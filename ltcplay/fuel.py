@@ -575,8 +575,11 @@ class FuelTracker:
         self._thread = None
         # Shows per refill (fuelshows.py, fuel_shows.json): read before
         # fuel.json, whose performance under way may end in _load.
-        self.shows = fuelshows.ShowsCounter(folder, clock, wall, self._note)
+        self.shows = fuelshows.ShowsCounter(
+            folder, clock, wall, self._note,
+            fuel_get=lambda mid: self.units.get(mid))
         self.audit = None            # audit.AuditLog, set by build()
+        self._unclean = False        # fuel.json said it did not close
         self._reload_config()
         self._load()
         self._shows_start()
@@ -685,6 +688,9 @@ class FuelTracker:
             if self._dirty and \
                     self._clock() - self._last_save >= SAVE_EVERY_S:
                 self.save()
+            elif self.shows.dirty and \
+                    self._clock() - self._last_save >= SAVE_EVERY_S:
+                self._save_shows()
             if self.run_error:
                 self._note("Fuel: counting is working again.")
                 self.run_error = ""
@@ -762,21 +768,23 @@ class FuelTracker:
             self._show_tc(t, secs, machines, rehearsal)
         if not ok or not values or dt <= 0 or not any(values):
             return
+        # `use`: the labelled pile of fuel_shows.json (fuelshows.BUCKETS) it
+        # also goes in, so every flame second is in exactly one.
         if rehearse or program or (purge and burn):
             # The wave flamer cleaning's bursts (cleaning.py) go out on the
             # purge frame but burn the show fuel: "other", like scrubbing.
             source = "other"
+            use = ("cleaning" if purge and burn else
+                   "live" if program else "rehearsal")
         elif purge:
-            source = "purge"
+            source = use = "purge"
         elif show_tc:
-            source = "show"
+            source = use = "show"
         else:
-            source = "other"
+            source = use = "other"
         n = len(values)
         for m in machines:
             kc = self.cfg["kinds"][m.kind]
-            if source == "purge" and not kc["count_purge"]:
-                continue
             at = kc["fire_at"]
             if not any(0 < s <= n and values[s - 1] >= at
                        for s in burn_slots(m)):
@@ -787,6 +795,13 @@ class FuelTracker:
                 # flamesafe says this group is not armed: it holds the
                 # group's fire slots at zero, so nothing burned.
                 continue
+            if source == "purge" and not kc["count_purge"]:
+                # Not in this kind's fuel.json tank (a Showven purges from
+                # its own purge fuel), but it fired: counted in shows per
+                # refill's Purges pile all the same.
+                self.shows.add(m, "purge", dt, fuel=False, wall=self._wall(),
+                               unsure=armed is None)
+                continue
             u = self._unit(m)
             if armed is None:
                 # Not known: counted anyway. flamesafe zeroes a disarmed
@@ -796,6 +811,10 @@ class FuelTracker:
                 b = self.episode["burn"]
                 b[m.id] = b.get(m.id, 0.0) + dt
             else:
+                # Before fuel.json's own pile: a unit seen here for the
+                # first time takes fuel.json's history without this frame.
+                self.shows.add(m, use, dt, fuel=True, wall=self._wall(),
+                               unsure=armed is None)
                 u["burn"][source] = u["burn"].get(source, 0.0) + dt
             self._dirty = True
 
@@ -881,10 +900,9 @@ class FuelTracker:
                 self._dirty = False
                 self._last_save = self._clock()
             # fuel_shows.json FIRST: a show it counted is then never lost
-            # (fuelshows.py); a failure there never stops fuel.json.
-            if not self.shows.write(stext):
-                with self._lock:
-                    self._dirty = True
+            # (fuelshows.py); a failure there never stops fuel.json, and is
+            # tried again on its own (tick, _save_shows).
+            self.shows.write(stext)
             try:
                 tmp = f"{self.path}.{os.getpid()}.tmp"
                 with open(tmp, "w", encoding="utf-8") as fh:
@@ -911,6 +929,15 @@ class FuelTracker:
             self.save_error = ""
             self.saved_at = self._wall()
         return True
+
+    def _save_shows(self):
+        """fuel_shows.json alone, when only it has changed or it could not
+        be written with fuel.json. Never raises."""
+        with self._save_lock:
+            with self._lock:
+                stext = self.shows.text()
+                self._last_save = self._clock()
+            return self.shows.write(stext)
 
     def _set_aside(self, why):
         """A fuel.json that cannot be used is never written over: it is
@@ -950,6 +977,7 @@ class FuelTracker:
             self.gaps = rec["gaps"]
             self.saved_at = rec["saved_at"]
             if not rec["clean"]:
+                self._unclean = True     # shows per refill's not sure time
                 when = ("" if self.saved_at is None else time.strftime(
                     " (last saved %Y-%m-%d %H:%M:%S)",
                     time.localtime(self.saved_at)))
@@ -999,7 +1027,7 @@ class FuelTracker:
         if not pick:
             return False, "No unit is tracked, so nothing was logged."
         with self._lock:
-            self._log_refills(pick, self._new_id(), who, role)
+            self._log_refills(pick, who, role)
         names = ("every unit" if which == "all" and len(pick) > 1
                  else pick[0].name)
         self._note(f"Fuel: {who or 'someone'} logged a refill of {names}.")
@@ -1019,9 +1047,12 @@ class FuelTracker:
         self.next_id = bid + 1
         return bid
 
-    def _log_refills(self, pick, bid, who, role):
-        """A full tank for each machine in `pick`, as refill number `bid`.
-        Under the lock."""
+    def _log_refills(self, pick, who, role):
+        """A full tank for each machine in `pick`, as one new refill
+        number: (that number, shows per refill's {id: (old X, new X)}).
+        Under the lock. An open Refueled +1 batch is written first."""
+        self.shows.commit_all(self._new_id)
+        bid = self._new_id()
         at = self._wall()
         for m in pick:
             u = self._unit(m)
@@ -1030,6 +1061,16 @@ class FuelTracker:
                 snap, id=bid, at=at, who=who or "unsigned",
                 role=role or "", undone=None)])[-REFILLS_KEPT:]
         self._dirty = True
+        # Shows per refill: X to N and "since the refill" starts again, as
+        # this refill number (one Undo takes both back).
+        return bid, self.shows.filled(pick, bid, who, role, self.gaps,
+                                      self._new_id, self._ep_burn())
+
+    def _ep_burn(self):
+        """Flame of the performance under way, per unit (not yet in a
+        pile). Under the lock."""
+        ep = self.episode
+        return dict(ep.get("burn") or {}) if ep is not None else {}
 
     # -- shows per refill (fuelshows.py) ---------------------------------------
     def _shows_start(self):
@@ -1039,7 +1080,8 @@ class FuelTracker:
         try:
             with self._lock:
                 self.shows.reconcile(self._machines(), self.units,
-                                     self._new_id)
+                                     self._new_id, unclean=self._unclean,
+                                     lost_s=SAVE_EVERY_S)
                 if self.shows.dirty:
                     self._dirty = True
             self._audit_written()
@@ -1052,9 +1094,9 @@ class FuelTracker:
         with self._lock:
             for mid in self.shows.due():
                 self.shows.commit(mid, self._new_id)
-            if self.shows.dirty:
-                self._dirty = True
         if self._audit_written():
+            with self._lock:
+                self._dirty = True       # the refill numbers in fuel.json
             self.save()
 
     def _audit_written(self):
@@ -1064,7 +1106,9 @@ class FuelTracker:
         for a in got:
             (mid, ch), = a["changes"].items()
             self._audit(a.get("who"), "fuel-refueled", f"unit={mid}",
-                        old=ch[0], new=ch[1], clicks=a.get("clicks", 0),
+                        old=fuelshows.whole(ch["old"]),
+                        new=fuelshows.whole(ch["new"]),
+                        clicks=a.get("clicks", 0),
                         wraps=a.get("wraps", 0),
                         confirmed=bool(a.get("confirmed", True)),
                         words=a.get("words", ""))
@@ -1101,13 +1145,15 @@ class FuelTracker:
             if n is None:
                 return False, (f"Set shows per refill for "
                                f"{fuelshows.KIND_NAMES[m.kind]}s first."), {}
-            old, new, _first = self.shows.step(m, who, role, self.gaps,
-                                               self._new_id)
+            old, new = self.shows.step(m, who, role, self.gaps,
+                                       self._new_id,
+                                       self._ep_burn().get(m.id, 0.0))
             self._dirty = True
         self._audit_written()
+        k = fuelshows.whole(new)
         return True, self._saved(
-            f"{m.name}: {fuelshows.left_words(new)}."), {
-            "unit": m.id, "left": new, "n": n}
+            f"{m.name}: {fuelshows.left_words(k)}."), {
+            "unit": m.id, "left": k, "n": n}
 
     def shows_set(self, kind, n, who, role=""):
         """Shows per refill for one machine type, or None for tracking
@@ -1123,7 +1169,7 @@ class FuelTracker:
             old, low = self.shows.set_n(kind, n, self._new_id(), who, role)
             self._dirty = True
         self._audit_written()
-        down = "".join(f" {self.shows.units[k]['name']} {a} to {b}."
+        down = "".join(f" {self.shows.units[k]['name']} {fuelshows.whole(a)} to {b}."
                        for k, (a, b) in low.items())
         self._note(f"Fuel: {who or 'someone'} set shows per refill for "
                    f"{word}s from {old} to {n}.{down}")
@@ -1159,19 +1205,19 @@ class FuelTracker:
         changed = {}
         if pick:
             with self._lock:
-                self.shows.commit_all(self._new_id)
-                bid = self._new_id()
-                self._log_refills(pick, bid, who, role)
-                changed = self.shows.fill(pick, bid, who, role, self.gaps)
+                bid, changed = self._log_refills(pick, who, role)
             self._audit_written()
             for m in pick:
-                ch = changed.get(m.id)
+                a, b = changed[m.id]
                 self._audit(who, "fuel-fill", f"unit={m.id}", refill=bid,
-                            **({"old": ch[0], "new": ch[1]} if ch else {}))
+                            **({"old": fuelshows.whole(a), "new": b}
+                               if b is not None else {}))
             self._note(f"Fuel: {who or 'someone'} filled "
                        f"{', '.join(m.name for m in pick)}" + "".join(
-                           f"; {by_id[k].name} shows left {a} to {b}"
-                           for k, (a, b) in changed.items()) + ".")
+                           f"; {by_id[k].name} shows left "
+                           f"{fuelshows.whole(a)} to {b}"
+                           for k, (a, b) in changed.items()
+                           if b is not None) + ".")
             if not self.save():
                 return True, (f"Filled, but fuel.json could NOT be written "
                               f"({self.save_error}); tried again every "
@@ -1390,8 +1436,11 @@ class FuelTracker:
                                     kc["start_shows_per_tank"]}
                 units = [self._unit_view(m, cfg, kinds[m.kind])
                          for m in machines]
+                live = self._ep_burn()
                 for m, u in zip(machines, units):
-                    w = self.shows.unit_view(m, self.gaps)
+                    extra = float(live.get(m.id, 0.0))
+                    u["use"] = self.shows.use_view(m, extra)
+                    w = self.shows.unit_view(m, self.gaps, extra)
                     if w is not None:
                         u["countdown"] = w
                         if w["refuel_now"]:
@@ -1461,6 +1510,7 @@ class FuelTracker:
                         for k in TRACKED_KINDS
                         if any(m.kind == k for m in machines)},
                     "shows_per_refill_max": fuelshows.N_MAX,
+                    "use_words": fuelshows.BUCKET_WORDS,
                     "settings": {k: cfg[k] for k in (
                         "learn_refills", "recent_shows", "min_shows",
                         "min_show_s", "amber_below_percent",

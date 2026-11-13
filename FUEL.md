@@ -67,25 +67,45 @@ Each refill is saved at once with who logged it and when.
 
 ## Shows per refill
 
-For planning, each flame unit can also count down the shows its tank has
-left.
+For planning, every flame unit's flame is counted from every source, and a
+unit can count down the shows its tank has left.
 
+- **What is counted.** Every second a unit's fire channel was at its fire
+  value in a frame LTC Player sent to flamesafe, unless flamesafe held
+  that group off (not armed) or the unit was locked out. One second at
+  the fire value is one second of full output (229 and 255 make the same
+  flame, so there is no level to weigh). Each second goes in one pile:
+  - **Shows**: a show of 30 s or more, by the schedule, Start now or Start
+    at a cue.
+  - **Short starts**: a start shorter than that.
+  - **Purges**: purges and timed purges (a Showven's too, though its
+    purge fuel is separate).
+  - **Cleaning**: the wave flamer cleaning's bursts.
+  - **Rehearsal**: Programming playback, scrubbing, Fireball practice.
+  - **Live programming**: live flame programming.
+  - **Other**: anything else flamesafe let through.
+  - **Not sure**: flame that may have burned unseen (below), counted at
+    full output.
+- **Fuel use.** On the Fuel step, **Fuel use** shows each unit's seconds
+  per pile since its last refill and in all, its shows, and its flame per
+  show.
 - **Shows per refill (N).** One whole number, 1 to 99, per machine type
-  (Wave Flamer, G-Flame). An admin sets it with **Shows per refill** on
-  the Fuel step; blank is count only. A type with no number keeps its
-  usual tile (shows since the refill), with no countdown. Lowering it
-  lowers any unit above it. A unit starts at 0, **Refuel now**, until it
-  is filled.
-- **Shows left.** The tile says **Shows left: 3**, or **Refuel now** at 0.
-  A show (as above: 30 seconds of show timecode, not Programming, not a
-  rehearsal, not a purge, not live flame programming) takes one off each
-  unit whose own flame was counted in it. A show it sat out takes nothing
-  off. Never below 0.
-- **Exactly once.** Each show is counted once, even across a restart. A
-  show cut by a restart counts for every unit that fired in it, short or
-  not, and those units read **Not sure** until they are filled to the top.
-  Flame that could not be counted (the note at the top) also reads Not
-  sure.
+  (Wave Flamer, G-Flame). An admin sets it with **Shows per refill**;
+  blank is count only, and those tiles stay as they were. Lowering it
+  lowers any unit above it. A unit starts at **Refuel now** until it is
+  filled.
+- **Shows left.** N, less ALL the flame since the refill divided by that
+  unit's flame per show: the average of its last 10 full shows. A show
+  is full when it ran at least 90 percent as long as its longest recent
+  one, so a Start at a cue part way in is never learned as a whole show.
+  Until a unit has 3 of its own it uses its type's average, then its
+  own, and the tile says **estimating**. With no show at all yet it
+  counts shows, estimating. So a 10 s purge with 5 s a show takes 2
+  shows off. Rounded down; below one show it says **Refuel now**.
+- **Not sure.** If LTC Player stops without closing while a unit is
+  burning, 30 s of flame is added to Not sure for it. Flame the fuel
+  record counted but this one missed is added too. A show cut by a
+  restart counts. Those units read **Not sure** until filled.
 - **Refueled +1.** On those tiles a tap adds one show at once, no
   question. Past the top it goes to 0, then 1, 2 and on, so an extra tap
   is fixed by tapping on round. The number is saved at once.
@@ -95,21 +115,21 @@ left.
   full, the line says so and calls the lower number a
   correction, not usage. If LTC Player stops in those 5 seconds, the entry is written at
   the next start, marked not confirmed. Each entry is one refill for
-  planning. An admin can Undo it in Recent refills until that unit
-  changes again. A +1 is never a full tank, so how long a tank lasts is
-  not changed by it.
+  planning. An admin can Undo it in Recent refills until that unit is
+  pressed or filled again; flame since stays counted. A +1 is never a
+  full tank, so how long a tank lasts is not changed by it.
 - **Select to fill.** Opens the list of flame units and hazers. Tap the
   ones you filled, or **Select all Wave Flamers**, **Select all
   G-Flames**, **Select all hazers**; **Clear** starts again. **Fill
   selected** asks first, naming what it fills. Each flame unit gets a full
-  tank logged (as Refilled does) and, if its type has a number, shows
-  left at the top; one Undo takes the flame units back. Each hazer gets a
-  haze refill, with its own Undo. It replaces Refill all.
+  tank logged (as Refilled does), which puts shows left at the top; one
+  Undo takes the flame units back. Each hazer gets a haze refill, with
+  its own Undo. It replaces Refill all.
 - **Where it is kept.** `fuel_shows.json`, beside `fuel.json`, written the
   same safe way with its own format number. `fuel.json` is not changed,
   so an older LTC Player reads it as before and ignores the new file.
-  Shows played while an older LTC Player ran are counted at the next
-  start of this one, and marked Not sure.
+  Flame counted while an older LTC Player ran is added as Not sure at the
+  next start of this one.
 
 ## How it learns
 

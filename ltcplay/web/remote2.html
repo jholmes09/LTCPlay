@@ -5684,6 +5684,7 @@ function dayWire(k){
     });
     $("fu-fill").addEventListener("click", fsSelect);
     $("fu-top").addEventListener("click", fsTopAsk);
+    $("fu-use").addEventListener("click", fsUseAsk);
   }
   if(k === "purge"){
     $("mo-groups").addEventListener("click", e => { const b = e.target.closest("[data-grp]"); if(b && !b.disabled) groupClick(b.dataset.grp); });
@@ -5911,7 +5912,7 @@ async function fuPress(route, body){
 // Select to fill opens the selection (units and hazers, the Purge step's
 // tap to select), then Fill selected asks first. Shows per refill is an
 // admin's, one number per machine type. Its own container (fu-shows).
-function fsRowHtml(){ return `<span id="fu-shows" class="drow"><button class="b" id="fu-fill">${icon("flame")}Select to fill</button><button class="b" id="fu-top" hidden>${icon("list")}Shows per refill</button></span>`; }
+function fsRowHtml(){ return `<span id="fu-shows" class="drow"><button class="b" id="fu-fill">${icon("flame")}Select to fill</button><button class="b" id="fu-top" hidden>${icon("list")}Shows per refill</button><button class="b" id="fu-use">${icon("list")}Fuel use</button></span>`; }
 function fsTile(u, f){
   const w = u.countdown || {};
   return `<button class="b ${w.refuel_now || w.not_sure ? "part" : ""}" data-step-unit="${esc(u.id)}" ${f.may_refill ? "" : "disabled"}>${icon(u.locked ? "lock" : "flame")}<span class="tt">${esc(u.name)}<small>${esc(w.words || "")}</small><small>Refueled +1</small></span></button>`;
@@ -5920,6 +5921,22 @@ function fsRow(f){
   const units = f.units || [], hz = hzfList(f);
   $("fu-fill").disabled = !f.may_refill || !(units.length || hz.length);
   $("fu-top").hidden = !f.may_set_shows || !Object.keys(f.shows_per_refill || {}).length;
+  $("fu-use").disabled = !units.length;
+}
+// Fuel use: where each unit's flame went, by source, since its last
+// refill and in all (fuelshows.py's piles), with its flame per show.
+function fsSecs(s){ s = Number(s) || 0; return s < 90 ? Math.round(s) + " s" : (s / 60).toFixed(1) + " min"; }
+function fsUseAsk(){
+  const f = FU || {}, words = f.use_words || {};
+  const cell = 'style="padding:2px 10px 2px 0;text-align:left"';
+  const html = `<div class="pline">Seconds of flame, by source.</div>` + (f.units || []).map(u => {
+    const v = u.use || {}, since = v.since || {}, life = v.life || {};
+    const rows = Object.keys(words).filter(k => (life[k] || 0) > 0).map(k => `<tr><td ${cell}>${esc(words[k])}</td><td ${cell}>${fsSecs(since[k])}</td><td ${cell}>${fsSecs(life[k])}</td></tr>`).join("");
+    const per = v.per_show_s == null ? "Not known yet" : fsSecs(v.per_show_s) + (v.mode === "learned" ? "" : ", estimating");
+    return `<div class="fs-use" data-use="${esc(u.id)}"><b>${esc(u.name)}</b><table><tr><th ${cell}>Source</th><th ${cell}>Since refill</th><th ${cell}>In all</th></tr>${rows}` +
+      `<tr><td ${cell}>Shows</td><td ${cell}>${v.shows_since || 0}</td><td ${cell}>${v.shows || 0}</td></tr></table><div class="pline">Per show: ${esc(per)}</div></div>`;
+  }).join("");
+  sheet("Where the fuel went", html, [{label:"Close", cls:"blue"}]);
 }
 // The selection: what Fill selected fills, kept while the sheet is open.
 let FS_SEL = new Set();

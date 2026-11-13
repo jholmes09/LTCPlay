@@ -15561,43 +15561,74 @@ def build():
  # Shows per refill (fuelshows.py, FUEL.md, Jeff 2026-11-13).
  ("shows per refill: Refueled +1 stops at N instead of going round to 0",
   "ltcplay/fuelshows.py",
-  "    return 0 if x >= n else x + 1",
-  "    return n if x >= n else x + 1"),
+  "    return 0.0 if x >= n - EPS else min(float(n), x + 1.0)",
+  "    return float(n) if x >= n - EPS else min(float(n), x + 1.0)"),
 
- ("shows per refill: Refueled +1 goes one above N before going round",
+ ("shows per refill: Refueled +1 goes above N",
   "ltcplay/fuelshows.py",
-  "    return 0 if x >= n else x + 1",
-  "    return 0 if x > n else x + 1"),
+  "    return 0.0 if x >= n - EPS else min(float(n), x + 1.0)",
+  "    return 0.0 if x >= n - EPS else x + 1.0"),
 
- ("shows per refill: a show takes shows left below 0",
+ ("shows per refill: flame takes shows left below 0",
   "ltcplay/fuelshows.py",
-  "        st[\"left\"] = max(0, st[\"left\"] - 1)",
-  "        st[\"left\"] = st[\"left\"] - 1"),
+  "        return max(0.0, min(float(n), a[\"x\"] - used))",
+  "        return min(float(n), a[\"x\"] - used)"),
+
+ ("shows per refill: only show flame takes shows left down (a purge is ignored)",
+  "ltcplay/fuelshows.py",
+  "            used = (_sum(st[\"life\"]) + extra - _sum(a[\"life\"])) / per",
+  "            used = (st[\"life\"][\"show\"] + extra - a[\"life\"][\"show\"]) / per"),
 
  ("shows per refill: a show replayed after a crash is counted again",
   "ltcplay/fuelshows.py",
-  "                key not in self.counted:",
-  "                True:"),
+  "        if key in self.counted:\n",
+  "        if False:\n"),
 
- ("shows per refill: a failed start counts as a show",
-  "ltcplay/fuelshows.py",
-  "        if not ep.get(\"rehearsal\") and (is_show or cut) and \\\n",
-  "        if not ep.get(\"rehearsal\") and True and \\\n"),
-
- ("shows per refill: a show the unit sat out counts for it",
-  "ltcplay/fuelshows.py",
-  "                if float(burn.get(m.id, 0.0) or 0.0) > 0.0 and \\\n",
-  "                if True and \\\n"),
-
- ("shows per refill: a show cut by a restart is dropped",
+ ("shows per refill: a show's frames are counted twice (each frame and at its end)",
   "ltcplay/fuel.py",
-  "            self.shows.show_ended(ep, burn, is_show, how in CUT_HOWS,",
-  "            self.shows.show_ended(ep, burn, is_show, False,"),
+  "                b = self.episode[\"burn\"]\n                b[m.id] = b.get(m.id, 0.0) + dt\n",
+  "                b = self.episode[\"burn\"]\n                b[m.id] = b.get(m.id, 0.0) + dt\n                self.shows.add(m, \"show\", dt, fuel=False, wall=0.0)\n"),
 
- ("shows per refill: a show cut by a restart is not marked not sure",
+ ("shows per refill: a Showven's purge is not counted",
+  "ltcplay/fuel.py",
+  "                self.shows.add(m, \"purge\", dt, fuel=False, wall=self._wall(),\n"
+  "                               unsure=armed is None)\n",
+  "                pass\n"),
+
+ ("shows per refill: live flame programming goes in Rehearsal",
+  "ltcplay/fuel.py",
+  "                   \"live\" if program else \"rehearsal\")",
+  "                   \"rehearsal\")"),
+
+ ("shows per refill: a part show is learned as a whole one",
   "ltcplay/fuelshows.py",
-  "                    self._down(self.state(m), cut)",
-  "                    self._down(self.state(m), False)"),
+  "        return [r[0] for r in recent if r[1] >= FULL_SHARE * longest]",
+  "        return [r[0] for r in recent]"),
+
+ ("shows per refill: estimating is never said",
+  "ltcplay/fuelshows.py",
+  "        if mode != \"learned\" and k >= 1:",
+  "        if False:"),
+
+ ("shows per refill: the type's flame per show is never used",
+  "ltcplay/fuelshows.py",
+  "        if len(pool) >= MIN_SHOWS:",
+  "        if False:"),
+
+ ("shows per refill: flame with flamesafe's armed state unknown reads sure",
+  "ltcplay/fuelshows.py",
+  "        if unsure:\n            st[\"unsure\"] = True\n",
+  "        if False:\n            st[\"unsure\"] = True\n"),
+
+ ("shows per refill: a crash while burning adds no not sure flame",
+  "ltcplay/fuelshows.py",
+  "                st[\"life\"][\"unsure\"] += lost_s\n",
+  "                pass\n"),
+
+ ("shows per refill: a crash adds not sure flame to a unit that burned long before",
+  "ltcplay/fuelshows.py",
+  "                    self.saved_at - st[\"last_burn_at\"] <= lost_s:",
+  "                    True:"),
 
  ("shows per refill: a +1 batch is written at once, one entry per tap",
   "ltcplay/fuelshows.py",
@@ -15624,10 +15655,10 @@ def build():
   "        pick = [by_id[u] for u in units]",
   "        pick = list(by_id.values())"),
 
- ("shows per refill: Fill selected leaves shows left where it was",
+ ("shows per refill: a refill leaves shows left where it was",
   "ltcplay/fuelshows.py",
-  "            self._set(st, n, gaps)",
-  "            st[\"rev\"] += 1"),
+  "            st[\"anchor\"] = self._anchor(st, None if n is None\n                                        else float(n))\n",
+  "            st[\"anchor\"] = st[\"anchor\"]\n"),
 
  ("ui 2.0 shows per refill: Fill selected goes with no question",
   "ltcplay/web/remote2.html",
@@ -15638,6 +15669,11 @@ def build():
   "ltcplay/web/remote2.html",
   "    if(t !== \"\" && (!/^[0-9]{1,3}$/.test(t) || Number(t) < 1 || Number(t) > max))",
   "    if(false)"),
+
+ ("ui 2.0 shows per refill: Fuel use shows only the Shows pile",
+  "ltcplay/web/remote2.html",
+  "filter(k => (life[k] || 0) > 0)",
+  "filter(k => k === \"show\" && (life[k] || 0) > 0)"),
 
  ("fuel: a Fireball is tracked",
   "ltcplay/fuel.py",

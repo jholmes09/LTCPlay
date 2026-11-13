@@ -90845,7 +90845,9 @@ def test_fuel_doc_in_plain_words():
                  "Showven", "G-Flame", "purge", "fuel.json",
                  "Shows per refill", "Refueled +1", "Refuel now",
                  "Select to fill", "Fill selected", "correction, not usage",
-                 "not confirmed", "fuel_shows.json"):
+                 "not confirmed", "fuel_shows.json", "Fuel use",
+                 "Short starts", "Live programming", "full output",
+                 "estimating", "Start at a cue"):
         check(need.lower() in doc.lower(), f"FUEL.md covers {need!r}")
     check("—" not in doc and "–" not in doc, "FUEL.md has no em or en "
                                              "dashes")
@@ -90853,17 +90855,29 @@ def test_fuel_doc_in_plain_words():
 
 
 # ----------------------------------------------- shows per refill --
-# Jeff, 2026-11-13: per machine type a "Shows per refill" N; each unit
-# shows "Shows left: X", one off per show it burned in; Refueled +1 adds
-# one and goes round to 0 after N, its log entry written once after the
-# taps stop; Select to fill then Fill selected (fuelshows.py, FUEL.md).
+# Jeff, 2026-11-13: every flame second the flame link sent is counted per
+# unit in one labelled pile (show, short, purge, cleaning, rehearsal, live,
+# other, unsure), since the refill and in all; per machine type a "Shows
+# per refill" N; Shows left = N less that flame over the unit's flame per
+# show; Refueled +1 adds one show and goes round to 0 after N, its log
+# entry written once after the taps stop; Select to fill then Fill
+# selected (fuelshows.py, FUEL.md).
 
 _WAVE_ON = ((3, 255),)          # Wave 1's ignition (CH3), firing
+_G1_ON = ((411, 255),)
+
+
+def _cd(R, mid="w1"):
+    return R.unit(mid).get("countdown")
 
 
 def _left(R, mid="w1"):
-    c = R.unit(mid).get("countdown")
+    c = _cd(R, mid)
     return None if c is None else c["left"]
+
+
+def _use(R, mid):
+    return R.unit(mid)["use"]
 
 
 def _commit(R, s=None):
@@ -90888,167 +90902,317 @@ class _Hazes:
         return True, f"Refill of {name} logged."
 
 
-def test_fuel_shows_count_down_once_per_show():
-    section("shows per refill: X goes down by one for each show the unit "
-            "burned in, exactly once, never below 0 (Refuel now); never "
-            "for a purge, a rehearsal, scrubbing, live flame programming, "
-            "a failed start, a show it sat out or a locked unit; a show cut "
-            "by a restart counts and is not sure; a show replayed after a "
-            "crash is never counted twice; a type with no N is tracking "
-            "only")
-    import json as _j
-    import shutil
+def test_fuel_shows_counts_every_flame_in_its_pile():
+    section("shows per refill: every flame second is counted, per unit, in "
+            "one labelled pile: shows, short starts, purges (a Showven's "
+            "too), cleaning, rehearsal, live programming, other; since the "
+            "refill and in all; a frame seen by two paths is counted once; "
+            "never a frame flamesafe held off or a locked unit")
     from ltcplay import fuelshows as FS
+    check(FS.BUCKETS == ("show", "short", "purge", "cleaning", "rehearsal",
+                         "live", "other", "unsure") and
+          FS.BUCKET_WORDS == {"show": "Shows", "short": "Short starts",
+                              "purge": "Purges", "cleaning": "Cleaning",
+                              "rehearsal": "Rehearsal",
+                              "live": "Live programming", "other": "Other",
+                              "unsure": "Not sure"},
+          "the piles and their labels")
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        R.frames(400, purge=True, on=_G1_ON + _WAVE_ON)       # 10 s purge
+        R.link.program_on = True
+        R.frames(200, purge=True, on=_G1_ON)    # live AND purge: one pile
+        R.link.program_on = False
+        R.link.rehearse_on = True
+        R.frames(200, tc=True, on=_G1_ON)       # scrubbing: rehearsal
+        R.link.rehearse_on = False
+        R.end()
+        tr.purge_is_burn = True
+        R.frames(120, purge=True, on=_G1_ON)    # cleaning bursts
+        tr.purge_is_burn = False
+        R.frames(80, on=_G1_ON)                 # no timecode: other
+        R.show(10, 4)                           # a failed start: short
+        R.show(40, 6)                           # a show
+        R.rehearsal[0] = True
+        R.show(60, 2)                           # a programming session
+        R.rehearsal[0] = False
+        R.locked = {"g1"}
+        R.frames(400, on=_G1_ON)                # locked: nothing
+        R.locked = set()
+        R.armed = {"cat-walk"}
+        R.frames(400, on=_G1_ON)                # not armed: nothing
+        R.armed = {"front row", "cat-walk", "wave flamer", "fireball"}
+        life = _use(R, "g1")["life"]
+        want = {"show": 6.0, "short": 4.0, "purge": 10.0, "cleaning": 3.0,
+                "rehearsal": 7.0, "live": 5.0, "other": 2.0, "unsure": 0.0}
+        check(all(_near(life[k], v) for k, v in want.items()),
+              f"each source in its own pile: {life}")
+        fuel_total = sum(tr.units["g1"]["burn"].values())
+        check(_near(sum(life.values()), fuel_total, 0.1) and
+              _near(fuel_total, 37.0, 0.1),
+              f"every second once: the piles add up to fuel.json's flame "
+              f"({sum(life.values()):.2f} and {fuel_total:.2f})")
+        w = _use(R, "w1")["life"]
+        check(_near(w["purge"], 10.0) and
+              _near(sum(tr.units.get("w1", {"burn": {}})["burn"].values()),
+                    0.0),
+              f"a Showven's purge is counted here, though fuel.json leaves "
+              f"it out (its own purge fuel): {w}")
+        # Since the refill, and in all.
+        tr.refill("g1", "Andy", "operator")
+        R.frames(400, purge=True, on=_G1_ON)
+        u = _use(R, "g1")
+        check(_near(u["since"]["purge"], 10.0) and
+              _near(u["life"]["purge"], 20.0) and
+              _near(sum(u["since"].values()), 10.0) and
+              u["since_at_ms"] is not None,
+              f"since the refill and in all: {u['since']} {u['life']}")
+        # A show under way is in Shows at once, and is not added twice
+        # when it ends.
+        R.pos[0] = 10.0
+        R.frames(400, tc=True, on=_G1_ON)
+        check(_near(_use(R, "g1")["since"]["show"], 10.0),
+              "a show under way counts at once")
+        R.frames(1200, tc=True)
+        R.end()
+        check(_near(_use(R, "g1")["since"]["show"], 10.0) and
+              _near(sum(_use(R, "g1")["life"].values()),
+                    sum(tr.units["g1"]["burn"].values()), 0.1),
+              "and once when it ends")
+        # A unit first seen with fuel.json history takes it once.
+        tr.close()
+        import os as _os
+        _os.remove(_os.path.join(R.work, FS.SHOWS_FILE))
+        tr = R.reopen()
+        u = _use(R, "g1")["life"]
+        check(_near(sum(u.values()), sum(tr.units["g1"]["burn"].values()),
+                    0.1) and _near(u["purge"], 20.0),
+              f"no fuel_shows.json: fuel.json's flame is its history, "
+              f"once: {u}")
+        R.frames(400, purge=True, on=_G1_ON)
+        u = _use(R, "g1")["life"]
+        check(_near(u["purge"], 30.0, 0.2) and
+              _near(sum(u.values()), sum(tr.units["g1"]["burn"].values()),
+                    0.5), f"and new flame on top, once: {u}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_left_from_every_flame():
+    section("shows per refill: shows left is N less all the flame since the "
+            "refill over the unit's flame per full show (learned from its "
+            "own, then its type's, saying estimating); with no show yet it "
+            "counts shows; a 10 s purge, live programming and a short or "
+            "part Start at a cue take it down in proportion; a part show is "
+            "never learned as a whole one; rounded down, never below 0; a "
+            "type with no N is tracking only")
     R = _FuelRig()
     try:
         tr = R.tr
         check(all("countdown" not in u for u in tr.view()["units"]) and
-              tr.view()["shows_per_refill"] == {
-                  "gflame": {"name": "G-Flame", "n": None},
-                  "waver": {"name": "Wave Flamer", "n": None}},
-              "no N: every tile is the fuel tracker's own (tracking only)")
-        ok, _t = tr.shows_set("waver", 4, "Andy", "admin")
-        check(ok and _left(R) == 0 and
-              R.unit("w1")["countdown"]["words"] == "Refuel now" and
-              "countdown" not in R.unit("g1"),
-              "N for Wave Flamers only: a never filled unit reads Refuel "
-              "now; G-Flames stay tracking only")
+              all("use" in u for u in tr.view()["units"]),
+              "no N: tiles as before (tracking only), the piles counted")
+        tr.shows_set("waver", 4, "Andy", "admin")
+        check(_left(R) == 0 and _cd(R)["words"] == "Refuel now",
+              "a unit never filled reads Refuel now")
         tr.fill(["w1"], [], "Andy", "admin")
-        check(_left(R) == 4 and
-              R.unit("w1")["countdown"]["words"] == "Shows left: 4",
-              f"filled: the single number: {R.unit('w1')['countdown']}")
+        c = _cd(R)
+        check(c["left"] == 4 and c["mode"] == "counting" and
+              c["words"] == "Shows left: 4, estimating",
+              f"filled, no show yet: counting, estimating: {c}")
+        R.frames(400, purge=True, on=_WAVE_ON)          # a 10 s purge
+        check(_left(R) == 4, "no flame per show known yet: a purge waits")
         R.show(40, 5, on=_WAVE_ON)
-        check(_left(R) == 3 and R.unit("w1")["shows_since"] == 1,
-              f"a show it burned in: down one: {R.unit('w1')['countdown']}")
-        R.show(40, 5)
-        check(_left(R) == 3, "a show it sat out (no flame of its own): no "
-                             "change")
-        R.frames(400, purge=True, on=_WAVE_ON)
-        R.frames(400, on=_WAVE_ON)
-        R.rehearsal[0] = True
-        R.show(60, 5, on=_WAVE_ON)
-        R.rehearsal[0] = False
-        R.show(10, 5, on=_WAVE_ON)
-        R.link.rehearse_on = True
-        R.frames(2000, tc=True, on=_WAVE_ON)
-        R.link.rehearse_on = False
-        R.end()
-        R.pos[0] = 10.0
-        R.frames(1600, tc=True)
+        c = _cd(R)
+        check(c["left"] == 1 and _near(c["x"], 1.0) and
+              c["mode"] == "estimating" and
+              c["words"] == "Shows left: 1, estimating",
+              f"one show of 5 s known: the 10 s purge and the show take 3 "
+              f"off: {c}")
+        tr.fill(["w1"], [], "Andy", "admin")
+        R.show(40, 5, on=_WAVE_ON)
+        R.show(40, 5, on=_WAVE_ON)
+        c = _cd(R)
+        check(c["left"] == 2 and c["mode"] == "learned" and
+              c["words"] == "Shows left: 2" and
+              _use(R, "w1")["per_show_s"] == 5.0,
+              f"3 full shows of its own: learned, 5 s a show: {c}")
         R.link.program_on = True
-        R.frames(200, tc=True, on=_WAVE_ON)
+        R.frames(100, on=_WAVE_ON)                      # 2.5 s live
         R.link.program_on = False
-        R.end()
-        check(_left(R) == 3,
-              f"a purge, other flame, a rehearsal, a failed start, "
-              f"scrubbing and live flame programming: no change: "
-              f"{R.unit('w1')['countdown']}")
-        R.locked = {"w1"}
-        R.show(40, 5, on=_WAVE_ON)
-        R.locked = set()
-        check(_left(R) == 3, "a locked out unit: no change")
-        R.pos[0] = 10.0
-        R.frames(400, tc=True, on=_WAVE_ON)
-        R.frames(800)
-        R.frames(1200, tc=True, on=_WAVE_ON)
-        R.end()
-        check(_left(R) == 2, "a gap inside one show: one show")
-        for _ in range(4):
-            R.show(40, 5, on=_WAVE_ON)
-        c = R.unit("w1")["countdown"]
-        check(c["left"] == 0 and tr.shows.units["w1"]["left"] == 0 and
-              c["refuel_now"] and
-              c["words"] == "Refuel now" and R.unit("w1")["refill_soon"] and
+        c = _cd(R)
+        check(_near(c["x"], 1.5) and c["left"] == 1,
+              f"live flame programming takes off in proportion, shown "
+              f"rounded down: {c}")
+        R.show(35, 2.5, on=_WAVE_ON)        # Start at a cue, part way in
+        c = _cd(R)
+        check(_near(c["x"], 1.0) and
+              _use(R, "w1")["per_show_s"] == 5.0,
+              f"a part show takes off in proportion and is not learned "
+              f"as a whole one: {c} {_use(R, 'w1')['per_show_s']}")
+        R.show(10, 2.5, on=_WAVE_ON)        # a short start
+        c = _cd(R)
+        check(_near(c["x"], 0.5) and c["refuel_now"] and
+              c["words"] == "Refuel now" and
+              _near(_use(R, "w1")["since"]["short"], 2.5),
+              f"a short start too; below one show: Refuel now: {c}")
+        R.frames(2000, purge=True, on=_WAVE_ON)
+        c = _cd(R)
+        check(c["x"] == 0.0 and c["left"] == 0 and
+              R.unit("w1")["refill_soon"] and
               "Wave 1" in tr.view()["refill_soon"],
-              f"never below 0; 0 reads Refuel now and lights Refill "
-              f"soon: {c}")
-        # G-Flames get their own N; a G-Flame show counts for them.
+              f"never below 0; lights Refill soon: {c}")
+        # The type's flame per show for a unit with none of its own.
         tr.shows_set("gflame", 2, "Andy", "admin")
-        tr.fill(["g1", "w1"], [], "Andy", "admin")
-        R.show(40, 5)                    # g1 (slot 411) fires
-        check(_left(R, "g1") == 1 and _left(R) == 4 and
-              _left(R, "g2") == 0,
-              "a G-Flame type with its own N counts down its own shows")
-        # A restart that cuts a show: counted, not sure, exactly once.
-        R.pos[0] = 10.0
-        R.frames(400, tc=True, on=_WAVE_ON)     # 10 s: short of 30 s
-        tr.save()
-        tr = R.reopen()                         # a crash: no close()
-        c = R.unit("w1")["countdown"]
-        check(c["left"] == 3 and c["not_sure"] and
-              c["words"] == "Shows left: 3. Not sure",
-              f"a show cut by a crash counts, short or not, and is not "
-              f"sure: {c}")
-        tr.save()
-        tr = R.reopen()
-        check(_left(R) == 3, "and never twice")
+        tr.fill(["g1", "g2"], [], "Andy", "admin")
+        for _ in range(3):
+            R.show(40, 5)                               # g1 fires
+        R.frames(200, on=((412, 255),))                 # g2: 5 s
+        c = _cd(R, "g2")
+        check(c["left"] == 1 and c["mode"] == "estimating" and
+              c["words"] == "Shows left: 1, estimating",
+              f"no show of its own: the type's flame per show, "
+              f"estimating: {c}")
+        check(_cd(R, "g1")["left"] == 0 and
+              _cd(R, "g1")["mode"] == "learned",
+              f"G-Flames count their own: {_cd(R, 'g1')}")
+        tr.shows_set("gflame", None, "Andy", "admin")
+        check("countdown" not in R.unit("g1") and
+              tr.view()["shows_per_refill"]["gflame"]["n"] is None and
+              "use" in R.unit("g1"),
+              "blank: tracking only again, the piles still counted")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_restart_not_sure_and_once():
+    section("shows per refill: a stop without closing while a unit burned "
+            "adds 30 s of not sure flame at full output and reads Not "
+            "sure; a clean stop or a unit not burning adds none; a show "
+            "cut by a restart counts and is not sure; a show replayed "
+            "after a crash is counted once; flame fuel.json counted that "
+            "fuel_shows.json missed is not sure flame")
+    import json as _j
+    import shutil
+    from ltcplay import fuel as F
+    from ltcplay import fuelshows as FS
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        tr.shows_set("waver", 10, "Andy", "admin")
+        for _ in range(3):
+            R.show(40, 5, on=_WAVE_ON)
         tr.fill(["w1"], [], "Andy", "admin")
-        check(not R.unit("w1")["countdown"]["not_sure"],
-              "filled to the top: sure again")
-        R.pos[0] = 10.0
-        R.frames(400, tc=True, on=_WAVE_ON)
+        R.frames(200, on=_WAVE_ON)                      # 5 s, then a save
+        tr.save()
+        tr = R.reopen()                                 # a crash
+        u = _use(R, "w1")
+        c = _cd(R)
+        check(_near(u["since"]["unsure"], F.SAVE_EVERY_S) and
+              c["not_sure"] and c["words"].endswith(". Not sure") and
+              _near(c["x"], 10 - (5 + F.SAVE_EVERY_S) / 5.0),
+              f"burning at a crash: {F.SAVE_EVERY_S:g} s of not sure flame "
+              f"at full output: {u['since']} {c}")
+        check(_near(_use(R, "g1")["life"]["unsure"], 0.0),
+              "a unit that was not burning: none")
+        tr.fill(["w1"], [], "Andy", "admin")
+        check(not _cd(R)["not_sure"], "filled: sure again")
+        R.frames(200, on=_WAVE_ON)
         tr.close()
         tr = R.reopen()
-        c = R.unit("w1")["countdown"]
-        check(c["left"] == 3 and c["not_sure"],
-              f"a show cut by a clean stop: counted, not sure: {c}")
+        check(_near(_use(R, "w1")["since"]["unsure"], 0.0) and
+              not _cd(R)["not_sure"], "a clean stop: none")
+        R.frames(200, on=_WAVE_ON)
+        R.t[0] += 100
+        R.wall[0] += 100
+        tr.save()
+        tr = R.reopen()
+        check(_near(_use(R, "w1")["since"]["unsure"], 0.0),
+              "burning long before the last save: none")
+        # A show cut by a crash: counted, short or not, not sure.
         tr.fill(["w1"], [], "Andy", "admin")
-        # fuel_shows.json written, fuel.json not (a crash between the
-        # two): the performance replays at the start, never counted twice.
+        R.pos[0] = 10.0
+        R.frames(400, tc=True, on=_WAVE_ON)
+        tr.save()
+        tr = R.reopen()
+        u = _use(R, "w1")
+        check(_near(u["since"]["short"], 10.0) and _cd(R)["not_sure"],
+              f"a show cut by a crash counts and is not sure: "
+              f"{u['since']}")
+        tr.save()
+        tr = R.reopen()
+        check(_near(_use(R, "w1")["since"]["short"], 10.0) and
+              _near(_use(R, "w1")["since"]["unsure"], F.SAVE_EVERY_S),
+              f"and never twice, its not sure time once: "
+              f"{_use(R, 'w1')['since']}")
+        # fuel_shows.json written, fuel.json not: the replay is not counted
+        # twice.
+        tr.close()
+        tr = R.reopen()
+        tr.fill(["w1"], [], "Andy", "admin")
         R.pos[0] = 10.0
         R.frames(1600, tc=True, on=_WAVE_ON)
         tr.save()
         R.end()
         tr.shows.write(tr.shows.text())
-        check(_left(R) == 3, "counted once when it ended")
         tr = R.reopen()
-        check(_left(R) == 3, f"the replayed show is not counted twice: "
-                             f"{R.unit('w1')['countdown']}")
-        # fuel.json written, fuel_shows.json not: counted at the start
-        # from fuel.json's show count, not sure, once.
-        tr.save()
+        check(_near(_use(R, "w1")["since"]["show"], 40.0) and
+              _near(_use(R, "w1")["since"]["unsure"], F.SAVE_EVERY_S),
+              f"the replayed show is counted once (its crash adds its not "
+              f"sure time): {_use(R, 'w1')['since']}")
+        # fuel.json written, fuel_shows.json not: not sure flame.
+        tr.close()
+        tr = R.reopen()
+        tr.fill(["w1"], [], "Andy", "admin")
+        tr.close()
+        tr = R.reopen()
         spath = os.path.join(R.work, FS.SHOWS_FILE)
         shutil.copy(spath, spath + ".old")
-        R.show(40, 5, on=_WAVE_ON)
-        tr.save()
+        before = _use(R, "w1")["life"]
+        R.frames(400, on=_WAVE_ON)
+        tr.close()
         shutil.copy(spath + ".old", spath)
         os.remove(spath + ".old")
         tr = R.reopen()
-        c = R.unit("w1")["countdown"]
-        check(c["left"] == 2 and c["not_sure"],
-              f"a show fuel.json counted and fuel_shows.json missed: "
-              f"counted at the start, not sure: {c}")
-        tr.save()
-        tr = R.reopen()
-        check(_left(R) == 2, "and only once")
-        tr.fill(["w1"], [], "Andy", "admin")
+        u = _use(R, "w1")
+        check(_near(u["life"]["unsure"] - before["unsure"], 10.0, 0.2) and
+              _near(u["life"]["other"], before["other"]) and
+              _cd(R)["not_sure"],
+              f"flame fuel.json counted and this file missed: not sure: "
+              f"{u['life']} {before}")
         tr._gap("test gap")
-        check(R.unit("w1")["countdown"]["not_sure"], "a gap: not sure")
+        check(_cd(R)["not_sure"], "a gap: not sure")
+        tr.fill(["w1"], [], "Andy", "admin")
+        R.armed = None
+        before = sum(_use(R, "w1")["life"].values())
+        R.frames(200, on=_WAVE_ON)
+        R.armed = {"front row", "cat-walk", "wave flamer", "fireball"}
+        check(_cd(R)["not_sure"] and
+              _near(sum(_use(R, "w1")["life"].values()) - before, 5.0),
+              "flamesafe's armed state not known: the flame counted once, "
+              "not sure")
         with open(spath, encoding="utf-8") as fh:
             doc = _j.load(fh)
         check(doc["shows_format"] == FS.SHOWS_FORMAT and
-              doc["shows_per_refill"] == {"gflame": 2, "waver": 4} and
-              doc["units"]["w1"]["left"] == 4,
+              doc["shows_per_refill"] == {"waver": 10},
               f"fuel_shows.json has its own format number: "
               f"{doc['shows_format']} {doc['shows_per_refill']}")
-        # Back to tracking only: the tile is the fuel tracker's again.
-        tr.shows_set("gflame", None, "Andy", "admin")
-        check("countdown" not in R.unit("g1") and
-              tr.view()["shows_per_refill"]["gflame"]["n"] is None,
-              "blank: G-Flames are tracking only again")
     finally:
         R.close()
     print("  ok")
 
 
 def test_fuel_shows_refueled_plus_one_and_its_one_entry():
-    section("shows per refill: each Refueled +1 adds one at once, after N "
-            "round to 0 and on, never above N or below 0, saved at once; "
-            "ONE log and audit entry per batch, written after COMMIT_S "
-            "still, in words for what happened (a wrap is a correction, "
-            "not usage); a restart before it writes it not confirmed; one "
-            "refill event per batch; Undo on the written entry; junk N "
-            "refused; never a fuel refill")
+    section("shows per refill: each Refueled +1 adds one show at once, up "
+            "to N and then round to 0 and on, saved at once; ONE log and "
+            "audit entry per batch, written after COMMIT_S still, in words "
+            "for what happened (a wrap is a correction, not usage); a "
+            "restart before it writes it not confirmed; one refill event "
+            "per batch; Undo on the written entry, flame since still "
+            "counted; junk N refused; never a fuel refill")
     import json as _j
     import types as _types
     from ltcplay import fuel as F
@@ -91085,24 +91249,24 @@ def test_fuel_shows_refueled_plus_one_and_its_one_entry():
         check(seen == [1, 2, 3, 0, 1, 2],
               f"+1 a tap, after 3 round to 0 and on: {seen}")
         check(text == "Wave 1: 2 shows left." and
-              R.unit("w1")["countdown"]["words"] == "Shows left: 2",
+              _cd(R)["words"] == "Shows left: 2, estimating",
               f"the new number at once: {text}")
         check(FS.step_value(0, 1) == 1 and FS.step_value(1, 1) == 0 and
-              FS.step_value(7, 3) == 0 and FS.step_value(-2, 3) == 1,
+              FS.step_value(7, 3) == 0 and FS.step_value(-2, 3) == 1 and
+              FS.step_value(2.5, 3) == 3 and FS.step_value(2.9999999, 3) == 0,
               "never above N or below 0, whatever was before")
         with open(os.path.join(R.work, FS.SHOWS_FILE),
                   encoding="utf-8") as fh:
             disk = _j.load(fh)["units"]["w1"]
-        check(disk["left"] == 2 and disk["pending"]["clicks"] == 6,
-              f"each tap saved at once: {disk['left']} {disk['pending']}")
+        check(disk["anchor"]["x"] == 2 and disk["pending"]["clicks"] == 6,
+              f"each tap saved at once: {disk['anchor']} {disk['pending']}")
         check(not [a for a in audit if a["action"] == "fuel-refueled"] and
-              not tr.shows.actions[-1]["what"] == "refuel" and
               not any("refilled Wave 1" in t for t, _f in R.lines),
               "no entry while the taps go on")
         _commit(R, FS.COMMIT_S - 0.6)
         check(not [a for a in audit if a["action"] == "fuel-refueled"],
               "not before COMMIT_S")
-        _commit(R, 0.2 + 0.01)
+        _commit(R, 0.21)
         got = [a for a in audit if a["action"] == "fuel-refueled"]
         words = ("Andy refilled Wave 1: 2 shows left (clicked 6 times; "
                  "wrapped past full once, so the lower number is a "
@@ -91115,53 +91279,47 @@ def test_fuel_shows_refueled_plus_one_and_its_one_entry():
               f"ONE audit entry, in words, the wrap a correction: {got}")
         check(any(t == f"Fuel: {words}" for t, _f in R.lines),
               "and one journal line")
-        check(R.unit("w1")["countdown"]["refills"] == 1,
-              "one refill event for planning, not six")
+        check(_cd(R)["refills"] == 1, "one refill event, not six")
         b = tr.view()["recent_refills"][0]
         check(b["units"] == ["Wave 1: 0 to 2 shows left (wrapped: a "
-                             "correction)"],
-              f"in Recent refills: {b}")
-        # A batch with no wrap.
+                             "correction)"], f"in Recent refills: {b}")
         tr.shows_step("w1", "Ola", "operator")
         _commit(R)
         a = tr.shows.actions[-1]
         check(a["words"] == "Ola refilled Wave 1: set from 2 to 3 shows "
                             "left (clicked 1 time).",
               f"no wrap: set from, to: {a['words']}")
-        # Undo the written entry; not once the unit changed.
+        # Undo: the X before, flame burned since still counted.
+        R.show(40, 5, on=_WAVE_ON)       # first show known: 5 s a show
         ok, text = tr.undo(a["id"], "Jeff")
-        check(ok and _left(R) == 2 and
-              R.unit("w1")["countdown"]["refills"] == 1,
-              f"Undo puts it back: {text}")
+        check(ok and _left(R) == 1 and _cd(R)["refills"] == 1,
+              f"Undo: back to 2, less the show since: {text} {_cd(R)}")
         check(not tr.undo(a["id"], "Jeff")[0], "not twice")
         tr.shows_step("w1", "Ola")
         _commit(R)
         a = tr.shows.actions[-1]
-        R.show(40, 5, on=_WAVE_ON)
+        tr.shows_step("w1", "Ola")
         ok, text = tr.undo(a["id"], "Jeff")
-        check(not ok and _left(R) == 2 and "changed since" in text,
-              f"a +1 with a show since is not undone: {text}")
+        check(not ok and "changed since" in text,
+              f"a +1 with a press since is not undone: {text}")
+        _commit(R)
         # A show ending writes an open batch first.
         tr.shows_step("w1", "Ola")
         R.show(40, 5, on=_WAVE_ON)
-        a = tr.shows.actions[-1]
-        check(a["what"] == "refuel" and a["changes"]["w1"][:2] == [2, 3] and
-              _left(R) == 2,
-              f"a show ending writes the open batch first: {a['words']}")
-        # Another person tapping writes the first person's batch.
+        check(tr.shows.actions[-1]["what"] == "refuel" and
+              tr.shows.units["w1"]["pending"] is None,
+              "a show ending writes the open batch first")
         tr.shows_step("w1", "Ola")
         tr.shows_step("w1", "Andy")
         check(tr.shows.actions[-1]["who"] == "Ola" and
               tr.shows.units["w1"]["pending"]["who"] == "Andy",
               "another person: the first batch is written, a new one opens")
         _commit(R)
-        # A restart before the entry: written at the start, not confirmed.
         tr.shows_step("w1", "Ola")
         tr.shows_step("w1", "Ola")
         tr = R.reopen()
         a = tr.shows.actions[-1]
-        check(a["confirmed"] is False and _left(R) == 2 and
-              a["changes"]["w1"][:2] == [0, 2] and
+        check(a["confirmed"] is False and
               a["words"].endswith(FS.NOT_CONFIRMED) and
               "(not confirmed)" in tr.view()["recent_refills"][0]["units"][0],
               f"restarted before the entry: not confirmed: {a['words']}")
@@ -91175,10 +91333,8 @@ def test_fuel_shows_refueled_plus_one_and_its_one_entry():
               F.read_record(fdoc)["units"]["w1"]["kind"] == "waver",
               "fuel.json keeps format 1 with no new key: an older build "
               "reads it as before")
-        n0 = tr._new_id()
-        check(n0 > tr.shows.max_id(),
+        check(tr._new_id() > tr.shows.max_id(),
               "refill numbers go on past the shows entries")
-        # Lowering N lowers X; raising it does not.
         tr.audit = _types.SimpleNamespace(event=lambda **kw: audit.append(kw))
         tr.fill(["w1"], [], "Andy")
         tr.shows_set("waver", 2, "Andy", "admin")
@@ -91191,7 +91347,8 @@ def test_fuel_shows_refueled_plus_one_and_its_one_entry():
         spath = os.path.join(R.work, FS.SHOWS_FILE)
         with open(spath, "w", encoding="utf-8") as fh:
             fh.write('{"shows_format": 1, "shows_per_refill": {"waver": 5}, '
-                     '"units": {"w1": {"kind": "waver", "left": 9}}}')
+                     '"units": {"w1": {"kind": "waver", "anchor": '
+                     '{"x": 9}}}}')
         tr = R.reopen()
         kept = [n for n in os.listdir(R.work) if ".unreadable-" in n and
                 n.startswith(FS.SHOWS_FILE)]
@@ -91210,8 +91367,8 @@ def test_fuel_shows_refueled_plus_one_and_its_one_entry():
 
 def test_fuel_shows_fill_selected():
     section("shows per refill: Fill selected fills only what was selected: "
-            "a full tank logged per flame unit (Refill's), shows left to N "
-            "for a type with N, a haze refill per hazer; refused, nothing "
+            "a full tank logged per flame unit (Refilled's), shows left to "
+            "N for a type with N, a haze refill per hazer; refused, nothing "
             "logged, for an unknown unit or hazer or nothing selected; one "
             "Undo for the flame units; audited per unit")
     import types as _types
@@ -91255,6 +91412,8 @@ def test_fuel_shows_fill_selected():
         ok, text = tr.undo(b["id"], "Jeff")
         check(ok and _left(R) == 1 and R.unit("g1")["status"] == "never",
               f"one Undo takes the flame units back: {text}")
+        tr.refill("w1", "Ola", "operator")
+        check(_left(R) == 3, "a plain Refilled puts shows left at N too")
     finally:
         R.close()
     print("  ok")
@@ -103247,14 +103406,28 @@ def _ui2_shows_fuel(may=True):
         return u
 
     def cd(left, n):
-        return {"left": left, "n": n, "refuel_now": left == 0,
-                "not_sure": False, "pending": False, "refills": 0,
-                "words": "Refuel now" if left == 0 else
+        return {"left": left, "x": left + 0.4, "n": n,
+                "refuel_now": left == 0, "estimating": False,
+                "mode": "learned", "not_sure": False, "pending": False,
+                "refills": 0, "words": "Refuel now" if left == 0 else
                 f"Shows left: {left}"}
+
+    def use(purge, live):
+        p = {b: 0.0 for b in ("show", "short", "purge", "cleaning",
+                              "rehearsal", "live", "other", "unsure")}
+        return {"since": dict(p, show=60.0, purge=purge, live=live),
+                "life": dict(p, show=600.0, purge=4 * purge, live=live),
+                "shows_since": 3, "shows": 30, "per_show_s": 20.0,
+                "mode": "learned", "since_at_ms": 1800000000000}
     units = [g("g1", "Ground 1"), g("g2", "Ground 2"),
              g("c1", "Catwalk 1"),
              dict(g("w1", "Wave Flamer 1", cd(2, 4)), kind="waver"),
              dict(g("w2", "Wave Flamer 2", cd(0, 4)), kind="waver")]
+    units[4]["countdown"].update(left=1, x=1.7, estimating=True,
+                                 mode="estimating", refuel_now=False,
+                                 words="Shows left: 1, estimating")
+    for i, u in enumerate(units):
+        u["use"] = use(10.0 * i, 5.0 if i == 3 else 0.0)
     return {"units": units, "unit_ids": [u["id"] for u in units],
             "may_refill": may, "may_undo": may, "may_set_shows": may,
             "refill_why": "" if may else "Sign in as an operator or admin.",
@@ -103263,6 +103436,11 @@ def _ui2_shows_fuel(may=True):
             "shows_per_refill": {"gflame": {"name": "G-Flame", "n": None},
                                  "waver": {"name": "Wave Flamer", "n": 4}},
             "shows_per_refill_max": 99,
+            "use_words": {"show": "Shows", "short": "Short starts",
+                          "purge": "Purges", "cleaning": "Cleaning",
+                          "rehearsal": "Rehearsal",
+                          "live": "Live programming", "other": "Other",
+                          "unsure": "Not sure"},
             "haze": {"available": True, "may_undo": may,
                      "recent_refills": [], "notes": [],
                      "hazers": [{"name": "Hazer 1", "big": "2 h of haze",
@@ -103298,6 +103476,13 @@ document.getElementById("fu-fill").click();
 await h.sleep(400);
 const sh = overlaps("#sheet button");
 out.sheet = {open:!document.getElementById("sheet").hidden, n:sh.n, overlap:sh.hit, xs:document.scrollingElement.scrollWidth - innerWidth};
+document.querySelector('#sh-row [data-i="0"]').click();
+await h.sleep(200);
+document.getElementById("fu-use").click();
+await h.sleep(300);
+const box = document.querySelector("#sheet .box").getBoundingClientRect();
+out.use = {open:!document.getElementById("sheet").hidden, wide:[...document.querySelectorAll("#sh-body table")].filter(t => t.getBoundingClientRect().right > box.right + 0.5).length,
+  xs:document.scrollingElement.scrollWidth - innerWidth};
 document.querySelector('#sh-row [data-i="0"]').click();
 await h.sleep(200);
 """
@@ -103397,6 +103582,12 @@ out.top = since(n).map(p => [p.route, p.body]);
 n = mark();
 await setTop("4", "");
 out.top_same = since(n).length;
+document.getElementById("fu-use").click();
+await h.sleep(300);
+out.use = {h:document.getElementById("sh-h").textContent,
+  w1:[...document.querySelectorAll('[data-use="w1"] tr')].map(txt), w1per:txt(document.querySelector('[data-use="w1"] .pline')),
+  g1:[...document.querySelectorAll('[data-use="g1"] tr')].map(txt), n:document.querySelectorAll("[data-use]").length};
+document.querySelector('#sh-row [data-i="0"]').click();
 """
     m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
                    frag="?tour=0#day",
@@ -103410,8 +103601,8 @@ out.top_same = since(n).length;
     t = m["tiles"]
     check(m["step"] and
           t["w1"] == "Wave Flamer 1 Shows left: 2 Refueled +1" and
-          t["w2"] == "Wave Flamer 2 Refuel now Refueled +1" and
-          t["w2part"] and t["g1"] == "Ground 1 3 shows left" and
+          t["w2"] == "Wave Flamer 2 Shows left: 1, estimating Refueled +1" and
+          not t["w2part"] and t["g1"] == "Ground 1 3 shows left" and
           not t["wrefill"] and t["fill"] == "Select to fill" and
           t["top"] == "Shows per refill" and not t["old"] and t["box"],
           f"a type with N: Shows left and Refueled +1; a type without: "
@@ -103463,6 +103654,15 @@ out.top_same = since(n).length;
           f"Shows per refill: one field per type, junk refused on the page, "
           f"a changed one posted, an unchanged one not: {m['top_rows']} "
           f"{m['junk']} {m['top']} {m['top_same']}")
+    u = m["use"]
+    check(u["h"] == "Where the fuel went" and u["n"] == 5 and
+          u["w1"] == ["Source Since refill In all", "Shows 60 s 10.0 min",
+                      "Purges 30 s 2.0 min", "Live programming 5 s 5 s",
+                      "Shows 3 30"] and u["w1per"] == "Per show: 20 s" and
+          u["g1"] == ["Source Since refill In all", "Shows 60 s 10.0 min",
+                      "Shows 3 30"],
+          f"Fuel use: each unit's flame by source, since the refill and "
+          f"in all, its shows and flame per show: {u}")
     steps2 = r"""
 const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
 await h.sleep(900); step("fuel"); await h.sleep(1500);
@@ -103497,10 +103697,12 @@ out.off = {posts:window.__posts.slice(n).filter(p => p.route !== "morning-open")
         r = r[0] if isinstance(r, list) and r else r
         lo = r.get("layout") if isinstance(r, dict) else None
         sh = r.get("sheet") if isinstance(r, dict) else None
+        us = r.get("use") if isinstance(r, dict) else None
         check(lo and lo["n"] > 5 and not lo["overlap"] and lo["xs"] <= 0 and
               lo["tiles"] == 2 and lo["fill"] and lo["top"] and
               not lo["cut"] and sh and sh["open"] and sh["n"] >= 12 and
-              not sh["overlap"] and sh["xs"] <= 0,
+              not sh["overlap"] and sh["xs"] <= 0 and us and us["open"] and
+              us["wide"] == 0 and us["xs"] <= 0,
               f"{sz[0]} px: no button on the Fuel step or the selection "
               f"overlaps another, no sideways scroll, the tile words fit: "
               f"{r!r}"[:900])
@@ -117213,7 +117415,9 @@ if __name__ == "__main__":
         test_fuel_settings_are_checked_strictly,
         test_fuel_routes_and_who_may_refill,
         test_fuel_doc_in_plain_words,
-        test_fuel_shows_count_down_once_per_show,
+        test_fuel_shows_counts_every_flame_in_its_pile,
+        test_fuel_shows_left_from_every_flame,
+        test_fuel_shows_restart_not_sure_and_once,
         test_fuel_shows_refueled_plus_one_and_its_one_entry,
         test_fuel_shows_fill_selected,
         test_fuel_shows_routes_and_who_may,

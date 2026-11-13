@@ -882,8 +882,8 @@ screen never opened. Now:
 **Shows left on each flame unit.**
 
 - Admins set Shows per refill per type.
-- Each show it fires in takes one off.
-- 0 reads Refuel now.
+- All flame counts: shows, purges, programming.
+- Below one show reads Refuel now.
 
 **Refueled +1: one tap, one show.**
 
@@ -895,6 +895,10 @@ screen never opened. Now:
 
 - Tap units and hazers, or Select all.
 - It asks first, naming what it fills.
+
+**Fuel use: where the flame went.**
+
+- Seconds per source, since refill and in all.
 
 FUEL.md has the details.
 

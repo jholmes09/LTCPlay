@@ -29,7 +29,34 @@
    "shows_left": 3,
    "refill_soon": true,
    "status": "learning",
-   "words": "Refill soon. Still learning the tank size (from 1 tank), so this reads on the low side. About 3 shows left (30 percent)."
+   "words": "Refill soon. Still learning the tank size (from 1 tank), so this reads on the low side. About 3 shows left (30 percent).",
+   "use": {
+    "since": {
+     "show": 60.0,
+     "short": 0.0,
+     "purge": 10.0,
+     "cleaning": 0.0,
+     "rehearsal": 0.0,
+     "live": 0.0,
+     "other": 0.0,
+     "unsure": 0.0
+    },
+    "life": {
+     "show": 600.0,
+     "short": 0.0,
+     "purge": 40.0,
+     "cleaning": 0.0,
+     "rehearsal": 0.0,
+     "live": 0.0,
+     "other": 0.0,
+     "unsure": 0.0
+    },
+    "shows_since": 3,
+    "shows": 30,
+    "per_show_s": 20.0,
+    "mode": "learned",
+    "since_at_ms": 1800000000000
+   }
   },
   {
    "id": "g2",
@@ -60,7 +87,34 @@
    "shows_left": 4,
    "refill_soon": false,
    "status": "learning",
-   "words": "Still learning the tank size (from 1 tank), so this reads on the low side. About 4 shows left (30 percent)."
+   "words": "Still learning the tank size (from 1 tank), so this reads on the low side. About 4 shows left (30 percent).",
+   "use": {
+    "since": {
+     "show": 60.0,
+     "short": 0.0,
+     "purge": 10.0,
+     "cleaning": 0.0,
+     "rehearsal": 0.0,
+     "live": 0.0,
+     "other": 0.0,
+     "unsure": 0.0
+    },
+    "life": {
+     "show": 600.0,
+     "short": 0.0,
+     "purge": 40.0,
+     "cleaning": 0.0,
+     "rehearsal": 0.0,
+     "live": 0.0,
+     "other": 0.0,
+     "unsure": 0.0
+    },
+    "shows_since": 3,
+    "shows": 30,
+    "per_show_s": 20.0,
+    "mode": "learned",
+    "since_at_ms": 1800000000000
+   }
   },
   {
    "id": "c1",
@@ -91,7 +145,34 @@
    "shows_left": null,
    "refill_soon": false,
    "status": "learning",
-   "words": "Still learning the tank size (from 1 tank), so this reads on the low side. 100 percent left. It has not burned in a show yet, so shows left is not known."
+   "words": "Still learning the tank size (from 1 tank), so this reads on the low side. 100 percent left. It has not burned in a show yet, so shows left is not known.",
+   "use": {
+    "since": {
+     "show": 60.0,
+     "short": 0.0,
+     "purge": 10.0,
+     "cleaning": 0.0,
+     "rehearsal": 0.0,
+     "live": 0.0,
+     "other": 0.0,
+     "unsure": 0.0
+    },
+    "life": {
+     "show": 600.0,
+     "short": 0.0,
+     "purge": 40.0,
+     "cleaning": 0.0,
+     "rehearsal": 0.0,
+     "live": 0.0,
+     "other": 0.0,
+     "unsure": 0.0
+    },
+    "shows_since": 3,
+    "shows": 30,
+    "per_show_s": 20.0,
+    "mode": "learned",
+    "since_at_ms": 1800000000000
+   }
   },
   {
    "id": "w1",
@@ -130,7 +211,37 @@
     "not_sure": false,
     "pending": false,
     "refills": 1,
-    "words": "Shows left: 2"
+    "words": "Shows left: 2",
+    "x": 2.4,
+    "estimating": false,
+    "mode": "learned"
+   },
+   "use": {
+    "since": {
+     "show": 60.0,
+     "short": 0.0,
+     "purge": 10.0,
+     "cleaning": 0.0,
+     "rehearsal": 0.0,
+     "live": 0.0,
+     "other": 0.0,
+     "unsure": 0.0
+    },
+    "life": {
+     "show": 600.0,
+     "short": 0.0,
+     "purge": 40.0,
+     "cleaning": 0.0,
+     "rehearsal": 0.0,
+     "live": 0.0,
+     "other": 0.0,
+     "unsure": 0.0
+    },
+    "shows_since": 3,
+    "shows": 30,
+    "per_show_s": 20.0,
+    "mode": "learned",
+    "since_at_ms": 1800000000000
    }
   }
  ],
@@ -224,5 +335,15 @@
  },
  "shows_per_refill_max": 99,
  "may_set_shows": true,
- "set_shows_why": ""
+ "set_shows_why": "",
+ "use_words": {
+  "show": "Shows",
+  "short": "Short starts",
+  "purge": "Purges",
+  "cleaning": "Cleaning",
+  "rehearsal": "Rehearsal",
+  "live": "Live programming",
+  "other": "Other",
+  "unsure": "Not sure"
+ }
 }
