@@ -3776,5 +3776,13 @@
 "hazer test: ON with no sign-in of its own is taken while there are users": "test_hazer_test_and_arm_all_need_the_arm_row",
 "hazer test: an old-status refusal is not journaled": "test_hazer_test_and_arm_all_need_the_arm_row",
 "hazer test: the rack tiles are ARMED's green during it": "test_ui2_hazer_test_in_a_browser",
-"hazer test: show control's state unreadable is read as off": "test_hazer_test_at_the_engine"
+"hazer test: show control's state unreadable is read as off": "test_hazer_test_at_the_engine",
+"release tags: a gpl-* tag builds a release again": "test_release_tags_are_ltc_only",
+"release tags: the installer's version keeps the ltc- prefix": "test_release_tags_are_ltc_only",
+"release tags: Run workflow on an old gpl- tag builds it": "test_release_tags_are_ltc_only",
+"release tags: a gpl-* tag is silent in the selftest run": "test_release_tags_are_ltc_only",
+"release tags: the updater no longer reads an ltc- release": "test_release_tags_are_ltc_only",
+"release tags: the updater no longer reads an old gpl- release": "test_release_tags_are_ltc_only",
+"release tags: an ltc- or gpl- stamp is compared as text again": "test_release_tags_are_ltc_only",
+"release tags: the rollback no longer reads a prefixed release": "test_release_tags_are_ltc_only"
 }
