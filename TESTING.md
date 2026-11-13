@@ -81,7 +81,7 @@ opens the issue too (`sweep-dropped.yml`).
 selftest, changes and every needed shard green
 (`.github/scripts/ci_verdict.sh`, pinned by `test_ci_verdict_rules`). A
 run on a PR into another branch is red, so a PR moved to main always needs
-a run of its own: main's copy of selftest.yml listens for edits, and an
+a run of its own: selftest.yml listens for edits, and an
 edit that moves the base runs everything again; an edit of the title or
 text runs nothing and copies the last verdict on the commit.
 
@@ -236,8 +236,9 @@ forces every way it can end red and checks the sentence is there.
 
 **The nightly or weekly sweep red.** The same as a shard, on bench-build,
 and an open issue (`mutate-nightly` or `mutate-sweep`) says which. A red
-selftest in the sweep means its shards never ran. Fix it before the next
-release; a red night is run again every night (it compares with the last
+selftest in the sweep means its shards never ran. Every PR's `ci` job
+carries a warning while the `mutate-sweep` issue is open. Fix it before
+the next release; a red night is run again every night (it compares with the last
 green one) until it is green, which closes its issue.
 
 ## Running things by hand

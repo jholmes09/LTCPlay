@@ -35,9 +35,20 @@ name: selftest
 #              at once is the account's job slots minus a reserve kept for
 #              other PRs (mutate_plan.py).
 #
+#   ci         the ONE required check on main (branch protection names this
+#              job, not the shards, so the shard count can follow the work).
+#              Its verdict is .github/scripts/ci_verdict.sh: green only for
+#              a push, or a PR into main whose selftest, changes and needed
+#              shards are green (or that had nothing to mutate); red on a PR
+#              into any other branch, so a green from before a retarget can
+#              never count. An edit of a PR's text copies the last verdict on
+#              the commit. It also warns on every PR while the weekly sweep's
+#              mutate-sweep issue is open.
+#
 # On a PR into bench-build the required checks are selftest (ubuntu-latest),
 # selftest (windows-latest), changes and installer (windows-app.yml), as
-# before; none of them waits for a shard.
+# before; none of them waits for a shard, and `ci` (red there by design) is
+# not one of them.
 #
 # A PR runs once, as a pull_request. Pushes run only for main and for release
 # tags, so a PR branch is not tested twice. ready_for_review is listed with
@@ -48,7 +59,9 @@ on:
     branches: [main]
     tags: ["**"]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # edited: a PR retargeted to main (its base changed) is judged again,
+    # in full; an edit of only the title or text runs nothing but `ci`.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
   contents: read
@@ -57,8 +70,8 @@ permissions:
 # cancelled, shards and all (the group is the workflow and the PR's ref,
 # refs/pull/N/merge, so it never touches another PR). Every push to main and
 # every tag gets a group of its own: they are never cancelled, and never
-# queue behind mutate.py either. An edit of a PR's title or text (main's
-# copy of this file listens for edits, to catch a retarget) runs nothing but
+# queue behind mutate.py either. An edit of a PR's title or text (this file
+# listens for edits, to catch a retarget) runs nothing but
 # `ci`, in a group of its own, so it never cancels the real run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base) && github.ref || github.run_id }}
@@ -400,7 +413,7 @@ jobs:
   # Each red shard's own summary says why (the kind of failure and the
   # mutation), its annotations carry the same, and its log is the artifact
   # named after it. Nothing is posted to the PR, and this job is green
-  # whatever it finds: the required checks are the shards themselves.
+  # whatever it finds: the required check on main is `ci`, below.
   mutate-report:
     needs: [changes, mutate]
     if: always() && needs.mutate.result != 'skipped' && needs.mutate.result != 'cancelled'
@@ -462,3 +475,47 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write(text)
           PY
+
+  # The one required check on main. The verdict is .github/scripts/
+  # ci_verdict.sh (pinned by selftest.py's test_ci_verdict_rules): green only
+  # for a push, or a PR into main whose selftest and changes jobs passed and
+  # whose mutate shards passed or had nothing to run; red when any of them
+  # failed, was cancelled, or did not run when it should have, and red on a
+  # PR into any other branch. Skipped on a draft PR, like the shards (a draft
+  # cannot be merged; marking it ready starts a fresh run with the shards in
+  # it).
+  ci:
+    needs: [selftest, changes, mutate]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: read
+      checks: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/scripts
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_CHANGED: ${{ github.event.changes.base != null }}
+          SELFTEST: ${{ needs.selftest.result }}
+          CHANGES: ${{ needs.changes.result }}
+          MUTATE: ${{ needs.mutate.result }}
+          MODE: ${{ needs.changes.outputs.mode }}
+        run: |
+          # A red weekly sweep (its issue is open) is said on every PR, so
+          # it is fixed before the next merge, as the rule has always been.
+          open_issue=$(gh issue list --repo "$REPO" --label mutate-sweep --state open --json number,url --jq '.[0] // empty | "#\(.number) \(.url)"' 2>/dev/null || true)
+          if [[ -n "$open_issue" ]]; then
+            echo "::warning title=the weekly mutation sweep is red::fix that before merging anything else: $open_issue"
+          fi
+          bash .github/scripts/ci_verdict.sh
