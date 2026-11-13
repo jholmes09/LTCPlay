@@ -88,7 +88,8 @@ jobs:
           if-no-files-found: ignore
 
   # Decides what the mutate shards do:
-  #   mode=full      a release tag: every mutation, ubuntu and windows
+  #   mode=full      a release tag (ltc-*): every mutation, ubuntu and
+  #                  windows. A gpl-* tag (the old name) fails here instead.
   #   mode=affected  a PR or a push to main with a base to diff against:
   #                  each shard runs `mutate.py --changed BASE`, which picks
   #                  the mutations the diff can have changed the result of
@@ -138,6 +139,14 @@ jobs:
               echo "shards=$(shards_json "$5")"; } >> "$GITHUB_OUTPUT"
             exit 0
           }
+          # Release tags are ltc-YYYY.MM.DD.N. gpl-* is the old name: such a
+          # tag builds nothing in windows-app.yml, on purpose, and fails
+          # here with the reason, so it is never silent (and starts no
+          # 11 hour sweep for a release that does not exist).
+          if [[ "$REF" == refs/tags/gpl-* ]]; then
+            echo "::error::${REF#refs/tags/} uses the old release tag name: releases are tagged ltc-YYYY.MM.DD.N now (for example ltc-2026.11.14.1), so no installer is built for this tag. Delete it and tag ltc-... instead (packaging/windows/INSTALL.md, Make a release)."
+            exit 1
+          fi
           if [[ "$REF" == refs/tags/* ]]; then
             say "release tag: every mutation, ubuntu and windows, $FULL_SHARDS shards each" full "" '["ubuntu-latest","windows-latest"]' "$FULL_SHARDS"
           fi

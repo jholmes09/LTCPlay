@@ -152,10 +152,9 @@ REFUSE_SETTLING = ("The charge record is settling after the last step: Step "
 DECK_NOTE = ("the Stream Deck alert is open (unplugged or failing). "
              "Practice carries on and nothing is disarmed for it; Stop, "
              "Hold and Done still work on every screen.")
-FUEL_NOTE = ("Every charge and shot of a step is recorded in the fuel and "
-             "air charge record like a show's (never a double charge), and "
-             "its flame time is in the fuel totals as Programming (Other). "
-             "A step is not a show.")
+FUEL_NOTE = ("Each charge and shot is in the fuel and air charge record, "
+             "never a double charge. Flame time counts as Programming "
+             "(Other), not a show.")
 OPEN_SAYS = ("Fireball practice opened: Stop was pressed, so every group "
              "and laser is disarmed and the schedule holds until Resume.")
 REFUSED_WHILE_OPEN = "Fireball practice is open: press Done first."
@@ -478,7 +477,7 @@ class Practice:
             return "the schedule left the Stop's Hold"
         s = self._session()
         if s is None or s is not b.get("session"):
-            return "Run was turned off or another show file was chosen"
+            return "Show control was turned off or another show file was chosen"
         view, raw = self._flames()
         why = self._flamesafe_why(view, raw)
         if why:
