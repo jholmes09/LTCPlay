@@ -200,8 +200,8 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 #b-go .lbl{display:flex;flex-direction:column;align-items:flex-start;text-align:left}
 /* Stop show's two lines: "Stop show" over "tap twice" (the Windows
    stress test, 2026-11-09). */
-#b-stop .lbl,#m-stop .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
-#b-stop{font-size:var(--fs);gap:6px;padding-left:8px;padding-right:8px}
+#b-stop .lbl,#m-stop .lbl,#b-runoff .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
+#b-stop,#b-runoff{font-size:var(--fs);gap:6px;padding-left:8px;padding-right:8px}
 #b-stop .lbl small:empty,#m-stop .lbl small:empty{display:none}
 .tr .q{align-self:center}
 #alert{display:flex;align-items:center;gap:var(--gap);padding:0 10px;border-radius:12px;border:2px solid var(--line);background:var(--panel)}
@@ -777,7 +777,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <button class="b green" id="b-go" data-mode="none"><svg class="i"><use href="#i-play"/></svg><span class="lbl"><span id="go-l">Start now</span><small id="go-why"></small></span></button>
       <button data-safe class="b amber" id="b-hold"><svg class="i"><use href="#i-pause"/></svg>Hold</button>
       <button data-safe class="b red nostop" id="b-stop"><svg class="i"><use href="#i-stop"/></svg><span class="lbl"><span id="stop-l">Stop show</span><small id="stop-s">tap twice</small></span></button>
-      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span>Run off</span></button>
+      <button class="b red" id="b-runoff" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="ro-l">Show ctrl</span><small id="ro-s">off</small></span></button>
       <button class="q" data-q="transport" aria-label="Help: show controls">?</button>
     </div>
     <div id="alert" class="none">
@@ -914,7 +914,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <div class="t"><b>Tonight's shows</b><span id="tn-state"></span></div>
         <div class="pline" id="tn-next">Next: None tonight</div>
         <div class="pline bad" id="tn-run-warn" role="alert" hidden></div>
-        <button class="b green" id="tn-run" hidden><svg class="i"><use href="#i-power"/></svg>Run show</button>
+        <button class="b green" id="tn-run" hidden><svg class="i"><use href="#i-power"/></svg>Show control on</button>
         <div id="tonight"></div>
               </div>
       <!-- SCHEDULE EDITOR (P4): 1.0's "Schedule: the show times" card, on
@@ -924,7 +924,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
            all the engine's (schedule.py, Remote.schedule_file_save). -->
       <div class="card col" id="sched-edit" hidden>
         <div class="t"><b>Schedule: the show times</b><span>On this machine. Saving loads it and starts nothing.</span></div>
-        <div class="pline">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Tonight's list is rebuilt from a save straight away, even after the night has closed, and nothing is started by it. Any times work: a last show end after midnight is the next morning, on the same night. Anything to know is said when it is saved, and the save stands. A save writes the whole schedule: a save from another window or iPad since this one read the file is overwritten, so Reload first if someone else may have changed it.</div>
+        <div class="pline">The scheduler starts a show at each time below (once show control is on and the Fire &amp; Ice settings say it performs). Tonight's list is rebuilt from a save straight away, even after the night has closed, and nothing is started by it. Any times work: a last show end after midnight is the next morning, on the same night. Anything to know is said when it is saved, and the save stands. A save writes the whole schedule: a save from another window or iPad since this one read the file is overwritten, so Reload first if someone else may have changed it.</div>
         <div class="segrid">
           <label class="fl"><span>Time zone</span><select class="f" id="se-tz"></select><span class="pline" id="se-tz-now"></span></label>
           <label class="fl"><span>Season starts</span><input class="f" id="se-first" type="date"></label>
@@ -953,12 +953,12 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
            programming_move_refusal). -->
       <div class="cards" id="t-prog">
         <div class="card col" id="p-run-card" hidden>
-          <div class="t"><b>Show file, on this machine</b><span>Nothing reaches the rig until Run.</span></div>
-          <div class="seg" id="p-mode" role="radiogroup" aria-label="Mode Run starts"><button type="button" class="b" role="radio" data-mode="show">Show</button><button type="button" class="b" role="radio" data-mode="programming">Programming</button></div>
+          <div class="t"><b>Show file, on this machine</b></div>
+          <div class="seg" id="p-mode" role="radiogroup" aria-label="Show or Programming"><button type="button" class="b" role="radio" data-mode="show">Show</button><button type="button" class="b" role="radio" data-mode="programming">Programming</button></div>
           <div class="pline" id="p-mode-what"></div>
           <div class="pline warn" id="p-rate" hidden></div>
-          <div class="pbar"><select class="f" id="p-file" aria-label="Show file (nothing reaches the rig until Run)" title="Nothing reaches the rig until Run"></select>
-            <button class="b green" id="p-run" data-mode="run"><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="p-run-l">Run</span><small id="p-run-s"></small></span></button></div>
+          <div class="pbar"><select class="f" id="p-file" aria-label="Show file" title="Show file"></select>
+            <button class="b green" id="p-run" data-mode="run"><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="p-run-l">Show control on</span><small id="p-run-s"></small></span></button></div>
         </div>
         <div class="card col" id="p-tr">
           <div class="t"><b>Programming session</b><span id="p-state"></span></div>
@@ -1246,7 +1246,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="kv" id="info-flames" hidden></div>
     <h2>Mode</h2>
     <div class="kv" id="info-mode"></div>
-    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Schedule tab. To switch between Show and Programming: the Show and Programming switch on the Schedule tab's Show file card, then Run (Stop first if something is running).</div>
+    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. SHOW CONTROL OFF: no show file is running; nothing reaches the rig until show control is on (on the Schedule tab). To switch between Show and Programming: the Show and Programming switch on the Schedule tab's Show file card, then Show control on or Start rehearsal (turn show control off or End rehearsal first).</div>
     <h2>Leaving this window</h2>
     <div class="kv"><b>Closing this window is safe.</b><ul class="kvl"><li>The show keeps running without it.</li><li>Minimize: <kbd>Windows</kbd> key + <kbd>Down arrow</kbd>.</li><li>Close: <kbd>Alt</kbd>+<kbd>F4</kbd>, or the button below.</li></ul><span class="dim">More: this window is only a view; the engine runs on its own. The Minimize, Maximize and Close buttons are at its top right. Press <kbd>Down arrow</kbd> twice if it is maximized. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</span></div>
     <div class="row">
@@ -1278,7 +1278,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   </dl>
   <h3>Five common fixes</h3>
   <dl>
-    <dt>Run is off</dt><dd>Press Run show. Shows then start on time.</dd>
+    <dt>Show control is off</dt><dd>Press Show control on.</dd>
     <dt>Group says WAIT</dt><dd>Wait for it, then hold to arm.</dd>
     <dt>Group says ARM AGAIN</dt><dd>Tap Disarm, then hold to arm.</dd>
     <dt>An alert</dt><dd>Read it, fix it, tap Acknowledge.</dd>
@@ -1722,8 +1722,8 @@ function goLook(st, isStaleNow, local, waiting){
   else if(sch.attached && prerollLook(st.preroll).checking) L = {mode:"checking", label:"Checking rig", icon:"clock", tone:"green", off:true, why:""};
   else if(waiting || sch.start_waiting) L = {mode:"loading", label:"Loading", icon:"clock", tone:"green", off:true, why:""};
   else if(!sch.attached) L = {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"No schedule here"};
-  else if(!runIsOn(st)) L = local ? {mode:"run", label:"Run show", icon:"power", tone:"green", off:!fresh, why:fresh ? "Turns tonight on" : "No contact"}
-                                  : {mode:"run", label:"Run show", icon:"power", tone:"green", off:true, why:"Press Run on show PC"};
+  else if(!runIsOn(st)) L = local ? {mode:"run", label:"Show control on", icon:"power", tone:"green", off:!fresh, why:fresh ? "Shows may start" : "No contact"}
+                                  : {mode:"run", label:"Show control on", icon:"power", tone:"green", off:true, why:"Only on the show PC"};
   else {
     const b = sch.start_blocked;
     if(b && b.text && !b.loading) L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:"Not ready: tap", blocked:String(b.text)};
@@ -1756,7 +1756,7 @@ function nextStep(st, isStaleNow, local, items){
   // with Acknowledge says Acknowledge).
   if(bad.length) return {tone:"bad", icon:"warn", text:bad[0].what + (bad[0].act === "ack" ? " Fix, then Acknowledge." : " See the alert.")};
   if(isRehearsal(st) && !isLive(st)) return {tone:"warn", icon:"info", text:"Rehearsal: the schedule starts no show."};
-  if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Show not running. Press Run show." : "Show not running. Press Run on show PC."};
+  if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Show control is off." : "Show control off: turn on at show PC."};
   const c = countdownRead(CD, monoNow());
   if(sch.state === "SHOW") return {tone:"ok", icon:"play", text:"Show " + (sch.running || "") + " running." + (c && c.kind === "left" ? " " + clockText(c.s) + " left." : "")};
   if(sch.start_waiting) return {tone:"ok", icon:"clock", text:"Starting when the show audio loads."};
@@ -1810,7 +1810,7 @@ function pillLook(st, isStaleNow, items){
   if(sch.attached && prerollLook(st.preroll).checking) return {cls:"warn", icon:"clock", text:"CHECKING RIG"};
   if((items || []).some(i => i.tone === "bad")) return {cls:"bad", icon:"warn", text:"NOT READY"};
   if(!sch.attached) return {cls:"off", icon:"info", text:"NO SCHEDULE"};
-  if(!runIsOn(st)) return {cls:"off", icon:"power", text:"NOT RUNNING"};
+  if(!runIsOn(st)) return {cls:"off", icon:"power", text:"SHOW CONTROL OFF"};
   return {cls:"ok", icon:"check", text:"READY"};
 }
 
@@ -1843,8 +1843,8 @@ function runWarnWords(text, local){
 // show PC, with contact and
 // the Show row (goLook's own gates): "run" while the big button is Run
 // show itself, "held" on a Hold, when the big button is Resume and the
-// engine says "Press Run, then Resume" (Run does not resume: runShow says
-// so); else "". Pure.
+// engine's warning asks for Resume too (turning show control on does not
+// resume: runShow says so); else "". Pure.
 function runHereShown(st, isStaleNow, local, waiting){
   const sch = (st && st.schedule) || {};
   if(!local || isStaleNow || !sch.run_warning || runIsOn(st)) return "";
@@ -1939,7 +1939,7 @@ function renderAlertSlot(){
   setText($("al-n"), (idx + 1) + " of " + items.length);
   $("al-next").hidden = items.length < 2;
   $("al-text").disabled = !it.full;
-  const act = {ack:"Acknowledge", seen:"Seen", "pr-continue":PR_HOLD_WORDS, run:"Run show"}[it.act];
+  const act = {ack:"Acknowledge", seen:"Seen", "pr-continue":PR_HOLD_WORDS, run:"Show control on"}[it.act];
   const ab = $("al-act");
   ab.hidden = !act;
   ab.dataset.act = it.act || "";
@@ -2228,6 +2228,9 @@ function drawTransport(isSt){
   if(ro.hidden !== !roOn) ro.hidden = !roOn;
   if(roOn) $("b-stop").hidden = true;
   else if($("b-stop").hidden) $("b-stop").hidden = false;
+  // Its words: Show ctrl / off, or End / rehearsal in a rehearsal.
+  const roReh = !!((ST && ST.transport) || {}).programming;
+  setText($("ro-l"), roReh ? "End" : "Show ctrl"); setText($("ro-s"), roReh ? "rehearsal" : "off");
   ro.disabled = !!FLIPPED.go && Date.now() - FLIPPED.go < FLIP_LOCK_MS;
 }
 // Stop show (Jeff, 2026-10-30): where Stop has always been (the SHOW tab's
@@ -2511,12 +2514,12 @@ async function runShow(){
   let f = "";
   try{ f = await runFile(); }catch(e){ say("Show files not readable.", e.message, "bad"); return; }
   if(!f){ say("No show file found.", "No show file in the show folder.", "bad"); return; }
-  // On a Hold Run does not resume (the engine's "Press Run, then Resume"):
-  // the confirm and the answer say so.
+  // On a Hold turning show control on does not resume (the engine's run
+  // warning asks for Resume too): the confirm and the answer say so.
   const held = !!(ST && (isHeld(ST) || (ST.schedule || {}).stop_held));
-  if(!(await confirmBox("Run the show?", "Runs " + f + (held ? ". The schedule stays held: press Resume after." : ". Shows then start on time."), "Yes, run", "green"))) return;
-  try{ const j = await post("/api/start", {timeline:f}); say(held ? "Running. Still held: press Resume." : "Running. Shows start on time.", j.banner || "Running.", "ok"); }
-  catch(e){ say("Run was refused.", e.message, "bad"); }
+  if(!(await confirmBox("Turn show control on?", "Uses " + f + (held ? ". The schedule stays held: press Resume after." : ". Shows may start."), "Yes, turn on", "green"))) return;
+  try{ const j = await post("/api/start", {timeline:f}); say(held ? "Show control is on. Still held: press Resume." : "Show control is on.", j.banner || "Running.", "ok"); }
+  catch(e){ say("Show control did not turn on.", e.message, "bad"); }
 }
 $("b-hold").addEventListener("click", () => press("hold"));
 // Run show where the Run warning is (the alert slot, the Schedule tab):
@@ -2530,7 +2533,7 @@ function runShowHere(){
   // Pressed only while it is offered (no contact, signed out, Run already
   // on: nothing done).
   if(!runHereShown(ST, stale(), !!(ME && ME.local), START_WAITING)){
-    say("Nothing done. Look, then press again.", "Run show is not offered now (no contact, signed out, or Run is already on). Nothing was done.", "warn");
+    say("Nothing done. Look, then press again.", "Show control on is not offered now (no contact, signed out, or show control is already on). Nothing was done.", "warn");
     try{ drawRunHere(stale()); }catch(e){}
     return;
   }
@@ -2562,7 +2565,7 @@ async function pressStop(route){
                             : await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
       headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))});
     j = await r.json().catch(() => ({}));
-    if(r.ok && route === "run-off" && !(j.failed || []).length) say("Run is off.", stopWords(j), "ok");
+    if(r.ok && route === "run-off" && !(j.failed || []).length) say("Show control is off.", stopWords(j), "ok");
     else if(r.ok || (j && j.failed)){
       const w = stopWords(j);
       if(w === STOP_DISARM_FAILED){ STOP_SAID = w; say("Flame disarm FAILED. Use the e-stop.", w, "bad"); }
@@ -2587,7 +2590,9 @@ function runOffShown(isSt){
   return !HALT_BUSY && !isSt && runIsOn(ST) && !stopShows(ST) && !STOP_TAPS2["b-stop"];
 }
 $("b-runoff").addEventListener("click", async () => {
-  if(!(await confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off", "red"))) return;
+  // In a rehearsal it is End rehearsal (Jeff, 2026-11-11): words only.
+  const reh = !!((ST && ST.transport) || {}).programming;
+  if(!(await (reh ? confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, "Yes, end it", "red") : confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, turn off", "red")))) return;
   if(!runOffShown(stale())){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
   return pressStop("run-off");
 });
@@ -2961,6 +2966,8 @@ const MODE_WHAT = {
   show: "<b>Show:</b> the scheduler starts each show at its time. Scrubbing is off.",
   programming: "<b>Programming:</b> a rehearsal. Play from, jump and loop work; the scheduler starts no show."};
 let RUN_MODE = null;
+// A rehearsal's Run off is End rehearsal (Jeff, 2026-11-11): its question.
+const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, and ends the rehearsal.";
 function runModeNow(st){
   const mo = modeLook(st);
   return mo.cls === "prog" ? "programming" : (mo.cls === "show" ? "show" : null);
@@ -2972,9 +2979,9 @@ function runModeView(st, want){
   let text = MODE_WHAT[want], locked = false;
   if(want === "programming" && live){
     locked = true;
-    text = "<b>Programming is locked:</b> a scheduled show is live (" + esc(sch.state) + "). Press Hold to pause it now; Programming opens once the show has ended. Then Stop, and Run here in Programming.";
+    text = "<b>Programming is locked:</b> a scheduled show is live (" + esc(sch.state) + "). Press Hold to pause it now; Programming opens once the show has ended. Then Stop, and Start rehearsal here.";
   } else if(now && now !== want){
-    text += " Now running in " + (now === "show" ? "Show" : "Programming") + ": press Stop, then Run, to switch.";
+    text += now === "show" ? " Show control is on now: turn it off, then Start rehearsal." : " A rehearsal is on now: End rehearsal, then turn show control on.";
   } else if(now === want){
     text += " Running now.";
   }
@@ -3058,7 +3065,7 @@ function drawProg(isSt){
     // Run, or Stop or Run off in its place (1.0's runLook): one Stop at a
     // time, never held back; Run and Run off wait out the lock after Stop
     // turned back into them, and need the Show row.
-    const b = $("p-run"), rk = runLook(ST, isSt);
+    const b = $("p-run"), rk = runLook(ST, isSt, RUN_MODE || "show");
     if(b.dataset.mode !== rk.mode){ if(b.dataset.mode === "stop") FLIPPED.prun = Date.now(); b.dataset.mode = rk.mode; }
     if(STOP_TAPS2["p-run"] && rk.mode !== "stop") stopTapDone2("p-run");
     const tap = rk.mode === "stop" && !!STOP_TAPS2["p-run"];
@@ -3071,7 +3078,7 @@ function drawProg(isSt){
     const cls = "b " + (rk.mode === "run" ? "green" : "red") + (tap ? " tap1" : "");
     if(b.className !== cls) b.className = cls;
     setIcon(b.querySelector("svg"), rk.mode === "run" ? "power" : "stop");
-    b.title = rk.mode === "stop" ? STOP_TITLE : rk.mode === "runoff" ? RUN_OFF_CONFIRM : "";
+    b.title = rk.mode === "stop" ? STOP_TITLE : rk.mode === "runoff" ? (tr.programming ? REHEARSAL_END_CONFIRM : RUN_OFF_CONFIRM) : "";
     b.disabled = HALT_BUSY || (rk.mode !== "stop" && (progFlipped() || !mayRow(ST, "show")));
   }
   setText($("p-tc"), isSt ? "--:--:--:--" : (show.timecode || "--:--:--:--"));
@@ -3125,7 +3132,10 @@ $("p-run").addEventListener("click", async ev => {
   if(d.act === "stop") return stopTap2("p-run", ev);
   if(d.act === "runoff"){
     // Run off: not an emergency control (Stop is), so it asks first.
-    const sure = await confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off", "red");
+    // A rehearsal's Run off is End rehearsal (Jeff, 2026-11-11): words only.
+    const sure = ((ST && ST.transport) || {}).programming
+      ? await confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, "Yes, end it", "red")
+      : await confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, turn off", "red");
     if(!sure) return;
     if(runLook(ST, stale()).mode !== "runoff"){ say("The show changed. Nothing done.", "The show changed while you answered, so nothing was done.", "warn"); return; }
     return pressStop("run-off");
@@ -3135,10 +3145,10 @@ $("p-run").addEventListener("click", async ev => {
   const prog = RUN_MODE === "programming";
   const v = runModeView(ST, RUN_MODE || "show");
   if(v.locked){ say("Programming is locked.", "Programming is locked while a scheduled show is live. Press Hold to pause it now; Programming opens once the show has ended.", "warn"); return; }
-  if(!(await confirmBox(prog ? "Run in Programming?" : "Press Run?", prog ? "Run " + f + " as a rehearsal. Play from, jump and loop work, and the scheduler starts no show." : "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run", "green"))) return;
+  if(!(await confirmBox(prog ? "Start rehearsal?" : "Turn show control on?", prog ? "Rehearses " + f + ". Play from, jump and loop work, and the scheduler starts no show." : "Uses " + f + ". The scheduler then starts each show by itself.", prog ? "Yes, start" : "Yes, turn on", "green"))) return;
   if(HALT_BUSY || runLook(ST, stale()).mode !== "run"){ say("The show changed. Nothing started.", "The show changed while you answered, so nothing was started.", "warn"); return; }
-  try{ const j = await post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f}); say(prog ? "Running in Programming." : "Running. Shows start on time.", j.banner || "Running.", "ok"); }
-  catch(e){ say("Run was refused.", e.message, "bad"); }
+  try{ const j = await post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f}); say(prog ? "Rehearsal started." : "Show control is on.", j.banner || "Running.", "ok"); }
+  catch(e){ say(prog ? "Rehearsal did not start." : "Show control did not turn on.", e.message, "bad"); }
 });
 
 // ---- TONIGHT (P3) and the SCHEDULE EDITOR (P4): 1.0's own code ----
@@ -3517,7 +3527,7 @@ function renderSetup(su, pr){
   t += ". " + (dkOk ? "The Stream Deck program is talking to this engine." : ("The Stream Deck program has not reached this engine" + (dkP.why ? ": " + esc(dkP.why) : "") + "."));
   if(su.example_flamesafe) t += " The flamesafe config was written at first run as a SAFE EXAMPLE: it sends to this PC only (127.0.0.1), never to a flame controller, until it is edited and confirmed.";
   fl.querySelector(".t").innerHTML = t;
-  $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until Run is pressed on the Schedule tab, and the scheduler only performs once the Fire & Ice settings say so.";
+  $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until show control is on (on the Schedule tab), and the scheduler only performs once the Fire & Ice settings say so.";
 }
 function makeOffered(su){
   return !!su && su.show_files === 0 && su.show_folder_renders > 0;
@@ -3528,7 +3538,7 @@ function setupFolderWords(su){
   return `<code>${esc(su.show_folder)}</code> ${su.show_folder_exists ? "is empty" : "does not exist yet"}. Put the show file (.json), its renders and its music stems there, or choose another folder on the Schedule tab.`;
 }
 async function makeShowFile(){
-  if(!(await confirmBox("Make a show file from this folder?", "A new show file listing every render (.fseq) in the show folder, back to back from 01:00:00:00. No show file is replaced and the renders are not changed. Nothing reaches the rig until Run.", "Yes, make it", "green"))) return null;
+  if(!(await confirmBox("Make a show file from this folder?", "A new show file listing every render (.fseq) in the show folder, back to back from 01:00:00:00. No show file is replaced and the renders are not changed. Nothing reaches the rig until show control is on.", "Yes, make it", "green"))) return null;
   const btn = $("fo-make");
   btn.disabled = true;
   $("fo-made").textContent = "Making the show file...";
@@ -3551,7 +3561,7 @@ function checkWords(f, j){
   const over = cues.filter(c => c.overlap).map(c => c.name || c.tc);
   const probs = (j.problems || []).slice(0, 8);
   let t = `Check of ${esc(f)}: ${cues.length} cue(s).`;
-  if(!missing.length && !over.length && !probs.length) t += " Nothing wrong found. Next: Run in Programming mode to rehearse it.";
+  if(!missing.length && !over.length && !probs.length) t += " Nothing wrong found. Next: Start rehearsal in Programming mode.";
   if(missing.length) t += ` <b>Render not found for:</b> ${esc(missing.slice(0, 8).join(", "))}${missing.length > 8 ? ", ..." : ""}.`;
   if(over.length) t += ` <b>Starts before the cue before it has ended:</b> ${esc(over.slice(0, 8).join(", "))}${over.length > 8 ? ", ..." : ""}. Set its "tc" later.`;
   if(probs.length) t += "<ul>" + probs.map(p => `<li>${esc(p)}</li>`).join("") + "</ul>";
@@ -4996,7 +5006,7 @@ $("wx").addEventListener("click", () => {
 // ---- "?" : one plain sentence per control ----
 const QHELP = {
   next: ["Next step", [["This line", "Says what to do next."], ["A red Stop here", "Stops a live mode: cleaning, live flame or Programming flames."]]],
-  transport: ["Show controls", [["Run show", "Turns tonight's show on. Shows start on time."], ["Start now", "Starts the next show early."],
+  transport: ["Show controls", [["Show control on", "Shows may start. Off: nothing reaches the rig."], ["Start now", "Starts the next show early."],
     ["Resume", "Carries on after a Hold or a Stop."],
     ["Hold", "Pauses the schedule. Resume carries on."], ["Stop show", "Tap twice. Ends everything and holds the schedule. Resume when safe."]]],
   alert: ["Alerts", [["The box", "What is wrong, and what to do."], ["Details", "The full message from the show PC."],
@@ -5038,7 +5048,7 @@ const COACH = [
   ["pill", "Show state, timecode and time left."],
   ["b-go", "The big button is the next step."],
   ["b-hold", "Hold pauses the schedule. Resume carries on."],
-  ["b-runoff", "Run off: ends the Run (Stop leaves Run on). Asks first."],
+  ["b-runoff", "Show ctrl off: turns show control off. Stop leaves it on. Asks first."],
   ["b-stop", "Stop: tap twice. Ends everything, the rig goes dark, and the schedule holds until Resume. Only there while something plays."],
   ["alert", "Problems show here. Fix, then Acknowledge."],
   ["groups", "Hold to arm. One tap disarms."]];

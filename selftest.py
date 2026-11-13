@@ -43586,7 +43586,7 @@ t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, fa
 t(startLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false, false).sub === "tap twice" &&
   runLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false).sub === "tap twice", "a live show: Stop, tap twice");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
-t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
+t(off.mode === "start" && off.sub === "Show control is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
 // "Run is off" on Start now is the engine's boolean, never its sentence
 // (show control, PR 1); anything but true is off, never on.
 const blk = (text, on) => ({schedule:{attached:true, state:"STANDBY", start_blocked:{text:text, loading:false}}, show:{running:true, show_control_on:on}});
@@ -43594,13 +43594,17 @@ t(startLook(blk("Run has not been pressed, so nothing may reach the rig; press R
 t(startLook(blk("the show audio interface is not available", true), false, false).sub === "not ready, tap for why", "Run on, blocked for another reason: not ready");
 for(const v of [false, undefined, null, "true", 1]){
   const lk = startLook(blk("Fireball practice is on", v), false, false);
-  t(lk.sub === "Run is off" && lk.why === "Fireball practice is on", "the boolean " + JSON.stringify(v) + ": Run is off, with the engine's own why: " + JSON.stringify(lk));
+  t(lk.sub === "Show control is off" && lk.why === "Fireball practice is on", "the boolean " + JSON.stringify(v) + ": Show control is off, with the engine's own why: " + JSON.stringify(lk));
 }
 // Run becomes Stop while Run is in force and there is something to stop;
 // with nothing to stop it is Run off (Stop no longer turns Run off).
 const att = (st, show, extra) => Object.assign({schedule:{attached:true, state:st}, show:show}, extra || {});
-t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while a show is live");
-t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Run off", "Run in force, nothing to stop: Run off");
+t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Show control on", "Run becomes Stop while a show is live");
+// Its words (Jeff, 2026-11-11): Show control on/off; Programming's Run is
+// a rehearsal (Start rehearsal, End rehearsal). The modes are the same.
+t(runLook(att("STANDBY", {running:false}), false, "show").label === "Show control on" && runLook(att("STANDBY", {running:false}), false, "programming").label === "Start rehearsal" && runLook(att("STANDBY", {running:false}), false, "programming").mode === "run", "Run's words: Show control on, or Start rehearsal with Programming picked");
+t(runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").label === "End rehearsal" && runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").mode === "runoff" && runLook(att("STANDBY", {running:true}), false, "programming").label === "Show control off", "Run off's words: End rehearsal while a rehearsal is in force, else Show control off");
+t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Show control off", "Run in force, nothing to stop: Run off");
 t(runLook(att("HOLD", {running:false, starting:true})).mode === "runoff", "Run starting with nothing to stop: Run off (F4 now)");
 t(runLook({schedule:{attached:false}, show:{running:true}}).mode === "stop" && runLook({schedule:{attached:false}, show:{running:false, starting:true}}).mode === "stop", "no scheduler: Run playing or starting is the show, so Stop");
 t(runLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}})).mode === "stop", "Programming playback on: Stop");
@@ -43627,10 +43631,10 @@ t(JSON.stringify(stopLines(null, false)) === '["Stop show","tap twice"]' && JSON
 t(stopLeftS(3000) === 3 && stopLeftS(2001) === 3 && stopLeftS(2000) === 2 && stopLeftS(10) === 1 && stopLeftS(-50) === 1, "the countdown: whole seconds left, never 0: " + stopLeftS(2000));
 t(stopTapStep({at:1000, kind:"mouse"}, 1500, "touch", false).fire === false, "a different pointer kind is a first tap");
 t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind");
-t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, Run is off");
+t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Show control is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, show control is off");
 const held = stopWords({stopped:true, run_on:true, show:{ok:true}, hold:{ok:true, text:""}, flames:{disarmed:true}});
-t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Run is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
-t(/Run is still on/.test(stopWords({stopped:true, run_on:true})), "a Stop with nothing to hold says Run is still on");
+t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Show control is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
+t(/Show control is still on/.test(stopWords({stopped:true, run_on:true})), "a Stop with nothing to hold says show control is still on");
 t(/did NOT work: show/.test(stopWords({stopped:true, failed:["show"], flames:{disarmed:true}})), "a failed step is named");
 t(/did NOT work: playback stop/.test(stopWords({stopped:false, failed:["playback stop"]})), "a failed playback stop is named");
 t(/^Stopped\. /.test(stopWords({stopped:false, failed:[]})), "nothing was playing: still Stopped, no false failure");
@@ -86985,7 +86989,7 @@ for(const k of ["prog", '{"on_lost": "hold"}', '{"no_output": true, "on_lost": "
   t(runningMode(L[k].snap) === "rehearsal", k + ": the old page reads " + runningMode(L[k].snap));
 }
 const idle = L.restart_idle.st;
-t(modeLook(idle).word === "Not running", "after a restart: Not running");
+t(modeLook(idle).word === "Show control off", "after a restart: Show control off");
 t(reload(idle) === "show", "after a restart the switch starts on Show");
 // An engine older than this change (no mode): on_lost, as before.
 t(runningMode({on_lost:"hold"}) === "rehearsal" && runningMode({on_lost:"freerun"}) === "show", "no mode field: on_lost as before");
@@ -99970,6 +99974,8 @@ s = base(); s.schedule.state = "SHOW";
 t(goLook(s, false, true).mode === "live" && goLook(s, false, true).off, "a show live: nothing to start");
 s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !goLook(s, false, true).off, "Run off, on the show PC: Run show");
+// Its words (Jeff, 2026-11-11): Show control on/off.
+t(goLook(s, false, true).label === "Show control on" && goLook(s, false, true).why === "Shows may start" && goLook(s, false, false).label === "Show control on" && goLook(s, false, false).why === "Only on the show PC", "Run show reads Show control on: " + JSON.stringify(goLook(s, false, true)));
 t(goLook(s, false, false).mode === "run" && goLook(s, false, false).off, "Run off, on an iPad: Run is not offered");
 // Whether Run is on is the engine's boolean, never its sentence: the
 // sentence alone changes nothing, the boolean alone decides, and a
@@ -99980,7 +99986,7 @@ s = base(); s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !runIsOn(s), "the boolean off with a show file running: Run show");
 for(const v of [undefined, null, "true", 1, "yes", {}]){
   s = base(); if(v === undefined) delete s.show.show_control_on; else s.show.show_control_on = v;
-  t(!runIsOn(s) && goLook(s, false, true).mode === "run" && pillLook(s).text === "NOT RUNNING", "the boolean " + JSON.stringify(v) + ": off, never on");
+  t(!runIsOn(s) && goLook(s, false, true).mode === "run" && pillLook(s).text === "SHOW CONTROL OFF", "the boolean " + JSON.stringify(v) + ": off, never on");
 }
 s = base(); delete s.show;
 t(!runIsOn(s) && !runIsOn(null) && !runIsOn({}), "no show answer at all: off");
@@ -100090,7 +100096,7 @@ for(const x of states) for(const st of [false, true]) for(const local of [true, 
   t(!/flamesafe|beats|seq|engine/i.test(n.text + " " + p.text), "no engine words on the SHOW tab: " + n.text);
 }
 t(/Stop, Hold, Disarm/.test(nextStep(base(), true, true, []).text) && !/Abort/.test(nextStep(base(), true, true, []).text), "no contact says Stop, Hold and Disarm still work");
-t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
+t(nextStep(states[6], false, true, []).text === "Show control is off." && nextStep(states[6], false, false, []).text === "Show control off: turn on at show PC.", "Run off says show control is off (the big button says how): " + nextStep(states[6], false, true, []).text);
 // The systems badge names what to check (Jeff, 2026-10-29).
 const okSubs = [{name:"Deck", state:"ok", word:"ok"}, {name:"Flamesafe", state:"ok", word:"linked"}];
 let L = sysLook(okSubs.concat([{name:"Deck", state:"warn", word:"USB slow 0.9 s"}]).slice(1), false);
@@ -102624,7 +102630,7 @@ def test_ui2_calm_screens_and_brand():
                       f"are disabled and say why: {a}"[:900])
 
             if kind == "run off":
-                check(a["next"] == "Show not running. Press Run show.",
+                check(a["next"] == "Show control is off.",
                       f"{where}: the top line says to press Run: "
                       f"{a['next']!r}")
                 # The engine plays an announcement with Run off (it holds
@@ -102656,8 +102662,7 @@ def test_ui2_calm_screens_and_brand():
                       f"No contact, Abort and the rest stay live: {sl} "
                       f"{r['stale_taps']}"[:1200])
                 check(not r["back"]["inactive"] or
-                      r["back"]["next"] == "Show not running. Press Run "
-                                           "show.",
+                      r["back"]["next"] == "Show control is off.",
                       f"{where}: contact back, the screen is as before: "
                       f"{r['back']['next']!r}")
     print("  ok")
@@ -113802,19 +113807,40 @@ def test_ui2_programming_tab_makes_1_0_presses():
              '{timeline:f})',
              'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : '
              '{timeline:f})'),
-            ('confirmBox(prog ? "Run in Programming?" : "Press Run?", prog '
-             '? "Run " + f + " as a rehearsal. Play from, jump and loop '
-             'work, and the scheduler starts no show." : "Run " + f + ". '
-             'The scheduler then starts each show by itself.", "Yes, Run"',
-             'confirmBox(prog ? "Run in Programming?" : "Press Run?", prog '
-             '? "Run " + f + " as a rehearsal. Play from, jump and loop '
-             'work, and the scheduler starts no show." : "Run " + f + ". '
-             'The scheduler then starts each show by itself.", "Yes, Run"'),
-            ('confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"',
-             'confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"'),
+            ('confirmBox(prog ? "Start rehearsal?" : "Turn show control '
+             'on?", prog ? "Rehearses " + f + ". Play from, jump and loop '
+             'work, and the scheduler starts no show." : "Uses " + f + ". '
+             'The scheduler then starts each show by itself.", prog ? '
+             '"Yes, start" : "Yes, turn on"',
+             'confirmBox(prog ? "Start rehearsal?" : "Turn show control '
+             'on?", prog ? "Rehearses " + f + ". Play from, jump and loop '
+             'work, and the scheduler starts no show." : "Uses " + f + ". '
+             'The scheduler then starts each show by itself.", prog ? '
+             '"Yes, start" : "Yes, turn on"'),
+            ('confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, '
+             'turn off"',
+             'confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, '
+             'turn off"'),
             ('if(runLook(ST, nowStale()).mode !== "runoff")',
              'if(runLook(ST, stale()).mode !== "runoff")')):
         check(p1 in one and p2 in two, f"1.0 presses {p1} and 2.0 {p2}")
+    # A rehearsal's Run off is End rehearsal everywhere it is said (cold
+    # reviews of #239): the Show file card's tooltip and question, the
+    # SHOW tab's button and its question; the card's heading claims no
+    # state it may not be in.
+    check('const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, '
+          'and ends the rehearsal.";' in two and
+          'reh ? confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
+          '"Yes, end it", "red")' in two and
+          '? await confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
+          '"Yes, end it", "red")' in two and
+          'rk.mode === "runoff" ? (tr.programming ? REHEARSAL_END_CONFIRM '
+          ': RUN_OFF_CONFIRM) : ""' in two and
+          'setText($("ro-l"), roReh ? "End" : "Show ctrl"); '
+          'setText($("ro-s"), roReh ? "rehearsal" : "off");' in two and
+          "<b>Show file, on this machine</b></div>" in two,
+          "a rehearsal's Run off says End rehearsal: tooltip, questions "
+          "and the SHOW tab's button")
     check('const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
           in one and
           'const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
@@ -113831,7 +113857,7 @@ def test_ui2_programming_tab_makes_1_0_presses():
     dp = _js_function(two, "drawProg") or ""
     check("const can = controlStates(ST, isSt).transport && "
           'mayRow(ST, "show");' in dp and
-          "runLook(ST, isSt)" in dp,
+          'runLook(ST, isSt, RUN_MODE || "show")' in dp,
           "the session controls follow 1.0's controlStates and sign-in "
           "lock; Run follows 1.0's runLook")
     here = os.path.dirname(os.path.abspath(__file__))
@@ -114113,7 +114139,7 @@ def test_ui2_programming_tab_in_a_browser():
                   a["files"] == ["Fire and Ice.json", "Other.json"] and
                   a["file"] == "Fire and Ice.json" and
                   a["mode"] == "programming" and "Running now." in a["what"]
-                  and a["run"] == "runoff" and a["run_l"] == "Run off" and
+                  and a["run"] == "runoff" and a["run_l"] == "End rehearsal" and
                   not a["run_dis"] and not any(a["tr_dis"]) and
                   len(a["tr_dis"]) == 11,
                   f"{where}: the show PC in a rehearsal: both cards, the "
@@ -114188,13 +114214,13 @@ def test_ui2_programming_tab_in_a_browser():
                       f"{r['ipad']}")
             if "run=1" in frag:
                 check(r["off"]["run"] == "run" and
-                      r["off"]["run_l"] == "Run" and
+                      r["off"]["run_l"] == "Start rehearsal" and
                       not r["off"]["run_dis"] and all(r["off"]["tr_dis"]) and
                       r["off"]["why"] == "No show file is running.",
                       f"{where}: Run off: Run, the session not pressable, "
                       f"the engine's reason: {r['off']}")
                 check(r["prog_sheet"]["sheet"] and
-                      r["prog_sheet"]["sheet_h"] == "Run in Programming?" and
+                      r["prog_sheet"]["sheet_h"] == "Start rehearsal?" and
                       r["prog_before"] == [] and
                       r["prog_after"] == [["/api/start", {
                           "timeline": "Fire and Ice.json",
@@ -114202,7 +114228,7 @@ def test_ui2_programming_tab_in_a_browser():
                       f"{where}: Run in Programming asks first, then posts "
                       f"1.0's rehearsal body: {r['prog_sheet']} "
                       f"{r['prog_after']}")
-                check(r["show_sheet"]["sheet_h"] == "Press Run?" and
+                check(r["show_sheet"]["sheet_h"] == "Turn show control on?" and
                       r["show_cancel"] == [] and
                       r["show_after"] == [["/api/start", {
                           "timeline": "Fire and Ice.json"}]],
@@ -114221,7 +114247,7 @@ def test_ui2_programming_tab_in_a_browser():
                       f"refused before any question, nothing sent: "
                       f"{r['locked_press']}")
                 check(r["runon"]["run"] == "runoff" and
-                      r["runoff_sheet"]["sheet_h"] == "Turn Run off?" and
+                      r["runoff_sheet"]["sheet_h"] == "End rehearsal?" and
                       r["runoff_before"] == [] and
                       [p[0] for p in r["runoff_after"]] == ["run-off"],
                       f"{where}: Run off asks first, then posts run-off: "
