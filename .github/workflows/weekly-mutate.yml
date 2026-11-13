@@ -17,15 +17,18 @@ name: weekly mutate
 # Run it by hand from the Actions tab (Run workflow) on any branch, and
 # choose windows or both before a tech build: that is the only place the
 # whole list runs on windows (release tags run no sweep since 2026-11-13).
-# A red sweep is never silent: the report job opens an issue labelled
-# `mutate-sweep` (or adds to the open one) naming the red jobs, and a later
-# green sweep of the same branch closes it. Every PR into main warns while
-# it is open. TESTING.md says what each kind of failure means.
+# A red sweep is never silent: the report job always runs (a failed plan
+# is red too) and, for the record sweep (scheduled, or by hand on
+# bench-build), opens an issue labelled `mutate-sweep` (or adds to the open
+# one) naming the red jobs; a later green record sweep closes it. A sweep of
+# another branch reports in its own summary only. Every PR into main warns
+# while the issue is open. TESTING.md says what each kind of failure means.
 on:
   schedule:
-    # Sundays 07:12 UTC, 03:12 Eastern: after the week's merges, before the
-    # week's work.
-    - cron: "12 7 * * 0"
+    # 02:12 UTC Sunday: 19:12 Mountain Standard Time on Saturday evening
+    # (20:12 in summer), after the week's merges; about 12 to 16 hours on
+    # 16 slots, so it ends on Sunday, before the week's work.
+    - cron: "12 2 * * 0"
   workflow_dispatch:
     inputs:
       ref:
@@ -46,6 +49,10 @@ permissions:
 concurrency:
   group: mutate-sweeps
   cancel-in-progress: false
+
+env:
+  # The record sweep: scheduled, or by hand on bench-build.
+  OFFICIAL: ${{ github.event_name == 'schedule' || inputs.ref == 'bench-build' }}
 
 jobs:
   plan:
@@ -74,11 +81,14 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           n=$(python3 mutate.py --list | grep -c '^  would run' || true)
           echo "every mutation: $n"
-          python3 .github/scripts/mutate_plan.py size "$n" | tee -a "$GITHUB_OUTPUT"
           case "$CHOICE" in
-            both) echo 'oses=["ubuntu-latest","windows-latest"]' >> "$GITHUB_OUTPUT"; echo "noses=2" >> "$GITHUB_OUTPUT" ;;
-            *)    echo "oses=[\"$CHOICE\"]" >> "$GITHUB_OUTPUT"; echo "noses=1" >> "$GITHUB_OUTPUT" ;;
+            both) oses='["ubuntu-latest","windows-latest"]'; noses=2 ;;
+            *)    oses="[\"$CHOICE\"]"; noses=1 ;;
           esac
+          # A list too big for one matrix (more than 256 jobs) stops here,
+          # with the reason, before any shard starts.
+          python3 .github/scripts/mutate_plan.py size "$n" "$noses" | tee -a "$GITHUB_OUTPUT"
+          { echo "oses=$oses"; echo "noses=$noses"; } >> "$GITHUB_OUTPUT"
 
   # The whole suite once per OS, on the commit the shards sweep.
   selftest:
@@ -165,7 +175,7 @@ jobs:
   # a green sweep closes it.
   report:
     needs: [plan, selftest, sweep]
-    if: always() && needs.plan.result == 'success'
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -175,7 +185,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.plan.outputs.sha }}
+          ref: ${{ needs.plan.outputs.sha || github.sha }}
       - shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -184,7 +194,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           WHAT: weekly mutation sweep
           LABEL: mutate-sweep
-          SWEPT: ${{ inputs.ref || 'bench-build' }} at ${{ needs.plan.outputs.sha }}
+          SWEPT: ${{ inputs.ref || 'bench-build' }} at ${{ needs.plan.outputs.sha || 'an unknown commit' }}
+          PLAN: ${{ needs.plan.result }}
+          MODE: full
           SELFTEST: ${{ needs.selftest.result }}
           NSHARDS: ${{ needs.plan.outputs.nshards }}
           NOSES: ${{ needs.plan.outputs.noses }}
