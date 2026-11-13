@@ -130,7 +130,7 @@ SHOW NETWORK, AUDIO, CLOCK AND MEMORY (from the 2026-10-21 soak)
     "rack_screen_keep_in_front": false turns that off.
 [ ] The audio interface runs at 48 kHz. Set it in its own control app
     (PreSonus Universal Control). At any other rate the engine refuses
-    Run with "will not play N output(s) at 48000 Hz".
+    show control on with "will not play N output(s) at 48000 Hz".
 [ ] Windows Time service: running, Startup type Automatic. Windows+R,
     services.msc, Windows Time. With it stopped the clock was 2.7 s
     behind, and shows start by this clock. The Morning page's Engine

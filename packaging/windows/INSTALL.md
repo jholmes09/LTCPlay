@@ -230,8 +230,8 @@ exactly as xLights made them. A fresh install has none. To make one:
    rate the timecode really runs at (add `"drop": true` for 29.97
    drop-frame); 29.97 and 30 look identical but drift about 2 seconds over
    a half hour.
-4. Press "Check the show file", then Run in Programming mode to rehearse.
-   Nothing reaches the rig until Run.
+4. Press "Check the show file", then Start rehearsal in Programming mode.
+   Nothing reaches the rig until show control is on.
 
 ## Show PC setup the soak taught us (2026-10-21)
 
@@ -248,7 +248,7 @@ exactly as xLights made them. A fresh install has none. To make one:
 - **MadMapper's Sync Source.** After reopening the project it can be
   empty. Set it to Art-Net and save the project.
 - **48 kHz.** Set the interface to 48 kHz in its own app (PreSonus
-  Universal Control). Otherwise Run is refused with "will not play N
+  Universal Control). Otherwise Show control on is refused with "will not play N
   output(s) at 48000 Hz".
 - **Windows Time running.** With the service stopped the clock was 2.7 s
   behind. services.msc, Windows Time, Startup type Automatic, Start. The
@@ -267,8 +267,8 @@ exactly as xLights made them. A fresh install has none. To make one:
 - The header's MODE pill says it on every screen: SHOW (a show file is
   running for real; the scheduler starts each show at its time),
   PROGRAMMING (a rehearsal is running; the scrubbing controls work and the
-  scheduler starts nothing) or NOT RUNNING (nothing reaches the rig until
-  Run is pressed on the Programming screen). The small "i" button next to
+  scheduler starts nothing) or SHOW CONTROL OFF (nothing reaches the rig
+  until show control is on). The small "i" button next to
   it explains, and shows this LTC Player's version.
 - Start menu, LTC Player opens the rack screen as an ordinary Edge app
   window, maximized on the show monitor, with Minimize, Maximize and

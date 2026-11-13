@@ -341,8 +341,8 @@ fires a slot only for a group it reports ARMED.
   to 0.1 s later; meanwhile flamesafe itself sends nothing for a disarmed
   group, so the link's value for it reaches no flame.
 - **What ends it at once.** Stop purge (from any screen, signed in or
-  not), Stop, Hold (and a Hold standing), Start now, Run (refused or
-  not), a show going live or the show clock playing,
+  not), Stop, Hold (and a Hold standing), Start now, Turn show control
+  on (refused or not), a show going live or the show clock playing,
   flamesafe's status over 1 s old, the flame link not sending or alarmed or
   zeroed, a selected machine locked out or taken off, a disarm of one of
   its groups (pressed, or seen at flamesafe), the starter signing out, any
@@ -675,7 +675,7 @@ Stream Deck's: the deck reads the cleaning as running, so its key is
 Stop, which never waits on the cleaning's lock), Hold, any disarm
 anywhere (the engine's disarm count moves), the flame link zeroed, the
 group not reading armed when it should, flamesafe's status older than
-0.5 s, a wave flamer locked or unlocked, a show live, Run pressed, live
+0.5 s, a wave flamer locked or unlocked, a show live, show control on, live
 flame programming, a purge, the Fireball page, Arrange mode, another
 flame group armed or being held, an open alert of kind flames, link or
 deck, every fixture locked out, screen arming switched off, the Stream

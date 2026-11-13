@@ -92602,7 +92602,7 @@ def test_fireball_doc_in_plain_words():
                  "Stop", "Hold", "signing out", "All off",
                  "fuel valve closed", "One screen at a time",
                  "turn\nFuel, Air, Purge off before arming",
-                 "During a show too", "while Run is pressed",
+                 "During a show too", "while show control is on",
                  "the higher of the\nshow's value",
                  "never turn\noff one the show has on",
                  "is a top-off, not a double\ncharge",
@@ -113909,8 +113909,9 @@ def test_ui2_programming_tab_makes_1_0_presses():
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
     i = op.find("- Programming (Schedule tab):")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
-    for words in ("Run asks first", "refused while a scheduled show is live",
-                  "Stop (tap twice)", "Run off", "Play from", "Set A",
+    for words in ("It asks first", "refused while a scheduled show is live",
+                  "Stop (tap twice)", "End rehearsal", "Start rehearsal",
+                  "Play from", "Set A",
                   "Follow timecode again", "flame cue fault", "Show row",
                   "show PC tools"):
         check(words in para, f"OPERATOR.md, 2.0 Programming, says "
@@ -114387,7 +114388,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     for need in ("and the Fire &amp; Ice settings say it performs",
                  "Any times work:", "is overwritten, so Reload first"):
         check(need in sched, f"the editor says, as 1.0 does: {need!r}")
-    for words in ("tap a show", "Run warning", "show PC only",
+    for words in ("tap a show", "show control warning", "show PC only",
                   "Save the schedule", "Reload from the file",
                   "Late start allowed", "exceptions",
                   "Unsaved schedule", "is overwritten"):
