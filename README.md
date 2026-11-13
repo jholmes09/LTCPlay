@@ -440,7 +440,7 @@ each flame group as flamesafe last reported it with its Hold to arm and
 Disarm, Disarm all flame groups, and a status strip (deck, flamesafe, audio, video, lasers, pixels). All through the
 same scheduler and conductor paths. Tonight's list is its own compact screen
 (Schedule), and everything else is on the Programming screen: the transport
-below, Run and Stop, the Stream Deck operator and the show network, the last
+below, Show control on/off (Start or End rehearsal in Programming) and Stop, the Stream Deck operator and the show network, the last
 three on the machine itself only. Each has a Back to the show button. There
 is no Abort (removed, Jeff, 2026-10-30): Stop does everything it did, and
 the hardware e-stop is the emergency layer. If the page has not heard from
@@ -451,7 +451,7 @@ it shows go off; Stop, Hold and Disarm stay on.
 keys 1 to 4 arm and disarm the first four flame groups (Floor G, Cat-Walk G,
 Blue Flames, Fireball by default; ltcplay_deck.json can reorder and
 relabel them), key 5 is spare. The deck has no Hold key: Hold is the Rack
-screen's. STOP RUN (while a run is going, and only when the
+screen's. STOP ALL (while a run is going, and only when the
 scheduler is known to have no show live) is a half second hold: every
 flame group is turned off on the arm link at once, then the Rack screen's
 Stop route is asked with "halt", which ends live flame programming, sends

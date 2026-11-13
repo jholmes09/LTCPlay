@@ -104,6 +104,10 @@ Source: "SHOW PC CHECKLIST.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "INSTALL.md"; DestDir: "{app}"; DestName: "INSTALL (read me).txt"; Flags: ignoreversion
 Source: "register_soak_task.ps1"; DestDir: "{app}"; Flags: ignoreversion
+; The SuperUser's double-click launchers (USERS.md, "The SuperUser"): they
+; ask for names and passwords in their own window, passwords hidden.
+Source: "Make me SuperUser.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "Reset SuperUser sign-in.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\USERS.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\flamesafe\flamesafe.example.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\ltcplay\ltcplay_schedule.example.json"; DestDir: "{app}"; Flags: ignoreversion

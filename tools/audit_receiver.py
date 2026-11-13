@@ -32,7 +32,8 @@ import re
 import sys
 import time
 
-NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor)\.jsonl$")
+NAME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor|cli)\.jsonl$")
 ANCHOR_TAG = "LTC Player audit"
 MAX_BYTES = 64 * 1024 * 1024
 

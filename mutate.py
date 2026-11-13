@@ -30,6 +30,13 @@ per-PR gate; the nightly sweep and a release tag still run everything):
     --list             print what would run and why, then stop
     --catchers FILE    {mutation name: test that caught it} from an earlier
                        sweep, so a changed test re-runs only what it guards
+    --with-core        with --changed or --files: every flamesafe, conductor
+                       and flame link mutation too, whatever the diff (the
+                       release PR into main runs these always)
+    --targets a,b,d/   exactly the mutations of these files (a name ending
+                       in / is a folder, one ending in * a name prefix):
+                       a bench-build PR's mutate-safety shards, and a
+                       nightly sweep over its cap
 
 Speed. None of it changes what a mutation has to survive: the baseline runs
 every test in file order, a mutant is caught only when the suite fails under
@@ -52,6 +59,19 @@ it (twice, with --expected), and the restore is proved byte for byte.
                        the tree with its own home and app-data
                        folders, and each copy runs its own whole baseline
                        first
+    --trust-baseline S the caller vouches that the whole suite, nothing
+                       mutated, just passed in file order on this commit on
+                       this OS in about S seconds (CI: the selftest job the
+                       shard needs). No copy runs the whole baseline before
+                       its first mutation; each runs the tests its
+                       mutations are hinted to (--hints) first instead, and
+                       a mutant's limit is measured from S. Every caught
+                       mutation's stopping test is proved green with
+                       nothing mutated in that copy (run first), or that
+                       copy runs its whole baseline after all; a copy whose
+                       sanity run is red runs its whole baseline at once.
+                       So a verdict never rests on less than it did
+                       without it. Without hints it does nothing.
 """
 import json
 import shutil
@@ -667,6 +687,46 @@ MUTATIONS = [
   "packaging/windows/supervisor.py",
   "              \"--no-browser\", \"--network-if-saved\"]",
   "              \"--no-browser\"]"),
+
+ ("release tags: a gpl-* tag builds a release again",
+  ".github/workflows/windows-app.yml",
+  '    tags: ["ltc-*"]\n',
+  '    tags: ["ltc-*", "gpl-*"]\n'),
+
+ ("release tags: the installer's version keeps the ltc- prefix",
+  ".github/workflows/windows-app.yml",
+  '            v="${GITHUB_REF_NAME#ltc-}"\n',
+  '            v="${GITHUB_REF_NAME#gpl-}"\n'),
+
+ ("release tags: Run workflow on an old gpl- tag builds it",
+  ".github/workflows/windows-app.yml",
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n',
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^(ltc|gpl)-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n'),
+
+ ("release tags: a gpl-* tag is silent in the selftest run",
+  ".github/workflows/selftest.yml",
+  '          if [[ "$REF" == refs/tags/gpl-* ]]; then\n',
+  '          if false; then\n'),
+
+ ("release tags: the updater no longer reads an ltc- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("gpl-",)\n'),
+
+ ("release tags: the updater no longer reads an old gpl- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("ltc-",)\n'),
+
+ ("release tags: an ltc- or gpl- stamp is compared as text again",
+  "packaging/windows/updater.py",
+  "    c, i = release_number(candidate), release_number(installed)\n",
+  "    c, i = str(candidate).strip(), str(installed).strip()\n"),
+
+ ("release tags: the rollback no longer reads a prefixed release",
+  "packaging/windows/supervisor.py",
+  "    return updater.release_number(ver)\n",
+  "    return str(ver).replace(\"gpl-\", \"\")\n"),
 
  ("show network: a saved public, VPN or link-local address is served on",
   "ltcplay/cli.py",
@@ -2014,8 +2074,8 @@ MUTATIONS = [
   '        if length_s is None:\n            length_s = 1e6\n        if False:'),
 
  ('play and halt race each other', 'ltcplay/clock.py',
-  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")',
-  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")'),
+  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")',
+  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")'),
 
  ('an unknown hour is taken as the show', 'ltcplay/clock.py',
   '    role = zones.get(h)\n',
@@ -2853,8 +2913,8 @@ MUTATIONS = [
 
  ("pump: an ON from a stale or ageless screen is taken",
   "ltcplay/remote.py",
-  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"The fuel pump was not turned on: the press came from a \"",
-  "        if False:\n            why = (\"The fuel pump was not turned on: the press came from a \""),
+  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"Fuel pump NOT turned on.\\n\"",
+  "        if False:\n            why = (\"Fuel pump NOT turned on.\\n\""),
 
  ("pump: a start that raised leaves the link naming the pump",
   "ltcplay/fuelpump.py",
@@ -3058,6 +3118,14 @@ MUTATIONS = [
   "ltcplay/web/remote2.html",
   "  if(n !== P_SAID) return j;\n",
   ""),
+
+ # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
+ # their rows when the step is taller than its panel, so the sections
+ # under them (the timed purge, the hazer test) are drawn over them
+ ("ui 2.0 DAY: a step's buttons shrink and the rows under them overlap them",
+  "ltcplay/web/remote2.html",
+  "#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 0 auto}",
+  "#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 1 auto}"),
 
  # interface 2.0's Resume sheet (play-from cues part 3): start at a cue
  ("ui 2.0 cue: Start at a cue goes with no question",
@@ -4413,6 +4481,187 @@ MUTATIONS = [
   "ltcplay/announce.py",
   "        if length_s is not None and length_s > SHOW_ROUTE_MAX_S:",
   "        if False:"),
+ # Pre-show audio (preshow_audio.py, Jeff 2026-11-12): the chosen file 120
+ # s before a scheduled show, once, never late, never over a Hold, show
+ # control off, a show or an announcement, and never in the show's way.
+ ("pre-show audio: plays before the two minutes",
+  'ltcplay/schedule_service.py',
+  '            if left > pa.LEAD_S:\n                return\n',
+  '            if left > pa.LEAD_S + 1:\n                return\n'),
+
+ ("pre-show audio: plays late, after the schedule changed inside the window",
+  'ltcplay/schedule_service.py',
+  '        if left < pa.LEAD_S - pa.GRACE_S:\n',
+  '        if False:\n'),
+
+ ("pre-show audio: a restart inside the window plays it again",
+  'ltcplay/preshow_audio.py',
+  '                    self._recs[str(k)] = dict(r, restored=True, said=False)\n',
+  '                    pass\n'),
+
+ ("pre-show audio: the show's record is not looked at before deciding",
+  'ltcplay/schedule_service.py',
+  '            if pa.record(key) is not None:\n',
+  '            if False:\n'),
+
+ ("pre-show audio: written down only after it plays, not before",
+  'ltcplay/preshow_audio.py',
+  '        ok, disk_why = self._persist()\n',
+  '        ok, disk_why = True, ""\n'),
+
+ ("pre-show audio: on with no setting saved",
+  'ltcplay/preshow_audio.py',
+  '    def is_on(self):\n        return bool(self.on and self.file)\n',
+  '    def is_on(self):\n        return True\n'),
+
+ ("pre-show audio: plays with the setting off",
+  'ltcplay/schedule_service.py',
+  '            if not pa.is_on():\n                return\n            m = self.machine\n',
+  '            m = self.machine\n'),
+
+ ("pre-show audio: the player runs on the scheduler's tick, under its lock",
+  'ltcplay/schedule_service.py',
+  '                self._pending_hooks.append(lambda: pa.settle(key))\n',
+  '                pa.settle(key)\n'),
+
+ ("pre-show audio: plays with show control off",
+  'ltcplay/schedule_service.py',
+  '        if not self._run_pressed():\n            return "show control is off"\n',
+  '        if False:\n            return "show control is off"\n'),
+
+ ("pre-show audio: plays on Hold",
+  'ltcplay/schedule_service.py',
+  '        if m.state == sch.HOLD:\n            return "the schedule is on Hold"\n',
+  '        if m.state == sch.HOLD:\n            return ""\n'),
+
+ ("pre-show audio: plays while a show is running",
+  'ltcplay/schedule_service.py',
+  '        if m.state in (sch.SHOW, sch.PAUSED):\n            return "a show is running"\n',
+  '        if m.state in (sch.SHOW, sch.PAUSED):\n            return ""\n'),
+
+ ("pre-show audio: plays before a delayed show",
+  'ltcplay/schedule_service.py',
+  '        if s.planned is not None and s.start > s.planned:\n',
+  '        if False:\n'),
+
+ ("pre-show audio: plays over an announcement already playing",
+  'ltcplay/announce.py',
+  '            if pre and self.playing is not None:\n'
+  '                raise ValueError(PRESHOW_BUSY)\n',
+  '            if False:\n'
+  '                raise ValueError(PRESHOW_BUSY)\n'),
+
+ ("pre-show audio: plays while a Stop is under way",
+  'ltcplay/schedule_service.py',
+  '        if self.halting():\n            return "a Stop is under way"\n',
+  '        if False:\n            return "a Stop is under way"\n'),
+
+ ("pre-show audio: plays over a Programming Run",
+  'ltcplay/schedule_service.py',
+  '        if self.preroll is not None and self.preroll.skip():\n'
+  '            return "a Programming Run is in force"\n',
+  '        if False:\n'
+  '            return "a Programming Run is in force"\n'),
+
+ ("pre-show audio: plays for a scheduler that starts no show",
+  'ltcplay/schedule_service.py',
+  '        if self.dry_run or self.performer is None:\n'
+  '            return "this scheduler does not start shows"\n',
+  '        if False:\n'
+  '            return "this scheduler does not start shows"\n'),
+
+ ("pre-show audio: plays with auto start off",
+  'ltcplay/schedule_service.py',
+  '        if getattr(cfg, "auto_start", "when_run_pressed") == "off":\n'
+  '            return "the scheduler does not start shows by itself"\n',
+  '        if False:\n'
+  '            return "the scheduler does not start shows by itself"\n'),
+
+ ("pre-show audio: plays with an alert open",
+  'ltcplay/schedule_service.py',
+  '        if gate is not None and gate():\n',
+  '        if False:\n'),
+
+ ("pre-show audio: plays before a show the scheduler would not start",
+  'ltcplay/schedule_service.py',
+  '            return f"the scheduler would not start show {n} at its time"\n',
+  '            return ""\n'),
+
+ ("pre-show audio: an operator's announcement press is refused while it plays",
+  'ltcplay/announce.py',
+  '            if not pre and self.playing == PRESHOW:\n',
+  '            if False:\n'),
+
+ ("pre-show audio: a Hold never reaches the player",
+  'ltcplay/schedule_service.py',
+  '                self._pending_hooks.append(self.on_schedule_held)\n',
+  '                pass\n'),
+
+ ("pre-show audio: the player does not stop it on Hold",
+  'ltcplay/announce.py',
+  '            self._player.stop_reason = "the schedule was held"\n',
+  '            return\n'),
+
+ ("pre-show audio: a file over 110 s can be chosen",
+  'ltcplay/preshow_audio.py',
+  '        if long_why:\n            raise ValueError(f"{long_why} Nothing was changed.")\n',
+  '        if False:\n            raise ValueError(f"{long_why} Nothing was changed.")\n'),
+
+ ("pre-show audio: a file over 110 s plays when due",
+  'ltcplay/preshow_audio.py',
+  '            if long_why:\n                raise ValueError(long_why)\n',
+  '            if False:\n                raise ValueError(long_why)\n'),
+
+ ("pre-show audio: held to the 60 s announcement limit through the show audio",
+  'ltcplay/announce.py',
+  '        if limit > SHOW_ROUTE_MAX_S and length_s is not None:\n',
+  '        if False:\n'),
+
+ ("pre-show audio: a show whose time is edited plays it again",
+  'ltcplay/schedule_service.py',
+  '            key = (str(m.date), nxt.n)\n',
+  '            key = self._show_key(m, nxt.n)\n'),
+
+ ("pre-show audio: the journal keeps the player's press sentence",
+  'ltcplay/preshow_audio.py',
+  '    t = _PRESS.sub("", t)\n',
+  '    pass\n'),
+
+ ("pre-show audio: Turn on posts an unsaved choice",
+  'ltcplay/web/remote2.html',
+  '$("psa-on").addEventListener("click", () => psaSave(true, PSA_FILE || ""));\n',
+  '$("psa-on").addEventListener("click", () => psaSave(true, $("psa-pick").value || PSA_FILE || ""));\n'),
+
+ ("pre-show audio: the player takes it on Hold, claimed first",
+  'ltcplay/announce.py',
+  '            if pre and state not in PRESHOW_STATES:\n'
+  '                why = preshow_state_words(state)\n',
+  '            if False:\n'
+  '                why = preshow_state_words(state)\n'),
+
+ ("pre-show audio: started over a show that began while it loaded",
+  'ltcplay/announce.py',
+  '            if pre and state not in PRESHOW_STATES:\n'
+  '                self.playing = None\n',
+  '            if False:\n'
+  '                self.playing = None\n'),
+
+ ("pre-show audio: the player Holds the schedule for it",
+  'ltcplay/announce.py',
+  '            if pre:\n                hold_note = PRESHOW_HOLD_NOTE\n'
+  '            elif tone:\n',
+  '            if False:\n                hold_note = PRESHOW_HOLD_NOTE\n'
+  '            elif tone:\n'),
+
+ ("pre-show audio: a Play press may ask for it",
+  'ltcplay/announce.py',
+  '        if ann_id not in IDS and not tone and not pre:\n',
+  '        if ann_id not in IDS and not tone and ann_id != PRESHOW:\n'),
+
+ ("pre-show audio: the card does not show the chosen file",
+  'ltcplay/web/remote2.html',
+  '  return (v.on ? "ON: " : "OFF: ") + (v.name || "no file chosen");\n',
+  '  return v.on ? "ON" : "OFF";\n'),
 
  ("show audio: the callback frees a finished recording",
   "ltcplay/showaudio.py",
@@ -10218,7 +10467,7 @@ def build():
  ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
   "screens do not have",
   'ltcplay/fire_ice.py',
-  '                "Programming: Show file card, Stop, then Run. "\n',
+  '                "Programming: End rehearsal, then Start rehearsal. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
 
  ("pixels: the look-in-show CUES FAULT sends a 2.0 screen to 1.0, not to "
@@ -12721,6 +12970,205 @@ def build():
                            f"{name}: locked safety slot {slot} = {v}")''',
   '''                    pass'''),
 
+ ("windows round 3: a show its rig check pushed past the limit says only how late",
+  "ltcplay/schedule.py",
+  "            elif tx.ev.late_show == s.n and tx.ev.late_ok_s:\n",
+  "            elif False:\n"),
+
+ ("windows round 3: a clock set back while the journal is stopped keeps it off",
+  "ltcplay/journal.py",
+  "                and self._retry_at - timedelta(seconds=self.retry_s) <= now \\\n",
+  "                and now \\\n"),
+
+ ("windows round 3: a clock set back puts off the journal's free space look",
+  "ltcplay/journal.py",
+  "            not 0 <= (now - self._free_at).total_seconds() < FREE_CHECK_S",
+  "            (now - self._free_at).total_seconds() >= FREE_CHECK_S"),
+
+ ("windows round 3: a journal file another program holds is not named",
+  "ltcplay/journal.py",
+  "            where = e.filename or self.folder\n",
+  "            where = self.folder\n"),
+
+ ("windows round 3: an empty Play from says the grey example as if typed",
+  "ltcplay/remote.py",
+  "                    raise ValueError(PLAY_FROM_EMPTY)\n",
+  "                    raise ValueError(\"Type a timecode to play from, like \"\n"
+  "                                     \"00:01:30:00, or a cue name.\")\n"),
+
+ ("windows round 3: Play from's box shows the example as if it were a time",
+  "ltcplay/web/remote2.html",
+  'placeholder="Example: 00:01:30:00"',
+  'placeholder="00:01:30:00"'),
+
+ ('journal watchdog: a writer stuck on the disk is never flagged',
+  'ltcplay/journal.py',
+  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
+  '        if False:\n'),
+
+ ('journal watchdog: a stuck writer is flagged again on every look',
+  'ltcplay/journal.py',
+  '            if not self.stalled_why:\n'
+  '                self.stalled_at = now\n',
+  '            if True:\n'
+  '                self.stalled_at = now\n'),
+
+ ('journal watchdog: a writer thread that is gone is left gone',
+  'ltcplay/journal.py',
+  '        if t is None or t.is_alive() or self._closing:\n',
+  '        if True:\n'),
+
+ ('journal watchdog: the health flag ignores a stuck writer and bad files',
+  'ltcplay/journal.py',
+  '        bad = bool(self.stopped_why or self.stalled_why or self.disk_why)\n',
+  '        bad = bool(self.stopped_why)\n'),
+
+ ('journal watchdog: a night file cut shorter is not found',
+  'ltcplay/journal.py',
+  '                if have < size:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a night file moved away is not found',
+  'ltcplay/journal.py',
+  '            except FileNotFoundError:\n'
+  '                result.append(f"{name} is gone from',
+  '            except FileNotFoundError:\n'
+  '                pass\n'
+  '                (f"{name} is gone from'),
+
+ ('journal watchdog: a disk that does not answer a read is not said',
+  'ltcplay/journal.py',
+  '                if t - started > DISK_ANSWER_S and not self.disk_why:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a stop that cannot be written up ends the writer',
+  'ltcplay/journal.py',
+  '                except Exception as e2:\n'
+  '                    self.stopped_why = self.stopped_why or (\n',
+  '                except ZeroDivisionError as e2:\n'
+  '                    self.stopped_why = self.stopped_why or (\n'),
+
+ ('journal watchdog: start_writer starts no watchdog',
+  'ltcplay/journal.py',
+  '            self._watcher.start()\n',
+  '            self._watcher = None\n'),
+
+ ("journal summary: the two files' counts are not compared",
+  'ltcplay/journal.py',
+  '    if not problems and jlines != len(recs) + cut:\n',
+  '    if False:\n'),
+
+ ('journal summary: lines made tonight but not in the files are not counted',
+  'ltcplay/journal.py',
+  '    missing = [i for i in made if i not in ids and i not in wait]\n',
+  '    missing = []\n'),
+
+ ('journal summary: no line for a long time while a show ran is not a gap',
+  'ltcplay/journal.py',
+  '        if span > gap_s:\n',
+  '        if False:\n'),
+
+ ("journal summary: a show's start or end with no line is not a gap",
+  'ltcplay/journal.py',
+  '        if inside and span > 60:\n',
+  '        if False:\n'),
+
+ ("journal summary: a restart's gap is called a logging gap",
+  'ltcplay/journal.py',
+  '        if rb is not None and rb.get("action") == "program start":\n',
+  '        if False:\n'),
+
+ ('journal summary: says complete whatever the files say',
+  'ltcplay/journal.py',
+  '    files_bad = files is not None and not files.get("complete")\n',
+  '    files_bad = False\n'),
+
+ ('journal summary: the scheduler does not hand over when each show ran',
+  'ltcplay/schedule_service.py',
+  '                         "started_at": (s.fired_at.isoformat()\n',
+  '                         "started_at": (None\n'),
+
+ ('journal summary: a show time is compared to the microsecond, not the millisecond the files keep',
+  'ltcplay/journal.py',
+  '                  if (t - a).total_seconds() > 0.001\n',
+  '                  if a < t\n'),
+
+ ("journal summary: a show's run is overlapped by a fraction of a millisecond",
+  'ltcplay/journal.py',
+  '                if (b - s).total_seconds() > 0.001 and (\n',
+  '                if s < b and (\n'),
+
+ ('journal writer: a file moved away is not found at the next write',
+  'ltcplay/journal.py',
+  '            if new:\n'
+  '                self._disk_problem(self.clock(), (\n',
+  '            if False:\n'
+  '                self._disk_problem(self.clock(), (\n'),
+
+ ('journal writer: a file cut shorter is not found at the next write',
+  'ltcplay/journal.py',
+  '            elif size is not None and size < had[0]:\n',
+  '            elif False:\n'),
+
+ ('journal summary: a partial write retried counts as two lines',
+  'ltcplay/journal.py',
+  '                    and rows[i + 1].startswith(r.lstrip(b"\\x00")))]\n',
+  '                    and False)]\n'),
+
+ ('journal summary: names the wrong file as short',
+  'ltcplay/journal.py',
+  '        short = ("journal file" if jlines < len(recs) + cut\n',
+  '        short = ("machine log" if jlines < len(recs) + cut\n'),
+
+ ('journal summary: a stop that lost no line reads as not complete',
+  'ltcplay/journal.py',
+  '    elif log_gaps and files is not None and not files_bad:\n',
+  '    elif False:\n'),
+
+ ('journal ring buffer: a stuck writer reads as logging ok',
+  'ltcplay/schedule_service.py',
+  '                                   or self.logbook.stalled_why\n',
+  '                                   or False\n'),
+
+ ('journal ring buffer: files that did not read back read as logging ok',
+  'ltcplay/schedule_service.py',
+  '                                   or self.logbook.disk_why)}\n',
+  '                                   or False)}\n'),
+
+ ("journal watchdog: lines that arrive mid write wait from the batch's first line",
+  'ltcplay/journal.py',
+  '                self._wait_since = self._mono() if self._pending else None\n',
+  '                pass\n'),
+
+ ('journal summary: lines made tonight are not handed to the check',
+  'ltcplay/journal.py',
+  '            made = list(self._made.get(night, ()))\n',
+  '            made = []\n'),
+
+ ('journal summary: lines still waiting for the disk count as lost',
+  'ltcplay/journal.py',
+  '            waiting = [r["id"] for r, _d in self._pending]\n'
+  '        files = check_files(',
+  '            waiting = []\n'
+  '        files = check_files('),
+
+ ('journal watchdog: a file replaced with the same size is not found',
+  'ltcplay/journal.py',
+  '                if got != tail:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a good read back does not clear the flag',
+  'ltcplay/journal.py',
+  '            elif self.disk_why:\n'
+  '                self.disk_why = ""\n',
+  '            elif False:\n'
+  '                self.disk_why = ""\n'),
+
+ ('journal watchdog: a stop already flagged is called stuck as well',
+  'ltcplay/journal.py',
+  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
+  '        if waiting and waited > self.stall_s:\n'),
+
  ("witness: fire with every safety locked is not fire without arm",
   "tools/stress/witness/check_witness.py",
   '''                if not need:
@@ -12871,8 +13319,8 @@ def build():
  # role matrix; then passwords, the lockout, the last admin, the chain,
  # the never-blocking writer and the nightly upload's acknowledgement.
  ('users: a safety press is restricted like any other', 'ltcplay/users.py',
-  '    if perm == "safety" or perm is None:\n        return True\n    if role is None or role not in ROLES:',
-  '    if perm is None:\n        return True\n    if role is None or role not in ROLES:'),
+  '    if perm == "safety" or perm is None:\n        return True\n    if perm in SUPERUSER_PERMS:',
+  '    if perm is None:\n        return True\n    if perm in SUPERUSER_PERMS:'),
 
  ('users: a purge turned off is an arming press', 'ltcplay/users.py',
   '                body.get("on") is False:\n            return "safety"',
@@ -12919,8 +13367,8 @@ def build():
   '                pass\n            del users[real]'),
 
  ('users: the last admin can be demoted', 'ltcplay/users.py',
-  '            if users[real].get("role") == "admin" and role != "admin" and \\',
-  '            if False and \\'),
+  '            if users[real].get("role") in ADMIN_ROLES and \\\n                    role not in ADMIN_ROLES and \\',
+  '            if False and \\\n                    role not in ADMIN_ROLES and \\'),
 
  ('users: a temporary password signs in as it is', 'ltcplay/users.py',
   '        if first or must:',
@@ -12939,8 +13387,8 @@ def build():
   '                           "changed": self._stamp(), "must_change": False,'),
 
  ("users: an admin's reset is not temporary", 'ltcplay/users.py',
-  '        real = self._set_pw(name, pw, temporary=True)',
-  '        real = self._set_pw(name, pw, temporary=False)'),
+  '        real = self._set_pw(name, pw, temporary=True, by=by)',
+  '        real = self._set_pw(name, pw, temporary=False, by=by)'),
 
  ('users: an admin can be locked out of managing users', 'ltcplay/users.py',
   'FIXED = {("admin", "users"): True}',
@@ -15590,7 +16038,7 @@ def build():
 
  ("fuel: an operator may undo a refill",
   "ltcplay/fuel.py",
-  "    return _may(ctx, users, (\"admin\",), \"undo a refill\")",
+  "    return _may(ctx, users, UNDO_ROLES, \"undo a refill\")",
   "    return _may(ctx, users, REFILL_ROLES, \"undo a refill\")"),
 
  ("fuel: without sign-in a network device may refill",
@@ -15815,6 +16263,117 @@ def build():
   "ltcplay/fuel.py",
   "        q = self._q\n        if len(q) >= QUEUE_MAX:",
   "        q = self._q\n        self.save()\n        if len(q) >= QUEUE_MAX:"),
+
+ # Haze fluid (fuelhaze.py, Jeff 2026-11-12).
+ ("haze fluid: fan only time is counted as fluid",
+  "ltcplay/fuelhaze.py",
+  "            v = wire[hs - 1] if 0 < hs <= n_wire else 0",
+  "            v = (wire[hs - 1] or wire[_fs - 1]) if 0 < hs <= n_wire else 0"),
+
+ ("haze fluid: the haze level is not weighted (every second is full output)",
+  "ltcplay/fuelhaze.py",
+  "            w = dt * (v / FULL)",
+  "            w = dt"),
+
+ ("haze fluid: a restart without closing is not marked not sure",
+  "ltcplay/fuelhaze.py",
+  "                for n in rec[\"hazing\"]:\n"
+  "                    self._unit(n)[\"unsure_s\"] += SAVE_EVERY_S",
+  "                for n in rec[\"hazing\"]:\n"
+  "                    pass"),
+
+ ("haze fluid: haze sent while flamesafe's status is stale is not marked not sure",
+  "ltcplay/fuelhaze.py",
+  "            if fresh is not True:\n                # flamesafe's status stale",
+  "            if False:\n                # flamesafe's status stale"),
+
+ ("haze fluid: a refill does not start the count again",
+  "ltcplay/fuelhaze.py",
+  "        last = rs[-1] if rs else None\n        base = last or",
+  "        last = None\n        base = last or"),
+
+ ("haze fluid: a refill is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "        if not self.save():\n            return True, (f\"Refill of {name} logged, but",
+  "        if not True:\n            return True, (f\"Refill of {name} logged, but"),
+
+ ("haze fluid: only a RuntimeError from the haze observer is kept off the sender",
+  "ltcplay/flamelink.py",
+  "                hobs(tc, wire, test, ok)\n            except Exception:\n                pass\n",
+  "                hobs(tc, wire, test, ok)\n            except RuntimeError:\n                pass\n"),
+
+ ("haze fluid: the observer takes the record lock on the sender thread",
+  "ltcplay/fuelhaze.py",
+  "        q = self._q\n        if len(q) >= QUEUE_MAX:",
+  "        q = self._q\n        with self._lock:\n            pass\n"
+  "        if len(q) >= QUEUE_MAX:"),
+
+ ("haze fluid: a counting error raises out of the tracker's pass",
+  "ltcplay/fuelhaze.py",
+  "        except Exception as e:                    # noqa: BLE001\n"
+  "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:",
+  "        except KeyError as e:\n"
+  "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:"),
+
+ ("haze fluid: the hold is a fixed 0.5 s, not flamesafe's frame_stale_ms",
+  "ltcplay/fuelhaze.py",
+  "                self.hold_s = ms / 1000.0 + HOLD_MARGIN_S",
+  "                self.hold_s = 0.5"),
+
+ ("haze fluid: a hazer starting is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "            if self._hazing - self._hazing_saved:",
+  "            if False:"),
+
+ ("haze fluid: a flow of 0 litres an hour is taken",
+  "ltcplay/fuelhaze.py",
+  "                    not 0 < v <= hi:",
+  "                    not 0 <= v <= hi:"),
+
+ ("haze fluid: a NaN in haze.json is read",
+  "ltcplay/fuelhaze.py",
+  "            not math.isfinite(v) or v < 0:",
+  "            v < 0:"),
+
+ ("haze fluid: not sure seconds are left out of the litres (reads fuller)",
+  "ltcplay/fuelhaze.py",
+  "            used = (full_s + unsure) / 3600.0 * lph",
+  "            used = full_s / 3600.0 * lph"),
+
+ ("haze fluid: a programming session is counted as a show",
+  "ltcplay/fuelhaze.py",
+  "        is_show = (not ep.get(\"rehearsal\")",
+  "        is_show = (True"),
+
+ ("haze fluid: per show records are unbounded",
+  "ltcplay/fuelhaze.py",
+  "                    [round(on, 3), round(full, 3)]])[-SHOW_BURNS_KEPT:]",
+  "                    [round(on, 3), round(full, 3)]])"),
+
+ ("haze fluid: refills are unbounded",
+  "ltcplay/fuelhaze.py",
+  "                role=role or \"\", undone=None)])[-REFILLS_KEPT:]",
+  "                role=role or \"\", undone=None)])"),
+
+ ("haze fluid: anyone who may refill may undo",
+  "ltcplay/fuelhaze.py",
+  "    if name == \"haze-undo\":\n        ok, why = may_undo(ctx, users)",
+  "    if name == \"haze-undo\":\n        ok, why = may_refill(ctx, users)"),
+
+ ("haze fluid: an undone refill still counts",
+  "ltcplay/fuelhaze.py",
+  "        rs = [r for r in u[\"refills\"] if not r.get(\"undone\")]",
+  "        rs = list(u[\"refills\"])"),
+
+ ("haze fluid: an undo is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "        tail = \"\" if self.save() else (f\" haze.json could NOT",
+  "        tail = \"\" if True else (f\" haze.json could NOT"),
+
+ ("ui 2.0 haze: Undo goes with no question",
+  "ltcplay/web/remote2.html",
+  "  const yes = await confirmBox(\"Undo this refill?\",",
+  "  const yes = true || await confirmBox(\"Undo this refill?\","),
 
  # Re-pointed (the #181 sweep, 2026-11-10): Fireball practice's record
  # (#225) went in after the fuel observer, so "pass, return ok" had become
@@ -16951,6 +17510,16 @@ def build():
   "  if(sch.stop_held && !isLive(st)) return {tone:\"warn\", icon:\"pause\", text:\"Held after Stop: press Resume.\"};",
   ""),
 
+ ("big button: Resume says Carries on under it again",
+  "ltcplay/web/remote2.html",
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "" : "No contact"};',
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};'),
+
+ ("big button: a Stop's Hold no longer says why under Resume",
+  "ltcplay/web/remote2.html",
+  'why:fresh ? "Held after Stop" : "No contact"};',
+  'why:fresh ? "" : "No contact"};'),
+
  ("scheduler: a Stop's Hold is not kept in tonight's file",
   "ltcplay/schedule.py",
   "    if m.stop_hold:\n        doc[\"stop_hold\"] = True\n",
@@ -16980,7 +17549,7 @@ def build():
 
  ("ui2 page: Run off turns Run off without asking",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\"))) return;\n",
+  "  if(!(await (reh ? confirmBox(\"End rehearsal?\", REHEARSAL_END_CONFIRM, \"Yes, end it\", \"red\") : confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\")))) return;\n",
   ""),
 
  # Cold review of #191 round 3.
@@ -17700,8 +18269,8 @@ def build():
 
  ("Rack screen: Run never becomes Stop while Run is starting",
   "ltcplay/web/remote_rules.js",
-  "  if(!(show.running || show.starting)) return {mode:\"run\"",
-  "  if(!show.running) return {mode:\"run\""),
+  "  if(!(show.running || show.starting))\n    return {mode:\"run\"",
+  "  if(!show.running)\n    return {mode:\"run\""),
 
  ("Rack screen: a press is not decided by what was seen at touch-down",
   "ltcplay/web/remote_rules.js",
@@ -19188,6 +19757,21 @@ def build():
  ("ui2 page: one system to check is not named", "ltcplay/web/remote2.html",
   "  const text = probs.length === 1 ?",
   "  const text = false ?"),
+
+ ("systems rows: a row says its state word twice again",
+  "ltcplay/web/remote2.html",
+  '  if(bare === lw || bare === "ok") rest = "";',
+  '  if(false) rest = "";'),
+
+ ("systems rows: a row cuts its own verb when it starts like the state",
+  "ltcplay/web/remote2.html",
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))',
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[\\s.:,]/.test(rest.slice(word.length)))'),
+
+ ("systems rows: a row drops what its words add",
+  "ltcplay/web/remote2.html",
+  '  if(!rest) return {head:x.label + ": " + word, rest:""};',
+  '  return {head:x.label + ": " + word, rest:""};'),
 
  ("ui2 page: a system not set up here reads Check", "ltcplay/web/remote2.html",
   "  if(state !== \"bad\" && SYS_OFF.test(w.trim())) state = \"off\";\n",
@@ -21834,8 +22418,8 @@ def build():
 
  ("review180: rack screen 2.0 says only Press Run, whatever the warning asks",
   "ltcplay/web/remote2.html",
-  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\", loc)",
-  "do:runWarnWords(\"Press Run.\", loc)"),
+  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Turn show control on.\", loc)",
+  "do:runWarnWords(\"Turn show control on.\", loc)"),
 
  ("play-from cues: a cue right at the end of the show audio is saved",
   "ltcplay/play_from.py",
@@ -22839,8 +23423,8 @@ def build():
 
  ("ui2 #227: Run show by the warning is offered on an iPad or with no contact",
   "ltcplay/web/remote2.html",
-  "  if(!local || isStaleNow || !/^Run is off/.test(",
-  "  if(!/^Run is off/.test("),
+  "  if(!local || isStaleNow || !sch.run_warning || runIsOn(st)) return \"\";",
+  "  if(!sch.run_warning || runIsOn(st)) return \"\";"),
 
  ("ui2 #227: Run show by the warning is offered signed out",
   "ltcplay/web/remote2.html",
@@ -22900,12 +23484,12 @@ def build():
 
  ("ui 2.0 Programming: Run starts with no question",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(prog ? \"Run in Programming?\"",
-  "  if(false && !(await confirmBox(prog ? \"Run in Programming?\""),
+  "  if(!(await confirmBox(prog ? \"Start rehearsal?\"",
+  "  if(false && !(await confirmBox(prog ? \"Start rehearsal?\""),
 
  ("ui 2.0 Programming: Run off goes with no question",
   "ltcplay/web/remote2.html",
-  "    const sure = await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
+  "    const sure = ((ST && ST.transport) || {}).programming\n      ? await confirmBox(\"End rehearsal?\", REHEARSAL_END_CONFIRM, \"Yes, end it\", \"red\")\n      : await confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
   "    if(runLook(ST, stale()).mode !== \"runoff\")"),
 
  ("ui 2.0 Programming: the session is pressable signed out",
@@ -23075,7 +23659,7 @@ def build():
   "  $(\"u-audit\").hidden = false;"),
 
  ("ui 2.0 Users: the shared token is written into its field",
-  "ltcplay/web/remote2.html",
+  "ltcplay/web/upload_card.js",
   "    $(\"au-tok\").placeholder = u.token_set ?",
   "    $(\"au-tok\").value = u.token || \"\";\n    $(\"au-tok\").placeholder = u.token_set ?"),
 
@@ -23126,8 +23710,8 @@ def build():
 
  ("ui 2.0 Users: the header's Sign out leaves a typed token in the pane",
   "ltcplay/web/remote2.html",
-  "[\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\", \"au-tok\"].forEach(id => { $(id).value = \"\"; });",
-  "[\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });"),
+  "  [\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });\n  dropUpload();\n",
+  "  [\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });\n"),
 
  ("ui 2.0 Users: the header's Sign out does not read the open pane again",
   "ltcplay/web/remote2.html",
@@ -23138,6 +23722,90 @@ def build():
   "ltcplay/web/remote2.html",
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
+
+ # Less prose on the Schedule tab's cards (Jeff, 2026-11-11).
+ ("less prose: the arming card stops naming a laser arm",
+  "ltcplay/web/remote2.html",
+  'turn a laser test on and arm a laser; this screen can without the switch.";',
+  'turn a laser test on; this screen can without the switch.";'),
+
+ ("less prose: Restart the engine no longer says it is refused during a show",
+  "ltcplay/web/remote2.html",
+  '"Restarts the show engine on the saved address. Refused while a show runs or a group is armed.',
+  '"Restarts the show engine on the saved address.'),
+
+ # Less prose in the rules (Jeff, 2026-11-11).
+ ("less prose: arming off no longer says to arm from the Stream Deck",
+  'ltcplay/web/remote_rules.js',
+  'const ARMING_OFF = "Arming from a screen is switched off. Arm from the Stream Deck, or turn it on',
+  'const ARMING_OFF = "Arming from a screen is switched off. Or turn it on'),
+
+ ("less prose: Programming's Stop explains itself again",
+  "ltcplay/web/remote_rules.js",
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"tap twice"}',
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}'),
+
+ # Less prose, engine answers and alerts (Jeff, 2026-11-11).
+ ("less prose: the Morning check runs two shows' CUES FAULTs together",
+  'ltcplay/remote.py',
+  '                        "text": "\\n\\n".join(faults) if faults else',
+  '                        "text": " ".join(faults) if faults else'),
+
+ ('less prose: the preroll alert hides what failed behind More',
+  'ltcplay/preroll.py',
+  '            f"- Failed: {\', \'.join(i[\'name\'] for i in bad)}.\\n"\n            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "',
+  '            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "'),
+
+ ('less prose: the CUES FAULT says what to render only behind More',
+  'ltcplay/fire_ice.py',
+  '            f"Render these again in xLights: {names}.\\n"',
+  '            f"Render these again in xLights.\\n"'),
+
+ ('less prose: the schedule save answer runs its warnings into one line',
+  'ltcplay/remote.py',
+  '                   "".join(f"- {w}\\n" for w in warns) if warns else "") +',
+  '                   " ".join(warns) + "\\n" if warns else "") +'),
+
+ ('less prose: the stale pump press says no way forward',
+  'ltcplay/remote.py',
+  '                   "Wait for the screen to be live, then press again.\\n"',
+  '                   ""'),
+
+ # Less prose (Jeff, 2026-11-11): bullets and paragraph breaks.
+ ("less prose: an alert's one-line text keeps its bullet marks",
+  "ltcplay/alerts.py",
+  '        text = " ".join(" ".join(ln[2:] if ln.startswith("- ") else ln',
+  '        text = " ".join(" ".join(ln if ln.startswith("- ") else ln'),
+
+ ("less prose: an alert drops its line breaks before the rack screen",
+  "ltcplay/alerts.py",
+  '        if "\\n" in self.full:\n            out["full"]',
+  '        if False:\n            out["full"]'),
+
+ ("less prose: opText writes the engine's words as markup",
+  "ltcplay/web/remote2.html",
+  '      list.appendChild(document.createElement("li")).textContent = line.slice(2).trim();',
+  '      list.appendChild(document.createElement("li")).innerHTML = line.slice(2).trim();'),
+
+ ("less prose: the audio alert's names leave More for the bullets",
+  "ltcplay/audiowatch.py",
+  '            f"- Why: No show can start without it.\\n"',
+  '            f"- Why: No show can start without it, {show_file}.\\n"'),
+
+ ("less prose: the aim alert's file path leaves More for the bullets",
+  "ltcplay/remote.py",
+  '                f"- Do: Tell Jeff.\\n"',
+  '                f"- Do: Tell Jeff, {path}.\\n"'),
+
+ ("less prose: the late frame alert's numbers leave More for the bullets",
+  "ltcplay/remote.py",
+  '                   "- Why: A flame pulse may be cut short.\\n"',
+  '                   "- Why: A flame pulse may be cut short, worst {w} ms.\\n"'),
+
+ ("less prose: the users alert's file names leave More for the bullets",
+  "ltcplay/remote.py",
+  '                    f"- Do: Put a good users file back.\\n"',
+  '                    f"- Do: Put {users_mod.USERS_MARK} back.\\n"'),
 
  # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
  # starts with flames off and says where; the supervisor starts neither
@@ -23439,187 +24107,664 @@ def build():
   'ltcplay/playhead.py',
   '            maybe = cond.lasers_maybe_lit() is True\n',
   '            maybe = lit\n'),
- # Pre-show audio (preshow_audio.py, Jeff 2026-11-12): the chosen file 120
- # s before a scheduled show, once, never late, never over a Hold, show
- # control off, a show or an announcement, and never in the show's way.
- ("pre-show audio: plays before the two minutes",
-  'ltcplay/schedule_service.py',
-  '            if left > pa.LEAD_S:\n                return\n',
-  '            if left > pa.LEAD_S + 1:\n                return\n'),
 
- ("pre-show audio: plays late, after the schedule changed inside the window",
-  'ltcplay/schedule_service.py',
-  '        if left < pa.LEAD_S - pa.GRACE_S:\n',
-  '        if False:\n'),
+ ('hazer test: no 60 s limit (a forgotten test fogs on)',
+  'ltcplay/hazertest.py',
+  'MAX_S = 60                  # Jeff decides; a forgotten test never fogs on\n',
+  'MAX_S = 6000                # Jeff decides; a forgotten test never fogs on\n'),
 
- ("pre-show audio: a restart inside the window plays it again",
-  'ltcplay/preshow_audio.py',
-  '                    self._recs[str(k)] = dict(r, restored=True, said=False)\n',
-  '                    pass\n'),
 
- ("pre-show audio: the show's record is not looked at before deciding",
-  'ltcplay/schedule_service.py',
-  '            if pa.record(key) is not None:\n',
+ ("hazer test: the flame link's own hard end never comes",
+  'ltcplay/flamelink.py',
+  '            until, beat = self._htest_until, self._htest_beat\n',
+  '            until, beat = float("inf"), self._htest_beat\n'),
+
+ ('hazer test: a quiet screen leaves it on',
+  'ltcplay/hazertest.py',
+  '            if now - e["page"] > PAGE_QUIET_S:\n',
   '            if False:\n'),
 
- ("pre-show audio: written down only after it plays, not before",
-  'ltcplay/preshow_audio.py',
-  '        ok, disk_why = self._persist()\n',
-  '        ok, disk_why = True, ""\n'),
+ ('hazer test: ON needs no permission (not the arm row)',
+  'ltcplay/users.py',
+  '    "hazer-test": "arm",\n',
+  '    "hazer-test": None,\n'),
 
- ("pre-show audio: on with no setting saved",
-  'ltcplay/preshow_audio.py',
-  '    def is_on(self):\n        return bool(self.on and self.file)\n',
-  '    def is_on(self):\n        return True\n'),
+ ('hazer test: ON is classified safety (anyone may turn it on)',
+  'ltcplay/users.py',
+  '        if name == "hazer-test" and body.get("on") is not True and \\\n',
+  '        if name == "hazer-test" and \\\n'),
 
- ("pre-show audio: plays with the setting off",
-  'ltcplay/schedule_service.py',
-  '            if not pa.is_on():\n                return\n            m = self.machine\n',
-  '            m = self.machine\n'),
+ ('hazer test: ON from the show network without screen_arming',
+  'ltcplay/remote.py',
+  '            why = ("Hazers not turned on: this device may not turn hazers "\n',
+  '            return 200, {}\n            why = ("Hazers not turned on: this device may not turn hazers "\n'),
 
- ("pre-show audio: the player runs on the scheduler's tick, under its lock",
-  'ltcplay/schedule_service.py',
-  '                self._pending_hooks.append(lambda: pa.settle(key))\n',
-  '                pa.settle(key)\n'),
+ ('hazer test: Stop leaves it on at the engine',
+  'ltcplay/remote.py',
+  '            self.hazer_test_cut(why, who, screen)\n',
+  '            pass\n'),
 
- ("pre-show audio: plays with show control off",
-  'ltcplay/schedule_service.py',
-  '        if not self._run_pressed():\n            return "show control is off"\n',
-  '        if False:\n            return "show control is off"\n'),
+ ("hazer test: Stop's disarm_all leaves it on at the link",
+  'ltcplay/flamelink.py',
+  '                self._htest_on = False\n                self._htest_until = None\n                # Abort and Stop switch every hazer OFF',
+  '                # Abort and Stop switch every hazer OFF'),
 
- ("pre-show audio: plays on Hold",
-  'ltcplay/schedule_service.py',
-  '        if m.state == sch.HOLD:\n            return "the schedule is on Hold"\n',
-  '        if m.state == sch.HOLD:\n            return ""\n'),
+ ('hazer test: a show starting leaves it on',
+  'ltcplay/remote.py',
+  '            if st == "playing":\n                return "a show is playing, and the show drives the hazers"\n',
+  '            if False:\n                return "a show is playing, and the show drives the hazers"\n'),
 
- ("pre-show audio: plays while a show is running",
-  'ltcplay/schedule_service.py',
-  '        if m.state in (sch.SHOW, sch.PAUSED):\n            return "a show is running"\n',
-  '        if m.state in (sch.SHOW, sch.PAUSED):\n            return ""\n'),
+ ('hazer test: show control on leaves it on',
+  'ltcplay/remote.py',
+  '            if cs.get("starting") or cs.get("running") or \\\n                    self.show_control_on(cs):\n                return "show control is on; press Stop first"\n',
+  '            if False:\n                return "show control is on; press Stop first"\n'),
 
- ("pre-show audio: plays before a delayed show",
-  'ltcplay/schedule_service.py',
-  '        if s.planned is not None and s.start > s.planned:\n',
-  '        if False:\n'),
+ ('hazer test: ON skips the checks arming a hazer has',
+  'ltcplay/hazertest.py',
+  '        for n in names:\n            why = hz.refusal(n)\n',
+  '        for n in ():\n            why = hz.refusal(n)\n'),
 
- ("pre-show audio: plays over an announcement already playing",
-  'ltcplay/announce.py',
-  '            if pre and self.playing is not None:\n'
-  '                raise ValueError(PRESHOW_BUSY)\n',
-  '            if False:\n'
-  '                raise ValueError(PRESHOW_BUSY)\n'),
-
- ("pre-show audio: plays while a Stop is under way",
-  'ltcplay/schedule_service.py',
-  '        if self.halting():\n            return "a Stop is under way"\n',
-  '        if False:\n            return "a Stop is under way"\n'),
-
- ("pre-show audio: plays over a Programming Run",
-  'ltcplay/schedule_service.py',
-  '        if self.preroll is not None and self.preroll.skip():\n'
-  '            return "a Programming Run is in force"\n',
-  '        if False:\n'
-  '            return "a Programming Run is in force"\n'),
-
- ("pre-show audio: plays for a scheduler that starts no show",
-  'ltcplay/schedule_service.py',
-  '        if self.dry_run or self.performer is None:\n'
-  '            return "this scheduler does not start shows"\n',
-  '        if False:\n'
-  '            return "this scheduler does not start shows"\n'),
-
- ("pre-show audio: plays with auto start off",
-  'ltcplay/schedule_service.py',
-  '        if getattr(cfg, "auto_start", "when_run_pressed") == "off":\n'
-  '            return "the scheduler does not start shows by itself"\n',
-  '        if False:\n'
-  '            return "the scheduler does not start shows by itself"\n'),
-
- ("pre-show audio: plays with an alert open",
-  'ltcplay/schedule_service.py',
-  '        if gate is not None and gate():\n',
-  '        if False:\n'),
-
- ("pre-show audio: plays before a show the scheduler would not start",
-  'ltcplay/schedule_service.py',
-  '            return f"the scheduler would not start show {n} at its time"\n',
+ ('hazer test: an error in a pass leaves it on',
+  'ltcplay/hazertest.py',
+  '            why = f"its check failed ({type(e).__name__})"\n            self.stop(why)\n            return why\n',
   '            return ""\n'),
 
- ("pre-show audio: an operator's announcement press is refused while it plays",
-  'ltcplay/announce.py',
-  '            if not pre and self.playing == PRESHOW:\n',
-  '            if False:\n'),
+ ('hazer test: a state that cannot be read is left on',
+  'ltcplay/hazertest.py',
+  '            self.stop(f"its state could not be read ({type(e).__name__})")\n',
+  '            pass\n'),
 
- ("pre-show audio: a Hold never reaches the player",
-  'ltcplay/schedule_service.py',
-  '                self._pending_hooks.append(self.on_schedule_held)\n',
+ ('hazer test: the page shows On with no contact',
+  'ltcplay/web/remote2.html',
+  'function hztKnown(v){ return !stale() && !!v && v.available === true && v.state !== "unknown" && Array.isArray(v.hazers); }',
+  'function hztKnown(v){ return !!v && v.available === true && Array.isArray(v.hazers); }'),
+
+ ('arm all hazers: every entry armed whatever its type',
+  'ltcplay/hazers.py',
+  '            if k != "hazer":\n                missed.append(',
+  '            if False:\n                missed.append('),
+
+ ('arm all hazers: a name flamesafe reports as a flame group is armed',
+  'ltcplay/hazers.py',
+  '        if name in groups:\n            return None\n',
+  ''),
+
+ ("arm all hazers: arms every hazer at the link, skipping each one's refusals",
+  'ltcplay/hazers.py',
+  '            ok, text = self.set(n, True, who=who, screen=screen)\n',
+  '            ok, text = True, ""\n            self.link().hazers_set(self.on() | {n})\n'),
+
+ ('arm all hazers: needs no permission (not the arm row)',
+  'ltcplay/users.py',
+  '    "hazers-arm-all": "arm",\n',
+  '    "hazers-arm-all": None,\n'),
+
+ ('arm all hazers: from the show network without screen_arming',
+  'ltcplay/remote.py',
+  '            if not self.may_act_from(ctx.local):\n                why = ("Arming hazers from a device on the show network "\n',
+  '            if False:\n                why = ("Arming hazers from a device on the show network "\n'),
+
+ ('hazer test: signing out on the screen leaves it on',
+  'ltcplay/remote.py',
+  '                    ht.end_for_token(getattr(ctx, "token", "") or "",\n',
+  '                    (lambda *a: None)(getattr(ctx, "token", "") or "",\n'),
+
+ ('hazer test: the timer never checks its starter is still signed in',
+  'ltcplay/hazertest.py',
+  '            gone = self._sign_in_gone(e.get("token", ""), e.get("who", ""))\n',
+  '            gone = ""\n'),
+
+ ('hazer test: a running test ignores flamesafe going stale',
+  'ltcplay/hazertest.py',
+  '            why = hz.down() if hz is not None else "the hazers are gone"\n',
+  '            why = ""\n'),
+
+ ('hazer test: a running test ignores live flame programming',
+  'ltcplay/hazertest.py',
+  '                why = hz._blocker() or ""\n',
+  '                why = ""\n'),
+
+ ('hazer test: flamesafe not passing it never ends it',
+  'ltcplay/hazertest.py',
+  '            elif now - since > NOT_PASSING_S:\n',
+  '            elif False:\n'),
+
+ ('hazer test: the plain /api/stop leaves it on at the engine',
+  'ltcplay/web.py',
+  '        fn = getattr(rm, "hazer_test_cut", None)\n',
+  '        fn = None\n'),
+
+ ('hazer test: the engine shutting down leaves it on',
+  'ltcplay/web.py',
+  '            remote.hazer_test.stop("the engine is shutting down")\n',
+  '            pass\n'),
+
+ ('hazer test: Hazers off leaves it on',
+  'ltcplay/hazers.py',
+  '                stop(why, who, screen, system)\n',
   '                pass\n'),
 
- ("pre-show audio: the player does not stop it on Hold",
-  'ltcplay/announce.py',
-  '            self._player.stop_reason = "the schedule was held"\n',
-  '            return\n'),
+ ('hazer test: the Stream Deck is not told it runs',
+  'ltcplay/remote.py',
+  '                                     "test": self._ht_names(),\n',
+  '                                     "test": [],\n'),
 
- ("pre-show audio: a file over 110 s can be chosen",
-  'ltcplay/preshow_audio.py',
-  '        if long_why:\n            raise ValueError(f"{long_why} Nothing was changed.")\n',
-  '        if False:\n            raise ValueError(f"{long_why} Nothing was changed.")\n'),
+ ('hazer test: a show state that cannot be read is idle',
+  'ltcplay/remote.py',
+  '        except Exception as e:                   # noqa: BLE001\n            return f"the engine\'s state could not be read ({type(e).__name__})"\n        return ""\n\n    def _ht_state',
+  '        except Exception as e:                   # noqa: BLE001\n            return ""\n        return ""\n\n    def _ht_state'),
 
- ("pre-show audio: a file over 110 s plays when due",
-  'ltcplay/preshow_audio.py',
-  '            if long_why:\n                raise ValueError(long_why)\n',
-  '            if False:\n                raise ValueError(long_why)\n'),
+ ("hazer test: a Hold's zero leaves it on at the link",
+  'ltcplay/flamelink.py',
+  '        self._htest_cut("the flame cues were zeroed (a Hold)")\n',
+  ''),
 
- ("pre-show audio: held to the 60 s announcement limit through the show audio",
-  'ltcplay/announce.py',
-  '        if limit > SHOW_ROUTE_MAX_S and length_s is not None:\n',
+ ('hazer test: it drives the hazers while a show cue plays or the gate is shut',
+  'ltcplay/flamelink.py',
+  '                tgate and not self._haze_live else frozenset()\n',
+  '                True else frozenset()\n'),
+
+ ('hazer test: the status reads on past its hard end',
+  'ltcplay/flamelink.py',
+  '            if not 0 <= now - beat <= HAZER_TEST_HOLD_S:\n                return frozenset()\n            return frozenset(n for n, u in dict(until).items() if now < u)\n',
+  '            return frozenset(dict(until))\n'),
+
+ ('hazer test: the page cannot send Off without contact',
+  'ltcplay/web/remote2.html',
+  '  if(!hztKnown(v)) return {mode: "off", label: "Turn off"};\n',
+  '  if(!hztKnown(v)) return {mode: "on", label: "Turn on"};\n'),
+
+ ("hazer test: the rack screen's hazer tiles read DISARMED during it",
+  'ltcplay/web/remote2.html',
+  '    if(htOn){ setText(b.querySelector(".hw"), "HAZE TEST"); b.className = "b hzt"; }\n',
+  ''),
+
+ ('hazer test: web.serve gives it no per-frame gate',
+  'ltcplay/web.py',
+  '            gate=remote.hazer_test_gate,\n',
+  ''),
+
+ ('hazer test: the flame link is never given the gate',
+  'ltcplay/hazertest.py',
+  '                    link.hazer_test_gate = self._gate\n',
+  ''),
+
+ ('hazer test: the per-frame gate ignores show control',
+  'ltcplay/remote.py',
+  '            if getattr(getattr(self.control, "session", None), "running",\n                       False):\n                return False\n            return True\n',
+  '            return True\n'),
+
+ ('hazer test: the per-frame gate lets a held show through',
+  'ltcplay/remote.py',
+  '            if self._ht_state() != "idle":\n                return False\n',
+  '            if self._ht_state() == "playing":\n                return False\n'),
+
+ ('hazer test: web.serve never hooks it to Hazers off',
+  'ltcplay/web.py',
+  '    remote.hazers.test_stop = lambda why, who, screen, system: \\\n',
+  '    _unhooked = lambda why, who, screen, system: \\\n'),
+
+ ('hazer test: ON with no sign-in of its own is taken while there are users',
+  'ltcplay/remote.py',
+  '        if self.users_active() and not (getattr(ctx, "token", None) or ""):\n',
   '        if False:\n'),
 
- ("pre-show audio: a show whose time is edited plays it again",
-  'ltcplay/schedule_service.py',
-  '            key = (str(m.date), nxt.n)\n',
-  '            key = self._show_key(m, nxt.n)\n'),
+ ('hazer test: an old-status refusal is not journaled',
+  'ltcplay/remote.py',
+  '"Wait for it to be live, then press again.")\n            self._journal(who, device, "hazer-test", "refused",\n',
+  '"Wait for it to be live, then press again.")\n            (lambda *a: None)(who, device, "hazer-test", "refused",\n'),
 
- ("pre-show audio: the journal keeps the player's press sentence",
-  'ltcplay/preshow_audio.py',
-  '    t = _PRESS.sub("", t)\n',
-  '    pass\n'),
-
- ("pre-show audio: Turn on posts an unsaved choice",
+ ("hazer test: the rack tiles are ARMED's green during it",
   'ltcplay/web/remote2.html',
-  '$("psa-on").addEventListener("click", () => psaSave(true, PSA_FILE || ""));\n',
-  '$("psa-on").addEventListener("click", () => psaSave(true, $("psa-pick").value || PSA_FILE || ""));\n'),
+  'b.className = "b hzt"; }\n',
+  'b.className = "b on"; }\n'),
 
- ("pre-show audio: the player takes it on Hold, claimed first",
-  'ltcplay/announce.py',
-  '            if pre and state not in PRESHOW_STATES:\n'
-  '                why = preshow_state_words(state)\n',
-  '            if False:\n'
-  '                why = preshow_state_words(state)\n'),
+ # Show control, PR 1 (2026-11-11): whether Run is on is the engine's one
+ # boolean, never its sentences, and anything but true is off.
+ ("show control: the page reads a missing Run boolean as on",
+  "ltcplay/web/remote2.html",
+  "  return !!(st && st.show && st.show.show_control_on === true);",
+  "  return !!(st && st.show && st.show.show_control_on !== false);"),
 
- ("pre-show audio: started over a show that began while it loaded",
-  'ltcplay/announce.py',
-  '            if pre and state not in PRESHOW_STATES:\n'
-  '                self.playing = None\n',
-  '            if False:\n'
-  '                self.playing = None\n'),
+ ("show control: the page reads Run off from the engine's sentence again",
+  "ltcplay/web/remote2.html",
+  "  return !!(st && st.show && st.show.show_control_on === true);",
+  "  const b = ((st && st.schedule) || {}).start_blocked;\n"
+  "  if(b && b.text && /^Run has not been pressed/.test(String(b.text))) return false;\n"
+  "  return !!(st && st.show && (st.show.running || st.show.starting));"),
 
- ("pre-show audio: the player Holds the schedule for it",
-  'ltcplay/announce.py',
-  '            if pre:\n                hold_note = PRESHOW_HOLD_NOTE\n'
-  '            elif tone:\n',
-  '            if False:\n                hold_note = PRESHOW_HOLD_NOTE\n'
-  '            elif tone:\n'),
+ ("show control: Start now says Run is off from the sentence again",
+  "ltcplay/web/remote_rules.js",
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Show control is off\"",
+  "sub:/^Run has not been pressed/.test(String(b.text)) ? \"Show control is off\""),
 
- ("pre-show audio: a Play press may ask for it",
-  'ltcplay/announce.py',
-  '        if ann_id not in IDS and not tone and not pre:\n',
-  '        if ann_id not in IDS and not tone and ann_id != PRESHOW:\n'),
+ ("show control: Start now reads a missing Run boolean as on",
+  "ltcplay/web/remote_rules.js",
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Show control is off\"",
+  "sub:(st && st.show && st.show.show_control_on === false) ? \"Show control is off\""),
 
- ("pre-show audio: the card does not show the chosen file",
+ ("show control: the status ignores the Run gate",
+  "ltcplay/remote.py",
+  "            return gate() is True\n        except Exception:                        # noqa: BLE001\n            return False\n\n    def disk_view(self):",
+  "            return True\n        except Exception:                        # noqa: BLE001\n            return False\n\n    def disk_view(self):"),
+
+ ("show control: a Run gate that raises reads as on",
+  "ltcplay/remote.py",
+  "            return gate() is True\n        except Exception:                        # noqa: BLE001\n            return False\n\n    def disk_view(self):",
+  "            return gate() is True\n        except Exception:                        # noqa: BLE001\n            return True\n\n    def disk_view(self):"),
+
+ ("show control: the status says Run on with nothing running",
+  "ltcplay/remote.py",
+  "            if not (cs.get(\"running\") or cs.get(\"starting\")):\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)",
+  "            if False:\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)"),
+
+ # Cold review of #240 (Jeff, 2026-11-11): Stop leaves show control on, so
+ # a refusal while it is on says turn it off, never press Stop.
+ ('show control: the timed purge refusal says press Stop again',
+  'ltcplay/remote.py',
+  '                       False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
+  '                       False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
+
+ ('show control: a new show file refusal says press Stop again',
+  'ltcplay/remote.py',
+  '            return 409, ("A show file is running. Turn show control off "\n                         "first (End rehearsal in a rehearsal), then make "',
+  '            return 409, ("A show file is running. Press Stop first, then "\n                         "make "'),
+
+ ('show control: the rig-not-answering line says Stop and Run again',
+  'ltcplay/display.py',
+  'f"and the switch. Turn show control off and on (on the Mac page: "\n                f"Stop, then Run) after it is back, or the socket "',
+  'f"and the switch. Stop and Run after it is back, or the socket "'),
+
+ ("hazer test: show control's state unreadable is read as off",
+  'ltcplay/remote.py',
+  '                return "show control\'s state could not be read"\n',
+  '                cs = {}\n'),
+
+ ('hazer test: the link runs every hazer, not only the selected ones',
+  'ltcplay/flamelink.py',
+  '            for n in (test if test else self._hazers_on):\n',
+  '            for n in (self._hazers if test else self._hazers_on):\n'),
+
+ ('hazer test: a second On restarts a hazer already running (its 60 s extended)',
+  'ltcplay/hazertest.py',
+  '        new = [n for n in names if n not in self.running()]\n',
+  '        new = list(names)\n'),
+
+ ('hazer test: a name the engine does not have is dropped, the rest turned on',
+  'ltcplay/hazertest.py',
+  '    bad = [n for n in raw if n not in known]\n',
+  '    bad = []\n'),
+
+ ('hazer test: Off needs screen_arming like On (Off no longer always works)',
+  'ltcplay/remote.py',
+  '            ht.stop(why, who=who, screen=device, system=False)\n            return 200, {"ok": True, "text": "Every hazer OFF."}\n',
+  '            pass\n'),
+
+ ('hazer test: All on is refused ("all" is not read)',
+  'ltcplay/remote.py',
+  '        if sel == "all":\n            sel = ht.names()\n',
+  '        if False:\n            sel = ht.names()\n'),
+
+ ("hazer test: the page's All off sends a selection, not every hazer",
   'ltcplay/web/remote2.html',
-  '  return (v.on ? "ON: " : "OFF: ") + (v.name || "no file chosen");\n',
-  '  return v.on ? "ON" : "OFF";\n'),
+  '$("hzt-alloff").addEventListener("click", () => hztOff(null));\n',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(["Hazer 1"]));\n'),
+
+ ("hazer test: the page's All on sends nothing",
+  'ltcplay/web/remote2.html',
+  '$("hzt-allon").addEventListener("click", () => hztOn("all"));\n',
+  ''),
+
+ ("arm all hazers: the show screen's button is never disabled",
+  'ltcplay/web/remote2.html',
+  '  ab.disabled = al.mode !== "arm" || !!al.why;\n',
+  '  ab.disabled = false;\n'),
+
+ ('arm all hazers: the show screen reads a state not known as known',
+  'ltcplay/web/remote2.html',
+  '  if(!known) return {mode: "none", state: "Not known", why: ""};\n',
+  '  if(false) return {mode: "none", state: "Not known", why: ""};\n'),
+
+ ("hazer test: one screen's beat keeps every screen's hazers on",
+  'ltcplay/hazertest.py',
+  '                if (isinstance(page, str) and page and e["owner"] == page) \\\n                        or e["rid"] == run:\n',
+  '                if True:\n'),
+
+ ("hazer test: signing out ends every person's hazers",
+  'ltcplay/hazertest.py',
+  '            mine = [n for n, e in r["names"].items()\n                    if e.get("token") == token]\n',
+  '            mine = list(r["names"])\n'),
+
+ ('hazer test: the link extends a hazer already running',
+  'ltcplay/flamelink.py',
+  '                    if n not in running:\n                        until[n] = mine + s\n',
+  '                    until[n] = mine + s\n'),
+
+ ("hazer test: the page's reason comes from every hazer, not the ticked ones",
+  'ltcplay/web/remote2.html',
+  '  const rows = v.hazers.filter(h => names.includes(h.name) && h.on === false);\n',
+  '  const rows = v.hazers.filter(h => h.on === false);\n'),
+
+ ('hazer test: the page lets an iPad with arming off press Turn on',
+  'ltcplay/web/remote2.html',
+  '  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";\n  if(names === "all")',
+  '  if(names === "all")'),
+
+ # The SuperUser (2026-11-13): the nightly upload is the SuperUser's alone,
+ # and only a SuperUser changes a SuperUser (users.py, remote.py, web.py).
+ ("superuser: the upload follows a stored matrix", "ltcplay/users.py",
+  "        # Never from a matrix: the role alone.\n        return role == SUPERUSER",
+  "        return role == SUPERUSER or ((matrix or {}).get(role) or {}).get(perm) is True"),
+
+ ("superuser: an admin may use the upload", "ltcplay/users.py",
+  "        # Never from a matrix: the role alone.\n        return role == SUPERUSER",
+  "        return role in ADMIN_ROLES"),
+
+ ("superuser: no route is the upload's", "ltcplay/users.py",
+  '    return n in UPLOAD_ROUTES or "upload" in n',
+  "    return False"),
+
+ ("superuser: a later upload route is anyone's", "ltcplay/users.py",
+  '    return n in UPLOAD_ROUTES or "upload" in n',
+  "    return n in UPLOAD_ROUTES"),
+
+ ("superuser: classify does not name a later upload route", "ltcplay/users.py",
+  "        if is_upload_route(name):\n            return UPLOAD\n",
+  ""),
+
+ ("superuser: an iPad sign-in is a SuperUser here", "ltcplay/users.py",
+  '            session.get("local") is True and bool(session.get("name"))',
+  '            bool(session.get("name"))'),
+
+ ("superuser: Tailscale is a SuperUser here", "ltcplay/users.py",
+  "        return local is True and not tailscale and \\",
+  "        return local is True and \\"),
+
+ ("superuser: an iPad request is a SuperUser here", "ltcplay/users.py",
+  "        return local is True and not tailscale and \\",
+  "        return not tailscale and \\"),
+
+ ("superuser: with no users the upload is open", "ltcplay/users.py",
+  "            return self.active() and allowed(None, role, perm)",
+  "            return allowed(None, role, perm) or not self.active()"),
+
+ ("superuser: a SuperUser's admin rows can be turned off", "ltcplay/users.py",
+  "FIXED.update({(SUPERUSER, p): True for p in PERM_KEYS})\n",
+  ""),
+
+ ("superuser: an admin adds a SuperUser", "ltcplay/users.py",
+  '            _need_superuser(by, f"add {name} as {SUPERUSER}")',
+  "            pass"),
+
+ ("superuser: an admin changes a SuperUser", "ltcplay/users.py",
+  '            _need_superuser(by, f"{what} {real} ({SUPERUSER})")',
+  "            pass"),
+
+ ("superuser: an admin makes a SuperUser", "ltcplay/users.py",
+  '                _need_superuser(by, f"make {real} {SUPERUSER}")',
+  "                pass"),
+
+ ("superuser: anyone at all is a SuperUser's rank", "ltcplay/users.py",
+  "    if by != SUPERUSER:\n        raise RankRefused(what)",
+  "    if False:\n        raise RankRefused(what)"),
+
+ ("superuser: the last SuperUser can be removed", "ltcplay/users.py",
+  '            if users[real].get("role") == SUPERUSER and \\\n                    not self._supers(users, without=real):',
+  '            if False and \\\n                    not self._supers(users, without=real):'),
+
+ ("superuser: the last SuperUser can be demoted", "ltcplay/users.py",
+  '            if users[real].get("role") == SUPERUSER and role != SUPERUSER \\',
+  "            if False \\"),
+
+ ("superuser: an admin resets a SuperUser's password", "ltcplay/users.py",
+  '                self._guard_super(users, real, by, "reset the password of")',
+  "                pass"),
+
+ ("superuser: a SuperUser's password can be cleared", "ltcplay/users.py",
+  '                if pw is None and users[real].get("role") == SUPERUSER:',
+  "                if False:"),
+
+ ("superuser: a SuperUser with no password is claimed", "ltcplay/users.py",
+  '            if u is not None and u.get("role") == SUPERUSER and (',
+  "            if False and ("),
+
+ ("superuser: an admin's temporary password signs in as a SuperUser", "ltcplay/users.py",
+  '                    first or (must and u.get("reset_by") not in',
+  '                    first or (False and u.get("reset_by") not in'),
+
+ ("superuser: a first run makes a SuperUser", "ltcplay/users.py",
+  "                if r not in ROLES or r == SUPERUSER:",
+  "                if r not in ROLES:"),
+
+ ("superuser: a SuperUser's column can be turned off", "ltcplay/users.py",
+  "                    if c == SUPERUSER and v is not True:",
+  "                    if False:"),
+
+ ("superuser: the command line promotes a claimable name", "ltcplay/users.py",
+  '            if u.get("pw") is None or u.get("must_change"):',
+  "            if False:"),
+
+ ("superuser: the command line's grant is not from the command line", "ltcplay/users.py",
+  "                           source=str(x.get(\"source\") or LOCAL_COMMAND))",
+  '                           source="")'),
+
+ ("superuser: the engine never refuses an upload route", "ltcplay/remote.py",
+  '        if self.upload_refused(name, ctx, "POST"):\n            return 404, {"error": UPLOAD_REFUSED}, {}',
+  '        if False:\n            return 404, {"error": UPLOAD_REFUSED}, {}'),
+
+ ("superuser: everyone gets the upload's card", "ltcplay/remote.py",
+  "            su = self.superuser_here(ctx)\n",
+  "            su = True\n"),
+
+ ("superuser: everyone may change a SuperUser on the screen", "ltcplay/remote.py",
+  '            out["users"] = [dict(x, edit=su or x.get("role") !=',
+  '            out["users"] = [dict(x, edit=True or x.get("role") !='),
+
+ ("superuser: every change is made with a SuperUser's rank", "ltcplay/remote.py",
+  "        if self.superuser_here(ctx):\n            return users_mod.SUPERUSER",
+  "        if True:\n            return users_mod.SUPERUSER"),
+
+ ("superuser: a refused SuperUser change is not audited", "ltcplay/remote.py",
+  '            self._audit_rank("superuser-refused", ctx, e.what)\n',
+  ""),
+
+ ("superuser: a refused upload press is not audited", "ltcplay/remote.py",
+  '        self._audit_rank("upload-refused", ctx, f"{method} {name}")\n',
+  ""),
+
+ ("superuser: an upload change is not audited", "ltcplay/remote.py",
+  '                    "upload-settings", ctx, ", ".join(said) or "no change",',
+  '                    "settings", ctx, ", ".join(said) or "no change",'),
+
+ ("superuser: the role check names the upload to an admin", "ltcplay/web.py",
+  "            if perm == users_mod.UPLOAD:\n                # The nightly upload",
+  "            if False:\n                # The nightly upload"),
+
+ ("superuser: a SuperUser may not undo a refill", "ltcplay/fuel.py",
+  'UNDO_ROLES = ("admin", "superuser")',
+  'UNDO_ROLES = ("admin",)'),
+
+ ("superuser: a SuperUser may not log a refill", "ltcplay/fuel.py",
+  'REFILL_ROLES = ("operator", "admin", "superuser")',
+  'REFILL_ROLES = ("operator", "admin")'),
+
+ ("ui 2.0 Users: an admin gets the upload card", "ltcplay/web/remote2.html",
+  "  if(!(UV && UV.local && UV.upload)){ dropUpload(); return; }",
+  "  if(!UV){ dropUpload(); return; }"),
+
+ ("ui 2.0 Users: an admin may change a SuperUser's row", "ltcplay/web/remote2.html",
+  '    if(u.edit === false) return `<tr>',
+  '    if(false) return `<tr>'),
+
+ ("ui 2.0 Users: superuser stays offered to an admin", "ltcplay/web/remote2.html",
+  "  if(!UV.may_superuser && su) su.remove();\n",
+  ""),
+
+ # The cold review of #251 (M1 to M6) and Jeff's 2026-11-13 rule: no
+ # screen a non-SuperUser sees names the upload's settings file.
+ ("superuser: a hand-made SuperUser is trusted", "ltcplay/users.py",
+  '            u["role"] = "admin"\n            u["su_untrusted"] = True\n',
+  '            u["su_untrusted"] = True\n'),
+
+ ("superuser: any fingerprint is this engine's", "ltcplay/users.py",
+  "                  isinstance(fp, str) and\n                  hmac.compare_digest(fp, self._fp(key, n, u)) and\n",
+  "                  isinstance(fp, str) and\n"),
+
+ ("superuser: a SuperUser removed outside the engine is not said", "ltcplay/users.py",
+  "                if gone:\n",
+  "                if False:\n"),
+
+ ("superuser: a changed SuperUser record raises no alert", "ltcplay/users.py",
+  "            if alerts and self.on_alert is not None:",
+  "            if False:"),
+
+ ("superuser: a change found by another process is never audited", "ltcplay/users.py",
+  '            for t in self._tamper:\n                self._pend(doc, "superuser-set-changed", "unknown",',
+  '            for t in ():\n                self._pend(doc, "superuser-set-changed", "unknown",'),
+
+ ("superuser: a SuperUser's session never ends by itself", "ltcplay/users.py",
+  "                and now - s[\"seen\"] > SUPERUSER_IDLE_S]",
+  "                and False]"),
+
+ ("superuser: a SuperUser's session lasts an hour", "ltcplay/users.py",
+  "SUPERUSER_IDLE_S = 15 * 60",
+  "SUPERUSER_IDLE_S = 60 * 60"),
+
+ ("superuser: an upload change needs no password again", "ltcplay/remote.py",
+  '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")',
+  '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")'),
+
+ ("superuser: a reset leaves the SuperUser signed in", "ltcplay/users.py",
+  "        self._end_sessions(name)\n        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n            self._confirm_fails.pop(",
+  "        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n            self._confirm_fails.pop("),
+
+ ("superuser: a stale signal is taken", "ltcplay/users.py",
+  "            elif abs(self._wall() - at) > SIGNAL_MAX_AGE_S:",
+  "            elif False:"),
+
+ ("superuser: the running engine is never told of a reset", "ltcplay/users.py",
+  "        real = self._change(fn)\n        self._signal(real)\n",
+  "        real = self._change(fn)\n"),
+
+ ("superuser: any password makes a SuperUser", "ltcplay/users.py",
+  '        ok = check_password(str(by_password or ""), rec) if rec else False',
+  "        ok = True"),
+
+ ("superuser: anyone's password makes the first SuperUser", "ltcplay/users.py",
+  "            by = real if \" \".join(str(by_name or \"\").split()).lower() == \\\n                real.lower() else None",
+  "            by = {n.lower(): n for n in users}.get(\n                \" \".join(str(by_name or \"\").split()).lower())"),
+
+ ("superuser: no lock across processes", "ltcplay/users.py",
+  "            with _file_lock(self.lock_path):\n                return self._change_locked(fn)",
+  "            if True:\n                return self._change_locked(fn)"),
+
+ ("superuser: the users routes' own upload check is gone", "ltcplay/remote.py",
+  "        if users_mod.is_upload_route(name) and \\\n                not self.superuser_here(ctx):\n            return 404, {\"error\": UPLOAD_REFUSED}, {}\n        # Everything else",
+  "        if False:\n            return 404, {\"error\": UPLOAD_REFUSED}, {}\n        # Everything else"),
+
+ ("superuser: a GET of the card's script is anyone's", "ltcplay/remote.py",
+  '        if self.upload_refused(name, ctx, "GET"):\n            return 404, {"error": UPLOAD_REFUSED}\n',
+  '        if False:\n            return 404, {"error": UPLOAD_REFUSED}\n'),
+
+ ("superuser: an admin's upload row attempt is not audited", "ltcplay/remote.py",
+  '                    self._audit_rank("superuser-refused", ctx,\n                                     "role matrix: the upload row")',
+  "                    pass"),
+
+ ("superuser: the upload row has its own words", "ltcplay/users.py",
+  '                        raise ValueError(f"{p} is not a row of the matrix.")',
+  '                        raise ValueError(f"{p} is not a row of the matrix." + (" It is the SuperUser\'s." if p in SUPERUSER_PERMS else ""))'),
+
+ ("superuser: the audit card says where the settings are", "ltcplay/remote.py",
+  '                                 if k != "folder"}',
+  "                                 if True}"),
+
+ ("superuser: an admin is told the upload's settings file", "ltcplay/remote.py",
+  '        out = {"writer": None, "chain": None}\n',
+  '        out = {"writer": None, "chain": None, "settings": "ltcplay_audit.json"}\n'),
+
+ # The verification review of #251 (B1, M2, M3, M6).
+ ("superuser: the first SuperUser path opens again", "ltcplay/users.py",
+  "        if not supers and self.ever_superuser():",
+  "        if False:"),
+
+ ("superuser: the command asks before it refuses the first path again", "ltcplay/users.py",
+  "        elif us.ever_superuser(doc):",
+  "        elif False:"),
+
+ ("superuser: the audit log's history is not asked", "ltcplay/users.py",
+  '            if any(r.get("action") in ("superuser-set",',
+  '            if False and any(r.get("action") in ("superuser-set",'),
+
+ ("superuser: a missing key or set record trusts the SuperUsers", "ltcplay/users.py",
+  "        if missing and not self._lockdown:\n            self._lockdown = True",
+  "        if False:\n            self._lockdown = True"),
+
+ ("superuser: a missing fingerprint is not said", "ltcplay/users.py",
+  '            missing.append("a SuperUser\'s fingerprint")',
+  "            pass"),
+
+ ("superuser: a forged key and set are believed", "ltcplay/users.py",
+  "                  (known is None or n.lower() in known))",
+  "                  True)"),
+
+ ("superuser: the command's change is taken without its audit line", "ltcplay/users.py",
+  '            if any(x["id"] in ids for x in want):',
+  "            if want:"),
+
+ ("superuser: a password changed outside may confirm", "ltcplay/users.py",
+  "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER and \\\n                self._known_pw.get(str(name).lower()) == _pw_digest(u)",
+  "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER"),
+
+ # The last round of #251: no recovery code; Jeff's own way back is the
+ # emergency procedure in SUPERUSER.md (the SuperUser files removed by
+ # hand), and the password typed again has its own counter.
+ ("superuser: the SuperUser files removed by hand never reopen the first path", "ltcplay/users.py",
+  "                self._known is not None)",
+  "                self._known is not None or True)"),
+
+ ("superuser: a save with no SuperUser makes the SuperUser's files", "ltcplay/users.py",
+  '            doc.pop("su_set", None)\n            return\n',
+  '            doc.pop("su_set", None)\n'),
+
+ ("superuser: the first SuperUser made again by hand raises no alert", "ltcplay/users.py",
+  "                       alert=again)",
+  "                       alert=False)"),
+
+ ("superuser: a wrong password typed again locks the sign-in out", "ltcplay/users.py",
+  "                self._failed(keys, now, self._confirm_fails)",
+  "                self._failed(keys, now)"),
+
+ ("superuser: a SuperUser changed outside is said on every beat", "ltcplay/users.py",
+  "        new = [f for f in found if f not in self._said]",
+  "        new = list(found)"),
+
+ ("superuser: the engine's own save is said as a change outside", "ltcplay/users.py",
+  "                    if set(str(x) for x in names) - known:",
+  "                    if set(str(x) for x in names) != known:"),
+
+ ("superuser: the password typed again can be guessed forever", "ltcplay/users.py",
+  "            if self._locked(keys, now, self._confirm_fails):",
+  "            if False:"),
+
+ ("superuser: the command's audit line comes after its change, or never", "ltcplay/users.py",
+  "                hook(said)\n",
+  "                pass\n"),
+
+ ("superuser: a command's missing audit line is not said", "ltcplay/users.py",
+  '                    if x["id"] not in ids:',
+  "                    if False:"),
+
+ ("superuser: a replayed signal is taken", "ltcplay/users.py",
+  '            elif str(doc.get("nonce")) in self._seen_nonces():',
+  "            elif False:"),
+
+ ("superuser: a SuperUser change needs no password again", "ltcplay/remote.py",
+  "                if su_change and not u.confirm(",
+  "                if False and not u.confirm("),
+
+ ("superuser: Send now needs no password", "ltcplay/remote.py",
+  '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")',
+  '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")'),
 ]
 
 
@@ -23989,7 +25134,8 @@ def main():
 
 
 OPTS = {"changed": None, "files": None, "list": False, "catchers": None,
-        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1}
+        "failfast": True, "hints": None, "write_catchers": None, "jobs": 1,
+        "with_core": False, "trust": None, "targets": None}
 
 
 def _args(argv):
@@ -23997,7 +25143,8 @@ def _args(argv):
     always was."""
     wants, shard, expected = [], None, None
     OPTS.update(changed=None, files=None, list=False, catchers=None,
-                failfast=True, hints=None, write_catchers=None, jobs=1)
+                failfast=True, hints=None, write_catchers=None, jobs=1,
+                with_core=False, trust=None, targets=None)
     it = iter(argv)
     for a in it:
         if a == "--shard":
@@ -24021,6 +25168,15 @@ def _args(argv):
             OPTS["write_catchers"] = next(it)
         elif a == "--jobs":
             OPTS["jobs"] = max(1, int(next(it)))
+        elif a == "--with-core":
+            OPTS["with_core"] = True
+        elif a == "--targets":
+            OPTS["targets"] = [t.strip() for t in next(it).split(",")
+                               if t.strip()]
+        elif a == "--trust-baseline":
+            OPTS["trust"] = float(next(it))
+            if not OPTS["trust"] > 0:
+                raise ValueError("--trust-baseline needs the suite's seconds")
         else:
             wants.append(a.lower())
     return wants or None, shard, expected
@@ -24279,7 +25435,25 @@ def _run():
     if expected_file:
         expected, unknown = _load_expected(expected_file)
     only = None
-    if OPTS["changed"] or OPTS["files"] is not None:
+    if OPTS["targets"] is not None:
+        if OPTS["changed"] or OPTS["files"] is not None:
+            print("--targets names the files itself: not with --changed or "
+                  "--files")
+            fail("bad options", ["--targets with --changed or --files"])
+            return 2
+
+        def hit(rel):
+            return any(rel.startswith(t[:-1]) if t.endswith("*") else
+                       rel.startswith(t) if t.endswith("/") else rel == t
+                       for t in OPTS["targets"])
+        only = {n for n, rel, _o, _n in MUTATIONS if hit(rel)}
+        print(f"targets {', '.join(OPTS['targets']) or '(none)'}: "
+              f"{len(only)} of {len(MUTATIONS)} mutations")
+        if not only:
+            print("nothing this change can have broken is mutated "
+                  "here: nothing to run")
+            return 0
+    elif OPTS["changed"] or OPTS["files"] is not None:
         base = None
         if OPTS["changed"]:
             try:
@@ -24297,6 +25471,12 @@ def _run():
             print(f"  {p}")
         catchers = _load_catchers(OPTS["catchers"]) if OPTS["catchers"] else {}
         only, reasons = select_affected(changed, base, catchers)
+        if OPTS["with_core"] and only is not None:
+            core = {n for n, rel, _o, _n in MUTATIONS
+                    if rel.startswith(SAFETY_CORE)}
+            reasons.append(f"--with-core: every flamesafe, conductor and "
+                           f"flame link mutation ({len(core - only)} more)")
+            only = only | core
         for r in reasons:
             print(f"  -> {r}")
         if only is None:
@@ -24433,8 +25613,45 @@ def _each_worker(workers, fn):
     return out
 
 
+def _sanity(tests, root, env):
+    """--trust-baseline's stand-in for a copy's whole baseline: `tests` run
+    first, nothing mutated, in this copy, and the run stops once they have
+    passed (selftest.py's probe). True when they all passed."""
+    run_suite(None, True, ",".join(tests), True, root, env)
+    return bool(_LAST_STOP[1])
+
+
 def _sweep(todo, workers, expected, unknown, expected_file):
-    bases = _each_worker(workers, _baseline)
+    # --trust-baseline: the tests this shard's mutations are hinted to are
+    # the sanity run. Without any hint there is nothing to stand in for the
+    # baseline, so it runs as before.
+    trust = OPTS["trust"]
+    hinted = {}
+    if OPTS["failfast"] and OPTS["hints"]:
+        hinted = _load_catchers(OPTS["hints"])
+    sanity = sorted({t for item in todo
+                     for t in (hinted.get(item[0]) or "").split(",") if t})
+    if trust is not None and not sanity:
+        print("--trust-baseline: none of these mutations has a catcher hint, "
+              "so nothing can stand in for the baseline: running it")
+        trust = None
+    trusted = set()     # the copies whose sanity run stood in for a baseline
+    if trust is not None:
+        def copy_check(root, env):
+            if _sanity(sanity, root, env):
+                return (True, False, float(trust), [], None, True)
+            with_lines = list(_LAST_FAILS)
+            print(f"  a copy's sanity run ({len(sanity)} hinted tests run "
+                  f"first) was red; that copy runs its whole baseline:",
+                  flush=True)
+            for _l in with_lines:
+                print("    " + _l)
+            return _baseline(root, env) + (False,)
+        checked = _each_worker(workers, copy_check)
+        bases = [c[:5] for c in checked]
+        trusted = {w[0] for w, c in zip(workers, checked) if c[5]}
+    else:
+        bases = _each_worker(workers, _baseline)
     timed = [b for b in bases if b[1]]
     if timed:
         for _l in timed[0][3]:
@@ -24462,6 +25679,9 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     baseline_s = max(b[2] for b in bases)
     limit = mutant_timeout(baseline_s)
     REPORT.baseline = "green" if len(bases) == 1 else f"green x{len(bases)}"
+    if trusted:
+        REPORT.baseline = (f"trusted (selftest job), sanity green in "
+                           f"{len(trusted)} of {len(bases)}")
     # Red once and then green with nothing mutated is a flaky test, not a
     # green baseline: it is let through (the second run was whole and
     # green) but never silently. It is named here and in the summary.
@@ -24477,10 +25697,17 @@ def _sweep(todo, workers, expected, unknown, expected_file):
             for _l in lines:
                 print("    " + _l)
     REPORT.limits = f"{baseline_s:.0f} s / {limit} s"
-    print(f"baseline green in {baseline_s:.0f} s"
-          f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
-          f"; a mutant's suite is stopped (and counts as caught) after "
-          f"{limit} s")
+    if trusted:
+        print(f"baseline trusted: the whole suite passed this commit in the "
+              f"selftest job (about {baseline_s:.0f} s); the sanity run "
+              f"({len(sanity)} hinted tests run first, nothing mutated) was "
+              f"green in {len(trusted)} of {len(bases)} copies; a mutant's "
+              f"suite is stopped (and counts as caught) after {limit} s")
+    else:
+        print(f"baseline green in {baseline_s:.0f} s"
+              f"{f' (slowest of {len(bases)} copies)' if len(bases) > 1 else ''}"
+              f"; a mutant's suite is stopped (and counts as caught) after "
+              f"{limit} s")
     ff = OPTS["failfast"]
     hints = _load_catchers(OPTS["hints"]) if (ff and OPTS["hints"]) else {}
     if hints:
@@ -24488,6 +25715,7 @@ def _sweep(todo, workers, expected, unknown, expected_file):
               f"caught it last time first")
     caught = missed = 0
     missed_names, caught_names, setup_fails = [], [], []
+    copy_red = []
     learned = {}
     # The bytes of every file this run breaks, before it does: the restore
     # is proved against them at the end, byte for byte, in every copy.
@@ -24495,6 +25723,37 @@ def _sweep(todo, workers, expected, unknown, expected_file):
                  for rel in sorted({m[1] for m in todo})}
     out_lock = threading.Lock()
     probes, probe_locks = {}, {}
+    if trusted and len(trusted) == len(workers):
+        # Every copy has just run each of these first and seen it pass.
+        probes.update({t: True for t in sanity})
+    proved, proved_locks, whole = {}, {}, {}
+
+    def prove(stops, root, env):
+        """In a copy that skipped its whole baseline, after the mutation is
+        put back: each test a caught mutant stopped in passes, run first,
+        with nothing mutated, in this copy. A test that does not (or a run
+        that never said where it stopped) costs this copy its whole
+        baseline, once; only a green one lets the verdict stand."""
+        if root not in trusted:
+            return True
+        for test in stops:
+            with out_lock:
+                lk = proved_locks.setdefault((root, test), threading.Lock())
+            with lk:
+                if (root, test) not in proved:
+                    ok = bool(test) and test in sanity
+                    if test and not ok:
+                        run_suite(limit, True, test, True, root, env)
+                        ok = bool(_LAST_STOP[1])
+                    proved[(root, test)] = ok
+            if not proved[(root, test)]:
+                if root not in whole:
+                    print(f"  {test or 'a run that stopped without saying where'}"
+                          f" is not proved green alone in this copy: running "
+                          f"its whole baseline", flush=True)
+                    whole[root] = _baseline(root, env)
+                return whole[root][0]
+        return True
 
     def probe(test, root, env):
         """Does `test` pass when it runs first, with nothing mutated? Asked
@@ -24560,6 +25819,7 @@ def _sweep(todo, workers, expected, unknown, expected_file):
             # file-order run that fails confirms it, so no such catch counts
             # or is written to --write-catchers. A hinted red is confirmed
             # this way even outside CI.
+            stops = [stop]
             if not green and (expected_file or hinted):
                 green2, stop2, fails2, _h = attempt(None, root, env)
                 if green2:
@@ -24568,17 +25828,24 @@ def _sweep(todo, workers, expected, unknown, expected_file):
                                   f"suite in file order was green"] + fails)
                     green, flaky = True, fails
                 else:
+                    stops.append(stop2)
                     stop = stop or stop2
         finally:
             _write(path, src)
         if green:
             return ("missed", None, flaky, None)
+        if not prove(sorted(set(stops)), root, env):
+            return ("baseline", whole[root][3], None, None)
         return ("caught", fails, None, stop if ff else None)
 
     def tally(item, res):
         nonlocal caught, missed
         name, rel = item[0], item[1]
         kind, info, flaky, catcher = res
+        if kind == "baseline":
+            print(f"  NO VERDICT  {name} (its copy's baseline is red)")
+            copy_red.append((name, info))
+            return
         if kind == "setup":
             print(f"  SETUP FAIL  {name} ({info})")
             missed += 1
@@ -24660,6 +25927,18 @@ def _sweep(todo, workers, expected, unknown, expected_file):
     print(f"tree restored byte for byte ({len(originals)} files"
           f"{f', in each of {len(workers)} copies' if len(workers) > 1 else ''})")
     REPORT.restored = "yes"
+    if copy_red:
+        lines = copy_red[0][1] or ["(no FAIL line)"]
+        REPORT.baseline = "FAILED in a copy that trusted the selftest job"
+        fail("the suite FAILS with nothing mutated, so the shard measured "
+             "nothing", lines)
+        print("The suite FAILS with nothing mutated in a copy that had "
+              "trusted the selftest job, so no caught mutation of that copy "
+              f"counts ({len(copy_red)} have no verdict). Fix that first: "
+              "nothing measured from here would mean anything.")
+        for _l in lines:
+            print("  " + _l)
+        return 2
     return _verdict(expected if expected_file else None, unknown,
                     missed_names, caught_names, setup_fails)
 

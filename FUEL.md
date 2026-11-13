@@ -140,3 +140,43 @@ refill and undo, at least every 30 seconds while flames burn, and when LTC
 Player stops (it never holds up the flames or the shutdown to do so). A show running when LTC Player restarts is still counted. If
 the file can ever not be read, it is kept aside under another name, never
 written over, and the page says so.
+
+## Haze fluid (the hazers)
+
+The Fuel page also shows each hazer (Hazer 1 to 4, flamesafe's hazer
+entries) under **Haze fluid**, with the same tiles.
+
+- **What counts.** The seconds a hazer's **haze** channel was above 0 in a
+  frame LTC Player actually sent to flamesafe. The **fan** alone never
+  counts: it uses no fluid. LTC Player only watches the frames; it never
+  changes, slows or holds back what goes to a hazer.
+- **How much.** Each second is weighed by the haze level sent: 255 is full
+  output, so a second at 140 counts as 140/255 of a full second. The record
+  keeps both: haze seconds and full output seconds.
+- **Three piles.** Show (an armed hazer during a show, per show as for the
+  flames), manual (the hazer test) and other.
+- **Not sure.** A restart without closing, a stale or lost link to
+  flamesafe, or frames that could not be counted while a hazer was on put
+  that time under "not sure" for that hazer. It is never dropped and never
+  made up. After the last frame flamesafe keeps a hazer going for its
+  `frame_stale_ms` (read from flamesafe.json), so that long, plus a
+  little, is not sure. A hazer that starts hazing is saved at once, so a
+  crash right after still names it. While flamesafe's status is stale the
+  haze is counted AND counted as not sure, so in litres it counts twice:
+  emptier, never fuller.
+- **Refilled.** Tap a hazer when its fluid tank is full and say yes. It
+  needs the same sign-in as a fuel refill, and is logged the same way.
+  A wrong one: an **admin** opens **Refills and notes** and presses
+  **Undo** on it, as for fuel. It stays in the record, marked undone.
+- **Litres.** Only if you set them, in `ltcplay_hazers.json` (beside the
+  levels): `"fluid": {"Hazer 1": {"litres_per_hour": 0.6, "tank_litres":
+  2.5}}`, the litres an hour at full output and the tank size. With both,
+  the tile shows the percent left from the last refill; with only the
+  first, litres used. Without them it shows haze time only. "Not sure"
+  time is counted as full output, so it reads emptier, never fuller.
+  An older LTC Player that sets a hazer level rewrites
+  `ltcplay_hazers.json` without the `fluid` block: set it again after
+  going back to an older build.
+- **Where it is kept.** `haze.json` in the settings folder, beside
+  `fuel.json`, written the same safe way with its own format number.
+  `fuel.json` is not changed.

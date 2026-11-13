@@ -1,0 +1,204 @@
+name: weekly mutate
+
+# The whole mutation list, once a week, on bench-build (where every change
+# lands first), ubuntu only. The release PR into main runs only what its
+# diff can have changed plus the safety core, and the nightly sweep runs
+# only what changed in a day; this is the sweep that proves the rest is
+# still caught, so a test weakened without being renamed, or a change in one
+# file that silenced a test of another, shows here within the week.
+#
+# One selftest on ubuntu first; the shards then trust it instead of each
+# running the whole suite again (mutate.py --trust-baseline). How many
+# shards and how many at once is .github/scripts/mutate_plan.py: about 100
+# shards of at most 45 mutations, at most CI_JOB_SLOTS minus
+# CI_SLOT_RESERVE at once (16 on the free plan, so 7 waves of about two
+# hours; more slots, fewer waves).
+#
+# Run it by hand from the Actions tab (Run workflow) on any branch, and
+# choose windows or both before a tech build: that is the only place the
+# whole list runs on windows (release tags run no sweep since 2026-11-13).
+# A red sweep is never silent: the report job always runs (a failed plan
+# is red too) and, for the record sweep (scheduled, or by hand on
+# bench-build), opens an issue labelled `mutate-sweep` (or adds to the open
+# one) naming the red jobs; a later green record sweep closes it. A sweep of
+# another branch reports in its own summary only. Every PR into main warns
+# while the issue is open. TESTING.md says what each kind of failure means.
+on:
+  schedule:
+    # 02:12 UTC Sunday: 19:12 Mountain Standard Time on Saturday evening
+    # (20:12 in summer), after the week's merges; about 12 to 16 hours on
+    # 16 slots, so it ends on Sunday, before the week's work.
+    - cron: "12 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or commit to sweep"
+        type: string
+        default: bench-build
+      os:
+        description: "Where to run the whole list"
+        type: choice
+        default: ubuntu-latest
+        options: [ubuntu-latest, windows-latest, both]
+
+permissions:
+  contents: read
+
+# One sweep at a time, nightly and weekly together (nightly-mutate.yml says
+# why).
+concurrency:
+  group: mutate-sweeps
+  cancel-in-progress: false
+
+env:
+  # The record sweep: scheduled, or by hand on bench-build.
+  OFFICIAL: ${{ github.event_name == 'schedule' || inputs.ref == 'bench-build' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      oses: ${{ steps.pick.outputs.oses }}
+      noses: ${{ steps.pick.outputs.noses }}
+      sha: ${{ steps.pick.outputs.sha }}
+      shards: ${{ steps.pick.outputs.shards }}
+      nshards: ${{ steps.pick.outputs.nshards }}
+      parallel: ${{ steps.pick.outputs.parallel }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || 'bench-build' }}
+      - id: pick
+        shell: bash
+        env:
+          CHOICE: ${{ inputs.os || 'ubuntu-latest' }}
+          CI_JOB_SLOTS: ${{ vars.CI_JOB_SLOTS }}
+          CI_SLOT_RESERVE: ${{ vars.CI_SLOT_RESERVE }}
+          MUTATE_SHARDS: ${{ vars.MUTATE_SHARDS }}
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          n=$(python3 mutate.py --list | grep -c '^  would run' || true)
+          echo "every mutation: $n"
+          case "$CHOICE" in
+            both) oses='["ubuntu-latest","windows-latest"]'; noses=2 ;;
+            *)    oses="[\"$CHOICE\"]"; noses=1 ;;
+          esac
+          # A list too big for one matrix (more than 256 jobs) stops here,
+          # with the reason, before any shard starts.
+          python3 .github/scripts/mutate_plan.py size "$n" "$noses" | tee -a "$GITHUB_OUTPUT"
+          { echo "oses=$oses"; echo "noses=$noses"; } >> "$GITHUB_OUTPUT"
+
+  # The whole suite once per OS, on the commit the shards sweep.
+  selftest:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.oses) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 45 }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/weekly-mutate.yml
+      - run: python -m pip install numpy zstandard tzdata pillow
+      - shell: bash
+        run: python -u selftest.py 2>&1 | tee "$RUNNER_TEMP/selftest.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: selftest-log-${{ matrix.os }}
+          path: ${{ runner.temp }}/selftest.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  sweep:
+    needs: [plan, selftest]
+    strategy:
+      fail-fast: false
+      # max-parallel counts every combination of the matrix, both OSes too.
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
+      matrix:
+        os: ${{ fromJSON(needs.plan.outputs.oses) }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    runs-on: ${{ matrix.os }}
+    # The same limits as selftest.yml's mutate job (the reason is there).
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/workflows/weekly-mutate.yml
+      - run: python -m pip install numpy zstandard tzdata pillow
+      - id: sweep
+        shell: bash
+        timeout-minutes: 340
+        env:
+          N: ${{ needs.plan.outputs.nshards }}
+          # The selftest job's limit on this OS, a little over its time with
+          # three copies at once on ubuntu, one at a time on windows.
+          TRUST_S: ${{ matrix.os == 'windows-latest' && 2400 || 1200 }}
+        run: |
+          trust=()
+          if grep -q -- '"--trust-baseline"' mutate.py; then trust=(--trust-baseline "$TRUST_S"); fi
+          python -u mutate.py --shard "${{ matrix.shard }}/$N" --expected mutate_expected_misses.txt --hints mutate_catchers.json --jobs ${{ matrix.os == 'ubuntu-latest' && 3 || 1 }} "${trust[@]}" 2>&1 | tee "$RUNNER_TEMP/mutate.log"
+      - name: Report a shard that ran out of time
+        if: always() && steps.sweep.outcome != 'success' && steps.sweep.outcome != 'skipped'
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          N: ${{ needs.plan.outputs.nshards }}
+          LOG: ${{ runner.temp }}/mutate.log
+        run: python3 .github/scripts/shard_timeout.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: mutate-log-${{ matrix.os }}-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutate.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Which jobs are red, in the run's summary and in the mutate-sweep issue;
+  # a green sweep closes it.
+  report:
+    needs: [plan, selftest, sweep]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha || github.sha }}
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WHAT: weekly mutation sweep
+          LABEL: mutate-sweep
+          SWEPT: ${{ inputs.ref || 'bench-build' }} at ${{ needs.plan.outputs.sha || 'an unknown commit' }}
+          PLAN: ${{ needs.plan.result }}
+          MODE: full
+          SELFTEST: ${{ needs.selftest.result }}
+          NSHARDS: ${{ needs.plan.outputs.nshards }}
+          NOSES: ${{ needs.plan.outputs.noses }}
+          JOB_PREFIX: "sweep ("
+        run: bash .github/scripts/sweep_report.sh

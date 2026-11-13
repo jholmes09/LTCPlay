@@ -135,6 +135,12 @@ CONTROL_ROUTES = ("start-now", "hold", "resume",
 # stopped, Run off (the Programming Run card). A live show's fade is let
 # run this long at most first (web.HALT_FADE_WAIT_S).
 STOP_FADE_WAIT_S = 3.0
+# Play from with the box left empty (Windows stress round 3, 2026-11-10:
+# the box's grey example was taken for a typed time). Still refused: an
+# empty box never means "from the top".
+PLAY_FROM_EMPTY = ("Nothing to play from: the box is empty. Type a "
+                   "timecode (example: 00:01:30:00) or a cue name; the grey "
+                   "example in the box is not a value.")
 # Programming-session transport (Jeff, 2026-10-03): play from a timecode,
 # jump, pause and continue, an A/B loop, back to following timecode. Only
 # in a programming session (a show started from the page as Rehearse, or in
@@ -207,6 +213,9 @@ MORNING_POST_ROUTES = ("morning-open", "purge-select", "purge-fire",
 # refill needs a signed-in operator or admin, an undo an admin (fuel.py).
 FUEL_GET_ROUTES = ("fuel",)
 FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
+# Haze fluid (fuelhaze.py, 2026-11-12): the Fuel page's Hazers section, in
+# the fuel GET; a refill needs what a fuel refill needs, an undo an admin.
+HAZE_POST_ROUTES = ("haze-refill", "haze-undo")
 # The Fireball page (fireball.py): read by anyone; a channel ON needs the
 # arm row (users.classify), everything off never.
 FIREBALL_GET_ROUTES = ("fireball",)
@@ -219,7 +228,12 @@ CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 # arming a hazer and setting its levels are arm presses (users.classify)
 # and from the show network need screen_arming; a disarm and Hazers off
 # never.
-HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
+HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level", "hazers-arm-all")
+# The hazer test (hazertest.py, Jeff 2026-11-11): read by anyone in the
+# status; {"on": true} and its page's {"beat": run} are arm presses
+# (users.classify) and from the show network need screen_arming; anything
+# else turns it off, never refused.
+HAZER_TEST_POST_ROUTES = ("hazer-test",)
 # Play-from cues (play_from.py, the cue list per show file): read by anyone
 # signed in; a save is the role matrix's Settings row (admin by default,
 # users.py), a signed-in person, from the show network with screen_arming
@@ -272,7 +286,7 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
     CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES + \
     PUMP_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES + \
-    FIREBALL_CHARGE_POST_ROUTES
+    FIREBALL_CHARGE_POST_ROUTES + HAZER_TEST_POST_ROUTES + HAZE_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -358,18 +372,28 @@ TAKEN_WAIT_S = 0.5
 # Everything the screen_arming switch lets screens do (review of PR #90,
 # P2-1). The page's card and confirm box say the same words (selftest).
 SCREEN_ARMING_ENABLES = (
-    "On, this rack screen and every device on the show network can hold "
-    "to arm a flame group (through the Stream Deck, with all of its rules "
-    "and flamesafe's) and disarm one flame group. Devices on the show "
-    "network can also select and fire a purge, unlock a machine, turn a "
-    "laser test on and arm a laser (this rack screen does those without this switch).")
+    "On: this screen and every show network device can hold to arm a "
+    "flame group and disarm one flame group, under the Stream Deck's and "
+    "flamesafe's rules. Show network devices can also select and fire a "
+    "purge, unlock a machine, turn a laser test on and arm a laser; this "
+    "screen can without the switch.")
 # What the page says when screen arming is switched off (the default).
-ARMING_OFF = ("Arming from a screen is switched off on this show PC. To turn "
-              "it on: on the show machine itself, Programming, Arming from "
-              "a screen, Turn on. Until then arm from the Stream Deck.")
+ARMING_OFF = ("Arming from a screen is switched off. Arm from the Stream "
+              "Deck, or turn it on at the show machine itself: Programming, "
+              "Arming from a screen, Turn on.")
 # Users and the audit log (users.py, Jeff, 2026-10-20). Sign in and out
 # from any page; the Users screen's changes from the show machine only.
 USER_GET_ROUTES = ("users",)
+# What a refused upload route answers (users.UPLOAD_REFUSED): the words of
+# a route that is not there.
+UPLOAD_REFUSED = "no such thing here"
+# The nightly upload card's script (web/upload_card.js): served only to a
+# SuperUser signed in on this show PC's rack screen, never part of the page.
+UPLOAD_CARD_ROUTE = "upload-card.js"
+UPLOAD_CARD_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "web", "upload_card.js")
+# An upload change without the SuperUser's own password typed again.
+UPLOAD_PASSWORD = "Type your password to save. Nothing was changed."
 USER_POST_ROUTES = ("signin", "signout", "my-password", "users",
                     "role-matrix", "clear-lockouts", "idle-signout",
                     "last-show-signout",
@@ -491,7 +515,12 @@ def show_folder_mismatch(served, wanted):
     wanted = wanted.strip()
     if served and _norm_folder(served) == _norm_folder(wanted):
         return ""
-    return (f"showpc.json names the show folder {wanted}, but this engine "
+    # A headline, bullets, the paths behind More (Jeff, 2026-11-11).
+    return (f"Wrong show folder in use.\n"
+            f"- It switches by itself once no show runs.\n"
+            f"- If it stays: stop and start LTC Player.\n"
+            f"\n"
+            f"More: showpc.json names the show folder {wanted}, but this engine "
             f"is serving {served or 'no folder'}: the show files listed "
             f"here, and the show that runs, come from "
             f"{served or 'nowhere'}. LTC Player restarts the engine with "
@@ -1674,6 +1703,7 @@ class Remote:
         self._follow_alert_id = None
         self.morning = None          # morning.Morning, set by web.serve
         self.fuel = None             # fuel.FuelTracker, set by web.serve
+        self.haze = None             # fuelhaze.HazeTracker, set by web.serve
         self.fireball = None         # fireball.FireballPanel, web.serve
         # fireball_charge.ChargeTracker, web.serve (display only here)
         self.fireball_charge = None
@@ -1692,6 +1722,9 @@ class Remote:
         # fuel pump (2026-10-30).
         self.pump = None
         self._pump_users_busy = {}
+        # hazertest.HazerTest, set by web.serve with the hazers
+        # (2026-11-11).
+        self.hazer_test = None
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -1977,6 +2010,16 @@ class Remote:
     # -- the routes --------------------------------------------------------
     def get(self, route, ctx, query=""):
         name = route[len("/api/remote/"):]
+        if self.upload_refused(name, ctx, "GET"):
+            return 404, {"error": UPLOAD_REFUSED}
+        if name == UPLOAD_CARD_ROUTE:
+            # The upload card's script: a SuperUser here only (above).
+            try:
+                with open(UPLOAD_CARD_JS, encoding="utf-8") as fh:
+                    return 200, fh.read(), \
+                        "application/javascript; charset=utf-8"
+            except OSError:
+                return 404, {"error": UPLOAD_REFUSED}
         if name in SETUP_GET_ROUTES:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
@@ -2022,7 +2065,18 @@ class Remote:
             return self.morning_get(name, query, ctx)
         if name in FUEL_GET_ROUTES:
             from . import fuel as fuel_mod
-            return fuel_mod.route_get(self.fuel, ctx, self.users, self.wall)
+            code, out = fuel_mod.route_get(self.fuel, ctx, self.users,
+                                           self.wall)
+            if code == 200:
+                # The hazers' section (fuelhaze.py): display only.
+                from . import fuelhaze
+                try:
+                    out["haze"] = fuelhaze.route_view(self.haze, ctx,
+                                                     self.users)
+                except Exception as e:           # noqa: BLE001
+                    out["haze"] = {"available": False,
+                                   "fault": f"{type(e).__name__}: {e}"}
+            return code, out
         if name in FIREBALL_GET_ROUTES:
             from . import fireball as fireball_mod
             return fireball_mod.route_get(self.fireball, ctx, self.wall)
@@ -2041,6 +2095,11 @@ class Remote:
         """(code, body, extra headers)."""
         name = route[len("/api/remote/"):]
         body = body if isinstance(body, dict) else {}
+        # The nightly upload (users.UPLOAD): a SuperUser here, or the same
+        # answer as a route that is not there. Before everything else, so
+        # no other route's check can say more.
+        if self.upload_refused(name, ctx, "POST"):
+            return 404, {"error": UPLOAD_REFUSED}, {}
         if name in REMOVED_ROUTES:
             # A page from before the change: told plainly, nothing done.
             return 410, {"error": REMOVED_ROUTES[name], "removed": True}, {}
@@ -2095,6 +2154,10 @@ class Remote:
             from . import fuel as fuel_mod
             return (*fuel_mod.route_post(self.fuel, name, body, ctx,
                                          self.users),) + ({},)
+        if name in HAZE_POST_ROUTES:
+            from . import fuelhaze
+            return (*fuelhaze.route_post(self.haze, name, body, ctx,
+                                         self.users),) + ({},)
         if name in FIREBALL_POST_ROUTES:
             from . import fireball as fireball_mod
             return (*fireball_mod.route_post(self.fireball, self, name, body,
@@ -2111,6 +2174,8 @@ class Remote:
             return (*self.play_from_save(body, ctx),) + ({},)
         if name in PUMP_POST_ROUTES:
             return (*self.pump_post(body, ctx),) + ({},)
+        if name in HAZER_TEST_POST_ROUTES:
+            return (*self.hazer_test_post(body, ctx),) + ({},)
         if name in FIREBALL_TIMELINE_POST_ROUTES:
             return (*self.fireball_timeline_save(body, ctx),) + ({},)
         if name in FIREBALL_CHARGE_POST_ROUTES:
@@ -2198,8 +2263,7 @@ class Remote:
         if m is not None and m.state in self.LIVE_STATES:
             why = "a show is live"
         elif getattr(self.control, "session", None) is None:
-            why = ("Run has not been pressed; press Run on the Programming "
-                   "screen first")
+            why = ("show control is off; turn show control on first")
         elif self.programming_playback_refusal():
             why = "Programming is playing"
         elif pr.checking():
@@ -2397,29 +2461,156 @@ class Remote:
                "me": {"name": me.get("name"), "role": me.get("role")},
                "local": ctx.local}
         if ctx.local:
+            from . import users as users_mod
             out.update(u.view())
             out["may_admin"] = u.may(me.get("role"), "users")
+            # A SuperUser this program wrote, reading as an admin now: the
+            # screen offers them Confirm (users op confirm-superuser).
+            try:
+                out["may_confirm"] = bool(me.get("name")) and \
+                    me.get("local") is True and u.may_confirm(me["name"])
+            except Exception:                    # noqa: BLE001
+                out["may_confirm"] = False
             out["may_settings"] = u.may(me.get("role"), "settings")
             out["audit"] = self.audit_view()
+            su = self.superuser_here(ctx)
+            # Who this screen may change: a SuperUser only by a SuperUser
+            # here; the superuser role offered only to one.
+            out["users"] = [dict(x, edit=su or x.get("role") !=
+                                 users_mod.SUPERUSER)
+                            for x in out.get("users") or []]
+            if not su:
+                out["roles"] = [r for r in out.get("roles") or []
+                                if r != users_mod.SUPERUSER]
+            else:
+                # Only a SuperUser here gets the upload's card, its state
+                # and its fixed row in who may do what. Nobody else gets
+                # a word of it (selftest walks the answer).
+                out["may_superuser"] = True
+                out["upload"] = self.upload_view()
+                out["perms"] = list(out.get("perms") or []) + [
+                    {"key": k, "label": l}
+                    for k, l in users_mod.SUPERUSER_ROWS]
+                m = out.get("matrix") or {}
+                for c in m:
+                    for k in users_mod.SUPERUSER_PERMS:
+                        m[c][k] = users_mod.allowed(None, c, k)
+                out["fixed"] = list(out.get("fixed") or []) + [
+                    [c, k] for c in m for k in users_mod.SUPERUSER_PERMS]
         return 200, out
 
     def audit_view(self):
-        """The Users screen's audit card: the writer, the chain, the upload."""
-        out = {"writer": None, "chain": None, "upload": None}
+        """The Users screen's audit card: the writer and the chain. Never
+        the upload (upload_view, a SuperUser's alone)."""
+        out = {"writer": None, "chain": None}
         a = self.audit
         if a is not None:
             try:
-                out["writer"] = a.status()
+                # Never a folder: where the settings live is not said on
+                # this card (Jeff, 2026-11-13: nothing a non-SuperUser sees
+                # says where the upload's settings are).
+                out["writer"] = {k: v for k, v in a.status().items()
+                                 if k != "folder"}
             except Exception as e:               # noqa: BLE001
                 out["writer"] = {"fault": f"{type(e).__name__}: {e}"}
+        out["chain"] = getattr(self, "_chain_said", None)
+        return out
+
+    def upload_view(self):
+        """The nightly upload's card: its settings (never the token) and
+        state. Only users_get for superuser_here() calls this; a later
+        upload (the night journal's, PR #246) puts its state here too."""
+        out = {"upload": None}
         up = self.uploader
         if up is not None:
             try:
                 out["upload"] = up.status()
             except Exception as e:               # noqa: BLE001
                 out["upload"] = {"last_error": f"{type(e).__name__}: {e}"}
-        out["chain"] = getattr(self, "_chain_said", None)
         return out
+
+    def superuser_here(self, ctx):
+        """users.superuser_here for this request: a SuperUser signed in on
+        this show PC's rack screen, never Tailscale, never a users file
+        that cannot be used. False on any fault (fail closed)."""
+        u = self.users
+        if u is None:
+            return False
+        try:
+            from . import users as users_mod
+            if not u.active() or u.broken():
+                return False
+            return users_mod.superuser_here(
+                getattr(ctx, "session", None), getattr(ctx, "local", False),
+                bool(getattr(ctx, "tailscale", False)))
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def rank(self, ctx):
+        """The rank a Users screen change is made with: SUPERUSER only for
+        superuser_here(); a SuperUser anywhere else acts as an admin."""
+        from . import users as users_mod
+        if self.superuser_here(ctx):
+            return users_mod.SUPERUSER
+        role = ((getattr(ctx, "session", None) or {}).get("role"))
+        return "admin" if role == users_mod.SUPERUSER else role
+
+    def upload_refused(self, name, ctx, method):
+        """True (and an audit line: who, what) when `name` is a route of
+        the nightly upload and this request is not superuser_here(). Fails
+        closed: a fault refuses."""
+        try:
+            from . import users as users_mod
+            if not users_mod.is_upload_route(name):
+                return False
+            if self.superuser_here(ctx):
+                return False
+        except Exception:                        # noqa: BLE001
+            pass
+        self._audit_rank("upload-refused", ctx, f"{method} {name}")
+        return True
+
+    def superuser_alert(self, found):
+        """users.Users.on_alert: the SuperUsers in the users file changed
+        outside this program (users.Users._trust). A display only alert on
+        every screen; it never holds a show. Never raises."""
+        more = " ".join(str(x) for x in (found or []))[:900]
+        text = ("SuperUser record changed outside LTC Player.\n"
+                "- Unconfirmed SuperUsers act as admins.\n"
+                "- Do: A SuperUser checks the Users screen.\n"
+                "\n"
+                f"More: {more} The audit log says the same (superuser-set-"
+                f"changed). A SuperUser confirms someone by making them "
+                f"superuser again on the Users screen of the show PC.")
+        try:
+            self.alerts.raise_("superuser", text)
+        except Exception:                        # noqa: BLE001
+            try:
+                self._journal("system", "engine", "users", "fault", text,
+                              fault=True)
+            except Exception:                    # noqa: BLE001
+                pass
+
+    def _audit_rank(self, action, ctx, target, reason=""):
+        """One audit line for a SuperUser's power asked or used: who (the
+        signed-in name, or unsigned) and from where. Never a body, a token
+        or a password. Never raises."""
+        a = self.audit
+        if a is None:
+            return
+        try:
+            s = getattr(ctx, "session", None) or {}
+            refused = action.endswith("-refused")
+            a.event(user=s.get("name") or "unsigned", surface="web",
+                    action=action, target=str(target)[:120],
+                    result="refused" if refused else "accepted",
+                    reason=reason or (
+                        f"role {s.get('role') or 'none'}"
+                        f"{', tailscale' if getattr(ctx, 'tailscale', False) else ''}"
+                        f"{'' if getattr(ctx, 'local', False) else ', not the show PC'}"),
+                    source=getattr(ctx, "source", ""))
+        except Exception:                        # noqa: BLE001
+            pass
 
     def audit_verify(self):
         """Every day file here, verified now (audit.verify_folder)."""
@@ -2476,6 +2667,12 @@ class Remote:
                 self.pump_after_signout(
                     f"{_who} signed out on the {ctx.device}", ctx.user,
                     ctx.device, getattr(ctx, "token", "") or "")
+                # The hazer test too; its timer's own check is the belt.
+                ht = self.hazer_test
+                if ht is not None:
+                    ht.end_for_token(getattr(ctx, "token", "") or "",
+                                     f"{_who} signed out on the "
+                                     f"{ctx.device}", ctx.user, ctx.device)
                 # The Fireball page's channels end here too, at once, not on
                 # the page's next beat or the 0.25 s backstop (round-4
                 # review, s28/s48): this screen's run, and on the show
@@ -2509,6 +2706,13 @@ class Remote:
             return 200, {"ok": True, "text": text}, {}
         if name == "audit-verify":
             return (*self.audit_verify(),) + ({},)
+        # The nightly upload's own check, before anything else can answer
+        # (post() already refused it): only a SuperUser on this rack
+        # screen, everyone else the words of a route that is not there,
+        # never the role check's, which would name the setting.
+        if users_mod.is_upload_route(name) and \
+                not self.superuser_here(ctx):
+            return 404, {"error": UPLOAD_REFUSED}, {}
         # Everything else changes users or settings: the show machine only.
         if not ctx.local:
             return 403, {"error": "Users and settings are changed on the "
@@ -2518,29 +2722,69 @@ class Remote:
             return 403, {"error": f"Sign in as someone who may: "
                                   f"{users_mod.perm_label(perm)}. Nothing "
                                   f"was changed.", "role_refused": True}, {}
+        by = self.rank(ctx)
         try:
             if name == "users":
                 op = str(body.get("op") or "")
                 who = body.get("name")
-                if op == "add":
-                    text = u.add(who, body.get("role"), body.get("password"))
+                # Every SuperUser change asks for the SuperUser's own
+                # password again (verification review of #251, M3): a
+                # SuperUser's screen left signed in is not enough.
+                su_change = by == users_mod.SUPERUSER and (
+                    (op in ("add", "role") and
+                     body.get("role") == users_mod.SUPERUSER) or
+                    (op in ("role", "password", "clear-password", "remove")
+                     and u.role_of(who) == users_mod.SUPERUSER))
+                if su_change and not u.confirm(
+                        me.get("name"), body.get("my_password"), ctx.source):
+                    self._audit_rank("superuser-password-refused", ctx,
+                                     f"users {op} {who}")
+                    return 403, {"error": UPLOAD_PASSWORD,
+                                 "password_again": True}, {}
+                if op == "confirm-superuser":
+                    # A SuperUser this program wrote, reading as an admin
+                    # (lockdown, or a record changed outside it), confirms
+                    # themselves with their password, signed in on this
+                    # rack screen (B1b).
+                    if not (ctx.local and me.get("local") is True and
+                            not getattr(ctx, "tailscale", False)):
+                        raise ValueError("Confirm on the show PC's rack "
+                                         "screen. Nothing was changed.")
+                    text = u.confirm_superuser(me.get("name"),
+                                               body.get("my_password"),
+                                               ctx.source)
+                elif op == "add":
+                    text = u.add(who, body.get("role"), body.get("password"),
+                                 by=by)
                 elif op == "remove":
                     if str(who or "").lower() == str(me.get("name") or
                                                      "").lower():
                         raise ValueError("You cannot remove yourself while "
                                          "signed in.")
-                    text = u.remove(who)
+                    text = u.remove(who, by=by)
                 elif op == "role":
-                    text = u.set_role(who, body.get("role"))
+                    text = u.set_role(who, body.get("role"), by=by)
+                    if body.get("role") == users_mod.SUPERUSER:
+                        self._audit_rank("superuser-set", ctx, str(who),
+                                         "made a SuperUser by a SuperUser")
                 elif op == "password":
-                    text = u.set_password(who, body.get("password"))
+                    text = u.set_password(who, body.get("password"), by=by)
                 elif op == "clear-password":
-                    text = u.clear_password(who)
+                    text = u.clear_password(who, by=by)
                 else:
                     raise ValueError("op has to be add, remove, role, "
-                                     "password or clear-password.")
+                                     "password, clear-password or "
+                                     "confirm-superuser.")
             elif name == "role-matrix":
-                text = u.set_matrix(body.get("matrix"))
+                mx = body.get("matrix")
+                if isinstance(mx, dict) and any(
+                        isinstance(r, dict) and set(r) & set(
+                            users_mod.SUPERUSER_PERMS) for r in mx.values()):
+                    # Refused below with the words of any unknown row;
+                    # written down here with who asked.
+                    self._audit_rank("superuser-refused", ctx,
+                                     "role matrix: the upload row")
+                text = u.set_matrix(mx)
             elif name == "clear-lockouts":
                 text = u.clear_lockouts()
             elif name == "idle-signout":
@@ -2549,11 +2793,34 @@ class Remote:
                 text = u.set_last_show(body.get("minutes"))
             elif name == "audit-settings":
                 from . import auditsend
+                # Every upload change asks for the SuperUser's password
+                # again (review of #251, M3).
+                if not u.confirm(me.get("name"), body.get("password"),
+                                 ctx.source):
+                    self._audit_rank("upload-password-refused", ctx,
+                                     "audit-settings")
+                    return 403, {"error": UPLOAD_PASSWORD}, {}
                 ch = {k: body[k] for k in ("enabled", "url", "token", "time",
                                            "keep_days") if k in body}
+                before, _e = auditsend.load_config(self.folder)
                 auditsend.save_config(self.folder, ch)
+                after, _e = auditsend.load_config(self.folder)
+                said = [k for k in ("enabled", "url", "time", "keep_days")
+                        if before.get(k) != after.get(k)]
+                if ch.get("token"):
+                    said.append("token")
+                self._audit_rank(
+                    "upload-settings", ctx, ", ".join(said) or "no change",
+                    f"on {after.get('enabled')}, at {after.get('time')}, "
+                    f"keep {after.get('keep_days')} days")
                 text = "The audit upload settings were saved."
             elif name == "audit-upload-now":
+                if not u.confirm(me.get("name"), body.get("password"),
+                                 ctx.source):
+                    self._audit_rank("upload-password-refused", ctx,
+                                     "audit-upload-now")
+                    return 403, {"error": UPLOAD_PASSWORD}, {}
+                self._audit_rank("upload-now", ctx, "audit-upload-now")
                 up = self.uploader
                 if up is None:
                     raise ValueError("The audit upload is not running in "
@@ -2565,6 +2832,11 @@ class Remote:
                         "says how it went.")
             else:
                 return 404, {"error": "no such thing here"}, {}
+        except users_mod.RankRefused as e:
+            # An admin asking for a SuperUser's change: refused, and the
+            # audit log says who asked for what (never a password).
+            self._audit_rank("superuser-refused", ctx, e.what)
+            return 403, {"error": str(e), "role_refused": True}, {}
         except (ValueError, OSError) as e:
             return 400, {"error": str(e)}, {}
         return 200, {"ok": True, "text": text}, {}
@@ -2891,11 +3163,15 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
-    TIMING_TEXT = ("Flame frames late: {n} in the last hour, worst {w} ms "
-                   "between two frames to flamesafe. flamesafe holds a fire "
-                   "value for {lim} ms after the last frame (its "
-                   "fire_hold_ms), so a flame pulse may have been cut "
-                   "short. The show carries on; nothing was changed.")
+    # A headline, bullets and the numbers behind More (Jeff, 2026-11-11:
+    # less prose); the rack screen's Details shows the lines (opText).
+    TIMING_TEXT = ("Flame frames late, last hour: {n}.\n"
+                   "- Why: A flame pulse may be cut short.\n"
+                   "- The show carries on. Nothing was changed.\n"
+                   "\n"
+                   "More: worst {w} ms between two frames to flamesafe. "
+                   "flamesafe holds a fire value for {lim} ms after the "
+                   "last frame (its fire_hold_ms).")
 
     def _frame_timing_work(self):
         """Flame frames late (flamelink.FrameTiming, 2026-10-29): on the
@@ -3518,8 +3794,8 @@ class Remote:
         from . import play_from as pf_mod
         s = getattr(self.control, "session", None)
         if s is None or not getattr(s, "running", False):
-            return None, ("no show file is running. Press Run on the "
-                          "Programming screen first (Show mode).")
+            return None, ("no show file is running. Turn show control on "
+                          "first (Show mode).")
         if self._rehearsal_run(s):
             # Asked of the run itself, live show or not: the runner asks
             # this again at the start (start_at_check).
@@ -3665,11 +3941,12 @@ class Remote:
         if s is None or not s.running or p is None:
             return False, ("Nothing is playing. To scrub, on the show "
                            "machine choose Programming on the Show file "
-                           "card and press Run.")
+                           "card and press Start rehearsal.")
         if not self._rehearsal_run(s):
             return False, ("This show was started in Show mode. Scrubbing "
-                           "only works in Programming: press Stop, choose "
-                           "Programming on the Show file card, then Run.")
+                           "only works in Programming: turn show control "
+                           "off, choose Programming on the Show file card, "
+                           "then Start rehearsal.")
         return True, ""
 
     def _rehearsal_run(self, s):
@@ -3738,8 +4015,7 @@ class Remote:
             if name == "play-from":
                 at = str(body.get("at") or "").strip()
                 if not at:
-                    raise ValueError("Type a timecode to play from, like "
-                                     "00:01:30:00, or a cue name.")
+                    raise ValueError(PLAY_FROM_EMPTY)
                 if ph is not None:
                     pos = ph.resolve(at)
                     said = (f"played from "
@@ -4273,8 +4549,15 @@ class Remote:
         label = who or "An unnamed operator"
         lead, why = cause
         ok, said = sent
+        # A headline, bullets, the rest behind More (Jeff, 2026-11-11).
+        # The first line is the footer's short line.
         if ok:
-            alert = (f"{lead}: ALL groups disarm sent. Disarm {gname} "
+            alert = (f"{lead}: ALL groups disarm sent.\n"
+                     f"- Disarm sent to every group. Hazers off.\n"
+                     f"- Flames stay zero until Hold then Resume.\n"
+                     f"- Do: Arm each group again to fire.\n"
+                     f"\n"
+                     f"More: Disarm {gname} "
                      f"forced ({why}): the flame link has no one-group "
                      f"disarm, so the Stop's disarm was sent to every "
                      f"flame group, every hazer is off, and the show's "
@@ -4282,11 +4565,14 @@ class Remote:
                      f"run. Each group needs Arm again (let go, then hold) "
                      f"before it can fire. {said}").strip()
         else:
-            alert = (f"Disarm {gname} COULD NOT be confirmed: {why}, and "
-                     f"the forced disarm did not go out either "
+            alert = (f"Disarm {gname} COULD NOT be confirmed.\n"
+                     f"- {gname} may still be armed.\n"
+                     f"- Do: Press Stop, or use the Stream Deck.\n"
+                     f"\n"
+                     f"More: Disarm {gname} COULD NOT be confirmed: {why}, "
+                     f"and the forced disarm did not go out either "
                      f"({said or 'no answer'}). {gname} may still be "
-                     f"armed: press "
-                     f"Stop, or disarm at the Stream Deck.")
+                     f"armed: press Stop, or disarm at the Stream Deck.")
         self._journal(who, device, "disarm", "forced" if ok else "fault",
                       f"{label} pressed Disarm {gname} on the {device}. "
                       f"{alert}", fault=True)
@@ -4375,6 +4661,9 @@ class Remote:
                 if names:
                     out["hazers"] = {"names": names,
                                      "on": sorted(hz.on()),
+                                     # The hazer test running: the deck's
+                                     # keys say HAZE TEST, never DISARMED.
+                                     "test": self._ht_names(),
                                      "down": hz.down(),
                                      "paused": hz.show() == "held"}
             except Exception:                    # noqa: BLE001
@@ -4481,14 +4770,16 @@ class Remote:
             return "a Hold is standing; Resume first"
         s = getattr(self.control, "session", None)
         if s is not None and getattr(s, "running", False):
-            return ("Run is pressed (a show file is running), so the show "
-                    "may send flame cues; press Stop first")
+            return ("show control is on (a show file is running), so the "
+                    "show may send flame cues; turn show control off first "
+                    "(End rehearsal in a rehearsal)")
         try:
             cs = self.control.state() or {}
         except Exception:                        # noqa: BLE001
             cs = {}
         if cs.get("running") or cs.get("starting"):
-            return "Run is pressed (a show file is running); press Stop first"
+            return ("show control is on (a show file is running); turn "
+                    "show control off first (End rehearsal in a rehearsal)")
         fs = self.flame_status
         fl = fs.view() if fs is not None else None
         if not fl or fl.get("stale"):
@@ -4761,9 +5052,38 @@ class Remote:
             return 404, {"error": "There are no hazers in this engine."}
         who, device, _surface = self._actor(ctx, body)
         if name == "hazers-off":
+            ht = self.hazer_test
+            testing = self._ht_running()
             hz.all_off(f"{who or 'someone'} pressed Hazers off on the "
                        f"{device}", who=who, screen=device, system=False)
-            return 200, {"ok": True, "text": "Every hazer is DISARMED."}
+            if ht is not None:
+                # all_off ended it; once more here, the belt.
+                ht.stop(f"{who or 'someone'} pressed Hazers off on the "
+                        f"{device}", who=who, screen=device, system=False)
+            text = "Every hazer is DISARMED."
+            if testing:
+                text += " Hazer test OFF."
+            return 200, {"ok": True, "text": text}
+        if name == "hazers-arm-all":
+            # Arm all hazers (2026-11-11): the same screen_arming rule as
+            # arming one; each hazer then through Hazers.set, every refusal
+            # of arming one applying to each.
+            if not self.may_act_from(ctx.local):
+                why = ("Arming hazers from a device on the show network "
+                       "needs screen_arming (on the show machine itself: "
+                       "Programming, Arming from a screen, Turn on). "
+                       "Nothing was changed.")
+                self._journal(who, device, name, "refused",
+                              f"{who or 'Someone'}'s Arm all hazers from "
+                              f"the {device} was refused. {why}")
+                return 403, {"error": why}
+            ok, text, armed, missed = hz.arm_all(who=who, screen=device)
+            out = {"ok": ok, "text": text, "armed": armed,
+                   "not_armed": [{"name": n, "why": w} for n, w in missed]}
+            if not armed:
+                out["error"] = text
+                return 409, out
+            return 200, out
         hname = body.get("hazer")
         names = hz.names()
         if isinstance(hname, int) and not isinstance(hname, bool) and \
@@ -4796,6 +5116,191 @@ class Remote:
         if not ok:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
+
+    # -- the hazer test (hazertest.py) ----------------------------------------
+    def hazer_test_cut(self, reason, who="", screen=""):
+        """Stop or Abort: the hazer test OFF at the flame link now, the
+        journal and audit lines on a thread of their own. Never raises,
+        never waits."""
+        ht = self.hazer_test
+        if ht is None:
+            return False
+        try:
+            was = ht.cut()
+            threading.Thread(target=ht.off, args=(reason,),
+                             kwargs={"who": who, "screen": screen,
+                                     "system": not who, "was": was},
+                             daemon=True, name="ltcplay-hazer-test-off").start()
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def hazer_test_show_busy(self):
+        """Why a show owns the hazers now (the hazer test is refused, and
+        one running ends), or "": the scheduled show playing or held, or
+        show control on or starting (the timed purge's own test). Fails
+        closed."""
+        try:
+            # Read here, not through hazer_show_state (which reads an error
+            # as idle): an error is busy (fail closed).
+            st = self._ht_state()
+            if st == "playing":
+                return "a show is playing, and the show drives the hazers"
+            if st == "held":
+                return "a show is on Hold; the show drives the hazers"
+            if getattr(getattr(self.control, "session", None), "running",
+                       False):
+                return "show control is on; press Stop first"
+            try:
+                cs = self.control.state() or {}
+            except Exception:                    # noqa: BLE001
+                # Fail closed: not known is busy, never off.
+                return "show control's state could not be read"
+            # Starting or running is on here, stricter than the status's
+            # show_control_on (which reads a starting file under a Run gate
+            # as off): the test never runs while show control may be on.
+            if cs.get("starting") or cs.get("running") or \
+                    self.show_control_on(cs):
+                return "show control is on; press Stop first"
+        except Exception as e:                   # noqa: BLE001
+            return f"the engine's state could not be read ({type(e).__name__})"
+        return ""
+
+    def _ht_state(self):
+        """The scheduled show for the hazer test: "playing", "held" or
+        "idle"; raises when it cannot be read."""
+        m = getattr(self.schedule, "machine", None)
+        state = m.state
+        if state == "SHOW":
+            return "playing"
+        if state in ("HOLD", "PAUSED"):
+            return "held"
+        return "idle"
+
+    def hazer_test_gate(self):
+        """The flame link's per-frame gate for the hazer test: True only
+        with no show playing or held and show control's session not
+        running (plain reads, no locks). False on any error."""
+        try:
+            if self._ht_state() != "idle":
+                return False
+            if getattr(getattr(self.control, "session", None), "running",
+                       False):
+                return False
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def hazer_test_signed_out(self, token, who):
+        """As pump_signed_out, for the hazer test. Never raises."""
+        try:
+            why = self.pump_signed_out(token, who)
+        except Exception:                        # noqa: BLE001
+            return "the sign-in could not be checked"
+        return why.replace("turn the fuel pump on", "run the hazer test") \
+            .replace("pump turned off", "hazer test turned off")
+
+    def hazer_test_post(self, body, ctx):
+        """POST hazer-test {"on": true, "hazers": [names] or "all", "run":
+        "<press id>", "seen": ms} (the Purge page's On and All on),
+        {"beat": "<press id>"} from the page that started it, or anything
+        else: OFF (for "hazers" when it names some, else every hazer;
+        All off), never refused. ON and the beat are arm presses
+        (users.classify, checked by web.py first). (code, body)."""
+        ht = self.hazer_test
+        if ht is None:
+            who, device, _surface = self._actor(ctx, body)
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device}: there are no hazers in this engine.")
+            return 404, {"error": "There are no hazers in this engine."}
+        who, device, _surface = self._actor(ctx, body)
+        on = body.get("on") is True
+        beat = body.get("beat")
+        if not on and not isinstance(beat, str):
+            why = (f"{who or 'someone'} pressed Off on the {device}")
+            sel = body.get("hazers")
+            if isinstance(sel, list) and sel:
+                ok, text = ht.stop_names(sel, why, who=who, screen=device)
+                return 200, {"ok": True, "text": text}
+            ht.stop(why, who=who, screen=device, system=False)
+            return 200, {"ok": True, "text": "Every hazer OFF."}
+        if not self.may_act_from(ctx.local):
+            why = ("Hazers not turned on: this device may not turn hazers "
+                   "on. Turn them on at the show PC. Nothing was changed.")
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        if not on:
+            ok, text = ht.beat(beat, body.get("page"))
+            return (200 if ok else 409), ({"ok": True, "text": text} if ok
+                                          else {"error": text})
+        if self.users_active() and not (getattr(ctx, "token", None) or ""):
+            why = ("The hazer test needs a sign-in on this screen. Sign in, "
+                   "then press again.")
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        try:
+            seen = float(body.get("seen"))
+        except (TypeError, ValueError):
+            seen = None
+        if seen is None or seen != seen or \
+                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
+            why = ("Hazer test not started: this screen's status was old. "
+                   "Wait for it to be live, then press again.")
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device} was refused. {why}")
+            return 409, {"error": why}
+        sel = body.get("hazers")
+        if sel == "all":
+            sel = ht.names()
+        ok, text = ht.start(sel, who=who, screen=device,
+                            run=body.get("run"),
+                            token=getattr(ctx, "token", "") or "",
+                            page=body.get("page"))
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
+
+    def _ht_names(self):
+        """The hazers the hazer test runs now, for the deck's keys; every
+        hazer when that cannot be read (never a plain DISARMED by
+        mistake)."""
+        ht = self.hazer_test
+        try:
+            return sorted(ht.running()) if ht is not None else []
+        except Exception:                        # noqa: BLE001
+            try:
+                return sorted(self.hazers.names())
+            except Exception:                    # noqa: BLE001
+                return []
+
+    def _ht_running(self):
+        ht = self.hazer_test
+        try:
+            return ht is not None and (ht.run is not None or ht.on())
+        except Exception:                        # noqa: BLE001
+            return True
+
+    def hazer_test_view(self):
+        """The status's "hazer_test", or None with no hazers. Fails
+        closed: an error is OFF."""
+        ht = self.hazer_test
+        if ht is None:
+            return None
+        try:
+            return ht.view()
+        except Exception as e:                   # noqa: BLE001
+            try:
+                ht.stop(f"its state could not be read ({type(e).__name__})")
+            except Exception:                    # noqa: BLE001
+                pass
+            return {"available": True, "on": False, "state": "unknown",
+                    "error": type(e).__name__}
 
     # -- play-from cues (play_from.py): the cue list per show file ----------
     def play_from_store(self):
@@ -5141,11 +5646,12 @@ class Remote:
             seen = None
         if seen is None or seen != seen or \
                 abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
-            why = ("The fuel pump was not turned on: the press came from a "
-                   "screen whose status was more than 1 s old (or said "
-                   "nothing of its age), so it may be from before a Pump "
-                   "off or a Stop. Wait for the screen to be live, then "
-                   "press again.")
+            why = ("Fuel pump NOT turned on.\n"
+                   "Wait for the screen to be live, then press again.\n"
+                   "\n"
+                   "More: the press came from a screen whose status was "
+                   "more than 1 s old (or said nothing of its age), so it "
+                   "may be from before a Pump off or a Stop.")
             self._journal(who, device, "fuel-pump", "refused",
                           f"{who or 'Someone'}'s fuel pump ON from the "
                           f"{device} was refused. {why}")
@@ -5912,15 +6418,17 @@ class Remote:
                 return "Stop is under way."
             if getattr(getattr(self.control, "session", None), "running",
                        False):
-                return ("Run is pressed (a show file is running), so the "
-                        "show file owns the flame channels; press Stop first.")
+                return ("Show control is on (a show file is running), so "
+                        "the show file owns the flame channels; turn show "
+                        "control off first (End rehearsal in a rehearsal).")
             try:
                 cs = self.control.state() or {}
             except Exception:                    # noqa: BLE001
                 cs = {}
             if cs.get("starting") or cs.get("running"):
-                return ("Run is pressed (a show file is running), so the "
-                        "show file owns the flame channels; press Stop first.")
+                return ("Show control is on (a show file is running), so "
+                        "the show file owns the flame channels; turn show "
+                        "control off first (End rehearsal in a rehearsal).")
             m = self.morning
             link = m._link_get() if m is not None else None
             if link is not None:
@@ -6430,6 +6938,9 @@ class Remote:
             # affected by the stop button"); step 1's disarm_all did it at
             # the link already.
             self.pump_cut(why, who, screen)
+            # The hazer test OFF too (2026-11-11); step 1's disarm_all did
+            # it at the link already.
+            self.hazer_test_cut(why, who, screen)
             # 3. Every laser: disarmed on the arm, and blanked at once.
             fn = getattr(m, "lasers_disarm_now", None)
             if fn is not None:
@@ -6578,7 +7089,7 @@ class Remote:
         except Exception as e:                   # noqa: BLE001
             ok, said = False, (f"Programming playback did NOT stop "
                                f"({type(e).__name__}: {e}). Press Stop "
-                               f"the show audio, or Run off.")
+                               f"the show audio, or turn show control off.")
         out["programming"] = {"ok": ok, "text": str(said or "")}
         if not ok:
             out["failed"].append("programming playback")
@@ -6917,14 +7428,22 @@ class Remote:
         file this engine read, and what to do."""
         def words(v):
             return ", ".join(str(x) for x in v) if v else "none"
-        return (f"Aim slots do not match: flamesafe has {words(theirs)} and "
-                f"LTC Player has {words(mine)} (LTC Player read "
-                f"{path or 'flamesafe config'} when it started). Until they "
-                f"match a wave flamer's angle can stay at 0, its end stop. "
-                f"Put the aim list in the flamesafe.json flamesafe uses, "
-                f"check that LTC Player reads that same file, then quit LTC "
-                f"Player and start it again so both read it afresh. Stop, "
-                f"Hold and Disarm all work as usual meanwhile.")
+        # A headline, bullets and the lists behind More (Jeff,
+        # 2026-11-11: less prose); the rack screen's Details shows the
+        # lines (opText), every other reader one line.
+        return (f"Wave flamer aim lists differ.\n"
+                f"- Do: Tell Jeff.\n"
+                f"- Why: A wave flamer may stay at 0.\n"
+                f"- Stop, Hold and Disarm all still work.\n"
+                f"\n"
+                f"More: Aim slots do not match: flamesafe has "
+                f"{words(theirs)} and LTC Player has {words(mine)} (LTC "
+                f"Player read {path or 'flamesafe config'} when it "
+                f"started). Until they match a wave flamer's angle can stay "
+                f"at 0, its end stop. Put the aim list in the flamesafe.json "
+                f"flamesafe uses, check that LTC Player reads that same "
+                f"file, then quit LTC Player and start it again so both "
+                f"read it afresh.")
 
     def _aim_alert(self, agree, mine, theirs, path):
         """Raise once per new mismatch sentence; clear the one raised here
@@ -7017,7 +7536,9 @@ class Remote:
                           f"{type(e).__name__}: {e}"]
             out.append({"id": "renders", "title": "Flame cue renders",
                         "level": "bad" if faults else "ok",
-                        "text": " ".join(faults) if faults else
+                        # One block per show file, each with its own
+                        # headline (Jeff, 2026-11-11: less prose).
+                        "text": "\n\n".join(faults) if faults else
                         "Every show file's renders are newer than its "
                         "xlights_networks.xml, so their flame cues can "
                         "play."})
@@ -7216,10 +7737,10 @@ class Remote:
         return {"id": "artnet", "title": "Art-Net timecode receivers",
                 "level": level, "text": text}
 
-    AMBIGUOUS = ("No show is loaded, Run or picked yet, so no show file "
-                 "is judged as a fault: what the check found in them is a "
-                 "note. Pick the show on the Programming screen (or Run "
-                 "it) and that one is checked. ")
+    AMBIGUOUS = ("No show is loaded, turned on or picked yet, so no show "
+                 "file is judged as a fault: what the check found in them is "
+                 "a note. Pick the show on the Show file card (or turn show "
+                 "control on with it) and that one is checked. ")
 
     def _artnet_unchosen(self, seen):
         """True when the last check judged no show file in use (none
@@ -7486,6 +8007,29 @@ class Remote:
             return str(getattr(b, "fault", "") or "")
         except Exception:
             return ""
+
+    def show_control_on(self, cs):
+        """True only while Run is in force. With a scheduler's Run gate
+        (fire_ice wires one: show._session() is not None, the same gate
+        that holds the scheduler back, Service._run_pressed), it is True
+        only while a show file is running AND the gate says pressed; a
+        show file that is only starting reads False, because the gate
+        reads not pressed until the session runs. Only with no gate (no
+        scheduler, or run_gate None) does a show file that is starting
+        count as on, as one running does. The rack screen reads this one
+        boolean to know whether Run is on, never the engine's sentences.
+        Anything not known (no answer, a gate that raises or answers
+        anything but True) is False: off, never on. Never raises."""
+        try:
+            if not (cs.get("running") or cs.get("starting")):
+                return False
+            gate = getattr(self.schedule, "run_gate", None) \
+                if self.schedule is not None else None
+            if gate is None:
+                return True
+            return gate() is True
+        except Exception:                        # noqa: BLE001
+            return False
 
     def disk_view(self):
         """{"state": "low" | "critical", "text"} while the supervisor says
@@ -7788,10 +8332,16 @@ class Remote:
         warns = list(sch.rule_warnings(rule))
         warned = (" Warnings, saved anyway: " + " ".join(warns)) \
             if warns else ""
+        # The answer as a headline, what tonight holds, each warning a
+        # bullet, the path behind More (Jeff, 2026-11-11: less prose).
+        answer = ("Schedule saved.\n" + loaded.strip() + "\n" +
+                  ("Warnings, saved anyway:\n" +
+                   "".join(f"- {w}\n" for w in warns) if warns else "") +
+                  f"\nMore: saved to {path}.")
         self._journal("", "Rack screen", "schedule file", "saved",
                       f"The schedule file {path} was saved from the "
                       f"Programming screen.{loaded}{warned}")
-        return 200, {"ok": True, "text": f"Saved to {path}.{loaded}{warned}",
+        return 200, {"ok": True, "text": answer,
                      "doc": doc, "path": path, "warnings": warns}
 
     def open_folder(self, body):
@@ -7870,8 +8420,9 @@ class Remote:
         sess = getattr(c, "session", None)
         if getattr(c, "_starting", False) or \
                 (sess is not None and getattr(sess, "running", False)):
-            return 409, ("A show file is running. Press Stop first, then "
-                         "make the new show file. Nothing was written.")
+            return 409, ("A show file is running. Turn show control off "
+                         "first (End rehearsal in a rehearsal), then make "
+                         "the new show file. Nothing was written.")
         return None
 
     def new_show_file(self, body):
@@ -7943,8 +8494,8 @@ class Remote:
                f"each cue's \"tc\" to the timecode that render starts at "
                f"in your show (the order is alphabetical until you change "
                f"it), and \"fps\" to the timecode's rate. Then press "
-               f"Check the show file, then Run in Programming mode to "
-               f"rehearse it. Nothing reaches the rig until Run.")
+               f"Check the show file, then Start rehearsal in Programming "
+               f"mode. Nothing reaches the rig until show control is on.")
         late = self._new_show_refusal()
         if late:
             # Something started while the file was written: it is kept,
@@ -8446,15 +8997,27 @@ class Remote:
         if getattr(u, "error_kind", "") == "open":
             # There, but held by something: nothing to delete. It is tried
             # again on every read (third review of PR #143, 4).
-            text = (f"The users file cannot be opened just now: {why}. "
-                    f"{locked} It is tried again all the time and used the "
-                    f"moment it opens, with no restart. Another program may "
-                    f"be holding it, such as an antivirus scan: if this "
-                    f"lasts, check that program, and that {u.folder} can be "
-                    f"read.")
+            # A headline, bullets and the rest behind More (Jeff,
+            # 2026-11-11: less prose).
+            text = (f"Users file cannot be opened.\n"
+                    f"- Only Stop, Hold, Acknowledge, Disarm work.\n"
+                    f"- Then: It is used once it opens.\n"
+                    f"- Do: If this lasts, check antivirus.\n"
+                    f"\n"
+                    f"More: The users file cannot be opened just now: "
+                    f"{why}. {locked} It is tried again all the time and "
+                    f"used the moment it opens, with no restart. Another "
+                    f"program may be holding it, such as an antivirus scan: "
+                    f"if this lasts, check that program, and that "
+                    f"{u.folder} can be read.")
         else:
-            text = (f"The users file cannot be used: {why}. {locked} If a "
-                    f"good {users_mod.USERS_FILE} is put back in "
+            text = (f"Users file cannot be used.\n"
+                    f"- Only Stop, Hold, Acknowledge, Disarm work.\n"
+                    f"- Do: Put a good users file back.\n"
+                    f"- Then: It is used at once.\n"
+                    f"\n"
+                    f"More: The users file cannot be used: {why}. "
+                    f"{locked} If a good {users_mod.USERS_FILE} is put back in "
                     f"{u.folder}, it is used at once, with no restart. To "
                     f"start over with no users instead: close LTC Player, "
                     f"remove {users_mod.USERS_FILE} and "
@@ -8504,6 +9067,9 @@ class Remote:
                            # Run on its way in (web.py _build_state): the
                            # page shows Stop then too (review of #144, F4).
                            "starting": bool(cs.get("starting")),
+                           # Is Run in force: the page reads this, never
+                           # the engine's sentences (show_control_on).
+                           "show_control_on": self.show_control_on(cs),
                            "show": cs.get("show"),
                            "timeline": cs.get("timeline"),
                            "timecode": cs.get("playing") or cs.get("ltc_in"),
@@ -8512,7 +9078,7 @@ class Remote:
             cue_now = cs.get("now")
             out["subsystems"] = self.subsystems(cs)
         except Exception as e:
-            out["show"] = {"running": False,
+            out["show"] = {"running": False, "show_control_on": False,
                            "error": f"{type(e).__name__}: {e}"}
             cue_now = None
             out["subsystems"] = self.subsystems({})
@@ -8553,6 +9119,9 @@ class Remote:
         pmv = self.pump_view(out["flames"])
         if pmv is not None:
             out["pump"] = pmv
+        htv = self.hazer_test_view()
+        if htv is not None:
+            out["hazer_test"] = htv
         fbc = self.fireball_charge
         if fbc is not None:
             # The fuel and air tanks (fireball_charge.py): display only.

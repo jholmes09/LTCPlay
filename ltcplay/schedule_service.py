@@ -77,7 +77,7 @@ DRY_RUN_NOTE = ("This build decides but does not act. No show is started, "
 # "scheduler_performs": true. Every other Service, and the GPL path, which
 # never builds one, keeps DRY_RUN.
 PERFORMING_NOTE = ("The scheduler performs: it starts the show cue on "
-                   "schedule (only once Run has been pressed), and the "
+                   "schedule (only once show control is on), and the "
                    "show ends when its audio does.")
 
 
@@ -1157,11 +1157,10 @@ class Service:
     # show is skipped; only shows added tonight are dropped. Each change is
     # a sentence of its own.
     REBUILT_WHAT = (
-        "Shows that already happened keep their status and their numbers, "
-        "and a show taken off tonight's list or skipped stays skipped. A "
-        "Delay or move of a show still to come is kept, and a time from the "
-        "file too close to a delayed show is skipped. Shows added tonight "
-        "are dropped. Each change is said below.")
+        "Past shows keep their status and numbers. A show taken off or "
+        "skipped stays skipped. A Delay or move still to come is kept; a "
+        "file time too close to a delayed show is skipped. Shows added "
+        "tonight are dropped. Each change is said below.")
     REBUILT_RESTART = (
         "The schedule file changed after tonight's list was saved, so "
         "tonight is rebuilt from the new schedule. " + REBUILT_WHAT)
@@ -1384,17 +1383,17 @@ class Service:
             why = self._programming_run()
             if not why:
                 return None
-            return (f"A Programming Run is in force: the {m.hm(nxt.start)} "
-                    f"show (show {nxt.n}) will NOT start. Press Stop, "
-                    f"choose Show, then Run.")
+            return (f"A rehearsal is on: the {m.hm(nxt.start)} "
+                    f"show (show {nxt.n}) will NOT start. End rehearsal, "
+                    f"choose Show, then turn show control on.")
         # Everything that has to be pressed before it starts, from what
         # stands now, in the order to press it (review of PR #180: on Hold,
         # Run alone is not enough).
-        need = ["Run"]
+        need = ["Turn show control on"]
         if m.state == sch.HOLD:
             need.append("Resume")
-        return (f"Run is off: the {m.hm(nxt.start)} show (show {nxt.n}) will "
-                f"NOT start. Press {', then '.join(need)}.")
+        return (f"Show control is off: the {m.hm(nxt.start)} show (show "
+                f"{nxt.n}) will NOT start. {', then '.join(need)}.")
 
     # The Run warning turns red (a fault) this long before the next show
     # (review of PR #180, round 3: the pre-roll window, 10 s, was too late
@@ -1613,7 +1612,7 @@ class Service:
                          frozenset((sch.START_SHOW,)), shows[0]))
         return plan
 
-    RUN_NOT_PRESSED = ("Run has not been pressed, so the scheduler sends "
+    RUN_NOT_PRESSED = ("Show control is off, so the scheduler sends "
                        "nothing to the rig: no fade, no blank, no MadMapper "
                        "or BEYOND command and no flame cue.")
 
@@ -1698,7 +1697,7 @@ class Service:
                 "system", f"Not sent to the show conductor, {entry[0]}: "
                           f"{self.RUN_NOT_PRESSED}",
                 action="conductor", outcome="held back",
-                reason=f"{entry[1]} held back, Run not pressed")
+                reason=f"{entry[1]} held back, show control off")
         claimed = set()
         for entry in plan:
             label, method, kinds = entry[:3]
@@ -1848,7 +1847,7 @@ class Service:
                     "system", f"Not sent to the show conductor, "
                               f"{call.label}: {self.RUN_NOT_PRESSED}",
                     action="conductor", outcome="held back",
-                    reason=f"{call.method} held back, Run not pressed")
+                    reason=f"{call.method} held back, show control off")
             return
         try:
             if call.method == "start_show":
@@ -2068,7 +2067,13 @@ class Service:
             rows.append({"show": s.n, "planned": planned,
                          "status": s.status, "reason": s.reason,
                          "started": hms(s.fired_at),
-                         "ended": hms(s.ended_at)})
+                         "ended": hms(s.ended_at),
+                         # For the summary's check of the files: when the
+                         # show ran, so a gap while it ran is found.
+                         "started_at": (s.fired_at.isoformat()
+                                        if s.fired_at else None),
+                         "ended_at": (s.ended_at.isoformat()
+                                      if s.ended_at else None)})
         return rows
 
     def _write_summary(self, how="", m=None):
@@ -3325,9 +3330,9 @@ class Service:
                 if key not in self._preroll_late:
                     self._preroll_late[key] = 0
                     self._journal_line(
-                        "system", f"Show {n} is not started: a Programming "
-                                  f"Run is in force. Press Stop, choose Show, "
-                                  f"then Run, and Start now.",
+                        "system", f"Show {n} is not started: a rehearsal "
+                                  f"is on. End rehearsal, choose Show, turn "
+                                  f"show control on, then Start now.",
                         action="pre-roll", outcome="programming", show=n)
                 return True
             v = pr.verdict(key)
@@ -3524,7 +3529,7 @@ class Service:
         elif self.halting():
             why = self.HALTING
         elif not self._run_pressed():
-            why = "Run has not been pressed"
+            why = "show control is off"
         if why:
             return {"ok": False, "text": f"Continue anyway was refused: "
                                          f"{why}. Nothing was changed."}
@@ -3976,7 +3981,9 @@ class Service:
         small: it is taken 5 times a second and never written to disk."""
         m, now = self.machine, self.clock()
         snap = {"state": self._state_name(),
-                "logging_ok": not self.logbook.stopped_why}
+                "logging_ok": not (self.logbook.stopped_why
+                                   or self.logbook.stalled_why
+                                   or self.logbook.disk_why)}
         if m is not None:
             nxt = m.next_slot()
             snap.update(

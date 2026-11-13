@@ -28,6 +28,8 @@ password yet:
 | Dave   | operator |
 | Jared  | operator |
 
+Nobody is made a SuperUser at first run ("The SuperUser", below).
+
 No password is shipped with the program. The first time each person signs
 in they pick their own (6 characters or more), at the rack screen on the
 show PC: a name with no password yet cannot be claimed from an iPad. Until
@@ -95,6 +97,31 @@ screen itself has no sign-in form on it.
   show machine it signs the whole machine out (the rack screen and the
   Stream Deck together) and lets go of any hold to arm under way.
 
+## The SuperUser
+
+One level above admin, for Jeff. A SuperUser can do everything an admin
+can, and is the only one who adds, changes the role of, resets the
+password of, or removes a SuperUser, and the only one who sees a few
+things that are Jeff's alone. Nobody else is shown those at all.
+
+An admin (Andy) keeps everything else: users, roles, who may do what,
+idle sign out, sign out after the last show, the audit log's state and
+"Check the chain now". An admin can never make anyone a SuperUser
+(themselves included), never change, reset or remove a SuperUser, and no
+tick in "Who may do what" can change that. The last SuperUser can never
+be removed or made something else.
+
+A SuperUser that LTC Player did not make itself (the users file edited by
+hand, or changed by an older version) acts as an admin until a SuperUser
+confirms them, and every screen shows an alert saying so.
+
+This protects against someone using the screens and the double-click
+tools. A person who can write the settings folder and knows the file
+formats can still change the users file and the SuperUser's files. That
+is by design: it is Jeff's own way in, in an emergency. The only way to
+prevent it is a separate Windows account for LTC Player, and that is not
+built.
+
 ## Adding people (admins)
 
 Jeff and Andy (any admin) can, on the Users screen of the show PC:
@@ -106,7 +133,8 @@ Jeff and Andy (any admin) can, on the Users screen of the show PC:
 - change a role, or remove a person (their audit lines stay).
 
 The last admin can never be removed or made something else, so nobody
-can lock every admin out. Every one of these changes is in the audit log,
+can lock every admin out (a SuperUser counts as an admin here). Only a
+SuperUser can change a SuperUser. Every one of these changes is in the audit log,
 including the ones that were refused.
 
 ## Who may do what
@@ -114,16 +142,17 @@ including the ones that were refused.
 This table is on the Users screen, in one place, and an admin can change
 the ticks there. These are the proposed defaults:
 
-| What | admin | operator | viewer | signed out |
-|---|---|---|---|---|
-| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Fireball practice's Done, Acknowledge** | always | always | always | always |
-| Start now, Start at a cue, Resume, Run a show file, rehearsal scrubbing, playing an announcement, choosing the operator | yes | yes | no | never |
-| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels, turning the fuel pump on, Fireball practice's open and Step, which need the row above too) | yes | yes | no | never |
-| Unlock a machine, turn a laser test on | yes | yes | no | never |
-| Tick the Morning and Shutdown checklists | yes | yes | no | never |
-| Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | yes | yes | no | never |
-| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, audit upload, idle sign out, sign out after the last show, the play-from cues, the fireball timeline) | yes | no | no | never |
-| Users (add, remove, passwords, roles, lockouts) | yes | no | no | never |
+| What | SuperUser | admin | operator | viewer | signed out |
+|---|---|---|---|---|---|
+| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Fireball practice's Done, Acknowledge** | always | always | always | always | always |
+| Start now, Start at a cue, Resume, Show control on/off, rehearsal scrubbing, playing an announcement, choosing the operator | always | yes | yes | no | never |
+| Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels, turning the fuel pump on, Fireball practice's open and Step, which need the row above too) | always | yes | yes | no | never |
+| Unlock a machine, turn a laser test on | always | yes | yes | no | never |
+| Tick the Morning and Shutdown checklists | always | yes | yes | no | never |
+| Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | always | yes | yes | no | never |
+| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, idle sign out, sign out after the last show, the play-from cues, the fireball timeline) | always | yes | no | no | never |
+| Users (add, remove, passwords, roles, lockouts; a SuperUser only by a SuperUser) | always | yes | no | no | never |
+| The nightly upload (SuperUser only; shown only to a SuperUser) | always | never | never | never | never |
 
 "Signed out" is view only (your field report, 2026-10-28). It replaces
 the 2026-10-07 rule that nobody needed to sign in to run or arm. The
@@ -176,35 +205,10 @@ lost lines are counted and written as a "gap" line once it can write
 again, and the rack screen's status strip shows "Audit: not writing"
 meanwhile.
 
-## The nightly upload (off until you switch it on)
-
-On the Users screen, under Audit log, an admin sets: the server address
-(it must start with https://), the shared token, the time of day (03:30
-unless changed) and how many days to keep here (at least 90). Then tick
-"Send the audit log to the server every night" and Save.
-
-- Only the audit day files are ever sent. Nothing else leaves the PC.
-- Each finished day is sent once, whole, with its checksum and its chain
-  fingerprints. It counts as sent only when your server answers that it
-  got exactly that file.
-- A failed send is tried again later (1 minute, then 5, 15, then hourly).
-  A night the PC was off is caught up the next time.
-- A day is removed from the PC only once the server has it AND it is older
-  than the keep. A day not yet on the server is never removed.
-- The token is kept in the settings folder (`ltcplay_audit.json`), like
-  flamesafe's link key: never in the program's files on GitHub, never on
-  the screen, never in the log or the diagnostics bundle.
-- A failure to send changes nothing about the show.
-
-Your server needs a receiver: `tools/audit_receiver.py` is one, and
-`tools/AUDIT_RECEIVER_README.md` says how to run it.
-
 ## What you decide
 
 1. The names and roles above, and whether the matrix defaults are right
    ("signed out" is now view only and fixed).
-2. Your server's address, and the token (the upload stays off until then).
-3. How long to keep the log on the show PC (90 days unless you say more).
-4. Whether the Stream Deck should ever need its own sign-in (today: no,
+2. Whether the Stream Deck should ever need its own sign-in (today: no,
    it acts as the rack screen's user, and with nobody signed in there it
    cannot arm or start).
