@@ -110233,10 +110233,19 @@ const rowsOf = box => [...box.querySelectorAll(".mrow")].map(r => {
   const c = r.querySelector(".mrow-c"), bs = [...c.children].filter(vis);
   const gap = parseFloat(getComputedStyle(c).columnGap) || 0, min = bs.length ? parseFloat(getComputedStyle(bs[0]).minWidth) : 0;
   return {label:r.querySelector(".mrow-l").textContent, ids:bs.map(nm), min:min,
+    mv:bs.length > 0 && bs.every(b => b.classList.contains("mv")),
     lines:new Set(bs.map(b => Math.round(b.getBoundingClientRect().top))).size,
     fits:bs.length * min + (bs.length - 1) * gap <= c.clientWidth + 0.5};
 });
 const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+// Waits (up to ms) for a state the page reaches, never a fixed sleep:
+// a slow runner's page may be a beat behind (Windows CI, 2560x1440 at
+// 1.5x, 2026-11-13).
+const until = async (f, ms) => { for(let t = 0; t < ms && !f(); t += 50) await h.sleep(50); return !!f(); };
+// What the page was doing, for a failure's message.
+const where = () => ({tab:typeof TAB === "undefined" ? null : TAB, step:typeof DAY_STEP === "undefined" ? null : DAY_STEP,
+  arranging:typeof FU_ARR === "undefined" ? null : !!FU_ARR, units:typeof FU === "undefined" ? null : ((FU || {}).units || []).length,
+  ab:(e => e ? {hidden:e.hidden, disabled:e.disabled} : null)(document.getElementById("fu-arrange"))});
 """
 
 _UI2_ROWS_LAYOUT_JS = _UI2_ROWS_MEASURE_JS + r"""
@@ -110246,9 +110255,15 @@ const P = document.getElementById("d-panel");
 step("fuel");
 await h.sleep(700);
 out.fuel = {rows:rowsOf(document.getElementById("d-fuel")), m:measure(P)};
+// Arrange is pressed once the page offers it, and measured once the page
+// shows it (the bar, and the tanks as cards that move).
+const arrBtn = () => { const e = document.getElementById("fu-arrange"); return e && !e.hidden && !e.disabled; };
+const arrOn = () => !document.getElementById("fu-arr-bar").hidden && !!document.querySelector("#d-fuel [data-mid]");
+out.arr_ready = {offered:await until(arrBtn, 3000), before:where()};
 document.getElementById("fu-arrange").click();
-await h.sleep(500);
-out.arr = {bar:!document.getElementById("fu-arr-bar").hidden, rows:rowsOf(document.getElementById("d-fuel")), m:measure(P)};
+out.arr_ready.shown = await until(arrOn, 3000);
+await h.sleep(200);
+out.arr = {bar:!document.getElementById("fu-arr-bar").hidden, rows:rowsOf(document.getElementById("d-fuel")), m:measure(P), after:where()};
 document.getElementById("fu-arr-cancel").click();
 await h.sleep(300);
 step("purge");
@@ -110305,8 +110320,11 @@ def test_ui2_machine_rows_fit_and_never_overlap():
               [r["label"] for r in fuel] == ["Wave Flamers", "G-Flames"],
               f"{where}: the Fuel step's tanks are the saved rows, the new "
               f"machine last in its type's row: {fuel}")
-        check([r["ids"] for r in arr] == want and m["arr"]["bar"],
-              f"{where}: Arrange shows the same rows, and its bar: {arr}")
+        check([r["ids"] for r in arr] == want and m["arr"]["bar"] and
+              all(r["mv"] for r in arr),
+              f"{where}: Arrange shows the same rows as cards that move, "
+              f"and its bar: {arr} {m.get('arr_ready')} "
+              f"{m['arr'].get('after')}")
         check([r["ids"] for r in mach] == want + [["fireball"]],
               f"{where}: the Purge step's Machines are the same rows: "
               f"{mach}")
