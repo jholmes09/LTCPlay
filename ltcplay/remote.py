@@ -5073,9 +5073,12 @@ class Remote:
                 return "a show is playing, and the show drives the hazers"
             if st == "held":
                 return "a show is on Hold; the show drives the hazers"
+            # Stop leaves show control on (#231): the way out is to turn
+            # it off (End rehearsal in a rehearsal), as the timed purge says.
             if getattr(getattr(self.control, "session", None), "running",
                        False):
-                return "show control is on; press Stop first"
+                return ("show control is on; turn show control off first "
+                        "(End rehearsal in a rehearsal)")
             try:
                 cs = self.control.state() or {}
             except Exception:                    # noqa: BLE001
@@ -5086,7 +5089,8 @@ class Remote:
             # as off): the test never runs while show control may be on.
             if cs.get("starting") or cs.get("running") or \
                     self.show_control_on(cs):
-                return "show control is on; press Stop first"
+                return ("show control is on; turn show control off first "
+                        "(End rehearsal in a rehearsal)")
         except Exception as e:                   # noqa: BLE001
             return f"the engine's state could not be read ({type(e).__name__})"
         return ""

@@ -80932,6 +80932,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/follow", "/api/remote/forecast", "/api/remote/fuel",
     "/api/remote/fuel-pump", "/api/remote/fuel-refill",
     "/api/remote/fuel-undo", "/api/remote/group-disarm",
+    "/api/remote/haze-refill", "/api/remote/haze-undo",
     "/api/remote/hazer", "/api/remote/hazer-level",
     "/api/remote/hazer-test", "/api/remote/hazers-arm-all",
     "/api/remote/hazers-off", "/api/remote/hold",
@@ -102473,8 +102474,8 @@ def test_show_control_refusals_say_turn_it_off():
     section("show control (Jeff, 2026-11-11; cold review of #240): a "
             "refusal while show control is on says turn it off (End "
             "rehearsal in a rehearsal), never press Stop: Stop leaves it "
-            "on. The timed purge, a new show file and the terminal's "
-            "rig-not-answering line")
+            "on. The timed purge, a new show file, the Purge page's hazers "
+            "and the terminal's rig-not-answering line")
     import inspect
     import types
     from ltcplay import remote as RM
@@ -102500,6 +102501,22 @@ def test_show_control_refusals_say_turn_it_off():
           "a rehearsal)" in why and "Press Stop" not in why and
           "Nothing was written" in why,
           f"a new show file with a show file running: {why!r}")
+    # The Purge page's hazers (hazertest.py): the same words, both ways
+    # show control can be on.
+    for how, ctl in (
+            ("the session running",
+             types.SimpleNamespace(session=run, state=lambda: {})),
+            ("the engine's state starting",
+             types.SimpleNamespace(session=None,
+                                   state=lambda: {"starting": True}))):
+        fake = types.SimpleNamespace(schedule=None, control=ctl,
+                                     _ht_state=lambda: "idle",
+                                     show_control_on=lambda cs: False)
+        why = RM.Remote.hazer_test_show_busy(fake)
+        check(why == "show control is on; turn show control off first "
+                     "(End rehearsal in a rehearsal)" and
+              "press Stop" not in why,
+              f"the hazers on the Purge page with {how}: {why!r}")
     src = inspect.getsource(DP.warnings_for)
     check("Turn show control off and on (on the Mac page: " in src and
           "Stop and Run after it is back" not in src,
