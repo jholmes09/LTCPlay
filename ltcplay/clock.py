@@ -1084,7 +1084,7 @@ class ArtNetMaster(Clock):
                 f"opened.")
         with self._lock:
             if not self._live:
-                raise ClockConfigError("Nothing is running. Press Run first.")
+                raise ClockConfigError("Nothing is running. Turn show control on first.")
             self.ticker.stop()
             frames = int(math.ceil(float(length_s) * MASTER_FPS - 1e-9))
             self._cue = (float(position_s), frames, label)
@@ -1603,7 +1603,7 @@ class AudioMaster(Clock):
         with self._lock:
             now = self._clock()
             if not self._live:
-                raise ClockConfigError("Nothing is running. Press Run first.")
+                raise ClockConfigError("Nothing is running. Turn show control on first.")
             if not self._device_ok:
                 # Jeff, 2026-09-27: a show never starts without its sound.
                 # Losing the interface once a show is running is different:
@@ -1617,7 +1617,7 @@ class AudioMaster(Clock):
             if role in self._load_failed:
                 raise ClockConfigError(
                     f"{_strip_stop(self._load_failed[role])} Replace the "
-                    f"file, then press Stop and Run again.")
+                    f"file, then turn show control off and on again.")
             if role not in self._loaded:
                 raise ClockConfigError(
                     f"The {role} audio is still loading. Try again in a few "

@@ -91,7 +91,7 @@
     <div class="kv" id="info-flames" hidden></div>
     <h2>Mode</h2>
     <div class="kv" id="info-mode"></div>
-    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Programming screen. To switch between Show and Programming: the Show and Programming switch on the Programming screen's Show file card, then Run (Stop first if something is running).</div>
+    <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. SHOW CONTROL OFF: no show file is running; nothing reaches the rig until show control is on (on the Programming screen). To switch between Show and Programming: the Show and Programming switch on the Programming screen's Show file card, then Show control on or Start rehearsal (turn show control off or End rehearsal first).</div>
     <h2>Leaving this window</h2>
     <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. It is an ordinary window: the Minimize, Maximize and Close buttons are at its top right. To minimize without them, press the <kbd>Windows</kbd> key + <kbd>Down arrow</kbd> (twice if it is maximized); <kbd>Alt</kbd>+<kbd>F4</kbd> closes it, or use the button below. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</div>
     <div class="row">
@@ -433,7 +433,7 @@ function renderSetup(su, pr){
   t += ". " + (dkOk ? "The Stream Deck program is talking to this engine." : ("The Stream Deck program has not reached this engine" + (dkP.why ? ": " + esc(dkP.why) : "") + "."));
   if(su.example_flamesafe) t += " The flamesafe config was written at first run as a SAFE EXAMPLE: it sends to this PC only (127.0.0.1), never to a flame controller, until it is edited and confirmed.";
   fl.querySelector(".t").innerHTML = t;
-  $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until Run is pressed on the Programming screen, and the scheduler only performs once the Fire & Ice settings say so.";
+  $("su-foot").textContent = su.ready ? "" : "Nothing reaches the rig until show control is on (on the Programming screen), and the scheduler only performs once the Fire & Ice settings say so.";
   try{ fitSetup(); }catch(e){}
 }
 
@@ -448,7 +448,7 @@ function setupFolderWords(su){
 }
 
 async function makeShowFile(){
-  if(!(await confirmBox("Make a show file from this folder?", "A new show file listing every render (.fseq) in the show folder, back to back from 01:00:00:00. No show file is replaced and the renders are not changed. Nothing reaches the rig until Run.", "Yes, make it", "start"))) return null;
+  if(!(await confirmBox("Make a show file from this folder?", "A new show file listing every render (.fseq) in the show folder, back to back from 01:00:00:00. No show file is replaced and the renders are not changed. Nothing reaches the rig until show control is on.", "Yes, make it", "start"))) return null;
   const btn = $("fo-make");
   btn.disabled = true;
   $("fo-made").textContent = "Making the show file...";
@@ -470,7 +470,7 @@ function checkWords(f, j){
   const over = cues.filter(c => c.overlap).map(c => c.name || c.tc);
   const probs = (j.problems || []).slice(0, 8);
   let t = `Check of ${esc(f)}: ${cues.length} cue(s).`;
-  if(!missing.length && !over.length && !probs.length) t += " Nothing wrong found. Next: Run in Programming mode to rehearse it.";
+  if(!missing.length && !over.length && !probs.length) t += " Nothing wrong found. Next: Start rehearsal in Programming mode.";
   if(missing.length) t += ` <b>Render not found for:</b> ${esc(missing.slice(0, 8).join(", "))}${missing.length > 8 ? ", ..." : ""}.`;
   if(over.length) t += ` <b>Starts before the cue before it has ended:</b> ${esc(over.slice(0, 8).join(", "))}${over.length > 8 ? ", ..." : ""}. Set its "tc" later.`;
   if(probs.length) t += "<ul>" + probs.map(p => `<li>${esc(p)}</li>`).join("") + "</ul>";
@@ -639,9 +639,9 @@ function runModeView(st, want){
   let text = MODE_WHAT[want], locked = false;
   if(want === "programming" && live){
     locked = true;
-    text = "<b>Programming is locked:</b> a scheduled show is live (" + esc(sch.state) + "). Press Hold to pause it now; Programming opens once the show has ended. Then Stop, and Run here in Programming.";
+    text = "<b>Programming is locked:</b> a scheduled show is live (" + esc(sch.state) + "). Press Hold to pause it now; Programming opens once the show has ended. Then Stop, and Start rehearsal here.";
   } else if(now && now !== want){
-    text += " Now running in " + (now === "show" ? "Show" : "Programming") + ": press Stop, then Run, to switch.";
+    text += now === "show" ? " Show control is on now: turn it off, then Start rehearsal." : " A rehearsal is on now: End rehearsal, then turn show control on.";
   } else if(now === want){
     text += " Running now.";
   }
@@ -651,11 +651,11 @@ Pure.
 function rateNote(st){
   return String((st && st.show && st.show.rate_note) || "");
 }
-confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"
+confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, turn off"
 if(runLook(ST, nowStale()).mode !== "runoff")
 const v = runModeView(ST, RUN_MODE || "show");
   if(v.locked)
-confirmBox(prog ? "Run in Programming?" : "Press Run?", prog ? "Run " + f + " as a rehearsal. Play from, jump and loop work, and the scheduler starts no show." : "Run " + f + ". The scheduler then starts each show by itself.", "Yes, Run"
+confirmBox(prog ? "Start rehearsal?" : "Turn show control on?", prog ? "Rehearses " + f + ". Play from, jump and loop work, and the scheduler starts no show." : "Uses " + f + ". The scheduler then starts each show by itself.", prog ? "Yes, start" : "Yes, turn on"
 post("/api/start", prog ? {timeline:f, on_lost:"hold"} : {timeline:f})
 press("hold")
 press("resume")

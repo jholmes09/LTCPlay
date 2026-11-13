@@ -1581,8 +1581,8 @@ def _cmd_serve(args):
         print("  " + (sv.error or (
             "Loaded. It decides but does not act: no show is started by it "
             "in this build." if sv.dry_run else
-            "Loaded. It performs: it starts the show on schedule once Run "
-            "has been pressed.")))
+            "Loaded. It performs: it starts the show on schedule once show "
+            "control is on.")))
     if fire_ice is not None:
         print(f"Fire & Ice: {fire_ice.path or 'no ltcplay_fire_ice.json'}")
         print(f"  {fire_ice.summary()}")

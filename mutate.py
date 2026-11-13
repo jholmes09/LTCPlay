@@ -668,6 +668,46 @@ MUTATIONS = [
   "              \"--no-browser\", \"--network-if-saved\"]",
   "              \"--no-browser\"]"),
 
+ ("release tags: a gpl-* tag builds a release again",
+  ".github/workflows/windows-app.yml",
+  '    tags: ["ltc-*"]\n',
+  '    tags: ["ltc-*", "gpl-*"]\n'),
+
+ ("release tags: the installer's version keeps the ltc- prefix",
+  ".github/workflows/windows-app.yml",
+  '            v="${GITHUB_REF_NAME#ltc-}"\n',
+  '            v="${GITHUB_REF_NAME#gpl-}"\n'),
+
+ ("release tags: Run workflow on an old gpl- tag builds it",
+  ".github/workflows/windows-app.yml",
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n',
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^(ltc|gpl)-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n'),
+
+ ("release tags: a gpl-* tag is silent in the selftest run",
+  ".github/workflows/selftest.yml",
+  '          if [[ "$REF" == refs/tags/gpl-* ]]; then\n',
+  '          if false; then\n'),
+
+ ("release tags: the updater no longer reads an ltc- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("gpl-",)\n'),
+
+ ("release tags: the updater no longer reads an old gpl- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("ltc-",)\n'),
+
+ ("release tags: an ltc- or gpl- stamp is compared as text again",
+  "packaging/windows/updater.py",
+  "    c, i = release_number(candidate), release_number(installed)\n",
+  "    c, i = str(candidate).strip(), str(installed).strip()\n"),
+
+ ("release tags: the rollback no longer reads a prefixed release",
+  "packaging/windows/supervisor.py",
+  "    return updater.release_number(ver)\n",
+  "    return str(ver).replace(\"gpl-\", \"\")\n"),
+
  ("show network: a saved public, VPN or link-local address is served on",
   "ltcplay/cli.py",
   "    if not remote_mod.is_rfc1918(saved):",
@@ -2014,8 +2054,8 @@ MUTATIONS = [
   '        if length_s is None:\n            length_s = 1e6\n        if False:'),
 
  ('play and halt race each other', 'ltcplay/clock.py',
-  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")',
-  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")'),
+  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")',
+  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")'),
 
  ('an unknown hour is taken as the show', 'ltcplay/clock.py',
   '    role = zones.get(h)\n',
@@ -3058,6 +3098,14 @@ MUTATIONS = [
   "ltcplay/web/remote2.html",
   "  if(n !== P_SAID) return j;\n",
   ""),
+
+ # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
+ # their rows when the step is taller than its panel, so the sections
+ # under them (the timed purge, the hazer test) are drawn over them
+ ("ui 2.0 DAY: a step's buttons shrink and the rows under them overlap them",
+  "ltcplay/web/remote2.html",
+  "#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 0 auto}",
+  "#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 1 auto}"),
 
  # interface 2.0's Resume sheet (play-from cues part 3): start at a cue
  ("ui 2.0 cue: Start at a cue goes with no question",
@@ -10218,7 +10266,7 @@ def build():
  ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
   "screens do not have",
   'ltcplay/fire_ice.py',
-  '                "Programming: Show file card, Stop, then Run. "\n',
+  '                "Programming: End rehearsal, then Start rehearsal. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
 
  ("pixels: the look-in-show CUES FAULT sends a 2.0 screen to 1.0, not to "
@@ -12720,6 +12768,431 @@ def build():
   '''                    ep.add("LOCKED SLOT", slot, t,
                            f"{name}: locked safety slot {slot} = {v}")''',
   '''                    pass'''),
+
+ ("windows round 3: a show its rig check pushed past the limit says only how late",
+  "ltcplay/schedule.py",
+  "            elif tx.ev.late_show == s.n and tx.ev.late_ok_s:\n",
+  "            elif False:\n"),
+
+ ("windows round 3: a clock set back while the journal is stopped keeps it off",
+  "ltcplay/journal.py",
+  "                and self._retry_at - timedelta(seconds=self.retry_s) <= now \\\n",
+  "                and now \\\n"),
+
+ ("windows round 3: a clock set back puts off the journal's free space look",
+  "ltcplay/journal.py",
+  "            not 0 <= (now - self._free_at).total_seconds() < FREE_CHECK_S",
+  "            (now - self._free_at).total_seconds() >= FREE_CHECK_S"),
+
+ ("windows round 3: a journal file another program holds is not named",
+  "ltcplay/journal.py",
+  "            where = e.filename or self.folder\n",
+  "            where = self.folder\n"),
+
+ ("windows round 3: an empty Play from says the grey example as if typed",
+  "ltcplay/remote.py",
+  "                    raise ValueError(PLAY_FROM_EMPTY)\n",
+  "                    raise ValueError(\"Type a timecode to play from, like \"\n"
+  "                                     \"00:01:30:00, or a cue name.\")\n"),
+
+ ("windows round 3: Play from's box shows the example as if it were a time",
+  "ltcplay/web/remote2.html",
+  'placeholder="Example: 00:01:30:00"',
+  'placeholder="00:01:30:00"'),
+
+ ('journal watchdog: a writer stuck on the disk is never flagged',
+  'ltcplay/journal.py',
+  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
+  '        if False:\n'),
+
+ ('journal watchdog: a stuck writer is flagged again on every look',
+  'ltcplay/journal.py',
+  '            if not self.stalled_why:\n'
+  '                self.stalled_at = now\n',
+  '            if True:\n'
+  '                self.stalled_at = now\n'),
+
+ ('journal watchdog: a writer thread that is gone is left gone',
+  'ltcplay/journal.py',
+  '        if t is None or t.is_alive() or self._closing:\n',
+  '        if True:\n'),
+
+ ('journal watchdog: the health flag ignores a stuck writer and bad files',
+  'ltcplay/journal.py',
+  '        bad = bool(self.stopped_why or self.stalled_why or self.disk_why)\n',
+  '        bad = bool(self.stopped_why)\n'),
+
+ ('journal watchdog: a night file cut shorter is not found',
+  'ltcplay/journal.py',
+  '                if have < size:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a night file moved away is not found',
+  'ltcplay/journal.py',
+  '            except FileNotFoundError:\n'
+  '                result.append(f"{name} is gone from',
+  '            except FileNotFoundError:\n'
+  '                pass\n'
+  '                (f"{name} is gone from'),
+
+ ('journal watchdog: a disk that does not answer a read is not said',
+  'ltcplay/journal.py',
+  '                if t - started > DISK_ANSWER_S and not self.disk_why:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a stop that cannot be written up ends the writer',
+  'ltcplay/journal.py',
+  '                except Exception as e2:\n'
+  '                    self.stopped_why = self.stopped_why or (\n',
+  '                except ZeroDivisionError as e2:\n'
+  '                    self.stopped_why = self.stopped_why or (\n'),
+
+ ('journal watchdog: start_writer starts no watchdog',
+  'ltcplay/journal.py',
+  '            self._watcher.start()\n',
+  '            self._watcher = None\n'),
+
+ ("journal summary: the two files' counts are not compared",
+  'ltcplay/journal.py',
+  '    if not problems and jlines != len(recs) + cut:\n',
+  '    if False:\n'),
+
+ ('journal summary: lines made tonight but not in the files are not counted',
+  'ltcplay/journal.py',
+  '    missing = [i for i in made if i not in ids and i not in wait]\n',
+  '    missing = []\n'),
+
+ ('journal summary: no line for a long time while a show ran is not a gap',
+  'ltcplay/journal.py',
+  '        if span > gap_s:\n',
+  '        if False:\n'),
+
+ ("journal summary: a show's start or end with no line is not a gap",
+  'ltcplay/journal.py',
+  '        if inside and span > 60:\n',
+  '        if False:\n'),
+
+ ("journal summary: a restart's gap is called a logging gap",
+  'ltcplay/journal.py',
+  '        if rb is not None and rb.get("action") == "program start":\n',
+  '        if False:\n'),
+
+ ('journal summary: says complete whatever the files say',
+  'ltcplay/journal.py',
+  '    files_bad = files is not None and not files.get("complete")\n',
+  '    files_bad = False\n'),
+
+ ('journal summary: the scheduler does not hand over when each show ran',
+  'ltcplay/schedule_service.py',
+  '                         "started_at": (s.fired_at.isoformat()\n',
+  '                         "started_at": (None\n'),
+
+ ('journal summary: a show time is compared to the microsecond, not the millisecond the files keep',
+  'ltcplay/journal.py',
+  '                  if (t - a).total_seconds() > 0.001\n',
+  '                  if a < t\n'),
+
+ ("journal summary: a show's run is overlapped by a fraction of a millisecond",
+  'ltcplay/journal.py',
+  '                if (b - s).total_seconds() > 0.001 and (\n',
+  '                if s < b and (\n'),
+
+ ('journal writer: a file moved away is not found at the next write',
+  'ltcplay/journal.py',
+  '            if new:\n'
+  '                self._disk_problem(self.clock(), (\n',
+  '            if False:\n'
+  '                self._disk_problem(self.clock(), (\n'),
+
+ ('journal writer: a file cut shorter is not found at the next write',
+  'ltcplay/journal.py',
+  '            elif size is not None and size < had[0]:\n',
+  '            elif False:\n'),
+
+ ('journal summary: a partial write retried counts as two lines',
+  'ltcplay/journal.py',
+  '                    and rows[i + 1].startswith(r.lstrip(b"\\x00")))]\n',
+  '                    and False)]\n'),
+
+ ('journal summary: names the wrong file as short',
+  'ltcplay/journal.py',
+  '        short = ("journal file" if jlines < len(recs) + cut\n',
+  '        short = ("machine log" if jlines < len(recs) + cut\n'),
+
+ ('journal summary: a stop that lost no line reads as not complete',
+  'ltcplay/journal.py',
+  '    elif log_gaps and files is not None and not files_bad:\n',
+  '    elif False:\n'),
+
+ ('journal ring buffer: a stuck writer reads as logging ok',
+  'ltcplay/schedule_service.py',
+  '                                   or self.logbook.stalled_why\n',
+  '                                   or False\n'),
+
+ ('journal ring buffer: files that did not read back read as logging ok',
+  'ltcplay/schedule_service.py',
+  '                                   or self.logbook.disk_why)}\n',
+  '                                   or False)}\n'),
+
+ ("journal watchdog: lines that arrive mid write wait from the batch's first line",
+  'ltcplay/journal.py',
+  '                self._wait_since = self._mono() if self._pending else None\n',
+  '                pass\n'),
+
+ ('journal summary: lines made tonight are not handed to the check',
+  'ltcplay/journal.py',
+  '            made = list(self._made.get(night, ()))\n',
+  '            made = []\n'),
+
+ ('journal summary: lines still waiting for the disk count as lost',
+  'ltcplay/journal.py',
+  '            waiting = [r["id"] for r, _d in self._pending]\n'
+  '        files = check_files(',
+  '            waiting = []\n'
+  '        files = check_files('),
+
+ ('journal watchdog: a file replaced with the same size is not found',
+  'ltcplay/journal.py',
+  '                if got != tail:\n',
+  '                if False:\n'),
+
+ ('journal watchdog: a good read back does not clear the flag',
+  'ltcplay/journal.py',
+  '            elif self.disk_why:\n'
+  '                self.disk_why = ""\n',
+  '            elif False:\n'
+  '                self.disk_why = ""\n'),
+
+ ('journal watchdog: a stop already flagged is called stuck as well',
+  'ltcplay/journal.py',
+  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
+  '        if waiting and waited > self.stall_s:\n'),
+
+ ('journal upload: the night still open counts as closed',
+  'ltcplay/auditsend.py',
+  '            if m and m.group(1) < open_n and os.path.isfile(\n',
+  '            if m and m.group(1) <= open_n and os.path.isfile(\n'),
+
+ ('journal upload: a night without its summary counts as closed',
+  'ltcplay/auditsend.py',
+  '            if m and m.group(1) < open_n and os.path.isfile(\n'
+  '                    os.path.join(self.folder,\n'
+  '                                 f"night_{m.group(1)}.summary.md")):\n',
+  '            if m and m.group(1) < open_n:\n'),
+
+ ("journal upload: marked sent without the server's checksum",
+  'ltcplay/auditsend.py',
+  '        took = isinstance(ack, dict) and ack.get("ok") is True and \\\n'
+  '            ack.get("sha256") == sha\n',
+  '        took = isinstance(ack, dict) and ack.get("ok") is True\n'),
+
+ ('journal upload: a failure is marked sent',
+  'ltcplay/auditsend.py',
+  '                if result == "sent":\n',
+  '                if result != "failed":\n'),
+
+ ('journal upload: no backoff after a failure',
+  'ltcplay/auditsend.py',
+  '            return self._next_try <= self._clock()\n',
+  '            return True\n'),
+
+ ('journal upload: an incomplete night is sent as complete',
+  'ltcplay/auditsend.py',
+  '        return {"incomplete": bool(not f["complete"] or said_bad),\n',
+  '        return {"incomplete": False,\n'),
+
+ ('journal upload: the gap list is left out of the metadata',
+  'ltcplay/auditsend.py',
+  '               "incomplete": meta["incomplete"], "gaps": meta["gaps"]}\n',
+  '               "incomplete": meta["incomplete"], "gaps": []}\n'),
+
+ ('journal upload: the token is said in an upload error',
+  'ltcplay/auditsend.py',
+  '            why = re.sub(r"(?i)bearer\\s+\\S+", "Bearer [hidden]", why)\n',
+  '            pass\n'),
+
+ ('journal upload: sent while it is off',
+  'ltcplay/auditsend.py',
+  '            if not cfg["enabled"]:\n'
+  '                return 0\n'
+  '            if not force and not self.due(cfg):\n',
+  '            if False:\n'
+  '                return 0\n'
+  '            if not force and not self.due(cfg):\n'),
+
+ ('journal upload: prune removes a night file the server has not acknowledged',
+  'ltcplay/journal.py',
+  '                    if d >= limit:\n'
+  '                        continue\n',
+  '                    if False:\n'
+  '                        continue\n'),
+
+ ('journal upload: prune keeps an unacknowledged night for ever',
+  'ltcplay/journal.py',
+  '                    if d >= limit:\n',
+  '                    if True:\n'),
+
+ ('journal upload: pruning an unacknowledged night is not said',
+  'ltcplay/journal.py',
+  '        if unsent:\n'
+  '            self.record(actor="system", action="prune",\n',
+  '        if False:\n'
+  '            self.record(actor="system", action="prune",\n'),
+
+ ('journal upload: pruning keeps unsent nights while the upload is off',
+  'ltcplay/journal.py',
+  '    if not isinstance(doc, dict) or doc.get("enabled") is False:\n',
+  '    if not isinstance(doc, dict):\n'),
+
+ ('journal upload: the engine does not start the night journal upload',
+  'ltcplay/web.py',
+  '        if book is not None:\n'
+  '            # The night journal goes to the same server',
+  '        if False:\n'
+  '            # The night journal goes to the same server'),
+
+ ("journal upload: the engine does not hand over the night files' check",
+  'ltcplay/web.py',
+  '                transport=transport, checker=book.check_night,\n',
+  '                transport=transport,\n'),
+
+ ('journal upload: the Users screen does not show the night journal',
+  'ltcplay/remote.py',
+  '                out["journal_upload"] = jup.status()\n',
+  '                out["journal_upload_"] = jup.status()\n'),
+
+ ('journal upload: the setting does not say the night journal is sent',
+  'ltcplay/web/remote2.html',
+  'Send the audit log and the night journal to the server every night',
+  'Send the audit log to the server every night'),
+
+ ('journal upload: the card does not say the journal names operators',
+  'ltcplay/web/remote2.html',
+  'The night journal names each operator and screen.',
+  'The night journal is sent.'),
+
+ ('journal upload: the card hides night files refused by the server',
+  'ltcplay/web/remote2.html',
+  '" NOT SENT, refused by the server: "',
+  '" "'),
+
+ ('journal upload: a refusal for good stops the later nights',
+  'ltcplay/auditsend.py',
+  '            if 400 <= status < 500 and status not in JOURNAL_RETRY_4XX:\n',
+  '            if False:\n'),
+
+ ('journal upload: a file refused for good is tried again',
+  'ltcplay/auditsend.py',
+  '                if isinstance(bad, dict) and bad.get("sha256") == sha:\n',
+  '                if False:\n'),
+
+ ('journal upload: a file refused for good is not said in the journal',
+  'ltcplay/auditsend.py',
+  '                    self._say_once(\n',
+  '                    (\n'),
+
+ ('journal upload: a file changed since sent is never sent again',
+  'ltcplay/auditsend.py',
+  '                if held != sha:\n',
+  '                if not held:\n'),
+
+ ('journal upload: a file sent again does not name the copy it replaces',
+  'ltcplay/auditsend.py',
+  '        if replaces:\n'
+  '            headers["X-LTC-Replaces"] = replaces\n',
+  '        if False:\n'
+  '            headers["X-LTC-Replaces"] = replaces\n'),
+
+ ('journal upload: a file that cannot be read is skipped without a backoff',
+  'ltcplay/auditsend.py',
+  '                    if os.path.isfile(p) and not os.path.islink(p):\n',
+  '                    if False:\n'),
+
+ ('journal upload: a link is sent',
+  'ltcplay/auditsend.py',
+  '        if not stat.S_ISREG(st.st_mode):\n'
+  '            return None\n',
+  '        if False:\n'
+  '            return None\n'),
+
+ ('journal upload: a file larger than the receiver takes is read and sent',
+  'ltcplay/auditsend.py',
+  '        if st.st_size > JOURNAL_MAX_BYTES:\n',
+  '        if False:\n'),
+
+ ('journal upload: the switch is not remembered for pruning',
+  'ltcplay/auditsend.py',
+  '            self._mark_enabled(bool(cfg["enabled"]))\n',
+  '            pass\n'),
+
+ ('receiver: night journal files are refused as not audit days',
+  'tools/audit_receiver.py',
+  '    if NIGHT_RE.match(name):\n',
+  '    if False:\n'),
+
+ ('receiver: a night file with the wrong checksum is stored',
+  'tools/audit_receiver.py',
+  '    if not hmac.compare_digest(sha, h("X-LTC-SHA256")):\n'
+  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
+  '    root = os.path.join(store, NIGHTS)\n',
+  '    if False:\n'
+  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
+  '    root = os.path.join(store, NIGHTS)\n'),
+
+ ('receiver: a different night file is acknowledged as the same',
+  'tools/audit_receiver.py',
+  '        if sha == have:\n',
+  '        if True:\n'),
+
+ ('receiver: a night file replaces one it does not name',
+  'tools/audit_receiver.py',
+  '        if wants and hmac.compare_digest(wants, have):\n',
+  '        if True:\n'),
+
+ ('receiver: a refused night file is kept again on every try',
+  'tools/audit_receiver.py',
+  '            if not os.path.exists(keep):\n'
+  '                tmp = _part(keep)\n',
+  '            if True:\n'
+  '                keep += str(time.time_ns())\n'
+  '                tmp = _part(keep)\n'),
+
+ ('receiver: a night that is not a date is taken',
+  'tools/audit_receiver.py',
+  '        time.strptime(night, "%Y-%m-%d")\n',
+  '        pass\n'),
+
+ ('receiver: what the PC said about an incomplete night is not kept',
+  'tools/audit_receiver.py',
+  '           "bytes": len(body), "incomplete": meta["incomplete"],\n',
+  '           "bytes": len(body), "incomplete": None,\n'),
+
+ ('receiver: verify does not check the night journal files',
+  'tools/audit_receiver.py',
+  '                ok = hashlib.sha256(fh.read()).hexdigest() == r.get("sha256")\n',
+  '                ok = True\n'),
+
+ ('receiver: a bad header raises instead of answering',
+  'tools/audit_receiver.py',
+  '    except (TypeError, ValueError, UnicodeError):\n',
+  '    except ZeroDivisionError:\n'),
+
+ ('receiver: a store it cannot write raises instead of answering',
+  'tools/audit_receiver.py',
+  '    except OSError as e:\n'
+  '        return 500,',
+  '    except ZeroDivisionError as e:\n'
+  '        return 500,'),
+
+ ('receiver: two requests share a temporary file',
+  'tools/audit_receiver.py',
+  '            f"{next(_PARTS)}.part")\n',
+  '            f"part")\n'),
+
+ ('receiver: a name with a newline after it is taken',
+  'tools/audit_receiver.py',
+  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)\\Z")\n',
+  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)$")\n'),
 
  ("witness: fire with every safety locked is not fire without arm",
   "tools/stress/witness/check_witness.py",
@@ -16951,6 +17424,16 @@ def build():
   "  if(sch.stop_held && !isLive(st)) return {tone:\"warn\", icon:\"pause\", text:\"Held after Stop: press Resume.\"};",
   ""),
 
+ ("big button: Resume says Carries on under it again",
+  "ltcplay/web/remote2.html",
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "" : "No contact"};',
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};'),
+
+ ("big button: a Stop's Hold no longer says why under Resume",
+  "ltcplay/web/remote2.html",
+  'why:fresh ? "Held after Stop" : "No contact"};',
+  'why:fresh ? "" : "No contact"};'),
+
  ("scheduler: a Stop's Hold is not kept in tonight's file",
   "ltcplay/schedule.py",
   "    if m.stop_hold:\n        doc[\"stop_hold\"] = True\n",
@@ -16980,7 +17463,7 @@ def build():
 
  ("ui2 page: Run off turns Run off without asking",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\"))) return;\n",
+  "  if(!(await (reh ? confirmBox(\"End rehearsal?\", REHEARSAL_END_CONFIRM, \"Yes, end it\", \"red\") : confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\")))) return;\n",
   ""),
 
  # Cold review of #191 round 3.
@@ -17700,8 +18183,8 @@ def build():
 
  ("Rack screen: Run never becomes Stop while Run is starting",
   "ltcplay/web/remote_rules.js",
-  "  if(!(show.running || show.starting)) return {mode:\"run\"",
-  "  if(!show.running) return {mode:\"run\""),
+  "  if(!(show.running || show.starting))\n    return {mode:\"run\"",
+  "  if(!show.running)\n    return {mode:\"run\""),
 
  ("Rack screen: a press is not decided by what was seen at touch-down",
   "ltcplay/web/remote_rules.js",
@@ -19188,6 +19671,21 @@ def build():
  ("ui2 page: one system to check is not named", "ltcplay/web/remote2.html",
   "  const text = probs.length === 1 ?",
   "  const text = false ?"),
+
+ ("systems rows: a row says its state word twice again",
+  "ltcplay/web/remote2.html",
+  '  if(bare === lw || bare === "ok") rest = "";',
+  '  if(false) rest = "";'),
+
+ ("systems rows: a row cuts its own verb when it starts like the state",
+  "ltcplay/web/remote2.html",
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))',
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[\\s.:,]/.test(rest.slice(word.length)))'),
+
+ ("systems rows: a row drops what its words add",
+  "ltcplay/web/remote2.html",
+  '  if(!rest) return {head:x.label + ": " + word, rest:""};',
+  '  return {head:x.label + ": " + word, rest:""};'),
 
  ("ui2 page: a system not set up here reads Check", "ltcplay/web/remote2.html",
   "  if(state !== \"bad\" && SYS_OFF.test(w.trim())) state = \"off\";\n",
@@ -21834,8 +22332,8 @@ def build():
 
  ("review180: rack screen 2.0 says only Press Run, whatever the warning asks",
   "ltcplay/web/remote2.html",
-  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\", loc)",
-  "do:runWarnWords(\"Press Run.\", loc)"),
+  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Turn show control on.\", loc)",
+  "do:runWarnWords(\"Turn show control on.\", loc)"),
 
  ("play-from cues: a cue right at the end of the show audio is saved",
   "ltcplay/play_from.py",
@@ -22900,12 +23398,12 @@ def build():
 
  ("ui 2.0 Programming: Run starts with no question",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(prog ? \"Run in Programming?\"",
-  "  if(false && !(await confirmBox(prog ? \"Run in Programming?\""),
+  "  if(!(await confirmBox(prog ? \"Start rehearsal?\"",
+  "  if(false && !(await confirmBox(prog ? \"Start rehearsal?\""),
 
  ("ui 2.0 Programming: Run off goes with no question",
   "ltcplay/web/remote2.html",
-  "    const sure = await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
+  "    const sure = ((ST && ST.transport) || {}).programming\n      ? await confirmBox(\"End rehearsal?\", REHEARSAL_END_CONFIRM, \"Yes, end it\", \"red\")\n      : await confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
   "    if(runLook(ST, stale()).mode !== \"runoff\")"),
 
  ("ui 2.0 Programming: the session is pressable signed out",
@@ -23138,6 +23636,28 @@ def build():
   "ltcplay/web/remote2.html",
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
+
+ # Less prose on the Schedule tab's cards (Jeff, 2026-11-11).
+ ("less prose: the arming card stops naming a laser arm",
+  "ltcplay/web/remote2.html",
+  'turn a laser test on and arm a laser; this screen can without the switch.";',
+  'turn a laser test on; this screen can without the switch.";'),
+
+ ("less prose: Restart the engine no longer says it is refused during a show",
+  "ltcplay/web/remote2.html",
+  '"Restarts the show engine on the saved address. Refused while a show runs or a group is armed.',
+  '"Restarts the show engine on the saved address.'),
+
+ # Less prose in the rules (Jeff, 2026-11-11).
+ ("less prose: arming off no longer says to arm from the Stream Deck",
+  'ltcplay/web/remote_rules.js',
+  'const ARMING_OFF = "Arming from a screen is switched off. Arm from the Stream Deck, or turn it on',
+  'const ARMING_OFF = "Arming from a screen is switched off. Or turn it on'),
+
+ ("less prose: Programming's Stop explains itself again",
+  "ltcplay/web/remote_rules.js",
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"tap twice"}',
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}'),
 
  # Less prose, engine answers and alerts (Jeff, 2026-11-11).
  ("less prose: the Morning check runs two shows' CUES FAULTs together",
@@ -23502,431 +24022,6 @@ def build():
   '            maybe = cond.lasers_maybe_lit() is True\n',
   '            maybe = lit\n'),
 
- ("windows round 3: a show its rig check pushed past the limit says only how late",
-  "ltcplay/schedule.py",
-  "            elif tx.ev.late_show == s.n and tx.ev.late_ok_s:\n",
-  "            elif False:\n"),
-
- ("windows round 3: a clock set back while the journal is stopped keeps it off",
-  "ltcplay/journal.py",
-  "                and self._retry_at - timedelta(seconds=self.retry_s) <= now \\\n",
-  "                and now \\\n"),
-
- ("windows round 3: a clock set back puts off the journal's free space look",
-  "ltcplay/journal.py",
-  "            not 0 <= (now - self._free_at).total_seconds() < FREE_CHECK_S",
-  "            (now - self._free_at).total_seconds() >= FREE_CHECK_S"),
-
- ("windows round 3: a journal file another program holds is not named",
-  "ltcplay/journal.py",
-  "            where = e.filename or self.folder\n",
-  "            where = self.folder\n"),
-
- ("windows round 3: an empty Play from says the grey example as if typed",
-  "ltcplay/remote.py",
-  "                    raise ValueError(PLAY_FROM_EMPTY)\n",
-  "                    raise ValueError(\"Type a timecode to play from, like \"\n"
-  "                                     \"00:01:30:00, or a cue name.\")\n"),
-
- ("windows round 3: Play from's box shows the example as if it were a time",
-  "ltcplay/web/remote2.html",
-  'placeholder="Example: 00:01:30:00"',
-  'placeholder="00:01:30:00"'),
-
- ('journal watchdog: a writer stuck on the disk is never flagged',
-  'ltcplay/journal.py',
-  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
-  '        if False:\n'),
-
- ('journal watchdog: a stuck writer is flagged again on every look',
-  'ltcplay/journal.py',
-  '            if not self.stalled_why:\n'
-  '                self.stalled_at = now\n',
-  '            if True:\n'
-  '                self.stalled_at = now\n'),
-
- ('journal watchdog: a writer thread that is gone is left gone',
-  'ltcplay/journal.py',
-  '        if t is None or t.is_alive() or self._closing:\n',
-  '        if True:\n'),
-
- ('journal watchdog: the health flag ignores a stuck writer and bad files',
-  'ltcplay/journal.py',
-  '        bad = bool(self.stopped_why or self.stalled_why or self.disk_why)\n',
-  '        bad = bool(self.stopped_why)\n'),
-
- ('journal watchdog: a night file cut shorter is not found',
-  'ltcplay/journal.py',
-  '                if have < size:\n',
-  '                if False:\n'),
-
- ('journal watchdog: a night file moved away is not found',
-  'ltcplay/journal.py',
-  '            except FileNotFoundError:\n'
-  '                result.append(f"{name} is gone from',
-  '            except FileNotFoundError:\n'
-  '                pass\n'
-  '                (f"{name} is gone from'),
-
- ('journal watchdog: a disk that does not answer a read is not said',
-  'ltcplay/journal.py',
-  '                if t - started > DISK_ANSWER_S and not self.disk_why:\n',
-  '                if False:\n'),
-
- ('journal watchdog: a stop that cannot be written up ends the writer',
-  'ltcplay/journal.py',
-  '                except Exception as e2:\n'
-  '                    self.stopped_why = self.stopped_why or (\n',
-  '                except ZeroDivisionError as e2:\n'
-  '                    self.stopped_why = self.stopped_why or (\n'),
-
- ('journal watchdog: start_writer starts no watchdog',
-  'ltcplay/journal.py',
-  '            self._watcher.start()\n',
-  '            self._watcher = None\n'),
-
- ("journal summary: the two files' counts are not compared",
-  'ltcplay/journal.py',
-  '    if not problems and jlines != len(recs) + cut:\n',
-  '    if False:\n'),
-
- ('journal summary: lines made tonight but not in the files are not counted',
-  'ltcplay/journal.py',
-  '    missing = [i for i in made if i not in ids and i not in wait]\n',
-  '    missing = []\n'),
-
- ('journal summary: no line for a long time while a show ran is not a gap',
-  'ltcplay/journal.py',
-  '        if span > gap_s:\n',
-  '        if False:\n'),
-
- ("journal summary: a show's start or end with no line is not a gap",
-  'ltcplay/journal.py',
-  '        if inside and span > 60:\n',
-  '        if False:\n'),
-
- ("journal summary: a restart's gap is called a logging gap",
-  'ltcplay/journal.py',
-  '        if rb is not None and rb.get("action") == "program start":\n',
-  '        if False:\n'),
-
- ('journal summary: says complete whatever the files say',
-  'ltcplay/journal.py',
-  '    files_bad = files is not None and not files.get("complete")\n',
-  '    files_bad = False\n'),
-
- ('journal summary: the scheduler does not hand over when each show ran',
-  'ltcplay/schedule_service.py',
-  '                         "started_at": (s.fired_at.isoformat()\n',
-  '                         "started_at": (None\n'),
-
- ('journal summary: a show time is compared to the microsecond, not the millisecond the files keep',
-  'ltcplay/journal.py',
-  '                  if (t - a).total_seconds() > 0.001\n',
-  '                  if a < t\n'),
-
- ("journal summary: a show's run is overlapped by a fraction of a millisecond",
-  'ltcplay/journal.py',
-  '                if (b - s).total_seconds() > 0.001 and (\n',
-  '                if s < b and (\n'),
-
- ('journal writer: a file moved away is not found at the next write',
-  'ltcplay/journal.py',
-  '            if new:\n'
-  '                self._disk_problem(self.clock(), (\n',
-  '            if False:\n'
-  '                self._disk_problem(self.clock(), (\n'),
-
- ('journal writer: a file cut shorter is not found at the next write',
-  'ltcplay/journal.py',
-  '            elif size is not None and size < had[0]:\n',
-  '            elif False:\n'),
-
- ('journal summary: a partial write retried counts as two lines',
-  'ltcplay/journal.py',
-  '                    and rows[i + 1].startswith(r.lstrip(b"\\x00")))]\n',
-  '                    and False)]\n'),
-
- ('journal summary: names the wrong file as short',
-  'ltcplay/journal.py',
-  '        short = ("journal file" if jlines < len(recs) + cut\n',
-  '        short = ("machine log" if jlines < len(recs) + cut\n'),
-
- ('journal summary: a stop that lost no line reads as not complete',
-  'ltcplay/journal.py',
-  '    elif log_gaps and files is not None and not files_bad:\n',
-  '    elif False:\n'),
-
- ('journal ring buffer: a stuck writer reads as logging ok',
-  'ltcplay/schedule_service.py',
-  '                                   or self.logbook.stalled_why\n',
-  '                                   or False\n'),
-
- ('journal ring buffer: files that did not read back read as logging ok',
-  'ltcplay/schedule_service.py',
-  '                                   or self.logbook.disk_why)}\n',
-  '                                   or False)}\n'),
-
- ("journal watchdog: lines that arrive mid write wait from the batch's first line",
-  'ltcplay/journal.py',
-  '                self._wait_since = self._mono() if self._pending else None\n',
-  '                pass\n'),
-
- ('journal summary: lines made tonight are not handed to the check',
-  'ltcplay/journal.py',
-  '            made = list(self._made.get(night, ()))\n',
-  '            made = []\n'),
-
- ('journal summary: lines still waiting for the disk count as lost',
-  'ltcplay/journal.py',
-  '            waiting = [r["id"] for r, _d in self._pending]\n'
-  '        files = check_files(',
-  '            waiting = []\n'
-  '        files = check_files('),
-
- ('journal watchdog: a file replaced with the same size is not found',
-  'ltcplay/journal.py',
-  '                if got != tail:\n',
-  '                if False:\n'),
-
- ('journal watchdog: a good read back does not clear the flag',
-  'ltcplay/journal.py',
-  '            elif self.disk_why:\n'
-  '                self.disk_why = ""\n',
-  '            elif False:\n'
-  '                self.disk_why = ""\n'),
-
- ('journal watchdog: a stop already flagged is called stuck as well',
-  'ltcplay/journal.py',
-  '        if waiting and not self.stopped_why and waited > self.stall_s:\n',
-  '        if waiting and waited > self.stall_s:\n'),
-
- ('journal upload: the night still open counts as closed',
-  'ltcplay/auditsend.py',
-  '            if m and m.group(1) < open_n and os.path.isfile(\n',
-  '            if m and m.group(1) <= open_n and os.path.isfile(\n'),
-
- ('journal upload: a night without its summary counts as closed',
-  'ltcplay/auditsend.py',
-  '            if m and m.group(1) < open_n and os.path.isfile(\n'
-  '                    os.path.join(self.folder,\n'
-  '                                 f"night_{m.group(1)}.summary.md")):\n',
-  '            if m and m.group(1) < open_n:\n'),
-
- ("journal upload: marked sent without the server's checksum",
-  'ltcplay/auditsend.py',
-  '        took = isinstance(ack, dict) and ack.get("ok") is True and \\\n'
-  '            ack.get("sha256") == sha\n',
-  '        took = isinstance(ack, dict) and ack.get("ok") is True\n'),
-
- ('journal upload: a failure is marked sent',
-  'ltcplay/auditsend.py',
-  '                if result == "sent":\n',
-  '                if result != "failed":\n'),
-
- ('journal upload: no backoff after a failure',
-  'ltcplay/auditsend.py',
-  '            return self._next_try <= self._clock()\n',
-  '            return True\n'),
-
- ('journal upload: an incomplete night is sent as complete',
-  'ltcplay/auditsend.py',
-  '        return {"incomplete": bool(not f["complete"] or said_bad),\n',
-  '        return {"incomplete": False,\n'),
-
- ('journal upload: the gap list is left out of the metadata',
-  'ltcplay/auditsend.py',
-  '               "incomplete": meta["incomplete"], "gaps": meta["gaps"]}\n',
-  '               "incomplete": meta["incomplete"], "gaps": []}\n'),
-
- ('journal upload: the token is said in an upload error',
-  'ltcplay/auditsend.py',
-  '            why = re.sub(r"(?i)bearer\\s+\\S+", "Bearer [hidden]", why)\n',
-  '            pass\n'),
-
- ('journal upload: sent while it is off',
-  'ltcplay/auditsend.py',
-  '            if not cfg["enabled"]:\n'
-  '                return 0\n'
-  '            if not force and not self.due(cfg):\n',
-  '            if False:\n'
-  '                return 0\n'
-  '            if not force and not self.due(cfg):\n'),
-
- ('journal upload: prune removes a night file the server has not acknowledged',
-  'ltcplay/journal.py',
-  '                    if d >= limit:\n'
-  '                        continue\n',
-  '                    if False:\n'
-  '                        continue\n'),
-
- ('journal upload: prune keeps an unacknowledged night for ever',
-  'ltcplay/journal.py',
-  '                    if d >= limit:\n',
-  '                    if True:\n'),
-
- ('journal upload: pruning an unacknowledged night is not said',
-  'ltcplay/journal.py',
-  '        if unsent:\n'
-  '            self.record(actor="system", action="prune",\n',
-  '        if False:\n'
-  '            self.record(actor="system", action="prune",\n'),
-
- ('journal upload: pruning keeps unsent nights while the upload is off',
-  'ltcplay/journal.py',
-  '    if not isinstance(doc, dict) or doc.get("enabled") is False:\n',
-  '    if not isinstance(doc, dict):\n'),
-
- ('journal upload: the engine does not start the night journal upload',
-  'ltcplay/web.py',
-  '        if book is not None:\n'
-  '            # The night journal goes to the same server',
-  '        if False:\n'
-  '            # The night journal goes to the same server'),
-
- ("journal upload: the engine does not hand over the night files' check",
-  'ltcplay/web.py',
-  '                transport=transport, checker=book.check_night,\n',
-  '                transport=transport,\n'),
-
- ('journal upload: the Users screen does not show the night journal',
-  'ltcplay/remote.py',
-  '                out["journal_upload"] = jup.status()\n',
-  '                out["journal_upload_"] = jup.status()\n'),
-
- ('journal upload: the setting does not say the night journal is sent',
-  'ltcplay/web/remote2.html',
-  'Send the audit log and the night journal to the server every night',
-  'Send the audit log to the server every night'),
-
- ('journal upload: the card does not say the journal names operators',
-  'ltcplay/web/remote2.html',
-  'The night journal names each operator and screen.',
-  'The night journal is sent.'),
-
- ('journal upload: the card hides night files refused by the server',
-  'ltcplay/web/remote2.html',
-  '" NOT SENT, refused by the server: "',
-  '" "'),
-
- ('journal upload: a refusal for good stops the later nights',
-  'ltcplay/auditsend.py',
-  '            if 400 <= status < 500 and status not in JOURNAL_RETRY_4XX:\n',
-  '            if False:\n'),
-
- ('journal upload: a file refused for good is tried again',
-  'ltcplay/auditsend.py',
-  '                if isinstance(bad, dict) and bad.get("sha256") == sha:\n',
-  '                if False:\n'),
-
- ('journal upload: a file refused for good is not said in the journal',
-  'ltcplay/auditsend.py',
-  '                    self._say_once(\n',
-  '                    (\n'),
-
- ('journal upload: a file changed since sent is never sent again',
-  'ltcplay/auditsend.py',
-  '                if held != sha:\n',
-  '                if not held:\n'),
-
- ('journal upload: a file sent again does not name the copy it replaces',
-  'ltcplay/auditsend.py',
-  '        if replaces:\n'
-  '            headers["X-LTC-Replaces"] = replaces\n',
-  '        if False:\n'
-  '            headers["X-LTC-Replaces"] = replaces\n'),
-
- ('journal upload: a file that cannot be read is skipped without a backoff',
-  'ltcplay/auditsend.py',
-  '                    if os.path.isfile(p) and not os.path.islink(p):\n',
-  '                    if False:\n'),
-
- ('journal upload: a link is sent',
-  'ltcplay/auditsend.py',
-  '        if not stat.S_ISREG(st.st_mode):\n'
-  '            return None\n',
-  '        if False:\n'
-  '            return None\n'),
-
- ('journal upload: a file larger than the receiver takes is read and sent',
-  'ltcplay/auditsend.py',
-  '        if st.st_size > JOURNAL_MAX_BYTES:\n',
-  '        if False:\n'),
-
- ('journal upload: the switch is not remembered for pruning',
-  'ltcplay/auditsend.py',
-  '            self._mark_enabled(bool(cfg["enabled"]))\n',
-  '            pass\n'),
-
- ('receiver: night journal files are refused as not audit days',
-  'tools/audit_receiver.py',
-  '    if NIGHT_RE.match(name):\n',
-  '    if False:\n'),
-
- ('receiver: a night file with the wrong checksum is stored',
-  'tools/audit_receiver.py',
-  '    if not hmac.compare_digest(sha, h("X-LTC-SHA256")):\n'
-  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
-  '    root = os.path.join(store, NIGHTS)\n',
-  '    if False:\n'
-  '        return 400, {"ok": False, "error": "the checksum does not match"}\n'
-  '    root = os.path.join(store, NIGHTS)\n'),
-
- ('receiver: a different night file is acknowledged as the same',
-  'tools/audit_receiver.py',
-  '        if sha == have:\n',
-  '        if True:\n'),
-
- ('receiver: a night file replaces one it does not name',
-  'tools/audit_receiver.py',
-  '        if wants and hmac.compare_digest(wants, have):\n',
-  '        if True:\n'),
-
- ('receiver: a refused night file is kept again on every try',
-  'tools/audit_receiver.py',
-  '            if not os.path.exists(keep):\n'
-  '                tmp = _part(keep)\n',
-  '            if True:\n'
-  '                keep += str(time.time_ns())\n'
-  '                tmp = _part(keep)\n'),
-
- ('receiver: a night that is not a date is taken',
-  'tools/audit_receiver.py',
-  '        time.strptime(night, "%Y-%m-%d")\n',
-  '        pass\n'),
-
- ('receiver: what the PC said about an incomplete night is not kept',
-  'tools/audit_receiver.py',
-  '           "bytes": len(body), "incomplete": meta["incomplete"],\n',
-  '           "bytes": len(body), "incomplete": None,\n'),
-
- ('receiver: verify does not check the night journal files',
-  'tools/audit_receiver.py',
-  '                ok = hashlib.sha256(fh.read()).hexdigest() == r.get("sha256")\n',
-  '                ok = True\n'),
-
- ('receiver: a bad header raises instead of answering',
-  'tools/audit_receiver.py',
-  '    except (TypeError, ValueError, UnicodeError):\n',
-  '    except ZeroDivisionError:\n'),
-
- ('receiver: a store it cannot write raises instead of answering',
-  'tools/audit_receiver.py',
-  '    except OSError as e:\n'
-  '        return 500,',
-  '    except ZeroDivisionError as e:\n'
-  '        return 500,'),
-
- ('receiver: two requests share a temporary file',
-  'tools/audit_receiver.py',
-  '            f"{next(_PARTS)}.part")\n',
-  '            f"part")\n'),
-
- ('receiver: a name with a newline after it is taken',
-  'tools/audit_receiver.py',
-  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)\\Z")\n',
-  '                      r"\\.(journal\\.txt|jsonl|summary\\.md)$")\n'),
-
  ('hazer test: no 60 s limit (a forgotten test fogs on)',
   'ltcplay/hazertest.py',
   'MAX_S = 60                  # Jeff decides; a forgotten test never fogs on\n',
@@ -23940,8 +24035,8 @@ def build():
 
  ('hazer test: a quiet screen leaves it on',
   'ltcplay/hazertest.py',
-  '        if now - r["page"] > PAGE_QUIET_S:\n',
-  '        if False:\n'),
+  '            if now - e["page"] > PAGE_QUIET_S:\n',
+  '            if False:\n'),
 
  ('hazer test: ON needs no permission (not the arm row)',
   'ltcplay/users.py',
@@ -23955,8 +24050,8 @@ def build():
 
  ('hazer test: ON from the show network without screen_arming',
   'ltcplay/remote.py',
-  '            why = ("The hazer test from a device on the show network needs "\n',
-  '            return 200, {}\n            why = ("The hazer test from a device on the show network needs "\n'),
+  '            why = ("Hazers not turned on: this device may not turn hazers "\n',
+  '            return 200, {}\n            why = ("Hazers not turned on: this device may not turn hazers "\n'),
 
  ('hazer test: Stop leaves it on at the engine',
   'ltcplay/remote.py',
@@ -23995,8 +24090,8 @@ def build():
 
  ('hazer test: the page shows On with no contact',
   'ltcplay/web/remote2.html',
-  '  const known = !isSt && v.state !== "unknown";\n',
-  '  const known = true;\n'),
+  'function hztKnown(v){ return !stale() && !!v && v.available === true && v.state !== "unknown" && Array.isArray(v.hazers); }',
+  'function hztKnown(v){ return !!v && v.available === true && Array.isArray(v.hazers); }'),
 
  ('arm all hazers: every entry armed whatever its type',
   'ltcplay/hazers.py',
@@ -24030,8 +24125,8 @@ def build():
 
  ('hazer test: the timer never checks its starter is still signed in',
   'ltcplay/hazertest.py',
-  '        gone = self._sign_in_gone(r.get("token", ""), r.get("who", ""))\n',
-  '        gone = ""\n'),
+  '            gone = self._sign_in_gone(e.get("token", ""), e.get("who", ""))\n',
+  '            gone = ""\n'),
 
  ('hazer test: a running test ignores flamesafe going stale',
   'ltcplay/hazertest.py',
@@ -24065,8 +24160,8 @@ def build():
 
  ('hazer test: the Stream Deck is not told it runs',
   'ltcplay/remote.py',
-  '                                     "test": self._ht_running(),\n',
-  '                                     "test": False,\n'),
+  '                                     "test": self._ht_names(),\n',
+  '                                     "test": [],\n'),
 
  ('hazer test: a show state that cannot be read is idle',
   'ltcplay/remote.py',
@@ -24080,18 +24175,18 @@ def build():
 
  ('hazer test: it drives the hazers while a show cue plays or the gate is shut',
   'ltcplay/flamelink.py',
-  '                tgate and not self._haze_live\n',
-  '                True\n'),
+  '                tgate and not self._haze_live else frozenset()\n',
+  '                True else frozenset()\n'),
 
  ('hazer test: the status reads on past its hard end',
   'ltcplay/flamelink.py',
-  '                "hazer_test_on": self.hazer_test_live_now(),\n',
-  '                "hazer_test_on": self._htest_on,\n'),
+  '            if not 0 <= now - beat <= HAZER_TEST_HOLD_S:\n                return frozenset()\n            return frozenset(n for n, u in dict(until).items() if now < u)\n',
+  '            return frozenset(dict(until))\n'),
 
  ('hazer test: the page cannot send Off without contact',
   'ltcplay/web/remote2.html',
-  '  if(!hztConfirmedOff(v)){ hazerTestOff(); return; }\n',
-  '  if(v && v.on === true){ hazerTestOff(); return; }\n'),
+  '  if(!hztKnown(v)) return {mode: "off", label: "Turn off"};\n',
+  '  if(!hztKnown(v)) return {mode: "on", label: "Turn on"};\n'),
 
  ("hazer test: the rack screen's hazer tiles read DISARMED during it",
   'ltcplay/web/remote2.html',
@@ -24154,13 +24249,13 @@ def build():
 
  ("show control: Start now says Run is off from the sentence again",
   "ltcplay/web/remote_rules.js",
-  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
-  "sub:/^Run has not been pressed/.test(String(b.text)) ? \"Run is off\""),
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Show control is off\"",
+  "sub:/^Run has not been pressed/.test(String(b.text)) ? \"Show control is off\""),
 
  ("show control: Start now reads a missing Run boolean as on",
   "ltcplay/web/remote_rules.js",
-  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
-  "sub:(st && st.show && st.show.show_control_on === false) ? \"Run is off\""),
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Show control is off\"",
+  "sub:(st && st.show && st.show.show_control_on === false) ? \"Show control is off\""),
 
  ("show control: the status ignores the Run gate",
   "ltcplay/remote.py",
@@ -24177,10 +24272,97 @@ def build():
   "            if not (cs.get(\"running\") or cs.get(\"starting\")):\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)",
   "            if False:\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)"),
 
+ # Cold review of #240 (Jeff, 2026-11-11): Stop leaves show control on, so
+ # a refusal while it is on says turn it off, never press Stop.
+ ('show control: the timed purge refusal says press Stop again',
+  'ltcplay/remote.py',
+  '                       False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
+  '                       False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
+
+ ('show control: a new show file refusal says press Stop again',
+  'ltcplay/remote.py',
+  '            return 409, ("A show file is running. Turn show control off "\n                         "first (End rehearsal in a rehearsal), then make "',
+  '            return 409, ("A show file is running. Press Stop first, then "\n                         "make "'),
+
+ ('show control: the rig-not-answering line says Stop and Run again',
+  'ltcplay/display.py',
+  'f"and the switch. Turn show control off and on (on the Mac page: "\n                f"Stop, then Run) after it is back, or the socket "',
+  'f"and the switch. Stop and Run after it is back, or the socket "'),
+
  ("hazer test: show control's state unreadable is read as off",
   'ltcplay/remote.py',
   '                return "show control\'s state could not be read"\n',
   '                cs = {}\n'),
+
+ ('hazer test: the link runs every hazer, not only the selected ones',
+  'ltcplay/flamelink.py',
+  '            for n in (test if test else self._hazers_on):\n',
+  '            for n in (self._hazers if test else self._hazers_on):\n'),
+
+ ('hazer test: a second On restarts a hazer already running (its 60 s extended)',
+  'ltcplay/hazertest.py',
+  '        new = [n for n in names if n not in self.running()]\n',
+  '        new = list(names)\n'),
+
+ ('hazer test: a name the engine does not have is dropped, the rest turned on',
+  'ltcplay/hazertest.py',
+  '    bad = [n for n in raw if n not in known]\n',
+  '    bad = []\n'),
+
+ ('hazer test: Off needs screen_arming like On (Off no longer always works)',
+  'ltcplay/remote.py',
+  '            ht.stop(why, who=who, screen=device, system=False)\n            return 200, {"ok": True, "text": "Every hazer OFF."}\n',
+  '            pass\n'),
+
+ ('hazer test: All on is refused ("all" is not read)',
+  'ltcplay/remote.py',
+  '        if sel == "all":\n            sel = ht.names()\n',
+  '        if False:\n            sel = ht.names()\n'),
+
+ ("hazer test: the page's All off sends a selection, not every hazer",
+  'ltcplay/web/remote2.html',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(null));\n',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(["Hazer 1"]));\n'),
+
+ ("hazer test: the page's All on sends nothing",
+  'ltcplay/web/remote2.html',
+  '$("hzt-allon").addEventListener("click", () => hztOn("all"));\n',
+  ''),
+
+ ("arm all hazers: the show screen's button is never disabled",
+  'ltcplay/web/remote2.html',
+  '  ab.disabled = al.mode !== "arm" || !!al.why;\n',
+  '  ab.disabled = false;\n'),
+
+ ('arm all hazers: the show screen reads a state not known as known',
+  'ltcplay/web/remote2.html',
+  '  if(!known) return {mode: "none", state: "Not known", why: ""};\n',
+  '  if(false) return {mode: "none", state: "Not known", why: ""};\n'),
+
+ ("hazer test: one screen's beat keeps every screen's hazers on",
+  'ltcplay/hazertest.py',
+  '                if (isinstance(page, str) and page and e["owner"] == page) \\\n                        or e["rid"] == run:\n',
+  '                if True:\n'),
+
+ ("hazer test: signing out ends every person's hazers",
+  'ltcplay/hazertest.py',
+  '            mine = [n for n, e in r["names"].items()\n                    if e.get("token") == token]\n',
+  '            mine = list(r["names"])\n'),
+
+ ('hazer test: the link extends a hazer already running',
+  'ltcplay/flamelink.py',
+  '                    if n not in running:\n                        until[n] = mine + s\n',
+  '                    until[n] = mine + s\n'),
+
+ ("hazer test: the page's reason comes from every hazer, not the ticked ones",
+  'ltcplay/web/remote2.html',
+  '  const rows = v.hazers.filter(h => names.includes(h.name) && h.on === false);\n',
+  '  const rows = v.hazers.filter(h => h.on === false);\n'),
+
+ ('hazer test: the page lets an iPad with arming off press Turn on',
+  'ltcplay/web/remote2.html',
+  '  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";\n  if(names === "all")',
+  '  if(names === "all")'),
 ]
 
 
