@@ -23508,8 +23508,8 @@ def build():
 
  ('hazer test: the page shows On with no contact',
   'ltcplay/web/remote2.html',
-  '  const known = !isSt && v.state !== "unknown";\n',
-  '  const known = true;\n'),
+  'function hztKnown(v){ return !stale() && !!v && v.available === true && v.state !== "unknown" && Array.isArray(v.hazers); }',
+  'function hztKnown(v){ return !!v && v.available === true && Array.isArray(v.hazers); }'),
 
  ('arm all hazers: every entry armed whatever its type',
   'ltcplay/hazers.py',
@@ -23543,8 +23543,8 @@ def build():
 
  ('hazer test: the timer never checks its starter is still signed in',
   'ltcplay/hazertest.py',
-  '        gone = self._sign_in_gone(r.get("token", ""), r.get("who", ""))\n',
-  '        gone = ""\n'),
+  '            gone = self._sign_in_gone(e.get("token", ""), e.get("who", ""))\n',
+  '            gone = ""\n'),
 
  ('hazer test: a running test ignores flamesafe going stale',
   'ltcplay/hazertest.py',
@@ -23578,8 +23578,8 @@ def build():
 
  ('hazer test: the Stream Deck is not told it runs',
   'ltcplay/remote.py',
-  '                                     "test": self._ht_running(),\n',
-  '                                     "test": False,\n'),
+  '                                     "test": self._ht_names(),\n',
+  '                                     "test": [],\n'),
 
  ('hazer test: a show state that cannot be read is idle',
   'ltcplay/remote.py',
@@ -23593,18 +23593,18 @@ def build():
 
  ('hazer test: it drives the hazers while a show cue plays or the gate is shut',
   'ltcplay/flamelink.py',
-  '                tgate and not self._haze_live\n',
-  '                True\n'),
+  '                tgate and not self._haze_live else frozenset()\n',
+  '                True else frozenset()\n'),
 
  ('hazer test: the status reads on past its hard end',
   'ltcplay/flamelink.py',
-  '                "hazer_test_on": self.hazer_test_live_now(),\n',
-  '                "hazer_test_on": self._htest_on,\n'),
+  '            if not 0 <= now - beat <= HAZER_TEST_HOLD_S:\n                return frozenset()\n            return frozenset(n for n, u in dict(until).items() if now < u)\n',
+  '            return frozenset(dict(until))\n'),
 
  ('hazer test: the page cannot send Off without contact',
   'ltcplay/web/remote2.html',
-  '  if(!hztConfirmedOff(v)){ hazerTestOff(); return; }\n',
-  '  if(v && v.on === true){ hazerTestOff(); return; }\n'),
+  '  if(!hztKnown(v)) return {mode: "off", label: "Turn off"};\n',
+  '  if(!hztKnown(v)) return {mode: "on", label: "Turn on"};\n'),
 
  ("hazer test: the rack screen's hazer tiles read DISARMED during it",
   'ltcplay/web/remote2.html',
@@ -23694,6 +23694,51 @@ def build():
   'ltcplay/remote.py',
   '                return "show control\'s state could not be read"\n',
   '                cs = {}\n'),
+
+ ('hazer test: the link runs every hazer, not only the selected ones',
+  'ltcplay/flamelink.py',
+  '            for n in (test if test else self._hazers_on):\n',
+  '            for n in (self._hazers if test else self._hazers_on):\n'),
+
+ ('hazer test: a second On restarts a hazer already running (its 60 s extended)',
+  'ltcplay/hazertest.py',
+  '        new = [n for n in names if n not in self.running()]\n',
+  '        new = list(names)\n'),
+
+ ('hazer test: a name the engine does not have is dropped, the rest turned on',
+  'ltcplay/hazertest.py',
+  '    bad = [n for n in raw if n not in known]\n',
+  '    bad = []\n'),
+
+ ('hazer test: Off needs screen_arming like On (Off no longer always works)',
+  'ltcplay/remote.py',
+  '            ht.stop(why, who=who, screen=device, system=False)\n            return 200, {"ok": True, "text": "Every hazer OFF."}\n',
+  '            pass\n'),
+
+ ('hazer test: All on is refused ("all" is not read)',
+  'ltcplay/remote.py',
+  '        if sel == "all":\n            sel = ht.names()\n',
+  '        if False:\n            sel = ht.names()\n'),
+
+ ("hazer test: the page's All off sends a selection, not every hazer",
+  'ltcplay/web/remote2.html',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(null));\n',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(["Hazer 1"]));\n'),
+
+ ("hazer test: the page's All on sends nothing",
+  'ltcplay/web/remote2.html',
+  '$("hzt-allon").addEventListener("click", () => hztOn("all"));\n',
+  ''),
+
+ ("arm all hazers: the show screen's button is never disabled",
+  'ltcplay/web/remote2.html',
+  '  ab.disabled = al.mode !== "arm" || !!al.why;\n',
+  '  ab.disabled = false;\n'),
+
+ ('arm all hazers: the show screen reads a state not known as known',
+  'ltcplay/web/remote2.html',
+  '  if(!known) return {mode: "none", state: "Not known", why: ""};\n',
+  '  if(false) return {mode: "none", state: "Not known", why: ""};\n'),
 ]
 
 

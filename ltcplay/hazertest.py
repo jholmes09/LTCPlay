@@ -1,23 +1,28 @@
-"""The hazer test (Jeff, 2026-11-11): "add a hazer purge button, so to
-speak. Same page as the other purges but more like a hazer test that
-toggles on/off even when the show isn't running."
+"""The hazer test (Jeff, 2026-11-11, per hazer 2026-11-13): "add a hazer
+purge button, so to speak. Same page as the other purges but more like a
+hazer test that toggles on/off even when the show isn't running." And:
+"Hazers are meant to toggle. On the Purge page, we select the hazers, and
+the levels are shown and the option to turn OFF hazers but not ON."
 
 What it is
 ==========
 
-One tap turns every hazer in flamesafe's config ON at its stored Haze and
-Fan levels (hazers.py, the rack screen's Levels), with no show playing; a
-second tap turns it OFF. It never arms a hazer: ARMED (which hazers run
-during a show) is untouched, and when the test ends only the ARMED ones
-are named to flamesafe again (with no show playing, at zero).
+The operator selects any of the hazers in flamesafe's config (each shown
+with its stored Haze and Fan level, the Levels sheet's numbers) and turns
+the SELECTED ones on at those levels, with no show playing, or off. Each
+hazer the test turns on runs for MAX_S from its own press, never longer: a
+second press never extends a hazer already running. Hazers not selected
+stay exactly as they were. It never turns a hazer On in the show sense
+(hazers.py "ARMED": runs at its levels while a show plays); that is
+untouched, and when the test ends only those are named to flamesafe again
+(with no show playing, at zero).
 
 The flame link carries it exactly as it carries the fuel pump
-(flamelink.hazer_test_start / hazer_test_beat): the frame names every
+(flamelink.hazer_test_start / hazer_test_beat): the frame names each test
 hazer in "hazers_on" and writes its levels on its two slots only while the
-engine's timer beats it and inside its hard end on the link's own clock.
-flamesafe needs nothing new: it passes a hazer's slots while the frame
-names it, the link is fresh and no Abort has stood since it last saw it
-OFF (flamesafe/CONTRACT.md, "Passthrough: the hazers").
+engine's timer beats it, inside that hazer's own hard end on the link's
+clock. flamesafe needs nothing new (flamesafe/CONTRACT.md, "Passthrough:
+the hazers").
 
 How it always ends
 ==================
@@ -26,8 +31,8 @@ Three clocks, each enough on its own, as the fuel pump:
 
   1. This engine's timer (SEND_S): every pass checks every ending cause
      (below), then beats the link.
-  2. The flame link's hard end and beat (HAZER_TEST_HOLD_S): a wrecked or
-     hung timer cannot keep it on.
+  2. The flame link's hard end per hazer and its beat (HAZER_TEST_HOLD_S):
+     a wrecked or hung timer cannot keep one on.
   3. flamesafe: an engine that dies (or shuts down) sends no frames, and
      flamesafe zeroes every hazer slot at frame_stale_ms.
 
@@ -35,23 +40,24 @@ The rules
 =========
 
   - OFF at start and after an engine restart.
-  - Ends by itself after MAX_S (60 s), with a countdown on the screen.
-  - Ends on Stop and Abort (disarm_all ends it at the link before its
-    first copy), the page that started it going quiet for PAGE_QUIET_S
-    (its beat), a show starting or held, show control turning on, live
-    flame programming, the starter's sign-in ending, flamesafe's status
-    not fresh, the flame link not sending, flamesafe not passing it for
-    NOT_PASSING_S, or any error (fail closed: OFF, and said).
-  - ON needs the role matrix's arm row (users.classify "hazer-test", the
-    same row as arming a hazer), from the show network screen_arming too
-    (remote.may_act_from), and every check that arming a hazer has today
-    (hazers.Hazers.refusal: the flame link sending, flamesafe fresh, no
-    Stop still being sent, live flame programming off, flamesafe's hazers
-    the same as the engine's), and no show playing or held and show
-    control off (during a show the show owns the hazers: ARMED ones run at
-    their levels, DISARMED ones are off on purpose), and at least one
-    hazer with a Haze level above 0.
-  - OFF: always, anyone, signed in or not.
+  - Each hazer ends by itself MAX_S (60 s) after the press that turned it
+    on, with a countdown on the screen; its starter's sign-in ending, or
+    flamesafe not passing it for NOT_PASSING_S, ends that hazer.
+  - Every hazer of the test ends on Stop and Abort (disarm_all ends it at
+    the link before its first copy), Hold (a zero), Hazers off, the page
+    that started it going quiet for PAGE_QUIET_S (its beat), a show
+    starting or held, show control turning on, live flame programming,
+    flamesafe's status not fresh, the flame link not sending, or any error
+    (fail closed: OFF, and said).
+  - ON names its hazers (validated against the engine's own hazer list; a
+    name it does not have refuses the whole press) and needs the role
+    matrix's arm row (users.classify "hazer-test", the row that turns a
+    hazer On for the show), from the show network screen_arming too
+    (remote.may_act_from), every check that turning a hazer On has today
+    (hazers.Hazers.refusal), no show playing or held, show control off,
+    and a Haze level above 0 on each selected hazer.
+  - OFF: always, anyone, signed in or not; for the named hazers, or all.
+    An OFF naming a hazer the engine does not have turns every one off.
 """
 import collections
 import secrets
@@ -68,25 +74,41 @@ PAGE_QUIET_S = 10.0         # the page's beat missing this long ends it
 PAGE_BEAT_S = 2.0           # how often the page beats (remote2.html)
 NOT_PASSING_S = 1.5         # as the fuel pump
 RUN_IDS_KEPT = 64
+NAMES_MAX = 16
+
+
+def names_of(raw, known):
+    """(names, "") for a press's "hazers": a non-empty list of names the
+    engine has (duplicates dropped, in the engine's order), or (None,
+    why) in a sentence. A name the engine does not have refuses the whole
+    list."""
+    if not isinstance(raw, list) or not raw or len(raw) > NAMES_MAX or \
+            not all(isinstance(n, str) for n in raw):
+        return None, "select one hazer or more."
+    bad = [n for n in raw if n not in known]
+    if bad:
+        return None, (f"{', '.join(repr(n) for n in bad[:3])} is not a "
+                      f"hazer in flamesafe's config. Nothing was changed.")
+    return [n for n in known if n in raw], ""
 
 
 class HazerTest:
-    """The hazer test's run, its refusals and its timer.
+    """The hazer test's runs, its refusals and its timer.
 
     hazers          () -> the engine's hazers.Hazers, or None
     show_busy       () -> why a show owns the hazers now, or ""
-    signed_out      (token, who) -> why the starter's sign-in ended, or ""
+    signed_out      (token, who) -> why a starter's sign-in ended, or ""
     journal         (who, screen, outcome, text, fault=False)
     audit           audit.AuditLog or None
     clock           the engine's monotonic clock
-    threaded        False for the selftest: send() by hand"""
+    threaded        False for the selftest: send() by hand
+    gate            () -> True while the test may haze, asked by the flame
+                    link on every frame (flamelink.hazer_test_gate)"""
 
     def __init__(self, hazers, show_busy=None, signed_out=None,
                  journal=None, audit=None, clock=time.monotonic,
                  threaded=True, gate=None):
         self._hazers = hazers
-        # () -> True while the test may haze, asked by the flame link on
-        # every frame (flamelink.hazer_test_gate). None: no gate.
         self._gate = gate
         self._show_busy = show_busy or (lambda: "")
         self._signed_out = signed_out or (lambda token, who: "")
@@ -95,10 +117,12 @@ class HazerTest:
         self._clock = clock
         self._threaded = threaded
         self._lock = threading.RLock()
+        # The run while any hazer is on: {"beat", "gen", "page", "ids",
+        # "names": {name: {"deadline", "who", "token", "screen", "np"}}}.
         self.run = None
         self._off_gen = 0
         self._used = collections.deque(maxlen=RUN_IDS_KEPT)
-        self.last_off = None        # {"reason", "who", "n", "boot"}
+        self.last_off = None        # {"reason", "who", "names", "n", "boot"}
         self._offs = 0
         self.boot = secrets.token_hex(4)
 
@@ -111,7 +135,8 @@ class HazerTest:
         except Exception:
             pass
 
-    def _audit(self, who, screen, action, result, reason, system=False):
+    def _audit(self, who, screen, action, target, result, reason,
+               system=False):
         log = self.audit
         if log is None:
             return
@@ -119,7 +144,7 @@ class HazerTest:
             from . import audit as audit_mod
             log.event(user=audit_mod.SYSTEM if system else
                       (who or audit_mod.UNSIGNED), surface="engine",
-                      action=action, target=NAME, result=result,
+                      action=action, target=target or NAME, result=result,
                       reason=reason, source=screen or "engine")
         except Exception:
             pass
@@ -138,14 +163,19 @@ class HazerTest:
         hz = self.hz()
         return hz.names() if hz is not None else []
 
-    def on(self):
-        """ON here: a run under way and the flame link carrying it."""
+    def running(self):
+        """The names on here: the run's AND the flame link's."""
         link = self.link()
+        r = self.run
         try:
-            return self.run is not None and link is not None and \
-                bool(link.hazer_test_live_now())
+            if r is None or link is None:
+                return set()
+            return set(r["names"]) & set(link.hazer_test_live_now())
         except Exception:
-            return False
+            return set()
+
+    def on(self):
+        return bool(self.running())
 
     def _busy(self):
         try:
@@ -172,12 +202,14 @@ class HazerTest:
                 for p in fl.get("passthrough") or [] if isinstance(p, dict)}
 
     # -- why not ------------------------------------------------------------
-    def refusal(self):
-        """Why the test may not start now, in a sentence, or ""."""
+    def refusal(self, names=None):
+        """Why `names` (every hazer when None) may not be turned on now, in
+        a sentence, or ""."""
         hz = self.hz()
-        names = self.names()
-        if hz is None or not names:
+        known = self.names()
+        if hz is None or not known:
             return "there are no hazers in flamesafe's config."
+        names = known if names is None else names
         busy = self._busy()
         if busy:
             return busy.rstrip(".") + "."
@@ -186,111 +218,128 @@ class HazerTest:
             if why:
                 return why
         lv = hz.levels.levels
-        if not any(lv.get(n, (0, 0))[0] > 0 for n in names):
-            return "every hazer's Haze level is 0. Set a level first."
+        zero = [n for n in names if not lv.get(n, (0, 0))[0] > 0]
+        if zero:
+            return (f"{', '.join(zero)}: the Haze level is 0. Set a level "
+                    f"first.")
         if not callable(getattr(self.link(), "hazer_test_start", None)):
             return "the flame link cannot run a hazer test."
         return ""
 
     # -- the presses -------------------------------------------------------
-    def start(self, who="", screen="", run=None, token=""):
-        """ON for MAX_S, named by the press id `run`: (ok, sentence)."""
+    def start(self, names, who="", screen="", run=None, token=""):
+        """The SELECTED hazers ON for MAX_S each, named by the press id
+        `run`: (ok, sentence). A hazer already on keeps its own end."""
         rid = run if isinstance(run, str) and 0 < len(run) <= 64 else None
         if rid is None:
             return False, "Not started: press again."
-        with self._lock:
-            used = rid in self._used
-            self._used.append(rid)
-            off0 = self._off_gen
-            running = self.run
-        if used:
-            return False, "Not started: that press was already used."
-        if running is not None:
-            return False, "The hazer test is already on."
-        why = self.refusal() or self._sign_in_gone(token, who)
+        names, why = names_of(names, self.names())
         if why:
             why = f"Hazer test not started: {why}"
             self._note(who, screen, "refused",
                        f"{who or 'Someone'} asked for the hazer test on the "
                        f"{screen}; refused: {why}")
-            self._audit(who, screen, "hazer test on", "refused", why)
+            self._audit(who, screen, "hazer test on", "", "refused", why)
+            return False, why
+        with self._lock:
+            used = rid in self._used
+            self._used.append(rid)
+            off0 = self._off_gen
+        if used:
+            return False, "Not started: that press was already used."
+        target = ", ".join(names)
+        new = [n for n in names if n not in self.running()]
+        if not new:
+            return True, f"Already on: {target}."
+        why = self.refusal(new) or self._sign_in_gone(token, who)
+        if why:
+            why = f"Hazer test not started: {why}"
+            self._note(who, screen, "refused",
+                       f"{who or 'Someone'} asked for the hazer test on the "
+                       f"{screen} ({target}); refused: {why}")
+            self._audit(who, screen, "hazer test on", target, "refused",
+                        why)
             return False, why
         link = self.link()
         ok = False
         with self._lock:
-            if self.run is None and self._off_gen == off0:
+            if self._off_gen == off0:
                 try:
-                    gen = link.abort_id
-                    link.hazer_test_gate = self._gate
                     now = self._clock()
-                    r = {"id": rid, "start": now, "beat": now, "page": now,
-                         "deadline": now + MAX_S, "gen": gen, "who": who,
-                         "screen": screen, "np": None, "token": token or ""}
-                    ok = link.hazer_test_start(MAX_S, gen,
-                                               deadline=r["deadline"],
-                                               clock=self._clock) is True
+                    r = self.run
+                    gen = link.abort_id if r is None else r["gen"]
+                    link.hazer_test_gate = self._gate
+                    ok = link.hazer_test_start(
+                        MAX_S, gen, deadline=now + MAX_S,
+                        clock=self._clock, names=new) is True
+                    if ok:
+                        if r is None:
+                            r = {"beat": now, "gen": gen, "page": now,
+                                 "ids": collections.deque(
+                                     maxlen=RUN_IDS_KEPT), "names": {}}
+                        r["page"] = now
+                        r["ids"].append(rid)
+                        for n in new:
+                            r["names"][n] = {"deadline": now + MAX_S,
+                                             "who": who, "token": token or "",
+                                             "screen": screen, "np": None}
+                        self.run = r
                 except Exception:
                     ok = False
-                    try:
-                        link.hazer_test_stop()
-                    except Exception:
-                        pass
-                if ok:
-                    self.run = r
+                    self._link_off(new)
         if not ok:
             why = ("Hazer test not started: the flame link did not take it "
                    "(a Stop landed?). Press again in a moment.")
             self._note(who, screen, "refused",
                        f"{who or 'Someone'} asked for the hazer test on the "
-                       f"{screen}; refused: {why}")
-            self._audit(who, screen, "hazer test on", "refused", why)
+                       f"{screen} ({', '.join(new)}); refused: {why}")
+            self._audit(who, screen, "hazer test on", ", ".join(new),
+                        "refused", why)
             return False, why
         self._note(who, screen, "on",
                    f"{who or 'Someone'} turned the hazer test on on the "
-                   f"{screen} ({', '.join(self.names())}) for {MAX_S} s at "
-                   f"their levels. It turns off by itself then; Stop, Hazer "
-                   f"test off and a quiet screen turn it off sooner.")
-        self._audit(who, screen, "hazer test on", "accepted", f"{MAX_S} s")
+                   f"{screen} for {', '.join(new)} for {MAX_S} s at their "
+                   f"levels. It turns off by itself then; Stop, Hazer test "
+                   f"off and a quiet screen turn it off sooner.")
+        self._audit(who, screen, "hazer test on", ", ".join(new),
+                    "accepted", f"{MAX_S} s")
         why = self.send()
         if why:
             return False, f"The hazer test turned off at once: {why}."
         if self._threaded:
-            threading.Thread(target=self._loop, args=(r,), daemon=True,
+            threading.Thread(target=self._loop, daemon=True,
                              name="ltcplay-hazer-test").start()
-        return True, f"Hazer test ON for {MAX_S} s."
+        return True, f"Hazer test ON: {', '.join(new)}, {MAX_S} s."
 
     def beat(self, run):
         """The page that started it is still there. (ok, sentence). A beat
-        never starts anything and never moves the end."""
+        never starts anything and never moves an end."""
         with self._lock:
             r = self.run
-            if r is None or not isinstance(run, str) or r["id"] != run:
+            if r is None or not isinstance(run, str) or run not in r["ids"]:
                 return False, "The hazer test is off."
             r["page"] = self._clock()
         return True, "Hazer test on."
 
     def _end_reason(self, r, now):
+        """(why every test hazer ends now or "", [(name, why)] for the ones
+        that end on their own)."""
         if now - r["beat"] > BEAT_STALE_S or now < r["beat"]:
             return (f"the engine's timer stalled (nothing sent for "
-                    f"{now - r['beat']:.2f} s)")
-        if now >= r["deadline"]:
-            return f"its {MAX_S} s were up"
+                    f"{now - r['beat']:.2f} s)"), []
         if now - r["page"] > PAGE_QUIET_S:
             return (f"the screen that started it went quiet for "
-                    f"{PAGE_QUIET_S:g} s")
-        gone = self._sign_in_gone(r.get("token", ""), r.get("who", ""))
-        if gone:
-            return gone
+                    f"{PAGE_QUIET_S:g} s"), []
         busy = self._busy()
         if busy:
-            return busy.rstrip(".")
+            return busy.rstrip("."), []
         link = self.link()
         try:
             if link.abort_id != r["gen"]:
                 return (link.hazer_test_ended() or
-                        "the disarm to every flame group was sent (a Stop)")
+                        "the disarm to every flame group was sent (a Stop)"), []
         except Exception:
-            return "the flame link could not be read"
+            return "the flame link could not be read", []
         hz = self.hz()
         try:
             why = hz.down() if hz is not None else "the hazers are gone"
@@ -299,39 +348,53 @@ class HazerTest:
         except Exception as e:
             why = f"its check failed ({type(e).__name__})"
         if why:
-            return why.rstrip(".")
+            return why.rstrip("."), []
+        ends = []
         passing = self._passing()
-        if not all(passing.get(n) for n in self.names()):
-            since = r.get("np")
-            if since is None:
-                r["np"] = now
-            elif now - since > NOT_PASSING_S:
-                return f"flamesafe did not pass it for {NOT_PASSING_S:g} s"
-        else:
-            r["np"] = None
-        return ""
+        for n, e in list(r["names"].items()):
+            if now >= e["deadline"]:
+                ends.append((n, f"its {MAX_S} s were up"))
+                continue
+            gone = self._sign_in_gone(e.get("token", ""), e.get("who", ""))
+            if gone:
+                ends.append((n, gone))
+                continue
+            if not passing.get(n):
+                since = e.get("np")
+                if since is None:
+                    e["np"] = now
+                elif now - since > NOT_PASSING_S:
+                    ends.append((n, f"flamesafe did not pass it for "
+                                    f"{NOT_PASSING_S:g} s"))
+            else:
+                e["np"] = None
+        return "", ends
 
     def send(self, now=None):
         """One pass of the timer: every ending cause, then the beat on the
-        flame link. "" or why it ended. Never raises."""
+        flame link. "" or why the last hazer ended. Never raises."""
         try:
             now = self._clock() if now is None else now
             with self._lock:
                 r = self.run
             if r is None:
                 return "it is not on"
-            why = self._end_reason(r, now)
+            why, ends = self._end_reason(r, now)
             if why:
                 self._finish(r, why)
                 return why
+            last = ""
+            for n, w in ends:
+                self._end_names(r, [n], w)
+                last = w
+            if self.run is not r:
+                return last or "it was turned off"
             link = self.link()
             with self._lock:
                 if self.run is not r:
                     return "it was turned off"
                 fresh = self._clock()
-                if fresh >= r["deadline"]:
-                    lost = f"its {MAX_S} s were up"
-                elif fresh - r["beat"] > BEAT_STALE_S or fresh < r["beat"]:
+                if fresh - r["beat"] > BEAT_STALE_S or fresh < r["beat"]:
                     lost = (f"the engine's timer stalled (nothing sent for "
                             f"{fresh - r['beat']:.2f} s)")
                 elif link.hazer_test_beat(r["gen"]) is not True:
@@ -341,55 +404,102 @@ class HazerTest:
                 else:
                     r["beat"] = fresh
                     lost = ""
+                    live = set(link.hazer_test_live_now())
+                    gone = [n for n in r["names"] if n not in live]
             if lost:
                 self._finish(r, lost)
-            return lost
+                return lost
+            if gone:
+                self._end_names(r, gone, "the flame link ended it")
+                if self.run is not r:
+                    return "the flame link ended it"
+            return ""
         except Exception as e:
             why = f"its check failed ({type(e).__name__})"
             self.stop(why)
             return why
 
-    def _loop(self, r):
+    def _loop(self):
         wait = threading.Event()
         try:
-            while self.run is r:
-                if self.send():
+            while self.run is not None:
+                if self.run is None or (self.send() and self.run is None):
                     return
                 wait.wait(SEND_S)
         except Exception as e:
-            self._finish(r, f"its timer raised {type(e).__name__}")
+            self.stop(f"its timer raised {type(e).__name__}")
+
+    def _end_names(self, r, names, why, who="", screen="", system=True):
+        """End `names` of run `r` (if it is still the run)."""
+        with self._lock:
+            if self.run is not r:
+                return False
+            gone = [n for n in names if n in r["names"]]
+            for n in gone:
+                del r["names"][n]
+            if not r["names"]:
+                self.run = None
+            self._link_off(gone if self.run is not None else None)
+        if gone:
+            self._said_off(why, gone, who, screen, system)
+        return bool(gone)
 
     def _finish(self, r, why, who="", screen="", system=True):
         with self._lock:
             mine = self.run is r
+            gone = sorted(r["names"]) if mine else []
             if mine:
                 self.run = None
             self._link_off()
         if mine:
-            self._said_off(why, who, screen, system)
+            self._said_off(why, gone, who, screen, system)
         return mine
 
-    def _link_off(self):
+    def _link_off(self, names=None):
         link = self.link()
         if link is not None:
             try:
-                link.hazer_test_stop()
+                link.hazer_test_stop(names)
             except Exception:
                 pass
 
-    def _said_off(self, why, who="", screen="", system=True):
+    def _said_off(self, why, names, who="", screen="", system=True):
         why = " ".join(str(why or "Hazer test off").split())[:200]
         by = who or ("system" if system else "unsigned")
+        target = ", ".join(names or ())
         with self._lock:
             self._offs += 1
-            self.last_off = {"reason": why, "who": by, "n": self._offs,
-                             "boot": self.boot}
-        self._note(by, screen or "engine", "off", f"Hazer test off: {why}.")
-        self._audit(by, screen or "engine", "hazer test off", "accepted",
-                    why, system=system and not who)
+            self.last_off = {"reason": why, "who": by, "names": list(names or ()),
+                             "n": self._offs, "boot": self.boot}
+        self._note(by, screen or "engine", "off",
+                   f"Hazer test off ({target or 'every hazer'}): {why}.")
+        self._audit(by, screen or "engine", "hazer test off", target,
+                    "accepted", why, system=system and not who)
+
+    def stop_names(self, names, reason, who="", screen="", system=False):
+        """The named hazers OFF now (the others as they were). An OFF
+        naming a hazer the engine does not have turns every one off.
+        (ok, sentence). Never refused, never raises."""
+        try:
+            got, bad = names_of(names, self.names())
+            if bad:
+                self.stop(f"{reason} (a hazer it named is not known, so "
+                          f"every one)", who, screen, system)
+                return True, "Hazer test OFF for every hazer."
+            with self._lock:
+                self._off_gen += 1
+                r = self.run
+            if r is not None:
+                self._end_names(r, got, reason, who, screen, system)
+            self._link_off(got)
+            return True, f"Hazer test OFF: {', '.join(got)}."
+        except Exception:
+            self.stop(reason, who, screen, system)
+            return True, "Hazer test OFF for every hazer."
 
     def stop(self, reason, who="", screen="", system=True):
-        """OFF now, for any reason. True when it was on. Never raises."""
+        """Every hazer of the test OFF now, for any reason. True when one
+        was on. Never raises."""
         try:
             with self._lock:
                 self._off_gen += 1
@@ -418,46 +528,71 @@ class HazerTest:
         try:
             self.stop(reason, who, screen, system)
             if was:
-                self._said_off(reason, who, screen, system)
+                self._said_off(reason, [], who, screen, system)
             return bool(was)
         except Exception:
             return False
 
     def end_for_token(self, token, why, who="", screen=""):
+        """A sign-in ended: the hazers it turned on go off now."""
         try:
             r = self.run
-            if r is None or not token or r.get("token") != token:
+            if r is None or not token:
                 return False
-            return self._finish(r, why, who, screen, system=not who)
+            mine = [n for n, e in r["names"].items()
+                    if e.get("token") == token]
+            if not mine:
+                return False
+            return self._end_names(r, mine, why, who, screen,
+                                   system=not who)
         except Exception:
             return False
 
     # -- the screens --------------------------------------------------------
     def view(self):
-        """For the screens: ON or not (the engine's word: the run AND the
-        flame link carrying it), "off", "waiting" (flamesafe has not passed
-        it yet) or "on", the time left, why ON would be refused now, and the
-        last thing that turned it off. Fails closed: an error is OFF."""
+        """For the screens: each hazer's name, its stored Haze and Fan
+        levels in percent (the Levels sheet's numbers), ON or not in the
+        test (the engine's word: the run AND the flame link carrying it),
+        "off", "waiting" (flamesafe has not passed it yet) or "on", its
+        time left; whether any is on; why turning hazers on would be
+        refused now; and the last thing that turned any off. Fails closed:
+        an error is OFF."""
         try:
             names = self.names()
             if not names:
                 return {"available": False}
+            hz = self.hz()
             r = self.run
-            on = self.on()
+            live = self.running()
             passing = self._passing()
-            state = "off" if not on else (
-                "on" if all(passing.get(n) for n in names) else "waiting")
-            left = None
-            if on and r is not None:
-                left = round(max(0.0, r["deadline"] - self._clock()), 1)
+            from .hazers import value_to_pct
+            rows = []
+            for n in names:
+                h, f = hz.levels.levels.get(n, (0, 0))
+                on = n in live
+                e = r["names"].get(n) if r is not None and on else None
+                left = None if e is None else \
+                    round(max(0.0, e["deadline"] - self._clock()), 1)
+                rows.append({"name": n, "on": on,
+                             "state": "off" if not on else (
+                                 "on" if passing.get(n) else "waiting"),
+                             "left_s": left, "haze_pct": value_to_pct(h),
+                             "fan_pct": value_to_pct(f)})
             try:
-                refusal = "" if on else self.refusal()
+                refusal = self.refusal(
+                    [x["name"] for x in rows if not x["on"]] or names)
             except Exception as e:
                 refusal = f"its check failed ({type(e).__name__})."
-            return {"available": True, "names": names, "on": on,
-                    "state": state, "left_s": left, "max_s": MAX_S,
-                    "beat_s": PAGE_BEAT_S, "refusal": refusal,
-                    "last_off": self.last_off, "boot": self.boot}
+            lefts = [x["left_s"] for x in rows if x["left_s"] is not None]
+            return {"available": True, "names": names, "hazers": rows,
+                    "on": bool(live), "names_on": sorted(live),
+                    "state": "off" if not live else (
+                        "on" if all(passing.get(n) for n in live)
+                        else "waiting"),
+                    "left_s": min(lefts) if lefts else None,
+                    "max_s": MAX_S, "beat_s": PAGE_BEAT_S,
+                    "refusal": refusal, "last_off": self.last_off,
+                    "boot": self.boot}
         except Exception as e:
             # Fail closed: a state that cannot be read is turned OFF.
             self.stop(f"its state could not be read ({type(e).__name__})")
