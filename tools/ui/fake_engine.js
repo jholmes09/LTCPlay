@@ -191,6 +191,7 @@ function dayState(name, st){
   }
   if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
   else if(st.me.role !== "admin" && st.me.role !== "superuser") fu.may_undo = false;
+  if(!st.me.user || (st.me.role !== "admin" && st.me.role !== "superuser")) fu.may_set_shows = false;
   const wc = {available: true, problem: "", state: "idle", running: false, holder: null, mine: false, run: null, armed: "disarmed",
     settings: {armed_s: 2, disarmed_s: 3, cycles: 5, burst_on_s: 0.5, burst_off_s: 1.5, max_burst_min: 5}, progress: null};
   if(name === "day_clean_paused") Object.assign(wc, {state: "paused", running: true, progress: {phase: 1, text: "waiting for the go-ahead hold", left_s: null, elapsed_s: 42}});
@@ -372,6 +373,15 @@ class FakeEngine {
           {rows: (body.rows || []).map(r => ({kind: r.kind, machines: r.machines})), saved: true, problem: ""};
         return {code: 200, body: {ok: true, text: body.reset === true ? "Rows back to one per type." : "Rows saved.", arrangement: this.mo.arrangement}};
       case "/api/remote/fuel-refill": (this.fu.units || []).forEach(u => { if(body.all || u.id === body.unit){ u.refill_soon = false; u.shows_left = 12; u.percent = 100; } }); return ok("Refill logged.");
+      // Shows per refill (fuelshows.py): +1 round to 0 after N, Fill
+      // selected to N, a type's N.
+      case "/api/remote/fuel-shows": { const per = this.fu.shows_per_refill || {};
+        const put = (u, x) => { const n = (per[u.kind] || {}).n; u.countdown = Object.assign(u.countdown || {}, {left: x, n: n, refuel_now: x === 0, words: x === 0 ? "Refuel now" : "Shows left: " + x}); };
+        if(body.action === "set"){ (per[body.kind] || {}).n = body.shows_per_refill; return ok("Shows per refill set."); }
+        if(body.action === "fill"){ (this.fu.units || []).forEach(u => { if((body.units || []).includes(u.id)){ u.refill_soon = false; if(u.countdown) put(u, u.countdown.n); } });
+          const k = (body.units || []).length + (body.hazers || []).length; return ok(k + (k === 1 ? " unit filled." : " units filled.")); }
+        const u = (this.fu.units || []).find(x => x.id === body.unit && x.countdown); if(!u) return {code: 400, body: {error: "No such flame unit."}};
+        const c = u.countdown; put(u, c.left >= c.n ? 0 : c.left + 1); return {code: 200, body: {text: u.name + ": " + u.countdown.left + " shows left.", left: u.countdown.left, n: c.n}}; }
       case "/api/remote/cleaning-beat": { const w = this.wc; this.wcBeats = (this.wcBeats || 0) + 1;
         if(body.hold && this.wcBeats >= 8){ w.state = w.state === "paused" ? "phase2" : "phase1"; w.running = true; w.progress = {phase: w.state === "phase2" ? 2 : 1, text: "running", left_s: 20, elapsed_s: 1}; this.wcBeats = 0; }
         else if(body.hold){ w.state = w.state === "paused" ? "acking" : "starting"; w.mine = true; }

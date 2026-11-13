@@ -11531,6 +11531,16 @@ def build():
   "            why = self.morning.rows_refill_refusal(ctx.device)\n",
   "            why = \"\"\n"),
 
+ ("rows: an Undo goes through from a screen that is arranging",
+  "ltcplay/remote.py",
+  "        if name in (\"fuel-refill\", \"fuel-undo\") and \\\n",
+  "        if name in (\"fuel-refill\",) and \\\n"),
+
+ ("rows: Refueled +1 and Fill selected go through from a screen that is arranging",
+  "ltcplay/remote.py",
+  "            if body.get(\"action\") != \"set\" and self.morning is not None:\n",
+  "            if False:\n"),
+
  ("rows: the arranging beat is never recorded",
   "ltcplay/morning.py",
   """        if on:
@@ -11543,10 +11553,10 @@ def build():
   '        if(FU_ARR) return `<button class="b mv ',
   '        if(false) return `<button class="b mv '),
 
- ("ui 2.0: Refill all stays on while arranging",
+ ("ui 2.0: Select to fill (Refill all's place) stays on while arranging",
   "ltcplay/web/remote2.html",
-  '    $("fu-all").disabled = !f.may_refill || !units.length || !!FU_ARR;',
-  '    $("fu-all").disabled = !f.may_refill || !units.length;'),
+  '  $("fu-fill").disabled = !f.may_refill || !(units.length || hz.length) || !!FU_ARR;',
+  '  $("fu-fill").disabled = !f.may_refill || !(units.length || hz.length);'),
 
  ("rows: the saved rows file is never used",
   "ltcplay/morning.py",
@@ -16507,6 +16517,133 @@ def build():
   "        except ZeroDivisionError as e:\n"
   "            why = f\"{type(e).__name__}: {e}\"\n            if not self.run_error:"),
 
+ # Shows per refill (fuelshows.py, FUEL.md, Jeff 2026-11-13).
+ ("shows per refill: Refueled +1 stops at N instead of going round to 0",
+  "ltcplay/fuelshows.py",
+  "    return 0.0 if x >= n - EPS else min(float(n), x + 1.0)",
+  "    return float(n) if x >= n - EPS else min(float(n), x + 1.0)"),
+
+ ("shows per refill: Refueled +1 goes above N",
+  "ltcplay/fuelshows.py",
+  "    return 0.0 if x >= n - EPS else min(float(n), x + 1.0)",
+  "    return 0.0 if x >= n - EPS else x + 1.0"),
+
+ ("shows per refill: flame takes shows left below 0",
+  "ltcplay/fuelshows.py",
+  "        return max(0.0, min(float(n), a[\"x\"] - used))",
+  "        return min(float(n), a[\"x\"] - used)"),
+
+ ("shows per refill: only show flame takes shows left down (a purge is ignored)",
+  "ltcplay/fuelshows.py",
+  "            used = (_sum(st[\"life\"]) + extra - _sum(a[\"life\"])) / per",
+  "            used = (st[\"life\"][\"show\"] + extra - a[\"life\"][\"show\"]) / per"),
+
+ ("shows per refill: a show replayed after a crash is counted again",
+  "ltcplay/fuelshows.py",
+  "        if key in self.counted:\n",
+  "        if False:\n"),
+
+ ("shows per refill: a show's frames are counted twice (each frame and at its end)",
+  "ltcplay/fuel.py",
+  "                b = self.episode[\"burn\"]\n                b[m.id] = b.get(m.id, 0.0) + dt\n",
+  "                b = self.episode[\"burn\"]\n                b[m.id] = b.get(m.id, 0.0) + dt\n                self.shows.add(m, \"show\", dt, fuel=False, wall=0.0)\n"),
+
+ ("shows per refill: a Showven's purge is not counted",
+  "ltcplay/fuel.py",
+  "                self.shows.add(m, \"purge\", dt, fuel=False, wall=self._wall(),\n"
+  "                               unsure=armed is None)\n",
+  "                pass\n"),
+
+ ("shows per refill: live flame programming goes in Rehearsal",
+  "ltcplay/fuel.py",
+  "                   \"live\" if program else \"rehearsal\")",
+  "                   \"rehearsal\")"),
+
+ ("shows per refill: a part show is learned as a whole one",
+  "ltcplay/fuelshows.py",
+  "        return [r[0] for r in recent if r[1] >= FULL_SHARE * longest]",
+  "        return [r[0] for r in recent]"),
+
+ ("shows per refill: estimating is never said",
+  "ltcplay/fuelshows.py",
+  "        if mode != \"learned\" and k >= 1:",
+  "        if False:"),
+
+ ("shows per refill: the type's flame per show is never used",
+  "ltcplay/fuelshows.py",
+  "        if len(pool) >= MIN_SHOWS:",
+  "        if False:"),
+
+ ("shows per refill: flame with flamesafe's armed state unknown reads sure",
+  "ltcplay/fuelshows.py",
+  "        if unsure:\n            st[\"unsure\"] = True\n",
+  "        if False:\n            st[\"unsure\"] = True\n"),
+
+ ("shows per refill: a crash while burning adds no not sure flame",
+  "ltcplay/fuelshows.py",
+  "                st[\"life\"][\"unsure\"] += lost_s\n",
+  "                pass\n"),
+
+ ("shows per refill: a crash adds not sure flame to a unit that burned long before",
+  "ltcplay/fuelshows.py",
+  "                    self.saved_at - st[\"last_burn_at\"] <= lost_s:",
+  "                    True:"),
+
+ ("shows per refill: a refill during a show counts the show's flame again when it ends",
+  "ltcplay/fuelshows.py",
+  "        life[\"show\"] += float(extra or 0.0)\n        return {\"x\": x, \"at\": self._wall(), \"life\": life,",
+  "        return {\"x\": x, \"at\": self._wall(), \"life\": life,"),
+
+ ("shows per refill: an entry written before the audit log is attached is lost",
+  "ltcplay/fuel.py",
+  "        if self._audit_log is None:\n            return 0\n",
+  ""),
+
+ ("shows per refill: a +1 batch is written at once, one entry per tap",
+  "ltcplay/fuelshows.py",
+  "                now - self._last_t.get(mid, float(\"-inf\")) >= COMMIT_S]",
+  "                True]"),
+
+ ("shows per refill: a batch open at a restart reads confirmed",
+  "ltcplay/fuelshows.py",
+  "        confirmed = confirmed and not p.get(\"restarted\")",
+  "        confirmed = confirmed"),
+
+ ("shows per refill: a wrap reads as usage, not a correction",
+  "ltcplay/fuelshows.py",
+  "    if wraps:",
+  "    if False:"),
+
+ ("shows per refill: each accepted +1 tap gets its own audit line",
+  "ltcplay/web.py",
+  "                     body.get(\"action\") == \"step\") or",
+  "                     False) or"),
+
+ ("shows per refill: Fill selected fills every unit, not only the selected",
+  "ltcplay/fuel.py",
+  "        pick = [by_id[u] for u in units]",
+  "        pick = list(by_id.values())"),
+
+ ("shows per refill: a refill leaves shows left where it was",
+  "ltcplay/fuelshows.py",
+  "            st[\"anchor\"] = self._anchor(st, None if n is None\n                                        else float(n), extra.get(m.id, 0.0))\n",
+  "            st[\"anchor\"] = st[\"anchor\"]\n"),
+
+ ("ui 2.0 shows per refill: Fill selected goes with no question",
+  "ltcplay/web/remote2.html",
+  "  if(yes !== true) return;\n  FS_SEL = new Set();",
+  "  FS_SEL = new Set();"),
+
+ ("ui 2.0 shows per refill: a junk shows per refill is posted",
+  "ltcplay/web/remote2.html",
+  "    if(t !== \"\" && (!/^[0-9]{1,3}$/.test(t) || Number(t) < 1 || Number(t) > max))",
+  "    if(false)"),
+
+ ("ui 2.0 shows per refill: Fuel use shows only the Shows pile",
+  "ltcplay/web/remote2.html",
+  "filter(k => (life[k] || 0) > 0)",
+  "filter(k => k === \"show\" && (life[k] || 0) > 0)"),
+
  ("fuel: a Fireball is tracked",
   "ltcplay/fuel.py",
   "        return [m for m in ms if getattr(m, \"kind\", None) in TRACKED_KINDS]",
@@ -16664,20 +16801,24 @@ def build():
  ("fuel: a save leaves the record marked changed",
   "ltcplay/fuel.py",
   "                text = json.dumps(self._doc(), indent=1, sort_keys=True)\n"
+  "                stext = self.shows.text()\n"
   "                self._dirty = False\n",
-  "                text = json.dumps(self._doc(), indent=1, sort_keys=True)\n"),
+  "                text = json.dumps(self._doc(), indent=1, sort_keys=True)\n"
+  "                stext = self.shows.text()\n"),
 
  ("fuel: a save's text is made before it waits for the file",
   "ltcplay/fuel.py",
   "        with self._save_lock:\n            with self._lock:\n"
   "                text = json.dumps(self._doc(), indent=1, sort_keys=True)\n"
+  "                stext = self.shows.text()\n"
   "                self._dirty = False\n"
-  "                self._last_save = self._clock()\n            try:",
+  "                self._last_save = self._clock()\n",
   "        with self._lock:\n"
   "            text = json.dumps(self._doc(), indent=1, sort_keys=True)\n"
+  "            stext = self.shows.text()\n"
   "            self._dirty = False\n"
   "            self._last_save = self._clock()\n"
-  "        with self._save_lock:\n            try:"),
+  "        with self._save_lock:\n"),
 
  ("fuel: a failed save is never tried again",
   "ltcplay/fuel.py",

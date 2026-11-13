@@ -5807,7 +5807,7 @@ $("d-steps").addEventListener("click", e => { const b = e.target.closest("[data-
 const DAY_HELP = {
   signin:"Sign in once: your name goes on every tick.", checks:"The show PC checks itself. Red needs fixing.",
   startlist:"Tick each step when it is done. Note adds a remark.", shutlist:"Tick each step when it is done.",
-  fuel:"Tap a tank you filled. Refill all only if all were.",
+  fuel:"Tap a tank you filled. Or select units, then fill.",
   purge:"Pick a group. Fire with the Deck's FIRE key or hold Space. Let go to stop.",
   lasers:"Test grid on, check the aim, then off.",
   hazers:"Levels sets each hazer's haze and fan, and arms it.",
@@ -5973,7 +5973,7 @@ function dayBuild(k){
     `<div class="drow"><button class="b" id="mo-verify">${icon("shield")}Verify records</button>` +
     `<a class="b" id="mo-pdf" href="/api/remote/checklist-pdf?date=" download target="_blank" rel="noopener">${icon("print")}Download today's PDF</a>` +
     `<a class="b" id="mo-export" href="/api/remote/checklist-export" download target="_blank" rel="noopener">${icon("list")}Export all</a></div>`;
-  else if(k === "fuel") box.innerHTML = FU_ARR_BAR + `<div class="mrows" id="d-fuel"></div><div class="drow"><button class="b" id="fu-all">${icon("flame")}Refill all</button><button class="b" id="fu-arrange" hidden>${icon("list")}Arrange</button><button class="b" id="d-fu-rec" hidden>${icon("list")}<span id="d-fu-rec-l">Refills and notes</span></button><span id="fu-why" class="dim"></span></div>` + HZF_HTML;
+  else if(k === "fuel") box.innerHTML = FU_ARR_BAR + `<div class="mrows" id="d-fuel"></div><div class="drow">${fsRowHtml()}<button class="b" id="fu-arrange" hidden>${icon("list")}Arrange</button><button class="b" id="d-fu-rec" hidden>${icon("list")}<span id="d-fu-rec-l">Refills and notes</span></button><span id="fu-why" class="dim"></span></div>` + HZF_HTML;
   else if(k === "purge") box.innerHTML = `<div class="dgrid" id="mo-groups"></div><div class="drow"><button class="b" id="mo-clear">${icon("x")}Clear</button><button class="b" id="d-mach">${icon("list")}Machines</button><button class="b" id="d-map">${icon("list")}<span id="d-map-l">Map</span></button><span class="key" id="mo-key"></span></div>`;
   else if(k === "lasers") box.innerHTML = `<div class="dgrid" id="mo-lasers"></div><div class="drow"><button class="b green" id="mo-cal-on">${icon("laser")}Test grid on</button><button class="b" id="mo-cal-off">${icon("x")}Test grid off</button><button class="b" id="mo-beyond" hidden>${icon("open")}Open BEYOND</button></div>`;
   else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
@@ -6028,18 +6028,19 @@ function dayWire(k){
     $("d-fuel").addEventListener("click", async ev => {
       // Arranging: a press moves a tank, never refills it.
       if(FU_ARR) return;
+      // A unit whose type has shows per refill: Refueled +1, each tap one
+      // show, no question (fuelshows.py: past N it goes round to 0).
+      const w = ev.target.closest("[data-step-unit]");
+      if(w){ if(!w.disabled) fuPress("fuel-shows", {action:"step", unit:w.dataset.stepUnit}); return; }
       const b = ev.target.closest("[data-refill]"); if(!b || b.disabled) return;
       const u = ((FU && FU.units) || []).find(x => x.id === b.dataset.refill); if(!u) return;
       if(await confirmBox(`${u.name} refilled?`, "Log that its tank is full now. The count of shows and flame starts again from here.", "Yes, refilled", "green"))
         fuPress("fuel-refill", {unit:u.id});
     });
     fuArrWire();
-    $("fu-all").addEventListener("click", async () => {
-      if(FU_ARR) return;
-      const n = ((FU && FU.units) || []).length;
-      if(await confirmBox(`Refill all ${n} units?`, "Log a full tank for every G-Flame and Showven at once. Only if every tank really was filled.", "Yes, refill all", "green"))
-        fuPress("fuel-refill", {all:true, confirm:true, units:(FU && FU.unit_ids) || []});
-    });
+    $("fu-fill").addEventListener("click", fsSelect);
+    $("fu-top").addEventListener("click", fsTopAsk);
+    $("fu-use").addEventListener("click", fsUseAsk);
   }
   if(k === "purge"){
     $("mo-groups").addEventListener("click", e => { const b = e.target.closest("[data-grp]"); if(b && !b.disabled) groupClick(b.dataset.grp); });
@@ -6125,18 +6126,19 @@ function dayUpdate(k){
     // The tanks in the shared machine rows (fuArrRows): one row per type
     // unless rows were saved. Arranging: cards that move, never refill.
     const rows = fuArrRows(units);
-    const sig = JSON.stringify([units.map(u => [u.id, u.shows_left, u.percent, u.refill_soon, u.color, u.locked]), f.may_refill,
+    const sig = JSON.stringify([units.map(u => [u.id, u.shows_left, u.percent, u.refill_soon, u.color, u.locked, u.countdown]), f.may_refill,
       rows.map(r => [r.ri, r.label, r.items.map(u => u.id)]), !!FU_ARR, FU_ARR && FU_ARR.sel]);
     if(box.dataset.sig !== sig){
       box.dataset.sig = sig;
       box.innerHTML = rows.map(r => `<div class="mrow" data-ri="${r.ri}"><div class="mrow-l">${esc(r.label)}</div><div class="mrow-c">` + r.items.map(u => {
         const big = u.shows_left != null ? `${u.shows_left} show${u.shows_left === 1 ? "" : "s"} left` : u.percent != null ? `${u.percent}% left` : u.status === "never" ? "No refill logged" : "Learning";
         if(FU_ARR) return `<button class="b mv ${FU_ARR.sel === u.id ? "sel" : ""}" data-mid="${esc(u.id)}" aria-pressed="${FU_ARR.sel === u.id}" title="${esc(u.name)}">${icon("list")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(big)}</small></span></button>`;
+        if(u.countdown) return fsTile(u, f);
         return `<button class="b ${u.refill_soon ? "part" : ""}" data-refill="${esc(u.id)}" ${f.may_refill ? "" : "disabled"} title="${esc(u.name)}: ${esc(big)}">${icon(u.locked ? "lock" : "flame")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(big)}</small></span></button>`;
       }).join("") + `</div></div>`).join("");
     }
     fuArrRender(units);
-    $("fu-all").disabled = !f.may_refill || !units.length || !!FU_ARR;
+    fsRow(f);
     // 1.0's fuel warning and recent refills (P9): one button away, in the
     // tanks' place, so the step never grows past the screen.
     const nWarn = [f.config_error, f.fault].concat(f.notes || []).filter(Boolean).length;
@@ -6270,6 +6272,107 @@ async function fuPress(route, body){
   catch(e){ $("fu-msg").textContent = e.message; }
   if(FU_OPEN){ clearTimeout(FU_TIMER); fuelPoll2(); }
 }
+// Shows per refill (fuelshows.py, Jeff 2026-11-13). A unit whose type
+// has N says "Shows left: X" (Refuel now at 0); a tap is Refueled +1.
+// Select to fill opens the selection (units and hazers, the Purge step's
+// tap to select), then Fill selected asks first. Shows per refill is an
+// admin's, one number per machine type. Its own container (fu-shows).
+function fsRowHtml(){ return `<span id="fu-shows" class="drow"><button class="b" id="fu-fill">${icon("flame")}Select to fill</button><button class="b" id="fu-top" hidden>${icon("list")}Shows per refill</button><button class="b" id="fu-use">${icon("list")}Fuel use</button></span>`; }
+function fsTile(u, f){
+  // #257's tank card, in its rows (.mrow-c); not drawn while arranging.
+  const w = u.countdown || {};
+  return `<button class="b ${w.refuel_now || w.not_sure ? "part" : ""}" data-step-unit="${esc(u.id)}" ${f.may_refill ? "" : "disabled"} title="${esc(u.name)}: ${esc(w.words || "")}">${icon(u.locked ? "lock" : "flame")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(w.words || "")}</small><small>Refueled +1</small></span></button>`;
+}
+function fsRow(f){
+  const units = f.units || [], hz = hzfList(f);
+  // While arranging (#257) refills are held back: no Select to fill.
+  $("fu-fill").disabled = !f.may_refill || !(units.length || hz.length) || !!FU_ARR;
+  $("fu-top").hidden = !f.may_set_shows || !Object.keys(f.shows_per_refill || {}).length;
+  $("fu-use").disabled = !units.length;
+}
+// Fuel use: where each unit's flame went, by source, since its last
+// refill and in all (fuelshows.py's piles), with its flame per show.
+function fsSecs(s){ s = Number(s) || 0; return s < 90 ? Math.round(s) + " s" : (s / 60).toFixed(1) + " min"; }
+function fsUseAsk(){
+  const f = FU || {}, words = f.use_words || {};
+  const cell = 'style="padding:2px 10px 2px 0;text-align:left"';
+  const html = `<div class="pline">Seconds of flame, by source.</div>` + (f.units || []).map(u => {
+    const v = u.use || {}, since = v.since || {}, life = v.life || {};
+    const rows = Object.keys(words).filter(k => (life[k] || 0) > 0).map(k => `<tr><td ${cell}>${esc(words[k])}</td><td ${cell}>${fsSecs(since[k])}</td><td ${cell}>${fsSecs(life[k])}</td></tr>`).join("");
+    const per = v.per_show_s == null ? "Not known yet" : fsSecs(v.per_show_s) + (v.mode === "learned" ? "" : ", estimating");
+    return `<div class="fs-use" data-use="${esc(u.id)}"><b>${esc(u.name)}</b><table><tr><th ${cell}>Source</th><th ${cell}>Since refill</th><th ${cell}>In all</th></tr>${rows}` +
+      `<tr><td ${cell}>Shows</td><td ${cell}>${v.shows_since || 0}</td><td ${cell}>${v.shows || 0}</td></tr></table><div class="pline">Per show: ${esc(per)}</div></div>`;
+  }).join("");
+  sheet("Where the fuel went", html, [{label:"Close", cls:"blue"}]);
+}
+// The selection: what Fill selected fills, kept while the sheet is open.
+let FS_SEL = new Set();
+const FS_KIND_WORD = {waver:"Wave Flamers", gflame:"G-Flames", hazer:"hazers"};
+function fsItems(f){
+  return (f.units || []).map(u => ({key:"u:" + u.id, id:u.id, name:u.name, kind:u.kind}))
+    .concat(hzfList(f).map(h => ({key:"h:" + h.name, id:h.name, name:h.name, kind:"hazer"})));
+}
+function fsDraw(){
+  const items = fsItems(FU || {});
+  const g = $("fs-units"); if(!g) return;
+  g.querySelectorAll("[data-fs]").forEach(b => b.classList.toggle("on", FS_SEL.has(b.dataset.fs)));
+  const go = document.querySelector('#sh-row [data-i="1"]');
+  if(go){ go.disabled = !FS_SEL.size; go.textContent = FS_SEL.size ? "Fill selected (" + FS_SEL.size + ")" : "Fill selected"; }
+  return items;
+}
+async function fsSelect(){
+  const f = FU || {}, items = fsItems(f);
+  FS_SEL = new Set([...FS_SEL].filter(k => items.some(i => i.key === k)));
+  const kinds = [...new Set(items.map(i => i.kind))];
+  const html = `<div class="drow" id="fs-kinds">${kinds.map(k => `<button class="b" data-fs-kind="${esc(k)}">Select all ${esc(FS_KIND_WORD[k] || k)}</button>`).join("")}<button class="b" data-fs-kind="">${icon("x")}Clear</button></div>` +
+    `<div class="dgrid" id="fs-units">${items.map(i => `<button class="b" data-fs="${esc(i.key)}">${icon(i.kind === "hazer" ? "wind" : "flame")}<span class="tt">${esc(i.name)}</span></button>`).join("")}</div>`;
+  const pick = sheet("Fill which units?", html, [{label:"Cancel", value:null, safe:true}, {label:"Fill selected", value:"go", cls:"green"}]);
+  fsDraw();
+  const v = await pick;
+  if(v !== "go" || !FS_SEL.size) return;
+  const chosen = items.filter(i => FS_SEL.has(i.key));
+  const lines = kinds.map(k => {
+    const of = items.filter(i => i.kind === k), in_ = chosen.filter(i => i.kind === k);
+    if(!in_.length) return "";
+    const word = FS_KIND_WORD[k] || k;
+    const t = word + ": " + in_.map(i => i.name).join(", ");
+    return in_.length === of.length && of.length > 1 ? word + ": all " + of.length : t.split(/\s+/).length <= 8 ? t : word + ": " + in_.length + " units";
+  }).filter(Boolean);
+  const n = chosen.length;
+  const yes = await sheet(`Fill ${n} unit${n === 1 ? "" : "s"} to full?`, `<ul class="pline">${lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>`,
+    [{label:"Cancel", value:false, safe:true}, {label:"Yes, fill", value:true, cls:"green"}]);
+  if(yes !== true) return;
+  FS_SEL = new Set();
+  fuPress("fuel-shows", {action:"fill", confirm:true, units:chosen.filter(i => i.kind !== "hazer").map(i => i.id), hazers:chosen.filter(i => i.kind === "hazer").map(i => i.id)});
+}
+$("sh-body").addEventListener("click", e => {
+  const b = e.target.closest("[data-fs]"), k = e.target.closest("[data-fs-kind]");
+  if(!b && !k) return;
+  if(b){ FS_SEL.has(b.dataset.fs) ? FS_SEL.delete(b.dataset.fs) : FS_SEL.add(b.dataset.fs); }
+  else if(!k.dataset.fsKind) FS_SEL = new Set();
+  else fsItems(FU || {}).filter(i => i.kind === k.dataset.fsKind).forEach(i => FS_SEL.add(i.key));
+  fsDraw();
+});
+// Shows per refill: one field per machine type here; blank is count only.
+let FS_TOP_IN = {};
+async function fsTopAsk(){
+  const f = FU || {}, max = f.shows_per_refill_max || 99, per = f.shows_per_refill || {};
+  FS_TOP_IN = {};
+  Object.keys(per).forEach(k => { FS_TOP_IN[k] = per[k].n == null ? "" : String(per[k].n); });
+  const v = await sheet("Shows per refill", `<ul class="pline"><li>One number for each machine type.</li><li>A whole number, 1 to ${max}.</li><li>Blank means count only, no countdown.</li></ul>` +
+    Object.keys(per).map(k => `<label class="drow">${esc(per[k].name)}s <input class="f" data-fs-top="${esc(k)}" type="number" inputmode="numeric" min="1" max="${max}" step="1" value="${esc(FS_TOP_IN[k])}" aria-label="Shows per refill, ${esc(per[k].name)}s"></label>`).join(""),
+    [{label:"Cancel", value:null, safe:true}, {label:"Save", value:"go", cls:"green", icon:"check"}]);
+  if(v !== "go") return;
+  const sends = [];
+  for(const k of Object.keys(per)){
+    const t = String(FS_TOP_IN[k] || "").trim();
+    if(t !== "" && (!/^[0-9]{1,3}$/.test(t) || Number(t) < 1 || Number(t) > max)){ $("fu-msg").textContent = "Not saved. Use a whole number 1 to " + max + "."; return; }
+    const n = t === "" ? null : Number(t);
+    if(n !== per[k].n) sends.push({action:"set", kind:k, shows_per_refill:n});
+  }
+  for(const b of sends) await fuPress("fuel-shows", b);
+}
+document.addEventListener("input", e => { const k = e.target && e.target.dataset && e.target.dataset.fsTop; if(k) FS_TOP_IN[k] = e.target.value; });
 // ---- The machine rows (morning.Arrangement; Jeff, 2026-11-13) -----------
 // One arrangement of the machines, in ONE file (ltcplay_arrangement.json),
 // read by the Fuel step and the Purge step alike: one row per type unless

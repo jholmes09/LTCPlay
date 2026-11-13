@@ -308,6 +308,11 @@ LIVE_FLAME_ENABLES = (
     "Run, a show starting, a second sender, no xLights data for a while, "
     "or the session limit. Never use xLights' test tools while a group is "
     "armed.")
+# Shows per refill (fuel.py, fuelshows.py, Jeff 2026-11-13): Refueled +1
+# and Fill selected need what a fuel refill needs, a type's shows per
+# refill an admin (fuel.py checks). Kept apart from FUEL_POST_ROUTES.
+SHOWS_POST_ROUTES = ("fuel-shows",)
+POST_ROUTES = POST_ROUTES + SHOWS_POST_ROUTES
 # The switch "Fire flames while scrubbing" is gone (Jeff, 2026-10-29: "as
 # long as I am armed, then jumping around timecode will work"). On a show
 # that plays from the show audio, Programming playback is the show's own
@@ -2592,12 +2597,25 @@ class Remote:
             return (*self.live_flame_post(body, ctx),) + ({},)
         if name in USER_POST_ROUTES:
             return self.users_post(name, body, ctx)
+        if name in SHOWS_POST_ROUTES:
+            if body.get("action") != "set" and self.morning is not None:
+                # As fuel-refill below (#257): Refueled +1 and Fill
+                # selected from a device arranging the machine rows are
+                # refused; shows per refill is a setting, not a refill.
+                held = self.morning.rows_refill_refusal(ctx.device)
+                if held:
+                    return 409, {"error": held}, {}
+            from . import fuel as fuel_mod
+            return (*fuel_mod.route_post(self.fuel, name, body, ctx,
+                                         self.users, haze=self.haze),) + ({},)
         if name in MORNING_POST_ROUTES:
             return (*self.morning_post(name, body, ctx),) + ({},)
-        if name == "fuel-refill" and self.morning is not None:
+        if name in ("fuel-refill", "fuel-undo") and \
+                self.morning is not None:
             # The Fuel step's Arrange (morning.Arrangement): while this
             # device arranges the machine rows, no refill is logged from
             # it, whatever its page let through. A drag is never a refill.
+            # An Undo from Refills and notes is held back the same way.
             why = self.morning.rows_refill_refusal(ctx.device)
             if why:
                 return 409, {"error": why}, {}

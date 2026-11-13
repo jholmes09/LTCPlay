@@ -76740,6 +76740,26 @@ def test_machine_rows_refills_held_back_while_arranging():
             check(st == 409 and "arranging" in out.get("error", "") and
                   R.unit("g1")["status"] == "never",
                   f"arranging: no refill logged ({body}): {st} {out}")
+        st, out, _h = http("/api/remote/fuel-undo", {"id": 1},
+                           cookie=ck["Jeff"])
+        check(st == 409 and "arranging" in out.get("error", ""),
+              f"arranging: an Undo is held back too: {st} {out}")
+        # Shows per refill's presses (fuelshows.py, #252): Refueled +1 and
+        # Fill selected are refills too; shows per refill is a setting.
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "set", "kind": "waver",
+                            "shows_per_refill": 4}, cookie=ck["Jeff"])
+        check(st == 200 and R.tr.shows.top("waver") == 4,
+              f"arranging: shows per refill is still set: {st} {out}")
+        for body in ({"action": "step", "unit": "w1"},
+                     {"action": "fill", "confirm": True, "units": ["g1"]}):
+            st, out, _h = http("/api/remote/fuel-shows", body,
+                               cookie=ck["Jeff"])
+            check(st == 409 and "arranging" in out.get("error", "") and
+                  R.unit("g1")["status"] == "never" and
+                  R.unit("w1")["countdown"]["left"] == 0,
+                  f"arranging: no Refueled +1 or Fill selected ({body}): "
+                  f"{st} {out}")
         dev = next(iter(rem.morning._rows_arranging))
         check(rem.morning.rows_refill_refusal("iPad at 10.20.0.44") == "",
               "another screen is not held back")
@@ -82625,6 +82645,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/fireball-timeline", "/api/remote/fireball-timeline-save",
     "/api/remote/follow", "/api/remote/forecast", "/api/remote/fuel",
     "/api/remote/fuel-pump", "/api/remote/fuel-refill",
+    "/api/remote/fuel-shows",
     "/api/remote/fuel-undo", "/api/remote/group-disarm",
     "/api/remote/haze-refill", "/api/remote/haze-undo", "/api/remote/hazer",
     "/api/remote/hazer-level", "/api/remote/hazer-test",
@@ -96351,10 +96372,795 @@ def test_fuel_doc_in_plain_words():
     here = os.path.dirname(os.path.abspath(__file__))
     doc = open(os.path.join(here, "FUEL.md"), encoding="utf-8").read()
     for need in ("Refilled", "Refill all", "Undo", "learn", "shows left",
-                 "Showven", "G-Flame", "purge", "fuel.json"):
+                 "Showven", "G-Flame", "purge", "fuel.json",
+                 "Shows per refill", "Refueled +1", "Refuel now",
+                 "Select to fill", "Fill selected", "correction, not usage",
+                 "not confirmed", "fuel_shows.json", "Fuel use",
+                 "Short starts", "Live programming", "full output",
+                 "estimating", "Start at a cue"):
         check(need.lower() in doc.lower(), f"FUEL.md covers {need!r}")
     check("—" not in doc and "–" not in doc, "FUEL.md has no em or en "
                                              "dashes")
+    print("  ok")
+
+
+# ----------------------------------------------- shows per refill --
+# Jeff, 2026-11-13: every flame second the flame link sent is counted per
+# unit in one labelled pile (show, short, purge, cleaning, rehearsal, live,
+# other, unsure), since the refill and in all; per machine type a "Shows
+# per refill" N; Shows left = N less that flame over the unit's flame per
+# show; Refueled +1 adds one show and goes round to 0 after N, its log
+# entry written once after the taps stop; Select to fill then Fill
+# selected (fuelshows.py, FUEL.md).
+
+_WAVE_ON = ((3, 255),)          # Wave 1's ignition (CH3), firing
+_G1_ON = ((411, 255),)
+
+
+def _cd(R, mid="w1"):
+    return R.unit(mid).get("countdown")
+
+
+def _left(R, mid="w1"):
+    c = _cd(R, mid)
+    return None if c is None else c["left"]
+
+
+def _use(R, mid):
+    return R.unit(mid)["use"]
+
+
+def _commit(R, s=None):
+    """The taps stop: COMMIT_S passes, the tracker's pass runs."""
+    from ltcplay import fuelshows as FS
+    R.t[0] += FS.COMMIT_S + 0.1 if s is None else s
+    R.tr.tick()
+
+
+class _Hazes:
+    """A stand-in for fuelhaze.HazeTracker: its hazers and refills."""
+
+    def __init__(self, names=("Hazer 1", "Hazer 2")):
+        self.names = list(names)
+        self.got = []
+
+    def hazers(self):
+        return [(n, None, None) for n in self.names]
+
+    def refill(self, name, who, role=""):
+        self.got.append((name, who))
+        return True, f"Refill of {name} logged."
+
+
+def test_fuel_shows_counts_every_flame_in_its_pile():
+    section("shows per refill: every flame second is counted, per unit, in "
+            "one labelled pile: shows, short starts, purges (a Showven's "
+            "too), cleaning, rehearsal, live programming, other; since the "
+            "refill and in all; a frame seen by two paths is counted once; "
+            "never a frame flamesafe held off or a locked unit")
+    from ltcplay import fuelshows as FS
+    check(FS.BUCKETS == ("show", "short", "purge", "cleaning", "rehearsal",
+                         "live", "other", "unsure") and
+          FS.BUCKET_WORDS == {"show": "Shows", "short": "Short starts",
+                              "purge": "Purges", "cleaning": "Cleaning",
+                              "rehearsal": "Rehearsal",
+                              "live": "Live programming", "other": "Other",
+                              "unsure": "Not sure"},
+          "the piles and their labels")
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        R.frames(400, purge=True, on=_G1_ON + _WAVE_ON)       # 10 s purge
+        R.link.program_on = True
+        R.frames(200, purge=True, on=_G1_ON)    # live AND purge: one pile
+        R.link.program_on = False
+        R.link.rehearse_on = True
+        R.frames(200, tc=True, on=_G1_ON)       # scrubbing: rehearsal
+        R.link.rehearse_on = False
+        R.end()
+        tr.purge_is_burn = True
+        R.frames(120, purge=True, on=_G1_ON)    # cleaning bursts
+        tr.purge_is_burn = False
+        R.frames(80, on=_G1_ON)                 # no timecode: other
+        R.show(10, 4)                           # a failed start: short
+        R.show(40, 6)                           # a show
+        R.rehearsal[0] = True
+        R.show(60, 2)                           # a programming session
+        R.rehearsal[0] = False
+        R.locked = {"g1"}
+        R.frames(400, on=_G1_ON)                # locked: nothing
+        R.locked = set()
+        R.armed = {"cat-walk"}
+        R.frames(400, on=_G1_ON)                # not armed: nothing
+        R.armed = {"front row", "cat-walk", "wave flamer", "fireball"}
+        life = _use(R, "g1")["life"]
+        want = {"show": 6.0, "short": 4.0, "purge": 10.0, "cleaning": 3.0,
+                "rehearsal": 7.0, "live": 5.0, "other": 2.0, "unsure": 0.0}
+        check(all(_near(life[k], v) for k, v in want.items()),
+              f"each source in its own pile: {life}")
+        fuel_total = sum(tr.units["g1"]["burn"].values())
+        check(_near(sum(life.values()), fuel_total, 0.1) and
+              _near(fuel_total, 37.0, 0.1),
+              f"every second once: the piles add up to fuel.json's flame "
+              f"({sum(life.values()):.2f} and {fuel_total:.2f})")
+        w = _use(R, "w1")["life"]
+        check(_near(w["purge"], 10.0) and
+              _near(sum(tr.units.get("w1", {"burn": {}})["burn"].values()),
+                    0.0),
+              f"a Showven's purge is counted here, though fuel.json leaves "
+              f"it out (its own purge fuel): {w}")
+        # Since the refill, and in all.
+        tr.refill("g1", "Andy", "operator")
+        R.frames(400, purge=True, on=_G1_ON)
+        u = _use(R, "g1")
+        check(_near(u["since"]["purge"], 10.0) and
+              _near(u["life"]["purge"], 20.0) and
+              _near(sum(u["since"].values()), 10.0) and
+              u["since_at_ms"] is not None,
+              f"since the refill and in all: {u['since']} {u['life']}")
+        # A show under way is in Shows at once, and is not added twice
+        # when it ends.
+        R.pos[0] = 10.0
+        R.frames(400, tc=True, on=_G1_ON)
+        check(_near(_use(R, "g1")["since"]["show"], 10.0),
+              "a show under way counts at once")
+        R.frames(1200, tc=True)
+        R.end()
+        check(_near(_use(R, "g1")["since"]["show"], 10.0) and
+              _near(sum(_use(R, "g1")["life"].values()),
+                    sum(tr.units["g1"]["burn"].values()), 0.1),
+              "and once when it ends")
+        # A unit first seen with fuel.json history takes it once.
+        tr.close()
+        import os as _os
+        _os.remove(_os.path.join(R.work, FS.SHOWS_FILE))
+        tr = R.reopen()
+        u = _use(R, "g1")["life"]
+        check(_near(sum(u.values()), sum(tr.units["g1"]["burn"].values()),
+                    0.1) and _near(u["purge"], 20.0),
+              f"no fuel_shows.json: fuel.json's flame is its history, "
+              f"once: {u}")
+        R.frames(400, purge=True, on=_G1_ON)
+        u = _use(R, "g1")["life"]
+        check(_near(u["purge"], 30.0, 0.2) and
+              _near(sum(u.values()), sum(tr.units["g1"]["burn"].values()),
+                    0.5), f"and new flame on top, once: {u}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_left_from_every_flame():
+    section("shows per refill: shows left is N less all the flame since the "
+            "refill over the unit's flame per full show (learned from its "
+            "own, then its type's, saying estimating); with no show yet it "
+            "counts shows; a 10 s purge, live programming and a short or "
+            "part Start at a cue take it down in proportion; a part show is "
+            "never learned as a whole one; rounded down, never below 0; a "
+            "type with no N is tracking only")
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        check(all("countdown" not in u for u in tr.view()["units"]) and
+              all("use" in u for u in tr.view()["units"]),
+              "no N: tiles as before (tracking only), the piles counted")
+        tr.shows_set("waver", 4, "Andy", "admin")
+        check(_left(R) == 0 and _cd(R)["words"] == "Refuel now",
+              "a unit never filled reads Refuel now")
+        tr.fill(["w1"], [], "Andy", "admin")
+        c = _cd(R)
+        check(c["left"] == 4 and c["mode"] == "counting" and
+              c["words"] == "Shows left: 4, estimating",
+              f"filled, no show yet: counting, estimating: {c}")
+        R.frames(400, purge=True, on=_WAVE_ON)          # a 10 s purge
+        check(_left(R) == 4, "no flame per show known yet: a purge waits")
+        R.show(40, 5, on=_WAVE_ON)
+        c = _cd(R)
+        check(c["left"] == 1 and _near(c["x"], 1.0) and
+              c["mode"] == "estimating" and
+              c["words"] == "Shows left: 1, estimating",
+              f"one show of 5 s known: the 10 s purge and the show take 3 "
+              f"off: {c}")
+        tr.fill(["w1"], [], "Andy", "admin")
+        R.show(40, 5, on=_WAVE_ON)
+        R.show(40, 5, on=_WAVE_ON)
+        c = _cd(R)
+        check(c["left"] == 2 and c["mode"] == "learned" and
+              c["words"] == "Shows left: 2" and
+              _use(R, "w1")["per_show_s"] == 5.0,
+              f"3 full shows of its own: learned, 5 s a show: {c}")
+        R.link.program_on = True
+        R.frames(100, on=_WAVE_ON)                      # 2.5 s live
+        R.link.program_on = False
+        c = _cd(R)
+        check(_near(c["x"], 1.5) and c["left"] == 1,
+              f"live flame programming takes off in proportion, shown "
+              f"rounded down: {c}")
+        R.show(35, 2.5, on=_WAVE_ON)        # Start at a cue, part way in
+        c = _cd(R)
+        check(_near(c["x"], 1.0) and
+              _use(R, "w1")["per_show_s"] == 5.0,
+              f"a part show takes off in proportion and is not learned "
+              f"as a whole one: {c} {_use(R, 'w1')['per_show_s']}")
+        R.show(10, 2.5, on=_WAVE_ON)        # a short start
+        c = _cd(R)
+        check(_near(c["x"], 0.5) and c["refuel_now"] and
+              c["words"] == "Refuel now" and
+              _near(_use(R, "w1")["since"]["short"], 2.5),
+              f"a short start too; below one show: Refuel now: {c}")
+        R.frames(2000, purge=True, on=_WAVE_ON)
+        c = _cd(R)
+        check(c["x"] == 0.0 and c["left"] == 0 and
+              R.unit("w1")["refill_soon"] and
+              "Wave 1" in tr.view()["refill_soon"],
+              f"never below 0; lights Refill soon: {c}")
+        # The type's flame per show for a unit with none of its own.
+        tr.shows_set("gflame", 2, "Andy", "admin")
+        tr.fill(["g1", "g2"], [], "Andy", "admin")
+        for _ in range(3):
+            R.show(40, 5)                               # g1 fires
+        R.frames(200, on=((412, 255),))                 # g2: 5 s
+        c = _cd(R, "g2")
+        check(c["left"] == 1 and c["mode"] == "estimating" and
+              c["words"] == "Shows left: 1, estimating",
+              f"no show of its own: the type's flame per show, "
+              f"estimating: {c}")
+        check(_cd(R, "g1")["left"] == 0 and
+              _cd(R, "g1")["mode"] == "learned",
+              f"G-Flames count their own: {_cd(R, 'g1')}")
+        tr.shows_set("gflame", None, "Andy", "admin")
+        check("countdown" not in R.unit("g1") and
+              tr.view()["shows_per_refill"]["gflame"]["n"] is None and
+              "use" in R.unit("g1"),
+              "blank: tracking only again, the piles still counted")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_restart_not_sure_and_once():
+    section("shows per refill: a stop without closing while a unit burned "
+            "adds 30 s of not sure flame at full output and reads Not "
+            "sure; a clean stop or a unit not burning adds none; a show "
+            "cut by a restart counts and is not sure; a show replayed "
+            "after a crash is counted once; flame fuel.json counted that "
+            "fuel_shows.json missed is not sure flame")
+    import json as _j
+    import shutil
+    from ltcplay import fuel as F
+    from ltcplay import fuelshows as FS
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        tr.shows_set("waver", 10, "Andy", "admin")
+        for _ in range(3):
+            R.show(40, 5, on=_WAVE_ON)
+        tr.fill(["w1"], [], "Andy", "admin")
+        R.frames(200, on=_WAVE_ON)                      # 5 s, then a save
+        tr.save()
+        tr = R.reopen()                                 # a crash
+        u = _use(R, "w1")
+        c = _cd(R)
+        check(_near(u["since"]["unsure"], F.SAVE_EVERY_S) and
+              c["not_sure"] and c["words"].endswith(". Not sure") and
+              _near(c["x"], 10 - (5 + F.SAVE_EVERY_S) / 5.0),
+              f"burning at a crash: {F.SAVE_EVERY_S:g} s of not sure flame "
+              f"at full output: {u['since']} {c}")
+        check(_near(_use(R, "g1")["life"]["unsure"], 0.0),
+              "a unit that was not burning: none")
+        tr.fill(["w1"], [], "Andy", "admin")
+        check(not _cd(R)["not_sure"], "filled: sure again")
+        R.frames(200, on=_WAVE_ON)
+        tr.close()
+        tr = R.reopen()
+        check(_near(_use(R, "w1")["since"]["unsure"], 0.0) and
+              not _cd(R)["not_sure"], "a clean stop: none")
+        R.frames(200, on=_WAVE_ON)
+        R.t[0] += 100
+        R.wall[0] += 100
+        tr.save()
+        tr = R.reopen()
+        check(_near(_use(R, "w1")["since"]["unsure"], 0.0),
+              "burning long before the last save: none")
+        # A show cut by a crash: counted, short or not, not sure.
+        tr.fill(["w1"], [], "Andy", "admin")
+        R.pos[0] = 10.0
+        R.frames(400, tc=True, on=_WAVE_ON)
+        tr.save()
+        tr = R.reopen()
+        u = _use(R, "w1")
+        check(_near(u["since"]["short"], 10.0) and _cd(R)["not_sure"],
+              f"a show cut by a crash counts and is not sure: "
+              f"{u['since']}")
+        tr.save()
+        tr = R.reopen()
+        check(_near(_use(R, "w1")["since"]["short"], 10.0) and
+              _near(_use(R, "w1")["since"]["unsure"], F.SAVE_EVERY_S),
+              f"and never twice, its not sure time once: "
+              f"{_use(R, 'w1')['since']}")
+        # fuel_shows.json written, fuel.json not: the replay is not counted
+        # twice.
+        tr.close()
+        tr = R.reopen()
+        tr.fill(["w1"], [], "Andy", "admin")
+        R.pos[0] = 10.0
+        R.frames(1600, tc=True, on=_WAVE_ON)
+        tr.save()
+        R.end()
+        tr.shows.write(tr.shows.text())
+        tr = R.reopen()
+        check(_near(_use(R, "w1")["since"]["show"], 40.0) and
+              _near(_use(R, "w1")["since"]["unsure"], F.SAVE_EVERY_S),
+              f"the replayed show is counted once (its crash adds its not "
+              f"sure time): {_use(R, 'w1')['since']}")
+        # fuel.json written, fuel_shows.json not: not sure flame.
+        tr.close()
+        tr = R.reopen()
+        tr.fill(["w1"], [], "Andy", "admin")
+        tr.close()
+        tr = R.reopen()
+        spath = os.path.join(R.work, FS.SHOWS_FILE)
+        shutil.copy(spath, spath + ".old")
+        before = _use(R, "w1")["life"]
+        R.frames(400, on=_WAVE_ON)
+        tr.close()
+        shutil.copy(spath + ".old", spath)
+        os.remove(spath + ".old")
+        tr = R.reopen()
+        u = _use(R, "w1")
+        check(_near(u["life"]["unsure"] - before["unsure"], 10.0, 0.2) and
+              _near(u["life"]["other"], before["other"]) and
+              _cd(R)["not_sure"],
+              f"flame fuel.json counted and this file missed: not sure: "
+              f"{u['life']} {before}")
+        tr._gap("test gap")
+        check(_cd(R)["not_sure"], "a gap: not sure")
+        tr.fill(["w1"], [], "Andy", "admin")
+        R.armed = None
+        before = sum(_use(R, "w1")["life"].values())
+        R.frames(200, on=_WAVE_ON)
+        R.armed = {"front row", "cat-walk", "wave flamer", "fireball"}
+        check(_cd(R)["not_sure"] and
+              _near(sum(_use(R, "w1")["life"].values()) - before, 5.0),
+              "flamesafe's armed state not known: the flame counted once, "
+              "not sure")
+        with open(spath, encoding="utf-8") as fh:
+            doc = _j.load(fh)
+        check(doc["shows_format"] == FS.SHOWS_FORMAT and
+              doc["shows_per_refill"] == {"waver": 10},
+              f"fuel_shows.json has its own format number: "
+              f"{doc['shows_format']} {doc['shows_per_refill']}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_refill_during_a_show_counts_its_flame_once():
+    section("shows per refill (cold review of #252, 1): a Fill selected or "
+            "a Refueled +1 while a performance is still open takes in its "
+            "flame so far, so when it closes that flame is not counted "
+            "again: a fill stays at N, a +1 can reach N and wrap")
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        tr.shows_set("waver", 10, "Andy", "admin")
+        for _ in range(3):
+            R.show(100, 60, on=_WAVE_ON)
+        check(_use(R, "w1")["per_show_s"] == 60.0,
+              f"60 s of flame a show: {_use(R, 'w1')['per_show_s']}")
+        # A: the show's flame is over, its performance not yet closed
+        # (inside EPISODE_JOIN_S); Fill selected now.
+        tr.fill(["w1"], [], "Andy", "operator")
+        R.pos[0] = 10.0
+        R.frames(2400, tc=True, on=_WAVE_ON)
+        R.frames(400, tc=True)
+        check(tr.episode is not None and _near(_cd(R)["x"], 9.0, 0.05),
+              f"under way: 60 s burned, 9 left: {_cd(R)}")
+        tr.fill(["w1"], [], "Andy", "operator")
+        check(_left(R) == 10, f"filled during it: 10: {_cd(R)}")
+        R.end()
+        check(tr.episode is None and _left(R) == 10 and
+              _near(_cd(R)["x"], 10.0),
+              f"the performance closes: still 10, its flame counted once: "
+              f"{_cd(R)}")
+        # B: Refueled +1 with 30 s of a show's flame under way.
+        R.pos[0] = 10.0
+        R.frames(1200, tc=True, on=_WAVE_ON)
+        check(_near(_cd(R)["x"], 9.5), f"9.5 under way: {_cd(R)}")
+        ok, _t, out = tr.shows_step("w1", "Ola", "operator")
+        check(ok and out["left"] == 10 and _near(_cd(R)["x"], 10.0),
+              f"+1 reaches 10: {out} {_cd(R)}")
+        R.frames(400, tc=True)
+        R.end()
+        check(_near(_cd(R)["x"], 10.0),
+              f"the performance closes: still 10: {_cd(R)}")
+        ok, _t, out = tr.shows_step("w1", "Ola", "operator")
+        check(ok and out["left"] == 0,
+              f"at 10 the next +1 goes round to 0: {out}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_entry_written_at_start_reaches_the_audit_log():
+    section("shows per refill (cold review of #252, 2): a +1 batch left "
+            "open at a stop is written \"not confirmed\" while the tracker "
+            "is made, before build() gives it the audit log; the audit "
+            "line waits for the log and is written once it is attached, "
+            "once")
+    import types as _types
+    from ltcplay import fuelshows as FS
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        tr.shows_set("waver", 4, "Andy", "admin")
+        tr.shows_step("w1", "Ola", "operator")
+        tr.shows_step("w1", "Ola", "operator")
+        tr = R.reopen()                   # made with no audit log
+        check(tr.audit is None and tr.shows.actions[-1]["confirmed"] is False
+              and any(FS.NOT_CONFIRMED in t for t, _f in R.lines),
+              "written at the start, not confirmed, journaled")
+        got = []
+        tr.audit = _types.SimpleNamespace(event=lambda **kw: got.append(kw))
+        rf = [a for a in got if a["action"] == "fuel-refueled"]
+        check(len(rf) == 1 and rf[0]["user"] == "Ola" and
+              rf[0]["confirmed"] is False and rf[0]["clicks"] == 2 and
+              rf[0]["words"].endswith(FS.NOT_CONFIRMED),
+              f"attached: the waiting audit line is written: {rf}")
+        _commit(R)
+        tr.audit = tr.audit
+        check(len([a for a in got if a["action"] == "fuel-refueled"]) == 1,
+              "and only once")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_refueled_plus_one_and_its_one_entry():
+    section("shows per refill: each Refueled +1 adds one show at once, up "
+            "to N and then round to 0 and on, saved at once; ONE log and "
+            "audit entry per batch, written after COMMIT_S still, in words "
+            "for what happened (a wrap is a correction, not usage); a "
+            "restart before it writes it not confirmed; one refill event "
+            "per batch; Undo on the written entry, flame since still "
+            "counted; junk N refused; never a fuel refill")
+    import json as _j
+    import types as _types
+    from ltcplay import fuel as F
+    from ltcplay import fuelshows as FS
+    check(FS.COMMIT_S == 5.0, f"the entry waits 5 s: {FS.COMMIT_S}")
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        audit = []
+        tr.audit = _types.SimpleNamespace(event=lambda **kw: audit.append(kw))
+        ok, text, _o = tr.shows_step("w1", "Ola", "operator")
+        check(not ok and text == "Set shows per refill for Wave Flamers "
+                                 "first.", f"no N: refused: {text}")
+        for junk in (0, 100, -1, "5", 5.5, True, [3]):
+            ok, text = tr.shows_set("waver", junk, "Andy", "admin")
+            check(not ok and tr.shows.top("waver") is None and
+                  text == "Shows per refill is a whole number 1 to 99. "
+                          "Nothing was changed.",
+                  f"shows per refill {junk!r} refused plainly: {text}")
+        check(not tr.shows_set("fireball", 3, "Andy")[0] and
+              not tr.shows_set("hazer", 3, "Andy")[0],
+              "only the flame types the fuel page tracks")
+        for good in (1, 99, 3):
+            ok, text = tr.shows_set("waver", good, "Andy", "admin")
+            check(ok and tr.shows.top("waver") == good and
+                  text == f"Wave Flamer: {good} shows per refill.",
+                  f"shows per refill {good}: {text}")
+        seen = []
+        for _ in range(6):
+            ok, text, out = tr.shows_step("w1", "Andy", "operator")
+            seen.append(out["left"])
+            R.t[0] += 0.5
+            tr.tick()
+        check(seen == [1, 2, 3, 0, 1, 2],
+              f"+1 a tap, after 3 round to 0 and on: {seen}")
+        check(text == "Wave 1: 2 shows left." and
+              _cd(R)["words"] == "Shows left: 2, estimating",
+              f"the new number at once: {text}")
+        check(FS.step_value(0, 1) == 1 and FS.step_value(1, 1) == 0 and
+              FS.step_value(7, 3) == 0 and FS.step_value(-2, 3) == 1 and
+              FS.step_value(2.5, 3) == 3 and FS.step_value(2.9999999, 3) == 0,
+              "never above N or below 0, whatever was before")
+        with open(os.path.join(R.work, FS.SHOWS_FILE),
+                  encoding="utf-8") as fh:
+            disk = _j.load(fh)["units"]["w1"]
+        check(disk["anchor"]["x"] == 2 and disk["pending"]["clicks"] == 6,
+              f"each tap saved at once: {disk['anchor']} {disk['pending']}")
+        check(not [a for a in audit if a["action"] == "fuel-refueled"] and
+              not any("refilled Wave 1" in t for t, _f in R.lines),
+              "no entry while the taps go on")
+        _commit(R, FS.COMMIT_S - 0.6)
+        check(not [a for a in audit if a["action"] == "fuel-refueled"],
+              "not before COMMIT_S")
+        _commit(R, 0.21)
+        got = [a for a in audit if a["action"] == "fuel-refueled"]
+        words = ("Andy refilled Wave 1: 2 shows left (clicked 6 times; "
+                 "wrapped past full once, so the lower number is a "
+                 "correction, not usage).")
+        check(len(got) == 1 and got[0]["user"] == "Andy" and
+              got[0]["target"] == "unit=w1" and got[0]["old"] == 0 and
+              got[0]["new"] == 2 and got[0]["clicks"] == 6 and
+              got[0]["wraps"] == 1 and got[0]["confirmed"] is True and
+              got[0]["words"] == words,
+              f"ONE audit entry, in words, the wrap a correction: {got}")
+        check(any(t == f"Fuel: {words}" for t, _f in R.lines),
+              "and one journal line")
+        check(_cd(R)["refills"] == 1, "one refill event, not six")
+        b = tr.view()["recent_refills"][0]
+        check(b["units"] == ["Wave 1: 0 to 2 shows left (wrapped: a "
+                             "correction)"], f"in Recent refills: {b}")
+        tr.shows_step("w1", "Ola", "operator")
+        _commit(R)
+        a = tr.shows.actions[-1]
+        check(a["words"] == "Ola refilled Wave 1: set from 2 to 3 shows "
+                            "left (clicked 1 time).",
+              f"no wrap: set from, to: {a['words']}")
+        # Undo: the X before, flame burned since still counted.
+        R.show(40, 5, on=_WAVE_ON)       # first show known: 5 s a show
+        ok, text = tr.undo(a["id"], "Jeff")
+        check(ok and _left(R) == 1 and _cd(R)["refills"] == 1,
+              f"Undo: back to 2, less the show since: {text} {_cd(R)}")
+        check(not tr.undo(a["id"], "Jeff")[0], "not twice")
+        tr.shows_step("w1", "Ola")
+        _commit(R)
+        a = tr.shows.actions[-1]
+        tr.shows_step("w1", "Ola")
+        ok, text = tr.undo(a["id"], "Jeff")
+        check(not ok and "changed since" in text,
+              f"a +1 with a press since is not undone: {text}")
+        _commit(R)
+        # A show ending writes an open batch first.
+        tr.shows_step("w1", "Ola")
+        R.show(40, 5, on=_WAVE_ON)
+        check(tr.shows.actions[-1]["what"] == "refuel" and
+              tr.shows.units["w1"]["pending"] is None,
+              "a show ending writes the open batch first")
+        tr.shows_step("w1", "Ola")
+        tr.shows_step("w1", "Andy")
+        check(tr.shows.actions[-1]["who"] == "Ola" and
+              tr.shows.units["w1"]["pending"]["who"] == "Andy",
+              "another person: the first batch is written, a new one opens")
+        _commit(R)
+        tr.shows_step("w1", "Ola")
+        tr.shows_step("w1", "Ola")
+        tr = R.reopen()
+        a = tr.shows.actions[-1]
+        check(a["confirmed"] is False and
+              a["words"].endswith(FS.NOT_CONFIRMED) and
+              "(not confirmed)" in tr.view()["recent_refills"][0]["units"][0],
+              f"restarted before the entry: not confirmed: {a['words']}")
+        check(not tr.units.get("w1", {}).get("refills"),
+              "a +1 never logs a fuel refill (the tank learning)")
+        with open(tr.path, encoding="utf-8") as fh:
+            fdoc = _j.load(fh)
+        check(fdoc["fuel_format"] == 1 and set(fdoc) == {
+            "fuel_format", "next_id", "units", "episode", "shows_total",
+            "gaps", "clean", "saved_at"} and
+              F.read_record(fdoc)["units"]["w1"]["kind"] == "waver",
+              "fuel.json keeps format 1 with no new key: an older build "
+              "reads it as before")
+        check(tr._new_id() > tr.shows.max_id(),
+              "refill numbers go on past the shows entries")
+        tr.audit = _types.SimpleNamespace(event=lambda **kw: audit.append(kw))
+        tr.fill(["w1"], [], "Andy")
+        tr.shows_set("waver", 2, "Andy", "admin")
+        check(_left(R) == 2, "N lowered to 2: X is 2")
+        tr.shows_set("waver", 5, "Andy", "admin")
+        check(_left(R) == 2, "N raised to 5: X stays 2")
+        sets = [a for a in audit if a["action"] == "fuel-shows-set"]
+        check(sets and sets[-1]["target"] == "kind=waver from=2 to=5",
+              f"the setting audited: {sets[-1:]}")
+        spath = os.path.join(R.work, FS.SHOWS_FILE)
+        with open(spath, "w", encoding="utf-8") as fh:
+            fh.write('{"shows_format": 1, "shows_per_refill": {"waver": 5}, '
+                     '"units": {"w1": {"kind": "waver", "anchor": '
+                     '{"x": 9}}}}')
+        tr = R.reopen()
+        kept = [n for n in os.listdir(R.work) if ".unreadable-" in n and
+                n.startswith(FS.SHOWS_FILE)]
+        check(tr.shows.top("waver") is None and kept and
+              any("could not be read" in n for n in tr.view()["notes"]),
+              f"a fuel_shows.json with X above N is kept aside: {kept}")
+        with open(spath, "w", encoding="utf-8") as fh:
+            fh.write('{"shows_format": 2}')
+        tr = R.reopen()
+        check(tr.shows.top("waver") is None,
+              "a newer format is never read as this one")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_fill_selected():
+    section("shows per refill: Fill selected fills only what was selected: "
+            "a full tank logged per flame unit (Refilled's), shows left to "
+            "N for a type with N, a haze refill per hazer; refused, nothing "
+            "logged, for an unknown unit or hazer or nothing selected; one "
+            "Undo for the flame units; audited per unit")
+    import types as _types
+    R = _FuelRig()
+    try:
+        tr = R.tr
+        audit = []
+        tr.audit = _types.SimpleNamespace(event=lambda **kw: audit.append(kw))
+        hz = _Hazes()
+        tr.shows_set("waver", 3, "Andy", "admin")
+        tr.shows_step("w1", "Ola")
+        for bad in ((["g1", "zz"], []), (["g1"], ["Hazer 9"]), ([], []),
+                    (["g1", "g1"], [])):
+            ok, text = tr.fill(bad[0], bad[1], "Ola", "operator", hz)
+            check(not ok and not hz.got and
+                  R.unit("g1")["status"] == "never",
+                  f"refused, nothing logged: {bad} {text}")
+        check(tr.fill([], ["Hazer 1"], "Ola", "operator", None)[0] is False,
+              "hazers with no haze tracker: refused")
+        ok, text = tr.fill(["g1", "w1"], ["Hazer 2"], "Ola", "operator", hz)
+        v = tr.view()
+        check(ok and text == "3 units filled." and _left(R) == 3 and
+              hz.got == [("Hazer 2", "Ola")] and
+              R.unit("g1")["last_refill"]["who"] == "Ola" and
+              R.unit("g2")["status"] == "never" and
+              R.unit("c1")["status"] == "never",
+              f"only the selected: G-Flame refilled, Wave 1 at N, Hazer 2 "
+              f"refilled: {text}")
+        check(tr.shows.actions[-1]["what"] == "fill" and
+              any(a["what"] == "refuel" and a["who"] == "Ola"
+                  for a in tr.shows.actions),
+              "an open +1 batch is written first")
+        fills = [a for a in audit if a["action"] == "fuel-fill"]
+        check(sorted(a["target"] for a in fills) ==
+              ["hazer=Hazer 2", "unit=g1", "unit=w1"] and
+              [a for a in fills if a["target"] == "unit=w1"][0]["new"] == 3,
+              f"audited per unit: {fills}")
+        b = v["recent_refills"][0]
+        check(sorted(b["units"]) == ["Ground 1", "Wave 1"],
+              f"one refill number for the flame units: {b}")
+        ok, text = tr.undo(b["id"], "Jeff")
+        check(ok and _left(R) == 1 and R.unit("g1")["status"] == "never",
+              f"one Undo takes the flame units back: {text}")
+        tr.refill("w1", "Ola", "operator")
+        check(_left(R) == 3, "a plain Refilled puts shows left at N too")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_fuel_shows_routes_and_who_may():
+    section("shows per refill: POST fuel-shows; Refueled +1 and Fill "
+            "selected need what a fuel refill needs (a signed-in operator "
+            "or admin), a type's N an admin; Fill selected needs its "
+            "confirm; without sign-in only the show machine; a +1's own "
+            "audit line is the one written entry, refusals still logged")
+    from ltcplay import fuel as F
+    from ltcplay import fuelshows as FS
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    check("fuel-shows" in RM.POST_ROUTES and
+          U.classify("/api/remote/fuel-shows", {"action": "step"}) is None,
+          "the route exists, no role matrix row (the route checks)")
+    R = _FuelRig()
+    try:
+        net = RM.Ctx(False, "10.20.0.44")
+        here = RM.Ctx(True, "127.0.0.1")
+        for body in ({"action": "step", "unit": "w1"},
+                     {"action": "set", "kind": "waver",
+                      "shows_per_refill": 3},
+                     {"action": "fill", "confirm": True, "units": ["g1"]}):
+            st, out = F.route_post(R.tr, "fuel-shows", body, net, None)
+            check(st == 403 and "show machine" in out["error"],
+                  f"no sign-in: the network may not: {body} {out}")
+        st, out = F.route_post(R.tr, "fuel-shows", {
+            "action": "set", "kind": "waver", "shows_per_refill": 3},
+            here, None)
+        check(st == 200 and R.tr.shows.top("waver") == 3,
+              f"the show machine may: {out}")
+        st, out = F.route_get(R.tr, here, None)
+        check(out["may_set_shows"] and
+              out["shows_per_refill"]["waver"]["n"] == 3 and
+              out["shows_per_refill_max"] == 99, "the page is told")
+    finally:
+        R.close()
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer"), ("Ola", "operator")))
+    rem = httpd.remote
+    R = _FuelRig()
+    try:
+        rem.fuel = R.tr
+        R.tr.audit = rem.audit
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "step", "unit": "w1"})
+        check(st == 403 and "Sign in as an operator or admin" in
+              out["error"], f"signed out: refused: {out}")
+        ck = {}
+        for name in ("Vic", "Ola", "Jeff"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "set", "kind": "waver",
+                            "shows_per_refill": 4}, cookie=ck["Ola"])
+        check(st == 403 and "admin" in out["error"] and
+              R.tr.shows.top("waver") is None,
+              f"an operator may not set shows per refill: {out}")
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "set", "kind": "waver",
+                            "shows_per_refill": "4"}, cookie=ck["Jeff"])
+        check(st == 400 and "whole number" in out["error"],
+              f"junk refused plainly: {out}")
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "set", "kind": "waver",
+                            "shows_per_refill": 4}, cookie=ck["Jeff"])
+        check(st == 200 and R.tr.shows.top("waver") == 4,
+              f"an admin may: {out}")
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "step", "unit": "w1"},
+                           cookie=ck["Vic"])
+        check(st == 403 and "viewer" in out["error"],
+              f"a viewer may not press Refueled +1: {out}")
+        for _ in range(2):
+            st, out, _h = http("/api/remote/fuel-shows",
+                               {"action": "step", "unit": "w1"},
+                               cookie=ck["Ola"])
+        check(st == 200 and out["left"] == 2 and out["n"] == 4 and
+              out["text"] == "Wave 1: 2 shows left.",
+              f"an operator may, and is told the new number: {out}")
+        _commit(R)
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "step", "unit": "g1"},
+                           cookie=ck["Ola"])
+        check(st == 400, f"not on a type with no N: {out}")
+        st, out, _h = http("/api/remote/fuel-shows", {"action": "nope"},
+                           cookie=ck["Jeff"])
+        check(st == 400, "an unknown action is refused")
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "fill", "units": ["w1"]},
+                           cookie=ck["Ola"])
+        check(st == 400 and "confirm" in out["error"],
+              f"Fill selected without its confirm: {out}")
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "fill", "confirm": True,
+                            "units": ["w1", "nope"]}, cookie=ck["Ola"])
+        check(st == 409 and _left(R) == 2, f"an unknown unit: {out}")
+        st, out, _h = http("/api/remote/fuel-shows",
+                           {"action": "fill", "confirm": True,
+                            "units": ["w1"]}, cookie=ck["Ola"])
+        check(st == 200 and _left(R) == 4, f"Fill selected: {out}")
+        st, out, _h = http("/api/remote/fuel", cookie=ck["Ola"])
+        bid = out["recent_refills"][0]["id"]
+        check(not out["may_set_shows"] and out["may_refill"],
+              "an operator: Refueled +1 and Fill selected, not the setting")
+        st, out, _h = http("/api/remote/fuel-undo", {"id": bid},
+                           cookie=ck["Ola"])
+        check(st == 403, "an operator may not undo")
+        st, out, _h = http("/api/remote/fuel-undo", {"id": bid},
+                           cookie=ck["Jeff"])
+        check(st == 200 and _left(R) == 2, f"an admin may: {out}")
+        rem.audit.flush(5.0)
+        lines = _audit_lines(rem.audit.folder)
+        acts = [l["action"] for l in lines]
+        steps = [l for l in lines if l["action"] == "fuel-shows" and
+                 "action=step" in l.get("target", "")]
+        rf = [l for l in lines if l["action"] == "fuel-refueled"]
+        check(len(rf) == 1 and rf[0]["user"] == "Ola" and
+              rf[0]["old"] == 0 and rf[0]["new"] == 2 and
+              rf[0]["clicks"] == 2 and
+              all(l["result"] == "refused" for l in steps) and
+              len(steps) == 3 and "fuel-fill" in acts and
+              "fuel-shows-set" in acts,
+              f"two accepted taps are ONE audit entry; refused taps are "
+              f"logged as refused: {rf} {[l['result'] for l in steps]}")
+    finally:
+        rem.fuel = None
+        httpd.server_close()
+        R.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
 
@@ -109547,13 +110353,13 @@ await h.sleep(400);
 const bar = document.getElementById("fu-arr-bar");
 out.bar = {shown:!bar.hidden, head:bar.querySelector("b").textContent, bullets:[...bar.querySelectorAll("li")].map(l => l.textContent),
   buttons:[...bar.querySelectorAll("button")].map(b => b.textContent.trim()), refills:document.querySelectorAll("#d-fuel [data-refill]").length,
-  all:document.getElementById("fu-all").disabled, mv:[...bar.querySelectorAll("[data-mv]")].every(b => b.disabled)};
+  all:document.getElementById("fu-fill").disabled, mv:[...bar.querySelectorAll("[data-mv]")].every(b => b.disabled)};
 out.beat_on = beats().length > 0 && beats().every(p => p.body.arranging === true && p.body.inst);
 // Every way a finger can press a tank while arranging: no refill leaves.
 const c1 = card("ground-3");
 h.tap(c1); await h.sleep(300);
 c1.click(); await h.sleep(200);
-document.getElementById("fu-all").click(); await h.sleep(300);
+document.getElementById("fu-fill").click(); await h.sleep(300);
 out.picked = (card("ground-3") || {}).className;
 document.querySelector('#fu-arr-mv [data-mv="right"]').click(); await h.sleep(200);
 out.right = ids();
@@ -109955,6 +110761,319 @@ out.undo = since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel"
           m["undo"] == [["haze-undo", {"id": 7}]],
           f"Undo asks first, then posts haze-undo {{id}}: {m['usheet']} "
           f"{m['undo']}")
+    print("  ok")
+
+
+def _ui2_shows_fuel(may=True):
+    def g(i, name, cd=None):
+        u = {"id": i, "name": name, "kind": "gflame", "shows_left": 3,
+             "percent": 40, "refill_soon": False, "color": "amber",
+             "locked": False, "status": "ok"}
+        if cd is not None:
+            u["countdown"] = cd
+        return u
+
+    def cd(left, n):
+        return {"left": left, "x": left + 0.4, "n": n,
+                "refuel_now": left == 0, "estimating": False,
+                "mode": "learned", "not_sure": False, "pending": False,
+                "refills": 0, "words": "Refuel now" if left == 0 else
+                f"Shows left: {left}"}
+
+    def use(purge, live):
+        p = {b: 0.0 for b in ("show", "short", "purge", "cleaning",
+                              "rehearsal", "live", "other", "unsure")}
+        return {"since": dict(p, show=60.0, purge=purge, live=live),
+                "life": dict(p, show=600.0, purge=4 * purge, live=live),
+                "shows_since": 3, "shows": 30, "per_show_s": 20.0,
+                "mode": "learned", "since_at_ms": 1800000000000}
+    units = [g("g1", "Ground 1"), g("g2", "Ground 2"),
+             g("c1", "Catwalk 1"),
+             dict(g("w1", "Wave Flamer 1", cd(2, 4)), kind="waver"),
+             dict(g("w2", "Wave Flamer 2", cd(0, 4)), kind="waver")]
+    units[4]["countdown"].update(left=1, x=1.7, estimating=True,
+                                 mode="estimating", refuel_now=False,
+                                 words="Shows left: 1, estimating")
+    for i, u in enumerate(units):
+        u["use"] = use(10.0 * i, 5.0 if i == 3 else 0.0)
+    return {"units": units, "unit_ids": [u["id"] for u in units],
+            "may_refill": may, "may_undo": may, "may_set_shows": may,
+            "refill_why": "" if may else "Sign in as an operator or admin.",
+            "undo_why": "", "set_shows_why": "", "fault": "",
+            "config_error": "", "notes": [], "recent_refills": [],
+            "shows_per_refill": {"gflame": {"name": "G-Flame", "n": None},
+                                 "waver": {"name": "Wave Flamer", "n": 4}},
+            "shows_per_refill_max": 99,
+            "use_words": {"show": "Shows", "short": "Short starts",
+                          "purge": "Purges", "cleaning": "Cleaning",
+                          "rehearsal": "Rehearsal",
+                          "live": "Live programming", "other": "Other",
+                          "unsure": "Not sure"},
+            "haze": {"available": True, "may_undo": may,
+                     "recent_refills": [], "notes": [],
+                     "hazers": [{"name": "Hazer 1", "big": "2 h of haze",
+                                 "color": "green", "refill_soon": False,
+                                 "not_sure": False, "words": ""},
+                                {"name": "Hazer 2", "big": "1 h of haze",
+                                 "color": "green", "refill_soon": False,
+                                 "not_sure": False, "words": ""}]}}
+
+
+_UI2_SHOWS_LAYOUT_JS = r"""
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+const vis = e => e.getClientRects().length && !e.closest("[hidden]");
+const overlaps = sel => {
+  const bs = [...document.querySelectorAll(sel)].filter(vis);
+  const r = bs.map(b => b.getBoundingClientRect()), hit = [];
+  for(let i = 0; i < r.length; i++) for(let j = i + 1; j < r.length; j++){
+    if(bs[i].contains(bs[j]) || bs[j].contains(bs[i])) continue;
+    const x = Math.min(r[i].right, r[j].right) - Math.max(r[i].left, r[j].left);
+    const y = Math.min(r[i].bottom, r[j].bottom) - Math.max(r[i].top, r[j].top);
+    if(x > 0.5 && y > 0.5) hit.push([bs[i].id || bs[i].textContent.trim().slice(0, 30), bs[j].id || bs[j].textContent.trim().slice(0, 30)]);
+  }
+  return {n:bs.length, hit:hit};
+};
+await h.sleep(900);
+out.step = step("fuel");
+await h.sleep(1500);
+const page = overlaps("#t-day button, #t-day a.b");
+out.layout = {n:page.n, overlap:page.hit, xs:document.scrollingElement.scrollWidth - innerWidth,
+  tiles:document.querySelectorAll("#d-fuel [data-step-unit]").length, fill:vis(document.getElementById("fu-fill")), top:vis(document.getElementById("fu-top")),
+  cut:[...document.querySelectorAll("#d-fuel [data-step-unit] small")].filter(e => e.scrollWidth > e.clientWidth + 1).map(e => e.textContent)};
+document.getElementById("fu-fill").click();
+await h.sleep(400);
+const sh = overlaps("#sheet button");
+out.sheet = {open:!document.getElementById("sheet").hidden, n:sh.n, overlap:sh.hit, xs:document.scrollingElement.scrollWidth - innerWidth};
+document.querySelector('#sh-row [data-i="0"]').click();
+await h.sleep(200);
+document.getElementById("fu-use").click();
+await h.sleep(300);
+const box = document.querySelector("#sheet .box").getBoundingClientRect();
+out.use = {open:!document.getElementById("sheet").hidden, wide:[...document.querySelectorAll("#sh-body table")].filter(t => t.getBoundingClientRect().right > box.right + 0.5).length,
+  xs:document.scrollingElement.scrollWidth - innerWidth};
+document.querySelector('#sh-row [data-i="0"]').click();
+await h.sleep(200);
+"""
+
+
+def test_ui2_fuel_shows_driven():
+    section("2.0's Fuel step with shows per refill, in a real browser: the "
+            "tile says Shows left: X (or Refuel now) and Refueled +1; each "
+            "tap posts one step with no question; Select to fill opens the "
+            "units and hazers, Select all per type and Clear, then Fill "
+            "selected asks first, naming what it fills; Shows per refill "
+            "(admins), one number per type, refuses junk on the page; "
+            "signed out nothing is pressed; no button overlaps another at "
+            "1024 to 2560 CSS px")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    mo = _morning_view_pico(selected=())
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n).filter(p => p.route !== "morning-open");
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+const txt = e => e ? e.innerText.replace(/\s+/g, " ").trim() : null;
+const yes = () => document.querySelector('#sh-row [data-i="1"]').click();
+await h.sleep(900);
+out.step = step("fuel");
+await h.sleep(1500);
+out.tiles = {w1:txt(document.querySelector('#d-fuel [data-step-unit="w1"]')), w2:txt(document.querySelector('#d-fuel [data-step-unit="w2"]')),
+  w2part:document.querySelector('#d-fuel [data-step-unit="w2"]').classList.contains("part"),
+  g1:txt(document.querySelector('#d-fuel [data-refill="g1"]')), wrefill:!!document.querySelector('#d-fuel [data-refill="w1"]'),
+  fill:txt(document.getElementById("fu-fill")), top:txt(document.getElementById("fu-top")), old:!!document.getElementById("fu-all"),
+  box:!!document.querySelector("#fu-shows #fu-fill") && !!document.querySelector("#fu-shows #fu-top")};
+window.__answer["fuel-shows"] = b => [200, b.action === "step" ? {text:"Wave Flamer 1: 3 shows left.", left:3, n:4} : {text:"Done."}];
+let n = mark();
+const t = document.querySelector('#d-fuel [data-step-unit="w1"]');
+t.click(); t.click(); t.click();
+await h.sleep(500);
+out.taps = {posts:since(n).map(p => [p.route, p.body]), sheet:!document.getElementById("sheet").hidden, msg:document.getElementById("fu-msg").textContent};
+n = mark();
+document.getElementById("fu-fill").click();
+await h.sleep(300);
+const go = () => document.querySelector('#sh-row [data-i="1"]');
+out.sel = {open:!document.getElementById("sheet").hidden, h:document.getElementById("sh-h").textContent,
+  kinds:[...document.querySelectorAll("#fs-kinds button")].map(txt), units:[...document.querySelectorAll("#fs-units [data-fs]")].map(txt),
+  go:txt(go()), dis:go().disabled};
+document.querySelector('#fs-kinds [data-fs-kind="waver"]').click();
+document.querySelector('#fs-units [data-fs="h:Hazer 2"]').click();
+document.querySelector('#fs-units [data-fs="u:g2"]').click();
+document.querySelector('#fs-units [data-fs="u:g2"]').click();
+await h.sleep(100);
+out.sel2 = {on:[...document.querySelectorAll("#fs-units .on")].map(b => b.dataset.fs), go:txt(go()), posts:since(n).length};
+document.querySelector('#fs-kinds [data-fs-kind=""]').click();
+await h.sleep(100);
+out.cleared = document.querySelectorAll("#fs-units .on").length;
+document.querySelector('#fs-kinds [data-fs-kind="waver"]').click();
+document.querySelector('#fs-kinds [data-fs-kind="hazer"]').click();
+document.querySelector('#fs-units [data-fs="u:g1"]').click();
+await h.sleep(100);
+yes();
+await h.sleep(300);
+out.conf = {open:!document.getElementById("sheet").hidden, h:document.getElementById("sh-h").textContent,
+  body:[...document.querySelectorAll("#sh-body li")].map(e => e.textContent), posts:since(n).length};
+document.querySelector('#sh-row [data-i="0"]').click();
+await h.sleep(300);
+out.conf_no = since(n).length;
+document.getElementById("fu-fill").click();
+await h.sleep(300);
+out.kept = document.querySelectorAll("#fs-units .on").length;
+yes(); await h.sleep(300); yes(); await h.sleep(400);
+out.fill = since(n).map(p => [p.route, p.body]);
+const setTop = async (w, g) => {
+  document.getElementById("fu-top").click();
+  await h.sleep(300);
+  for(const [k, v] of [["waver", w], ["gflame", g]]){
+    const i = document.querySelector('[data-fs-top="' + k + '"]');
+    i.value = v; i.dispatchEvent(new Event("input", {bubbles:true}));
+  }
+  yes();
+  await h.sleep(400);
+};
+n = mark();
+document.getElementById("fu-top").click();
+await h.sleep(300);
+out.top_h = document.getElementById("sh-h").textContent;
+out.top_rows = [...document.querySelectorAll("#sh-body label")].map(txt);
+out.top_vals = [...document.querySelectorAll("[data-fs-top]")].map(e => [e.dataset.fsTop, e.value]);
+document.querySelector('#sh-row [data-i="0"]').click();
+await h.sleep(300);
+for(const v of ["0", "100", "2.5", "-3"]) await setTop(v, "");
+out.junk = {posts:since(n).length, msg:document.getElementById("fu-msg").textContent};
+await setTop("6", "12");
+out.top = since(n).map(p => [p.route, p.body]);
+n = mark();
+await setTop("4", "");
+out.top_same = since(n).length;
+document.getElementById("fu-use").click();
+await h.sleep(300);
+out.use = {h:document.getElementById("sh-h").textContent,
+  w1:[...document.querySelectorAll('[data-use="w1"] tr')].map(txt), w1per:txt(document.querySelector('[data-use="w1"] .pline')),
+  g1:[...document.querySelectorAll('[data-use="g1"] tr')].map(txt), n:document.querySelectorAll("[data-use]").length};
+document.querySelector('#sh-row [data-i="0"]').click();
+"""
+    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": mo,
+                           "/api/remote/fuel": _ui2_shows_fuel()},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's shows per refill, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    t = m["tiles"]
+    check(m["step"] and
+          t["w1"] == "Wave Flamer 1 Shows left: 2 Refueled +1" and
+          t["w2"] == "Wave Flamer 2 Shows left: 1, estimating Refueled +1" and
+          not t["w2part"] and t["g1"] == "Ground 1 3 shows left" and
+          not t["wrefill"] and t["fill"] == "Select to fill" and
+          t["top"] == "Shows per refill" and not t["old"] and t["box"],
+          f"a type with N: Shows left and Refueled +1; a type without: "
+          f"the tile as before; Select to fill and Shows per refill in "
+          f"their own container: {t}")
+    check(m["taps"]["posts"] == [["fuel-shows",
+                                  {"action": "step", "unit": "w1"}]] * 3 and
+          not m["taps"]["sheet"] and
+          m["taps"]["msg"] == "Wave Flamer 1: 3 shows left.",
+          f"three taps, three +1 presses, no question, the new number "
+          f"said at once: {m['taps']}")
+    s = m["sel"]
+    check(s["open"] and s["h"] == "Fill which units?" and
+          s["kinds"] == ["Select all G-Flames", "Select all Wave Flamers",
+                         "Select all hazers", "Clear"] and
+          s["units"] == ["Ground 1", "Ground 2", "Catwalk 1",
+                         "Wave Flamer 1", "Wave Flamer 2", "Hazer 1",
+                         "Hazer 2"] and
+          s["go"] == "Fill selected" and s["dis"],
+          f"Select to fill: every flame unit and hazer, a Select all per "
+          f"type, Clear; nothing selected, nothing to fill: {s}")
+    check(m["sel2"] == {"on": ["u:w1", "u:w2", "h:Hazer 2"],
+                        "go": "Fill selected (3)", "posts": 0} and
+          m["cleared"] == 0,
+          f"tap to select, again to drop; Select all Wave Flamers; Clear: "
+          f"{m['sel2']} {m['cleared']}")
+    check(m["conf"]["open"] and m["conf"]["h"] == "Fill 5 units to full?" and
+          m["conf"]["body"] == ["G-Flames: Ground 1",
+                                "Wave Flamers: all 2", "hazers: all 2"] and
+          m["conf"]["posts"] == 0 and m["conf_no"] == 0 and m["kept"] == 5,
+          f"Fill selected asks first, naming what it fills; Cancel sends "
+          f"nothing and keeps the selection: {m['conf']}")
+    check(m["fill"] == [["fuel-shows", {
+        "action": "fill", "confirm": True, "units": ["g1", "w1", "w2"],
+        "hazers": ["Hazer 1", "Hazer 2"]}]],
+          f"yes: one fill with the flame units and hazers chosen: "
+          f"{m['fill']}")
+    check(m["top_h"] == "Shows per refill" and
+          m["top_rows"] == ["G-Flames", "Wave Flamers"] and
+          sorted(m["top_vals"]) == [["gflame", ""], ["waver", "4"]] and
+          m["junk"]["posts"] == 0 and
+          m["junk"]["msg"] == "Not saved. Use a whole number 1 to 99." and
+          sorted(json.dumps(p) for p in m["top"]) == sorted(json.dumps(p)
+              for p in [["fuel-shows", {"action": "set", "kind": "waver",
+                                        "shows_per_refill": 6}],
+                        ["fuel-shows", {"action": "set", "kind": "gflame",
+                                        "shows_per_refill": 12}]]) and
+          m["top_same"] == 0,
+          f"Shows per refill: one field per type, junk refused on the page, "
+          f"a changed one posted, an unchanged one not: {m['top_rows']} "
+          f"{m['junk']} {m['top']} {m['top_same']}")
+    u = m["use"]
+    check(u["h"] == "Where the fuel went" and u["n"] == 5 and
+          u["w1"] == ["Source Since refill In all", "Shows 60 s 10.0 min",
+                      "Purges 30 s 2.0 min", "Live programming 5 s 5 s",
+                      "Shows 3 30"] and u["w1per"] == "Per show: 20 s" and
+          u["g1"] == ["Source Since refill In all", "Shows 60 s 10.0 min",
+                      "Shows 3 30"],
+          f"Fuel use: each unit's flame by source, since the refill and "
+          f"in all, its shows and flame per show: {u}")
+    steps2 = r"""
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+await h.sleep(900); step("fuel"); await h.sleep(1500);
+const n = window.__posts.length;
+document.querySelector('#d-fuel [data-step-unit="w1"]').click();
+document.getElementById("fu-fill").click();
+await h.sleep(300);
+out.off = {posts:window.__posts.slice(n).filter(p => p.route !== "morning-open").length,
+  dis:document.querySelector('#d-fuel [data-step-unit="w1"]').disabled, fill:document.getElementById("fu-fill").disabled,
+  top:document.getElementById("fu-top").hidden, sheet:!document.getElementById("sheet").hidden};
+"""
+    m2 = _ui2_drive(chrome, page, _ui2_status_day(), steps2, size=(1366, 768),
+                    frag="?tour=0#day",
+                    routes={"/api/remote/morning": mo,
+                            "/api/remote/fuel": _ui2_shows_fuel(False)},
+                    budget_ms=20000)
+    check(isinstance(m2, dict) and m2.get("off") == {
+        "posts": 0, "dis": True, "fill": True, "top": True, "sheet": False},
+          f"who may not refill: tiles and Select to fill disabled, no "
+          f"Shows per refill: {m2!r}"[:600])
+    js = "<script>window.__drive = async (out, h) => {\n" + \
+        _UI2_SHOWS_LAYOUT_JS + "\n};</script>" + _UI2_DRIVE_JS
+    sizes = ((1024, 768), (1366, 768), (1920, 1080), (2560, 1440))
+    got = _rack_screen_in_chromium(chrome, page, _ui2_status_day(), sizes,
+                                   measure_js=js, frag="?tour=0#day",
+                                   routes={"/api/remote/morning": mo,
+                                           "/api/remote/fuel":
+                                               _ui2_shows_fuel()},
+                                   budget_ms=20000)
+    for sz in sizes:
+        r = got.get(sz)
+        r = r[0] if isinstance(r, list) and r else r
+        lo = r.get("layout") if isinstance(r, dict) else None
+        sh = r.get("sheet") if isinstance(r, dict) else None
+        us = r.get("use") if isinstance(r, dict) else None
+        check(lo and lo["n"] > 5 and not lo["overlap"] and lo["xs"] <= 0 and
+              lo["tiles"] == 2 and lo["fill"] and lo["top"] and
+              not lo["cut"] and sh and sh["open"] and sh["n"] >= 12 and
+              not sh["overlap"] and sh["xs"] <= 0 and us and us["open"] and
+              us["wide"] == 0 and us["xs"] <= 0,
+              f"{sz[0]} px: no button on the Fuel step or the selection "
+              f"overlaps another, no sideways scroll, the tile words fit: "
+              f"{r!r}"[:900])
     print("  ok")
 
 
@@ -110506,14 +111625,27 @@ def test_ui2_day_makes_only_1_0_presses():
           "haze-refill" not in k1 and "haze-undo" not in k1,
           f"haze fluid's Refilled and Undo are the only new DAY presses: "
           f"{k2.get('haze-refill')} {k2.get('haze-undo')}")
+    # Shows per refill (fuelshows.py, Jeff 2026-11-13), new on 2.0's Fuel
+    # step: Refueled +1 {action, unit} and Fill selected {action, confirm,
+    # units, hazers}; Fill selected replaces Refill all (1.0 keeps its
+    # own). A type's shows per refill posts from a list (no literal body).
+    check(k2.get("fuel-shows") == {("action", "unit"),
+                                   ("action", "confirm", "hazers",
+                                    "units")} and
+          "fuel-shows" not in k1,
+          f"shows per refill's presses are the only other new DAY "
+          f"presses: {k2.get('fuel-shows')}")
     k2 = {r: k for r, k in k2.items() if r not in ("haze-refill",
-                                                    "haze-undo")}
+                                                    "haze-undo",
+                                                    "fuel-shows")}
     check(k2 and all(r in k1 and keys <= k1[r] for r, keys in k2.items()),
           f"every DAY press is a 1.0 press, body keys and all: "
           f"{ {r: sorted(k) for r, k in k2.items() if r not in k1 or not k <= k1[r]} }")
-    for need in ('fuPress("fuel-refill", {all:true, confirm:true, '
-                 'units:(FU && FU.unit_ids) || []});',
-                 'fuPress("fuel-refill", {unit:u.id});',
+    check('fuPress("fuel-refill", {all:true, confirm:true, '
+          'units:(FU && FU.unit_ids) || []});' in one and
+          'fuPress("fuel-refill", {all:true' not in two,
+          "1.0 keeps Refill all; 2.0's Fuel step has Fill selected instead")
+    for need in ('fuPress("fuel-refill", {unit:u.id});',
                  'moPress("laser-test", {all:true, on:true}, "mo-lmsg")',
                  'moPress("laser-test", {all:true, on:false}, "mo-lmsg")',
                  'moPress("open-beyond", {}, "mo-lmsg")',
@@ -124025,6 +125157,14 @@ if __name__ == "__main__":
         test_fuel_settings_are_checked_strictly,
         test_fuel_routes_and_who_may_refill,
         test_fuel_doc_in_plain_words,
+        test_fuel_shows_counts_every_flame_in_its_pile,
+        test_fuel_shows_left_from_every_flame,
+        test_fuel_shows_restart_not_sure_and_once,
+        test_fuel_shows_refill_during_a_show_counts_its_flame_once,
+        test_fuel_shows_entry_written_at_start_reaches_the_audit_log,
+        test_fuel_shows_refueled_plus_one_and_its_one_entry,
+        test_fuel_shows_fill_selected,
+        test_fuel_shows_routes_and_who_may,
         test_haze_fluid_reads_the_bytes_on_the_wire,
         test_haze_fluid_counts_haze_not_fan_by_level_and_source,
         test_haze_fluid_not_sure_on_restart_and_a_stale_link,
@@ -124076,6 +125216,7 @@ if __name__ == "__main__":
         test_ui2_fireball_page_driven,
         test_ui2_fireball_pads_only_whole,
         test_ui2_timed_purge_and_fuel_undo_driven,
+        test_ui2_fuel_shows_driven,
         test_ui2_haze_fluid_driven,
         test_ui2_startup_steps_never_overlap,
         test_ui2_machine_rows_fit_and_never_overlap,

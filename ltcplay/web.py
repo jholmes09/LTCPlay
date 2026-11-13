@@ -1342,6 +1342,11 @@ class Handler(BaseHTTPRequestHandler):
                     (short == "fireball-beat" and
                      body.get("run") is not None and
                      body.get("change") is not True) or
+                    # Refueled +1 (fuel.py, fuelshows.py): the presses
+                    # of one batch are ONE audit line, written by the
+                    # fuel tracker once shows left has sat COMMIT_S.
+                    (short == "fuel-shows" and
+                     body.get("action") == "step") or
                     # The wave flamer cleaning: a beat while held.
                     (short == "cleaning-beat" and
                      body.get("run") is not None and
