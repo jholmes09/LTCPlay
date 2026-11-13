@@ -224,7 +224,12 @@ CLEANING_POST_ROUTES = ("cleaning-beat", "cleaning-stop")
 # arming a hazer and setting its levels are arm presses (users.classify)
 # and from the show network need screen_arming; a disarm and Hazers off
 # never.
-HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level")
+HAZER_POST_ROUTES = ("hazer", "hazers-off", "hazer-level", "hazers-arm-all")
+# The hazer test (hazertest.py, Jeff 2026-11-11): read by anyone in the
+# status; {"on": true} and its page's {"beat": run} are arm presses
+# (users.classify) and from the show network need screen_arming; anything
+# else turns it off, never refused.
+HAZER_TEST_POST_ROUTES = ("hazer-test",)
 # Play-from cues (play_from.py, the cue list per show file): read by anyone
 # signed in; a save is the role matrix's Settings row (admin by default,
 # users.py), a signed-in person, from the show network with screen_arming
@@ -277,7 +282,7 @@ POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
     CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES + \
     PUMP_POST_ROUTES + FIREBALL_TIMELINE_POST_ROUTES + \
-    FIREBALL_CHARGE_POST_ROUTES
+    FIREBALL_CHARGE_POST_ROUTES + HAZER_TEST_POST_ROUTES
 # Live flame programming (flameprog.py, LIVE_FLAME_PROGRAMMING.md): ON only
 # on the show machine itself (and the role matrix's Settings, users.py), with
 # a confirm; OFF from any surface, signed in or not: it only takes risk away.
@@ -498,7 +503,12 @@ def show_folder_mismatch(served, wanted):
     wanted = wanted.strip()
     if served and _norm_folder(served) == _norm_folder(wanted):
         return ""
-    return (f"showpc.json names the show folder {wanted}, but this engine "
+    # A headline, bullets, the paths behind More (Jeff, 2026-11-11).
+    return (f"Wrong show folder in use.\n"
+            f"- It switches by itself once no show runs.\n"
+            f"- If it stays: stop and start LTC Player.\n"
+            f"\n"
+            f"More: showpc.json names the show folder {wanted}, but this engine "
             f"is serving {served or 'no folder'}: the show files listed "
             f"here, and the show that runs, come from "
             f"{served or 'nowhere'}. LTC Player restarts the engine with "
@@ -1964,6 +1974,9 @@ class Remote:
         # fuel pump (2026-10-30).
         self.pump = None
         self._pump_users_busy = {}
+        # hazertest.HazerTest, set by web.serve with the hazers
+        # (2026-11-11).
+        self.hazer_test = None
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -2389,6 +2402,8 @@ class Remote:
             return (*self.play_from_save(body, ctx),) + ({},)
         if name in PUMP_POST_ROUTES:
             return (*self.pump_post(body, ctx),) + ({},)
+        if name in HAZER_TEST_POST_ROUTES:
+            return (*self.hazer_test_post(body, ctx),) + ({},)
         if name in FIREBALL_TIMELINE_POST_ROUTES:
             return (*self.fireball_timeline_save(body, ctx),) + ({},)
         if name in FIREBALL_CHARGE_POST_ROUTES:
@@ -2777,6 +2792,12 @@ class Remote:
                 self.pump_after_signout(
                     f"{_who} signed out on the {ctx.device}", ctx.user,
                     ctx.device, getattr(ctx, "token", "") or "")
+                # The hazer test too; its timer's own check is the belt.
+                ht = self.hazer_test
+                if ht is not None:
+                    ht.end_for_token(getattr(ctx, "token", "") or "",
+                                     f"{_who} signed out on the "
+                                     f"{ctx.device}", ctx.user, ctx.device)
                 # The Fireball page's channels end here too, at once, not on
                 # the page's next beat or the 0.25 s backstop (round-4
                 # review, s28/s48): this screen's run, and on the show
@@ -3439,11 +3460,15 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
-    TIMING_TEXT = ("Flame frames late: {n} in the last hour, worst {w} ms "
-                   "between two frames to flamesafe. flamesafe holds a fire "
-                   "value for {lim} ms after the last frame (its "
-                   "fire_hold_ms), so a flame pulse may have been cut "
-                   "short. The show carries on; nothing was changed.")
+    # A headline, bullets and the numbers behind More (Jeff, 2026-11-11:
+    # less prose); the rack screen's Details shows the lines (opText).
+    TIMING_TEXT = ("Flame frames late, last hour: {n}.\n"
+                   "- Why: A flame pulse may be cut short.\n"
+                   "- The show carries on. Nothing was changed.\n"
+                   "\n"
+                   "More: worst {w} ms between two frames to flamesafe. "
+                   "flamesafe holds a fire value for {lim} ms after the "
+                   "last frame (its fire_hold_ms).")
 
     def _frame_timing_work(self):
         """Flame frames late (flamelink.FrameTiming, 2026-10-29): on the
@@ -4769,8 +4794,15 @@ class Remote:
         label = who or "An unnamed operator"
         lead, why = cause
         ok, said = sent
+        # A headline, bullets, the rest behind More (Jeff, 2026-11-11).
+        # The first line is the footer's short line.
         if ok:
-            alert = (f"{lead}: ALL groups disarm sent. Disarm {gname} "
+            alert = (f"{lead}: ALL groups disarm sent.\n"
+                     f"- Disarm sent to every group. Hazers off.\n"
+                     f"- Flames stay zero until Hold then Resume.\n"
+                     f"- Do: Arm each group again to fire.\n"
+                     f"\n"
+                     f"More: Disarm {gname} "
                      f"forced ({why}): the flame link has no one-group "
                      f"disarm, so the Stop's disarm was sent to every "
                      f"flame group, every hazer is off, and the show's "
@@ -4778,11 +4810,14 @@ class Remote:
                      f"run. Each group needs Arm again (let go, then hold) "
                      f"before it can fire. {said}").strip()
         else:
-            alert = (f"Disarm {gname} COULD NOT be confirmed: {why}, and "
-                     f"the forced disarm did not go out either "
+            alert = (f"Disarm {gname} COULD NOT be confirmed.\n"
+                     f"- {gname} may still be armed.\n"
+                     f"- Do: Press Stop, or use the Stream Deck.\n"
+                     f"\n"
+                     f"More: Disarm {gname} COULD NOT be confirmed: {why}, "
+                     f"and the forced disarm did not go out either "
                      f"({said or 'no answer'}). {gname} may still be "
-                     f"armed: press "
-                     f"Stop, or disarm at the Stream Deck.")
+                     f"armed: press Stop, or disarm at the Stream Deck.")
         self._journal(who, device, "disarm", "forced" if ok else "fault",
                       f"{label} pressed Disarm {gname} on the {device}. "
                       f"{alert}", fault=True)
@@ -4871,6 +4906,9 @@ class Remote:
                 if names:
                     out["hazers"] = {"names": names,
                                      "on": sorted(hz.on()),
+                                     # The hazer test running: the deck's
+                                     # keys say HAZE TEST, never DISARMED.
+                                     "test": self._ht_running(),
                                      "down": hz.down(),
                                      "paused": hz.show() == "held"}
             except Exception:                    # noqa: BLE001
@@ -5257,9 +5295,38 @@ class Remote:
             return 404, {"error": "There are no hazers in this engine."}
         who, device, _surface = self._actor(ctx, body)
         if name == "hazers-off":
+            ht = self.hazer_test
+            testing = self._ht_running()
             hz.all_off(f"{who or 'someone'} pressed Hazers off on the "
                        f"{device}", who=who, screen=device, system=False)
-            return 200, {"ok": True, "text": "Every hazer is DISARMED."}
+            if ht is not None:
+                # all_off ended it; once more here, the belt.
+                ht.stop(f"{who or 'someone'} pressed Hazers off on the "
+                        f"{device}", who=who, screen=device, system=False)
+            text = "Every hazer is DISARMED."
+            if testing:
+                text += " Hazer test OFF."
+            return 200, {"ok": True, "text": text}
+        if name == "hazers-arm-all":
+            # Arm all hazers (2026-11-11): the same screen_arming rule as
+            # arming one; each hazer then through Hazers.set, every refusal
+            # of arming one applying to each.
+            if not self.may_act_from(ctx.local):
+                why = ("Arming hazers from a device on the show network "
+                       "needs screen_arming (on the show machine itself: "
+                       "Programming, Arming from a screen, Turn on). "
+                       "Nothing was changed.")
+                self._journal(who, device, name, "refused",
+                              f"{who or 'Someone'}'s Arm all hazers from "
+                              f"the {device} was refused. {why}")
+                return 403, {"error": why}
+            ok, text, armed, missed = hz.arm_all(who=who, screen=device)
+            out = {"ok": ok, "text": text, "armed": armed,
+                   "not_armed": [{"name": n, "why": w} for n, w in missed]}
+            if not armed:
+                out["error"] = text
+                return 409, out
+            return 200, out
         hname = body.get("hazer")
         names = hz.names()
         if isinstance(hname, int) and not isinstance(hname, bool) and \
@@ -5292,6 +5359,168 @@ class Remote:
         if not ok:
             return 409, {"error": text}
         return 200, {"ok": True, "text": text}
+
+    # -- the hazer test (hazertest.py) ----------------------------------------
+    def hazer_test_cut(self, reason, who="", screen=""):
+        """Stop or Abort: the hazer test OFF at the flame link now, the
+        journal and audit lines on a thread of their own. Never raises,
+        never waits."""
+        ht = self.hazer_test
+        if ht is None:
+            return False
+        try:
+            was = ht.cut()
+            threading.Thread(target=ht.off, args=(reason,),
+                             kwargs={"who": who, "screen": screen,
+                                     "system": not who, "was": was},
+                             daemon=True, name="ltcplay-hazer-test-off").start()
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def hazer_test_show_busy(self):
+        """Why a show owns the hazers now (the hazer test is refused, and
+        one running ends), or "": the scheduled show playing or held, or
+        show control on or starting (the timed purge's own test). Fails
+        closed."""
+        try:
+            # Read here, not through hazer_show_state (which reads an error
+            # as idle): an error is busy (fail closed).
+            st = self._ht_state()
+            if st == "playing":
+                return "a show is playing, and the show drives the hazers"
+            if st == "held":
+                return "a show is on Hold; the show drives the hazers"
+            if getattr(getattr(self.control, "session", None), "running",
+                       False):
+                return "show control is on; press Stop first"
+            try:
+                cs = self.control.state() or {}
+            except Exception:                    # noqa: BLE001
+                # Fail closed: not known is busy, never off.
+                return "show control's state could not be read"
+            # Starting or running is on here, stricter than the status's
+            # show_control_on (which reads a starting file under a Run gate
+            # as off): the test never runs while show control may be on.
+            if cs.get("starting") or cs.get("running") or \
+                    self.show_control_on(cs):
+                return "show control is on; press Stop first"
+        except Exception as e:                   # noqa: BLE001
+            return f"the engine's state could not be read ({type(e).__name__})"
+        return ""
+
+    def _ht_state(self):
+        """The scheduled show for the hazer test: "playing", "held" or
+        "idle"; raises when it cannot be read."""
+        m = getattr(self.schedule, "machine", None)
+        state = m.state
+        if state == "SHOW":
+            return "playing"
+        if state in ("HOLD", "PAUSED"):
+            return "held"
+        return "idle"
+
+    def hazer_test_gate(self):
+        """The flame link's per-frame gate for the hazer test: True only
+        with no show playing or held and show control's session not
+        running (plain reads, no locks). False on any error."""
+        try:
+            if self._ht_state() != "idle":
+                return False
+            if getattr(getattr(self.control, "session", None), "running",
+                       False):
+                return False
+            return True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def hazer_test_signed_out(self, token, who):
+        """As pump_signed_out, for the hazer test. Never raises."""
+        try:
+            why = self.pump_signed_out(token, who)
+        except Exception:                        # noqa: BLE001
+            return "the sign-in could not be checked"
+        return why.replace("turn the fuel pump on", "run the hazer test") \
+            .replace("pump turned off", "hazer test turned off")
+
+    def hazer_test_post(self, body, ctx):
+        """POST hazer-test {"on": true, "run": "<press id>", "seen": ms},
+        {"beat": "<press id>"} from the page that started it, or anything
+        else: OFF, never refused. ON and the beat are arm presses
+        (users.classify, checked by web.py first). (code, body)."""
+        ht = self.hazer_test
+        if ht is None:
+            who, device, _surface = self._actor(ctx, body)
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device}: there are no hazers in this engine.")
+            return 404, {"error": "There are no hazers in this engine."}
+        who, device, _surface = self._actor(ctx, body)
+        on = body.get("on") is True
+        beat = body.get("beat")
+        if not on and not isinstance(beat, str):
+            ht.stop(f"{who or 'someone'} pressed Hazer test off on the "
+                    f"{device}", who=who, screen=device, system=False)
+            return 200, {"ok": True, "text": "Hazer test OFF."}
+        if not self.may_act_from(ctx.local):
+            why = ("The hazer test from a device on the show network needs "
+                   "screen_arming (on the show machine itself: Programming, "
+                   "Arming from a screen, Turn on). Nothing was changed.")
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        if not on:
+            ok, text = ht.beat(beat)
+            return (200 if ok else 409), ({"ok": True, "text": text} if ok
+                                          else {"error": text})
+        if self.users_active() and not (getattr(ctx, "token", None) or ""):
+            why = ("The hazer test needs a sign-in on this screen. Sign in, "
+                   "then press again.")
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device} was refused. {why}")
+            return 403, {"error": why}
+        try:
+            seen = float(body.get("seen"))
+        except (TypeError, ValueError):
+            seen = None
+        if seen is None or seen != seen or \
+                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
+            why = ("Hazer test not started: this screen's status was old. "
+                   "Wait for it to be live, then press again.")
+            self._journal(who, device, "hazer-test", "refused",
+                          f"{who or 'Someone'}'s hazer test from the "
+                          f"{device} was refused. {why}")
+            return 409, {"error": why}
+        ok, text = ht.start(who=who, screen=device, run=body.get("run"),
+                            token=getattr(ctx, "token", "") or "")
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
+
+    def _ht_running(self):
+        ht = self.hazer_test
+        try:
+            return ht is not None and (ht.run is not None or ht.on())
+        except Exception:                        # noqa: BLE001
+            return True
+
+    def hazer_test_view(self):
+        """The status's "hazer_test", or None with no hazers. Fails
+        closed: an error is OFF."""
+        ht = self.hazer_test
+        if ht is None:
+            return None
+        try:
+            return ht.view()
+        except Exception as e:                   # noqa: BLE001
+            try:
+                ht.stop(f"its state could not be read ({type(e).__name__})")
+            except Exception:                    # noqa: BLE001
+                pass
+            return {"available": True, "on": False, "state": "unknown",
+                    "error": type(e).__name__}
 
     # -- play-from cues (play_from.py): the cue list per show file ----------
     def play_from_store(self):
@@ -5637,11 +5866,12 @@ class Remote:
             seen = None
         if seen is None or seen != seen or \
                 abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
-            why = ("The fuel pump was not turned on: the press came from a "
-                   "screen whose status was more than 1 s old (or said "
-                   "nothing of its age), so it may be from before a Pump "
-                   "off or a Stop. Wait for the screen to be live, then "
-                   "press again.")
+            why = ("Fuel pump NOT turned on.\n"
+                   "Wait for the screen to be live, then press again.\n"
+                   "\n"
+                   "More: the press came from a screen whose status was "
+                   "more than 1 s old (or said nothing of its age), so it "
+                   "may be from before a Pump off or a Stop.")
             self._journal(who, device, "fuel-pump", "refused",
                           f"{who or 'Someone'}'s fuel pump ON from the "
                           f"{device} was refused. {why}")
@@ -6926,6 +7156,9 @@ class Remote:
             # affected by the stop button"); step 1's disarm_all did it at
             # the link already.
             self.pump_cut(why, who, screen)
+            # The hazer test OFF too (2026-11-11); step 1's disarm_all did
+            # it at the link already.
+            self.hazer_test_cut(why, who, screen)
             # 3. Every laser: disarmed on the arm, and blanked at once.
             fn = getattr(m, "lasers_disarm_now", None)
             if fn is not None:
@@ -7413,14 +7646,22 @@ class Remote:
         file this engine read, and what to do."""
         def words(v):
             return ", ".join(str(x) for x in v) if v else "none"
-        return (f"Aim slots do not match: flamesafe has {words(theirs)} and "
-                f"LTC Player has {words(mine)} (LTC Player read "
-                f"{path or 'flamesafe config'} when it started). Until they "
-                f"match a wave flamer's angle can stay at 0, its end stop. "
-                f"Put the aim list in the flamesafe.json flamesafe uses, "
-                f"check that LTC Player reads that same file, then quit LTC "
-                f"Player and start it again so both read it afresh. Stop, "
-                f"Hold and Disarm all work as usual meanwhile.")
+        # A headline, bullets and the lists behind More (Jeff,
+        # 2026-11-11: less prose); the rack screen's Details shows the
+        # lines (opText), every other reader one line.
+        return (f"Wave flamer aim lists differ.\n"
+                f"- Do: Tell Jeff.\n"
+                f"- Why: A wave flamer may stay at 0.\n"
+                f"- Stop, Hold and Disarm all still work.\n"
+                f"\n"
+                f"More: Aim slots do not match: flamesafe has "
+                f"{words(theirs)} and LTC Player has {words(mine)} (LTC "
+                f"Player read {path or 'flamesafe config'} when it "
+                f"started). Until they match a wave flamer's angle can stay "
+                f"at 0, its end stop. Put the aim list in the flamesafe.json "
+                f"flamesafe uses, check that LTC Player reads that same "
+                f"file, then quit LTC Player and start it again so both "
+                f"read it afresh.")
 
     def _aim_alert(self, agree, mine, theirs, path):
         """Raise once per new mismatch sentence; clear the one raised here
@@ -7513,7 +7754,9 @@ class Remote:
                           f"{type(e).__name__}: {e}"]
             out.append({"id": "renders", "title": "Flame cue renders",
                         "level": "bad" if faults else "ok",
-                        "text": " ".join(faults) if faults else
+                        # One block per show file, each with its own
+                        # headline (Jeff, 2026-11-11: less prose).
+                        "text": "\n\n".join(faults) if faults else
                         "Every show file's renders are newer than its "
                         "xlights_networks.xml, so their flame cues can "
                         "play."})
@@ -8307,10 +8550,16 @@ class Remote:
         warns = list(sch.rule_warnings(rule))
         warned = (" Warnings, saved anyway: " + " ".join(warns)) \
             if warns else ""
+        # The answer as a headline, what tonight holds, each warning a
+        # bullet, the path behind More (Jeff, 2026-11-11: less prose).
+        answer = ("Schedule saved.\n" + loaded.strip() + "\n" +
+                  ("Warnings, saved anyway:\n" +
+                   "".join(f"- {w}\n" for w in warns) if warns else "") +
+                  f"\nMore: saved to {path}.")
         self._journal("", "Rack screen", "schedule file", "saved",
                       f"The schedule file {path} was saved from the "
                       f"Programming screen.{loaded}{warned}")
-        return 200, {"ok": True, "text": f"Saved to {path}.{loaded}{warned}",
+        return 200, {"ok": True, "text": answer,
                      "doc": doc, "path": path, "warnings": warns}
 
     def open_folder(self, body):
@@ -8965,15 +9214,27 @@ class Remote:
         if getattr(u, "error_kind", "") == "open":
             # There, but held by something: nothing to delete. It is tried
             # again on every read (third review of PR #143, 4).
-            text = (f"The users file cannot be opened just now: {why}. "
-                    f"{locked} It is tried again all the time and used the "
-                    f"moment it opens, with no restart. Another program may "
-                    f"be holding it, such as an antivirus scan: if this "
-                    f"lasts, check that program, and that {u.folder} can be "
-                    f"read.")
+            # A headline, bullets and the rest behind More (Jeff,
+            # 2026-11-11: less prose).
+            text = (f"Users file cannot be opened.\n"
+                    f"- Only Stop, Hold, Acknowledge, Disarm work.\n"
+                    f"- Then: It is used once it opens.\n"
+                    f"- Do: If this lasts, check antivirus.\n"
+                    f"\n"
+                    f"More: The users file cannot be opened just now: "
+                    f"{why}. {locked} It is tried again all the time and "
+                    f"used the moment it opens, with no restart. Another "
+                    f"program may be holding it, such as an antivirus scan: "
+                    f"if this lasts, check that program, and that "
+                    f"{u.folder} can be read.")
         else:
-            text = (f"The users file cannot be used: {why}. {locked} If a "
-                    f"good {users_mod.USERS_FILE} is put back in "
+            text = (f"Users file cannot be used.\n"
+                    f"- Only Stop, Hold, Acknowledge, Disarm work.\n"
+                    f"- Do: Put a good users file back.\n"
+                    f"- Then: It is used at once.\n"
+                    f"\n"
+                    f"More: The users file cannot be used: {why}. "
+                    f"{locked} If a good {users_mod.USERS_FILE} is put back in "
                     f"{u.folder}, it is used at once, with no restart. To "
                     f"start over with no users instead: close LTC Player, "
                     f"remove {users_mod.USERS_FILE} and "
@@ -9075,6 +9336,9 @@ class Remote:
         pmv = self.pump_view(out["flames"])
         if pmv is not None:
             out["pump"] = pmv
+        htv = self.hazer_test_view()
+        if htv is not None:
+            out["hazer_test"] = htv
         fbc = self.fireball_charge
         if fbc is not None:
             # The fuel and air tanks (fireball_charge.py): display only.

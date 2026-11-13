@@ -48,9 +48,6 @@ CURRENT_OPERATOR_FILE = "ltcplay_current_operator.json"
 SCREENS_FILE = "ltcplay_screens.json"
 # "iPad": the show-network remote page (ltcplay/remote.py) signs a device in
 # under one of these names, so a list written fresh already has it.
-# Never "Tailscale" (remote access over Tailscale, remote.py): Start now and
-# Resume from there need an admin to add it to the list by hand, and a
-# missing or broken list never allows it (verification of #244, M-a).
 DEFAULT_SCREENS = ("Rack screen", "Stream Deck", "Phone", "iPad")
 NTP_SERVER = "pool.ntp.org"
 # The whole clock check, name lookup included, gets this long. It runs on its
@@ -1151,11 +1148,10 @@ class Service:
     # show is skipped; only shows added tonight are dropped. Each change is
     # a sentence of its own.
     REBUILT_WHAT = (
-        "Shows that already happened keep their status and their numbers, "
-        "and a show taken off tonight's list or skipped stays skipped. A "
-        "Delay or move of a show still to come is kept, and a time from the "
-        "file too close to a delayed show is skipped. Shows added tonight "
-        "are dropped. Each change is said below.")
+        "Past shows keep their status and numbers. A show taken off or "
+        "skipped stays skipped. A Delay or move still to come is kept; a "
+        "file time too close to a delayed show is skipped. Shows added "
+        "tonight are dropped. Each change is said below.")
     REBUILT_RESTART = (
         "The schedule file changed after tonight's list was saved, so "
         "tonight is rebuilt from the new schedule. " + REBUILT_WHAT)
@@ -4242,7 +4238,7 @@ class Service:
 
     def operator_press(self, what, who, screen, confirmed=False,
                        pressed=None, surface=False, preroll=True,
-                       detail="", start_at=None, gate=None):
+                       detail="", start_at=None):
         """One operator press from a screen: Start now, Hold or Resume (and
         the engine's own Stop, "stop-show" and "stop-hold"). `who` must be
         on the operator list and `screen` on the screen list; anything else
@@ -4256,11 +4252,7 @@ class Service:
         {"cue", "show_cue", "file"}, the saved cue the engine resolved.
         Every rule of Start now applies unchanged; the show is always an
         extra show (schedule.PLAY_FROM_DETAIL) and the runner starts it at
-        the cue.
-        `gate` (Start now and Resume only): a callable asked under the lock
-        right before the press is made, after any wait for the show audio
-        and the rig check; a sentence refuses it (remote access over
-        Tailscale: something armed meanwhile). A fault refuses too."""
+        the cue."""
         kind = self.PRESSES.get(what)
         if kind is None:
             raise ValueError(f"{what!r} is not a press this program knows. "
@@ -4369,20 +4361,6 @@ class Service:
                                    f"{who}'s {label} was refused. "
                                    f"{sentence}")
                 return {"ok": False, "text": sentence}
-            if gate is not None and kind in (sch.START_NOW, sch.RESUME):
-                # Asked again right before the press is made (verification
-                # of #244, m4): anything armed while it waited refuses.
-                try:
-                    no = str(gate() or "")
-                except Exception:                    # noqa: BLE001
-                    no = "it could not be checked"
-                if no:
-                    sentence = (f"{label if kind == sch.START_NOW else 'Resume'}"
-                                f" was refused: {no}")
-                    self.journal_press(who, screen, what, "refused",
-                                       f"{who}'s {what} was refused. "
-                                       f"{sentence}")
-                    return {"ok": False, "text": sentence}
             if kind == sch.RESUME and self.resume_veto is not None:
                 # Before every branch of Resume below, the release of a
                 # Stop's Hold with nothing held among them.
