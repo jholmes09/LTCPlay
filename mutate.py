@@ -668,6 +668,46 @@ MUTATIONS = [
   "              \"--no-browser\", \"--network-if-saved\"]",
   "              \"--no-browser\"]"),
 
+ ("release tags: a gpl-* tag builds a release again",
+  ".github/workflows/windows-app.yml",
+  '    tags: ["ltc-*"]\n',
+  '    tags: ["ltc-*", "gpl-*"]\n'),
+
+ ("release tags: the installer's version keeps the ltc- prefix",
+  ".github/workflows/windows-app.yml",
+  '            v="${GITHUB_REF_NAME#ltc-}"\n',
+  '            v="${GITHUB_REF_NAME#gpl-}"\n'),
+
+ ("release tags: Run workflow on an old gpl- tag builds it",
+  ".github/workflows/windows-app.yml",
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n',
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^(ltc|gpl)-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n'),
+
+ ("release tags: a gpl-* tag is silent in the selftest run",
+  ".github/workflows/selftest.yml",
+  '          if [[ "$REF" == refs/tags/gpl-* ]]; then\n',
+  '          if false; then\n'),
+
+ ("release tags: the updater no longer reads an ltc- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("gpl-",)\n'),
+
+ ("release tags: the updater no longer reads an old gpl- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("ltc-",)\n'),
+
+ ("release tags: an ltc- or gpl- stamp is compared as text again",
+  "packaging/windows/updater.py",
+  "    c, i = release_number(candidate), release_number(installed)\n",
+  "    c, i = str(candidate).strip(), str(installed).strip()\n"),
+
+ ("release tags: the rollback no longer reads a prefixed release",
+  "packaging/windows/supervisor.py",
+  "    return updater.release_number(ver)\n",
+  "    return str(ver).replace(\"gpl-\", \"\")\n"),
+
  ("show network: a saved public, VPN or link-local address is served on",
   "ltcplay/cli.py",
   "    if not remote_mod.is_rfc1918(saved):",
@@ -3058,6 +3098,14 @@ MUTATIONS = [
   "ltcplay/web/remote2.html",
   "  if(n !== P_SAID) return j;\n",
   ""),
+
+ # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
+ # their rows when the step is taller than its panel, so the sections
+ # under them (the timed purge, the hazer test) are drawn over them
+ ("ui 2.0 DAY: a step's buttons shrink and the rows under them overlap them",
+  "ltcplay/web/remote2.html",
+  "#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 0 auto}",
+  "#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 1 auto}"),
 
  # interface 2.0's Resume sheet (play-from cues part 3): start at a cue
  ("ui 2.0 cue: Start at a cue goes with no question",
@@ -16951,6 +16999,16 @@ def build():
   "  if(sch.stop_held && !isLive(st)) return {tone:\"warn\", icon:\"pause\", text:\"Held after Stop: press Resume.\"};",
   ""),
 
+ ("big button: Resume says Carries on under it again",
+  "ltcplay/web/remote2.html",
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "" : "No contact"};',
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};'),
+
+ ("big button: a Stop's Hold no longer says why under Resume",
+  "ltcplay/web/remote2.html",
+  'why:fresh ? "Held after Stop" : "No contact"};',
+  'why:fresh ? "" : "No contact"};'),
+
  ("scheduler: a Stop's Hold is not kept in tonight's file",
   "ltcplay/schedule.py",
   "    if m.stop_hold:\n        doc[\"stop_hold\"] = True\n",
@@ -19188,6 +19246,21 @@ def build():
  ("ui2 page: one system to check is not named", "ltcplay/web/remote2.html",
   "  const text = probs.length === 1 ?",
   "  const text = false ?"),
+
+ ("systems rows: a row says its state word twice again",
+  "ltcplay/web/remote2.html",
+  '  if(bare === lw || bare === "ok") rest = "";',
+  '  if(false) rest = "";'),
+
+ ("systems rows: a row cuts its own verb when it starts like the state",
+  "ltcplay/web/remote2.html",
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))',
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[\\s.:,]/.test(rest.slice(word.length)))'),
+
+ ("systems rows: a row drops what its words add",
+  "ltcplay/web/remote2.html",
+  '  if(!rest) return {head:x.label + ": " + word, rest:""};',
+  '  return {head:x.label + ": " + word, rest:""};'),
 
  ("ui2 page: a system not set up here reads Check", "ltcplay/web/remote2.html",
   "  if(state !== \"bad\" && SYS_OFF.test(w.trim())) state = \"off\";\n",
@@ -23139,6 +23212,28 @@ def build():
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
 
+ # Less prose on the Schedule tab's cards (Jeff, 2026-11-11).
+ ("less prose: the arming card stops naming a laser arm",
+  "ltcplay/web/remote2.html",
+  'turn a laser test on and arm a laser; this screen can without the switch.";',
+  'turn a laser test on; this screen can without the switch.";'),
+
+ ("less prose: Restart the engine no longer says it is refused during a show",
+  "ltcplay/web/remote2.html",
+  '"Restarts the show engine on the saved address. Refused while a show runs or a group is armed.',
+  '"Restarts the show engine on the saved address.'),
+
+ # Less prose in the rules (Jeff, 2026-11-11).
+ ("less prose: arming off no longer says to arm from the Stream Deck",
+  'ltcplay/web/remote_rules.js',
+  'const ARMING_OFF = "Arming from a screen is switched off. Arm from the Stream Deck, or turn it on',
+  'const ARMING_OFF = "Arming from a screen is switched off. Or turn it on'),
+
+ ("less prose: Programming's Stop explains itself again",
+  "ltcplay/web/remote_rules.js",
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"tap twice"}',
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}'),
+
  # Less prose, engine answers and alerts (Jeff, 2026-11-11).
  ("less prose: the Morning check runs two shows' CUES FAULTs together",
   'ltcplay/remote.py',
@@ -23515,8 +23610,8 @@ def build():
 
  ('hazer test: a quiet screen leaves it on',
   'ltcplay/hazertest.py',
-  '        if now - r["page"] > PAGE_QUIET_S:\n',
-  '        if False:\n'),
+  '            if now - e["page"] > PAGE_QUIET_S:\n',
+  '            if False:\n'),
 
  ('hazer test: ON needs no permission (not the arm row)',
   'ltcplay/users.py',
@@ -23530,8 +23625,8 @@ def build():
 
  ('hazer test: ON from the show network without screen_arming',
   'ltcplay/remote.py',
-  '            why = ("The hazer test from a device on the show network needs "\n',
-  '            return 200, {}\n            why = ("The hazer test from a device on the show network needs "\n'),
+  '            why = ("Hazers not turned on: this device may not turn hazers "\n',
+  '            return 200, {}\n            why = ("Hazers not turned on: this device may not turn hazers "\n'),
 
  ('hazer test: Stop leaves it on at the engine',
   'ltcplay/remote.py',
@@ -23570,8 +23665,8 @@ def build():
 
  ('hazer test: the page shows On with no contact',
   'ltcplay/web/remote2.html',
-  '  const known = !isSt && v.state !== "unknown";\n',
-  '  const known = true;\n'),
+  'function hztKnown(v){ return !stale() && !!v && v.available === true && v.state !== "unknown" && Array.isArray(v.hazers); }',
+  'function hztKnown(v){ return !!v && v.available === true && Array.isArray(v.hazers); }'),
 
  ('arm all hazers: every entry armed whatever its type',
   'ltcplay/hazers.py',
@@ -23605,8 +23700,8 @@ def build():
 
  ('hazer test: the timer never checks its starter is still signed in',
   'ltcplay/hazertest.py',
-  '        gone = self._sign_in_gone(r.get("token", ""), r.get("who", ""))\n',
-  '        gone = ""\n'),
+  '            gone = self._sign_in_gone(e.get("token", ""), e.get("who", ""))\n',
+  '            gone = ""\n'),
 
  ('hazer test: a running test ignores flamesafe going stale',
   'ltcplay/hazertest.py',
@@ -23640,8 +23735,8 @@ def build():
 
  ('hazer test: the Stream Deck is not told it runs',
   'ltcplay/remote.py',
-  '                                     "test": self._ht_running(),\n',
-  '                                     "test": False,\n'),
+  '                                     "test": self._ht_names(),\n',
+  '                                     "test": [],\n'),
 
  ('hazer test: a show state that cannot be read is idle',
   'ltcplay/remote.py',
@@ -23655,18 +23750,18 @@ def build():
 
  ('hazer test: it drives the hazers while a show cue plays or the gate is shut',
   'ltcplay/flamelink.py',
-  '                tgate and not self._haze_live\n',
-  '                True\n'),
+  '                tgate and not self._haze_live else frozenset()\n',
+  '                True else frozenset()\n'),
 
  ('hazer test: the status reads on past its hard end',
   'ltcplay/flamelink.py',
-  '                "hazer_test_on": self.hazer_test_live_now(),\n',
-  '                "hazer_test_on": self._htest_on,\n'),
+  '            if not 0 <= now - beat <= HAZER_TEST_HOLD_S:\n                return frozenset()\n            return frozenset(n for n, u in dict(until).items() if now < u)\n',
+  '            return frozenset(dict(until))\n'),
 
  ('hazer test: the page cannot send Off without contact',
   'ltcplay/web/remote2.html',
-  '  if(!hztConfirmedOff(v)){ hazerTestOff(); return; }\n',
-  '  if(v && v.on === true){ hazerTestOff(); return; }\n'),
+  '  if(!hztKnown(v)) return {mode: "off", label: "Turn off"};\n',
+  '  if(!hztKnown(v)) return {mode: "on", label: "Turn on"};\n'),
 
  ("hazer test: the rack screen's hazer tiles read DISARMED during it",
   'ltcplay/web/remote2.html',
@@ -23757,45 +23852,75 @@ def build():
   '                return "show control\'s state could not be read"\n',
   '                cs = {}\n'),
 
- ("release tags: a gpl-* tag builds a release again",
-  ".github/workflows/windows-app.yml",
-  '    tags: ["ltc-*"]\n',
-  '    tags: ["ltc-*", "gpl-*"]\n'),
+ ('hazer test: the link runs every hazer, not only the selected ones',
+  'ltcplay/flamelink.py',
+  '            for n in (test if test else self._hazers_on):\n',
+  '            for n in (self._hazers if test else self._hazers_on):\n'),
 
- ("release tags: the installer's version keeps the ltc- prefix",
-  ".github/workflows/windows-app.yml",
-  '            v="${GITHUB_REF_NAME#ltc-}"\n',
-  '            v="${GITHUB_REF_NAME#gpl-}"\n'),
+ ('hazer test: a second On restarts a hazer already running (its 60 s extended)',
+  'ltcplay/hazertest.py',
+  '        new = [n for n in names if n not in self.running()]\n',
+  '        new = list(names)\n'),
 
- ("release tags: Run workflow on an old gpl- tag builds it",
-  ".github/workflows/windows-app.yml",
-  '            if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n',
-  '            if [[ ! "$GITHUB_REF_NAME" =~ ^(ltc|gpl)-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n'),
+ ('hazer test: a name the engine does not have is dropped, the rest turned on',
+  'ltcplay/hazertest.py',
+  '    bad = [n for n in raw if n not in known]\n',
+  '    bad = []\n'),
 
- ("release tags: a gpl-* tag is silent in the selftest run",
-  ".github/workflows/selftest.yml",
-  '          if [[ "$REF" == refs/tags/gpl-* ]]; then\n',
-  '          if false; then\n'),
+ ('hazer test: Off needs screen_arming like On (Off no longer always works)',
+  'ltcplay/remote.py',
+  '            ht.stop(why, who=who, screen=device, system=False)\n            return 200, {"ok": True, "text": "Every hazer OFF."}\n',
+  '            pass\n'),
 
- ("release tags: the updater no longer reads an ltc- release",
-  "packaging/windows/updater.py",
-  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
-  'RELEASE_PREFIXES = ("gpl-",)\n'),
+ ('hazer test: All on is refused ("all" is not read)',
+  'ltcplay/remote.py',
+  '        if sel == "all":\n            sel = ht.names()\n',
+  '        if False:\n            sel = ht.names()\n'),
 
- ("release tags: the updater no longer reads an old gpl- release",
-  "packaging/windows/updater.py",
-  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
-  'RELEASE_PREFIXES = ("ltc-",)\n'),
+ ("hazer test: the page's All off sends a selection, not every hazer",
+  'ltcplay/web/remote2.html',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(null));\n',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(["Hazer 1"]));\n'),
 
- ("release tags: an ltc- or gpl- stamp is compared as text again",
-  "packaging/windows/updater.py",
-  "    c, i = release_number(candidate), release_number(installed)\n",
-  "    c, i = str(candidate).strip(), str(installed).strip()\n"),
+ ("hazer test: the page's All on sends nothing",
+  'ltcplay/web/remote2.html',
+  '$("hzt-allon").addEventListener("click", () => hztOn("all"));\n',
+  ''),
 
- ("release tags: the rollback no longer reads a prefixed release",
-  "packaging/windows/supervisor.py",
-  "    return updater.release_number(ver)\n",
-  "    return str(ver).replace(\"gpl-\", \"\")\n"),
+ ("arm all hazers: the show screen's button is never disabled",
+  'ltcplay/web/remote2.html',
+  '  ab.disabled = al.mode !== "arm" || !!al.why;\n',
+  '  ab.disabled = false;\n'),
+
+ ('arm all hazers: the show screen reads a state not known as known',
+  'ltcplay/web/remote2.html',
+  '  if(!known) return {mode: "none", state: "Not known", why: ""};\n',
+  '  if(false) return {mode: "none", state: "Not known", why: ""};\n'),
+
+ ("hazer test: one screen's beat keeps every screen's hazers on",
+  'ltcplay/hazertest.py',
+  '                if (isinstance(page, str) and page and e["owner"] == page) \\\n                        or e["rid"] == run:\n',
+  '                if True:\n'),
+
+ ("hazer test: signing out ends every person's hazers",
+  'ltcplay/hazertest.py',
+  '            mine = [n for n, e in r["names"].items()\n                    if e.get("token") == token]\n',
+  '            mine = list(r["names"])\n'),
+
+ ('hazer test: the link extends a hazer already running',
+  'ltcplay/flamelink.py',
+  '                    if n not in running:\n                        until[n] = mine + s\n',
+  '                    until[n] = mine + s\n'),
+
+ ("hazer test: the page's reason comes from every hazer, not the ticked ones",
+  'ltcplay/web/remote2.html',
+  '  const rows = v.hazers.filter(h => names.includes(h.name) && h.on === false);\n',
+  '  const rows = v.hazers.filter(h => h.on === false);\n'),
+
+ ('hazer test: the page lets an iPad with arming off press Turn on',
+  'ltcplay/web/remote2.html',
+  '  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";\n  if(names === "all")',
+  '  if(names === "all")'),
 ]
 
 

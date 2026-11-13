@@ -917,21 +917,25 @@ channel, and is either ARMED or DISARMED.
   each one again (wait a second after a Stop).
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
-- **Hazer test (Startup page, Purge step, 2026-11-11).** Tap **Hazer
-  test: On** to run every hazer at its levels with show control off
-  and no show; tap **Hazer test: Off** to stop it. It reads On with a
-  countdown (and HAZE ON in the top bar) only when the engine says so,
-  Not known with no contact.
-  - Off by itself after 60 s.
-  - Off on Stop, a show or show control starting.
+- **Purge page: Hazers: turn on or off (Startup page, Purge step).**
+  This runs hazers NOW, for checking them; it never arms one. Tick the
+  hazers you want (each shows its Haze and Fan level), then **Turn on**
+  or **Turn off**. **All on** runs every hazer; **All off** turns every
+  one off and always works, for anyone. Each reads On with its countdown
+  (HAZE ON in the top bar, HAZE TEST on its tile) only when the engine
+  says so; Not known with no contact, and then the button is Turn off.
+  - Each turns off by itself 60 s after its press.
+  - Off on Stop, Hold, Hazers off, a show or show control starting.
   - Off if this screen goes quiet 10 s.
-  It needs the arm row (as arming a hazer), and every check arming a
-  hazer has; it never arms a hazer. Set a Haze level first.
-- **Arm all hazers (same place).** One tap arms every hazer through the
-  same checks as arming one, and says which did not arm
-  ("2 of 3 hazers armed: Hazer 2 refused"). A name flamesafe does not
-  report as a hazer is skipped and named. With all armed it reads
-  **Disarm all hazers** (Hazers off).
+  It needs the arm row (as arming a hazer) and every check arming a
+  hazer has, and a Haze level above 0 on each hazer turned on.
+- **Arm all hazers (SHOW tab, the Hazers row, beside Hazers off; and
+  the Levels sheet).** Armed hazers run during the show. One tap arms
+  every hazer through the same checks as arming one, and says which did
+  not arm ("2 of 3 hazers armed: Hazer 2 refused"). A name flamesafe does
+  not report as a hazer is skipped and named. It reads None armed, 2 of 3
+  armed, All armed or Not known; Hazers off beside it disarms every hazer,
+  always. It never arms a flame group or a laser.
 
 ## The fireball's fuel pump
 
@@ -1866,7 +1870,7 @@ example "Show 1 did not start: Run has not been pressed, so nothing may
 reach the rig; press Run on the Programming screen, then Start now". Start
 now that cannot work is refused at once with the same words, and adds no
 FAULT line. Right after Run the show audio takes a few seconds to load:
-Start now then says "audio loading, starts when ready". Pressed then, it
+Start now then says "audio loading". Pressed then, it
 waits for the audio (at most 20 seconds) and reads **Loading, starting when
 ready**; the show starts as soon as the audio is in. Hold or Stop
 cancels the wait and nothing starts, and so does any Hold the program
