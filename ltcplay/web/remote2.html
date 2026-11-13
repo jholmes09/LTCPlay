@@ -1673,7 +1673,10 @@ function pinItems(st){
   return out;
 }
 // The big button: the next step, one of Resume, Run show, Start now. Each
-// press is 1.0's own press.
+// press is 1.0's own press. Its second line is only live state or a
+// reason (Jeff, 2026-11-11: no line that says what the label says):
+// No contact, Held after Stop, No shows start, No schedule here, Not
+// ready: tap, a sign-in reason.
 function goLook(st, isStaleNow, local, waiting){
   if(!st) return {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"Waiting"};
   const sch = st.schedule || {};
@@ -1682,20 +1685,20 @@ function goLook(st, isStaleNow, local, waiting){
   // A Stop's Hold (Jeff, 2026-10-30): it stands until Resume, also when
   // nothing is held right now (the night closing, over, or without shows).
   if(sch.stop_held && !isLive(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Held after Stop" : "No contact"};
-  else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};
-  else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:"Hold pauses it"};
+  else if(isHeld(st)) L = {mode:"resume", label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "" : "No contact"};
+  else if(isLive(st)) L = {mode:"live", label:"Show running", icon:"play", tone:"green", off:true, why:""};
   // A rehearsal: the scheduler starts nothing, so nothing to start here.
   else if(isRehearsal(st)) L = {mode:"none", label:"Rehearsal", icon:"info", tone:"green", off:true, why:"No shows start"};
   // The rig check before a show (1.0's startLook: Checking, nothing to press).
-  else if(sch.attached && prerollLook(st.preroll).checking) L = {mode:"checking", label:"Checking rig", icon:"clock", tone:"green", off:true, why:"Hold or Stop cancels"};
-  else if(waiting || sch.start_waiting) L = {mode:"loading", label:"Loading", icon:"clock", tone:"green", off:true, why:"Starts when ready"};
+  else if(sch.attached && prerollLook(st.preroll).checking) L = {mode:"checking", label:"Checking rig", icon:"clock", tone:"green", off:true, why:""};
+  else if(waiting || sch.start_waiting) L = {mode:"loading", label:"Loading", icon:"clock", tone:"green", off:true, why:""};
   else if(!sch.attached) L = {mode:"none", label:"Start now", icon:"play", tone:"green", off:true, why:"No schedule here"};
   else if(!runIsOn(st)) L = local ? {mode:"run", label:"Run show", icon:"power", tone:"green", off:!fresh, why:fresh ? "Turns tonight on" : "No contact"}
                                   : {mode:"run", label:"Run show", icon:"power", tone:"green", off:true, why:"Press Run on show PC"};
   else {
     const b = sch.start_blocked;
     if(b && b.text && !b.loading) L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:"Not ready: tap", blocked:String(b.text)};
-    else L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:fresh ? "Starts the next show" : "No contact"};
+    else L = {mode:"start", label:"Start now", icon:"play", tone:"green", off:!fresh, why:fresh ? "" : "No contact"};
   }
   // Signed out is view only: none of these is a safety press.
   if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = signWhy(st, "show"); }
