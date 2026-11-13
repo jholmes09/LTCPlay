@@ -78,7 +78,17 @@ USERS_FILE = "ltcplay_users.json"
 # controls instead of opening them (review of PR #143, 2).
 USERS_MARK = "ltcplay_users.made"
 COOKIE = "ltcplay_user"
-ROLES = ("admin", "operator", "viewer")
+# THE SUPERUSER (Jeff, 2026-11-13): one level above admin. A SuperUser may
+# do everything an admin may (its matrix column is fixed all on), and is
+# the only one who may see or change the nightly upload (SUPERUSER_ROWS)
+# or create, change, reset or remove a SuperUser. Being one takes the
+# local command line on the show PC (main(), below): never the web page.
+# What a SuperUser may do beyond an admin is used only through
+# superuser_here(): on the show PC's own rack screen, signed in there.
+SUPERUSER = "superuser"
+ROLES = (SUPERUSER, "admin", "operator", "viewer")
+# The roles with every admin power (the last of them is never removed).
+ADMIN_ROLES = (SUPERUSER, "admin")
 SIGNED_OUT = "signed_out"
 COLUMNS = ROLES + (SIGNED_OUT,)
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'_-]{0,39}$")
@@ -124,13 +134,39 @@ PERMS = (
     ("settings", "Settings: the show network, arming from a screen, live "
                  "flame programming, moving Programming playback from an "
                  "iPad while flames follow it, the timecode input, the "
-                 "announcement output, the audit upload, idle sign out, "
+                 "announcement output, idle sign out, "
                  "sign out after the last show, the play-from cues, the "
                  "fireball timeline"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
 PERM_KEYS = tuple(p for p, _ in PERMS)
+# The SuperUser's own rows: never in PERMS, never in a stored matrix, never
+# in whoami's "may", never in the Users screen's matrix for anyone but a
+# SuperUser here. allowed() answers them from the role alone, so no matrix
+# edit can ever give them to anyone else.
+UPLOAD = "upload"
+SUPERUSER_ROWS = (
+    (UPLOAD, "The nightly upload: on or off, server, token, time, days "
+             "kept, Send now and its state"),
+)
+SUPERUSER_PERMS = tuple(p for p, _ in SUPERUSER_ROWS)
+# The upload's routes (remote.py). is_upload_route() also takes any route
+# whose name says "upload", so a route added for the upload later (the
+# night journal's, PR #246) is the SuperUser's without a change here.
+UPLOAD_ROUTES = ("audit-settings", "audit-upload-now")
+# Who may have set a SuperUser's temporary password that it then signs in
+# with (Users.sign_in): a SuperUser, or the local command line.
+LOCAL_COMMAND = "local command line"
+SUPERUSER_RESETS = (SUPERUSER, LOCAL_COMMAND)
+# Audit lines the local command line leaves in the users file for the
+# engine to write (Users.flush_pending_audit): at most this many.
+PENDING_AUDIT_MAX = 50
+# What a refused upload route answers: the same words as a route that is
+# not there at all, so it says nothing about the setting.
+UPLOAD_REFUSED = "no such thing here"
+# What an admin hears when a change needs a SuperUser.
+SUPERUSER_ONLY = "Only a SuperUser can do that. Nothing was changed."
 SAFETY_ROWS = ("Stop, Hold, Disarm (one group or every group, "
                "flames or lasers), "
                "letting go of a hold, stopping or clearing a purge, "
@@ -145,6 +181,7 @@ SAFETY_ROWS = ("Stop, Hold, Disarm (one group or every group, "
 # field report, 2026-10-28): it may do nothing restricted, and FIXED keeps
 # it that way.
 DEFAULT_MATRIX = {
+    SUPERUSER: {p: True for p in PERM_KEYS},
     "admin": {p: True for p in PERM_KEYS},
     "operator": {"show": True, "arm": True, "unlock": True,
                  "checklist": True, "show_files": True, "settings": False,
@@ -154,13 +191,18 @@ DEFAULT_MATRIX = {
 }
 # The people LTC Player starts with (Jeff, 2026-10-20). Written once, at
 # first run, with NO password: each chooses their own at their first
-# sign-in. No password is ever shipped in the repo.
+# sign-in. No password is ever shipped in the repo. Never a SuperUser
+# (seed() refuses one): a name with no password yet is claimed by whoever
+# signs in as it first at the rack screen, so a SuperUser is only ever
+# made by the local command line, by someone with the PC's files.
 SEED_USERS = (("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator"),
               ("Dave", "operator"), ("Jared", "operator"))
 # An admin can always manage users, so nobody can lock every admin out.
 # And signed out may do nothing restricted (2026-10-28): view only.
 FIXED = {("admin", "users"): True}
 FIXED.update({(SIGNED_OUT, p): False for p in PERM_KEYS})
+# A SuperUser may always do everything an admin may.
+FIXED.update({(SUPERUSER, p): True for p in PERM_KEYS})
 # Sign everyone out this many minutes after the night's last show ended
 # (Jeff, 2026-10-26): on by default; 0 is off.
 LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10
@@ -204,8 +246,9 @@ REMOTE_ROUTES = {
     # The announcement output picker (remote.announce_output).
     "announce-output": "settings", "announce-test-tone": "settings",
     "live-flame": "settings",
-    "audit-settings": "settings",
-    "audit-upload-now": "settings", "idle-signout": "settings",
+    # The nightly upload: the SuperUser's alone (UPLOAD, is_upload_route).
+    "audit-settings": UPLOAD,
+    "audit-upload-now": UPLOAD, "idle-signout": "settings",
     "last-show-signout": "settings",
     "users": "users", "role-matrix": "users", "clear-lockouts": "users",
     "schedule-file": "show_files", "show-folder": "show_files",
@@ -275,6 +318,43 @@ WEB_ROUTES = {
 }
 
 
+def is_upload_route(name):
+    """True for a route of the nightly upload: UPLOAD_ROUTES, and any route
+    whose name says "upload". Only superuser_here() may use one."""
+    n = str(name or "").strip().lower()
+    return n in UPLOAD_ROUTES or "upload" in n
+
+
+def superuser_here(session, local, tailscale=False):
+    """THE one test for a SuperUser's own powers (the nightly upload, and
+    making or changing a SuperUser): a SuperUser signed in on this show
+    PC's own rack screen (the session was made here, and this request is
+    from here), never from an iPad, never from Tailscale (remote.py's
+    Tailscale door, PR #244), never with nobody signed in. Anything else,
+    or anything not known, is False."""
+    try:
+        return local is True and not tailscale and \
+            isinstance(session, dict) and \
+            session.get("role") == SUPERUSER and \
+            session.get("local") is True and bool(session.get("name"))
+    except Exception:                            # noqa: BLE001
+        return False
+
+
+class RankRefused(ValueError):
+    """A change only a SuperUser may make, asked by someone else. Its words
+    are SUPERUSER_ONLY; `what` is for the audit log."""
+
+    def __init__(self, what, words=SUPERUSER_ONLY):
+        super().__init__(words)
+        self.what = what
+
+
+def _need_superuser(by, what):
+    if by != SUPERUSER:
+        raise RankRefused(what)
+
+
 def purge_fire_wanted(body):
     """True only for a purge-fire body that asks to START or CARRY ON a fire
     press: "on" is the JSON word true and nothing else. Every other body
@@ -308,6 +388,8 @@ def classify(route, body=None):
     route = str(route or "")
     if route.startswith("/api/remote/"):
         name = route[len("/api/remote/"):]
+        if is_upload_route(name):
+            return UPLOAD
         if name == "purge-fire":
             # The engine starts or carries on a press only for
             # purge_fire_wanted(); everything else it turns into a stop.
@@ -402,6 +484,9 @@ def allowed(matrix, role, perm):
     out is view only, whatever a stored matrix says)."""
     if perm == "safety" or perm is None:
         return True
+    if perm in SUPERUSER_PERMS:
+        # Never from a matrix: the role alone.
+        return role == SUPERUSER
     if role is None or role not in ROLES:
         return False
     col = role
@@ -410,7 +495,7 @@ def allowed(matrix, role, perm):
 
 
 def perm_label(perm):
-    return dict(PERMS).get(perm, perm)
+    return dict(PERMS + SUPERUSER_ROWS).get(perm, perm)
 
 
 # ------------------------------------------------------------- passwords --
@@ -693,6 +778,9 @@ class Users:
         press may (the feature is not switched on yet)."""
         if perm == "safety" or perm is None:
             return True
+        if perm in SUPERUSER_PERMS:
+            # Fail closed: with no users there is no SuperUser.
+            return self.active() and allowed(None, role, perm)
         if not self.active():
             return True
         return allowed(self.matrix(), role, perm)
@@ -759,8 +847,10 @@ class Users:
         self._beat_stop.clear()
 
         def loop():
+            self.flush_pending_audit()
             while not self._beat_stop.wait(every_s):
                 self.after_last_show_tick()
+                self.flush_pending_audit()
         self._beat = threading.Thread(target=loop, daemon=True,
                                       name="ltcplay-users-beat")
         self._beat.start()
@@ -886,6 +976,15 @@ class Users:
                 rec = u.get("pw") if u else None
                 must = bool(u and u.get("must_change"))
             first = u is not None and rec is None
+            if u is not None and u.get("role") == SUPERUSER and (
+                    first or (must and u.get("reset_by") not in
+                              SUPERUSER_RESETS)):
+                # A SuperUser's password is never claimed: not with none
+                # at all, and not with a temporary one that a SuperUser did
+                # not set (an older build's admin reset, a hand edit). The
+                # local command line sets one (main()).
+                first, rec, must = False, None, False
+                u = None
             if first:
                 ok = True                  # nothing to check yet
             elif rec is None:
@@ -925,7 +1024,7 @@ class Users:
                 return False, ("The new password has to be different from "
                                "the temporary one."), None, True
             try:
-                self._set_pw(real, pw, temporary=False)
+                self._set_pw(real, pw, temporary=False, own=True)
             except (ValueError, OSError) as e:
                 return False, f"The password could not be saved: {e}", \
                     None, True
@@ -991,10 +1090,14 @@ class Users:
         return time.strftime("%Y-%m-%d %H:%M:%S",
                              time.localtime(self._wall()))
 
-    def add(self, name, role, password):
+    def add(self, name, role, password, by=None):
+        """`by`: the rank the change is made with (remote.Remote.rank): a
+        SuperUser is added only with SUPERUSER."""
         name = check_name(name)
         if role not in ROLES:
             raise ValueError(f"A role is {', '.join(ROLES)}.")
+        if role == SUPERUSER:
+            _need_superuser(by, f"add {name} as {SUPERUSER}")
         pw = check_new_password(password)
 
         def fn(doc):
@@ -1013,8 +1116,19 @@ class Users:
         return self._change(fn)
 
     def _admins(self, users, without=None):
+        """Everyone with an admin's powers (a SuperUser too)."""
         return [n for n, u in users.items() if n != without and
-                isinstance(u, dict) and u.get("role") == "admin"]
+                isinstance(u, dict) and u.get("role") in ADMIN_ROLES]
+
+    def _supers(self, users, without=None):
+        return [n for n, u in users.items() if n != without and
+                isinstance(u, dict) and u.get("role") == SUPERUSER]
+
+    def _guard_super(self, users, real, by, what):
+        """A change to a SuperUser is a SuperUser's alone."""
+        u = users.get(real)
+        if isinstance(u, dict) and u.get("role") == SUPERUSER:
+            _need_superuser(by, f"{what} {real} ({SUPERUSER})")
 
     def _real(self, users, name):
         real = {n.lower(): n for n in users}.get(str(name or "").lower())
@@ -1022,11 +1136,16 @@ class Users:
             raise ValueError(f"{name} is not a user.")
         return real
 
-    def remove(self, name):
+    def remove(self, name, by=None):
         def fn(doc):
             users = doc["users"]
             real = self._real(users, name)
-            if users[real].get("role") == "admin" and \
+            self._guard_super(users, real, by, "remove")
+            if users[real].get("role") == SUPERUSER and \
+                    not self._supers(users, without=real):
+                raise ValueError("That is the last SuperUser. Nothing was "
+                                 "changed.")
+            if users[real].get("role") in ADMIN_ROLES and \
                     not self._admins(users, without=real):
                 raise ValueError("That is the last admin. Make another admin "
                                  "first.")
@@ -1036,14 +1155,22 @@ class Users:
         self._end_sessions(name)
         return said
 
-    def set_role(self, name, role):
+    def set_role(self, name, role, by=None):
         if role not in ROLES:
             raise ValueError(f"A role is {', '.join(ROLES)}.")
 
         def fn(doc):
             users = doc["users"]
             real = self._real(users, name)
-            if users[real].get("role") == "admin" and role != "admin" and \
+            self._guard_super(users, real, by, "change the role of")
+            if role == SUPERUSER:
+                _need_superuser(by, f"make {real} {SUPERUSER}")
+            if users[real].get("role") == SUPERUSER and role != SUPERUSER \
+                    and not self._supers(users, without=real):
+                raise ValueError("That is the last SuperUser. Nothing was "
+                                 "changed.")
+            if users[real].get("role") in ADMIN_ROLES and \
+                    role not in ADMIN_ROLES and \
                     not self._admins(users, without=real):
                 raise ValueError("That is the last admin. Make another admin "
                                  "first.")
@@ -1052,10 +1179,25 @@ class Users:
             return f"{real} is now {role}."
         return self._change(fn)
 
-    def _set_pw(self, name, pw, temporary):
+    def _set_pw(self, name, pw, temporary, by=None, own=False):
+        """`own`: the person's own password (their first sign-in, or their
+        own change). Anyone else's: a SuperUser's only with `by`
+        SUPERUSER."""
         def fn(doc):
             users = doc["users"]
             real = self._real(users, name)
+            if not own:
+                self._guard_super(users, real, by, "reset the password of")
+                if pw is None and users[real].get("role") == SUPERUSER:
+                    # A name with no password is claimed by whoever signs
+                    # in as it first: never a SuperUser's.
+                    raise ValueError("A SuperUser's password is reset with "
+                                     "a temporary one, never cleared. "
+                                     "Nothing was changed.")
+            if temporary:
+                users[real]["reset_by"] = str(by or "")
+            else:
+                users[real].pop("reset_by", None)
             users[real]["pw"] = (hash_password(pw, params=self._hash_params)
                                  if pw is not None else None)
             users[real]["must_change"] = bool(temporary)
@@ -1063,11 +1205,11 @@ class Users:
             return real
         return self._change(fn)
 
-    def set_password(self, name, password):
+    def set_password(self, name, password, by=None):
         """An admin's reset: a temporary password, changed by its user at
         their next sign-in."""
         pw = check_new_password(password)
-        real = self._set_pw(name, pw, temporary=True)
+        real = self._set_pw(name, pw, temporary=True, by=by)
         said = (f"The password for {real} was reset. It is temporary: "
                 f"{real} chooses their own at the next sign-in.")
         self._end_sessions(real)
@@ -1082,13 +1224,13 @@ class Users:
             raise ValueError("The current password is not right. Nothing "
                              "was changed.")
         pw = check_new_password(new)
-        self._set_pw(name, pw, temporary=False)
+        self._set_pw(name, pw, temporary=False, own=True)
         return "Your password was changed."
 
-    def clear_password(self, name):
+    def clear_password(self, name, by=None):
         """An admin's reset with no temporary password: the user chooses
         one at their next sign-in."""
-        real = self._set_pw(name, None, temporary=False)
+        real = self._set_pw(name, None, temporary=False, by=by)
         self._end_sessions(real)
         return f"{real} chooses a new password at the next sign-in."
 
@@ -1112,8 +1254,9 @@ class Users:
                 return False
             for n, r in people:
                 n = check_name(n)
-                if r not in ROLES:
-                    raise ValueError(f"{r} is not a role")
+                if r not in ROLES or r == SUPERUSER:
+                    # Never a SuperUser with no password (SEED_USERS).
+                    raise ValueError(f"{r} is not a role a first run makes")
                 doc["users"][n] = {"role": r, "created": self._stamp(),
                                    "changed": self._stamp(), "pw": None,
                                    "must_change": False}
@@ -1137,8 +1280,18 @@ class Users:
                 if c not in COLUMNS or not isinstance(row, dict):
                     raise ValueError(f"{c} is not a column of the matrix.")
                 for p, v in row.items():
+                    if p in SUPERUSER_PERMS:
+                        # Never in the matrix, never changed: refused and
+                        # written down, whoever asks.
+                        raise RankRefused(f"role matrix {c}/{p}",
+                                          f"{p} is not a row of the "
+                                          f"matrix.")
                     if p not in PERM_KEYS or not isinstance(v, bool):
                         raise ValueError(f"{p} is not a row of the matrix.")
+                    if c == SUPERUSER and v is not True:
+                        raise RankRefused(
+                            f"role matrix {c}/{p} off",
+                            "A SuperUser can always do what an admin can.")
                     if (c, p) in FIXED and v != FIXED[(c, p)]:
                         raise ValueError(
                             "An admin can always manage users."
@@ -1181,6 +1334,101 @@ class Users:
             self._fails.clear()
         return f"Sign-in lockouts cleared ({n})."
 
+    # -- the SuperUser, from the local command line only (main()) ----------
+    def _pend(self, doc, action, who, target, reason=""):
+        """An audit line for the engine to write (flush_pending_audit): the
+        command line has no audit writer of its own, and a second writer
+        on the engine's day file would break its chain."""
+        q = doc.get("pending_audit")
+        q = [x for x in q if isinstance(x, dict)] if isinstance(q, list) \
+            else []
+        q.append({"action": action, "user": str(who or UNSIGNED)[:80],
+                  "target": str(target)[:120], "reason": str(reason)[:200],
+                  "source": LOCAL_COMMAND, "at": self._stamp()})
+        doc["pending_audit"] = q[-PENDING_AUDIT_MAX:]
+
+    def promote_local(self, name, who):
+        """Make an existing user a SuperUser. ONLY the local command line
+        calls this (main(): run on the show PC by an account that can
+        write the settings folder); no route reaches it. Refused for a name
+        whose password is not their own yet (none, or a temporary one
+        someone else knows): that name could be claimed. Returns a
+        sentence; raises ValueError."""
+        def fn(doc):
+            users = doc["users"]
+            real = self._real(users, name)
+            u = users[real] if isinstance(users[real], dict) else {}
+            if u.get("pw") is None or u.get("must_change"):
+                raise ValueError(f"{real} has not chosen their own password "
+                                 f"yet. Sign in as {real} on the rack screen "
+                                 f"first, then run this again. Nothing was "
+                                 f"changed.")
+            if u.get("role") == SUPERUSER:
+                return f"{real} is already a SuperUser. Nothing was changed."
+            before = u.get("role")
+            u["role"] = SUPERUSER
+            u["changed"] = self._stamp()
+            users[real] = u
+            self._pend(doc, "superuser-set", who, real,
+                       f"was {before}")
+            return (f"{real} is now a SuperUser. LTC Player picks this up "
+                    f"by itself; no restart is needed.")
+        return self._change(fn)
+
+    def superuser_password_local(self, name, password, who):
+        """A temporary password for a SuperUser who cannot sign in (the
+        local command line only, like promote_local). They choose their
+        own at their next sign-in on the rack screen."""
+        pw = check_new_password(password)
+
+        def fn(doc):
+            users = doc["users"]
+            real = self._real(users, name)
+            u = users[real] if isinstance(users[real], dict) else {}
+            if u.get("role") != SUPERUSER:
+                raise ValueError(f"{real} is not a SuperUser. Nothing was "
+                                 f"changed.")
+            u["pw"] = hash_password(pw, params=self._hash_params)
+            u["must_change"] = True
+            u["reset_by"] = LOCAL_COMMAND
+            u["changed"] = self._stamp()
+            users[real] = u
+            self._pend(doc, "superuser-password-reset", who, real)
+            return real
+        real = self._change(fn)
+        self._end_sessions(real)
+        with self._lock:
+            self._fails.pop(("name", real.lower()), None)
+        return (f"{real} has a temporary password. {real} chooses their own "
+                f"at the next sign-in on the rack screen.")
+
+    def flush_pending_audit(self):
+        """Write the local command line's audit lines (pending_audit in the
+        users file) through this engine's audit log, once each, and take
+        them out of the file. Never raises."""
+        try:
+            with self._lock:
+                q = self._load().get("pending_audit")
+                if not q:
+                    return 0
+                taken = []
+
+                def fn(doc):
+                    got = doc.pop("pending_audit", None)
+                    taken.extend(x for x in (got or [])
+                                 if isinstance(x, dict))
+                self._change(fn)
+            for x in taken:
+                self._note(str(x.get("action") or "superuser-set")[:40],
+                           str(x.get("user") or UNSIGNED),
+                           reason=(str(x.get("reason") or "") +
+                                   f" (at {x.get('at', '')})").strip(),
+                           target=str(x.get("target") or ""),
+                           source=LOCAL_COMMAND)
+            return len(taken)
+        except Exception:                        # noqa: BLE001
+            return 0
+
     def view(self):
         """The Users screen's read: users, matrix, settings. No secrets."""
         return {"active": self.active(), "users": self.listing(),
@@ -1191,3 +1439,65 @@ class Users:
                 "idle_signout_min": self.idle_minutes(),
                 "signout_after_last_show_min": self.last_show_minutes(),
                 "error": self.error}
+
+
+# ---------------------------------------------- the local command line --
+
+USAGE = ("usage: python -m ltcplay.users superuser NAME\n"
+         "       python -m ltcplay.users superuser-password NAME\n"
+         "  [--folder SETTINGS_FOLDER]")
+
+
+def main(argv=None, folder=None, who=None, read_password=None, out=print):
+    """python -m ltcplay.users superuser NAME: make an existing user a
+    SuperUser. superuser-password NAME: a temporary password for a
+    SuperUser who cannot sign in. Run on the show PC itself, by an account
+    that can write the settings folder; nothing on the web page can do
+    either. The engine does not need to be stopped: it reads the users
+    file again when it changes, and writes the audit line
+    ("superuser-set", source "local command line") on its next beat.
+    Exit 0 when done."""
+    import getpass
+    import sys
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--folder" in argv:
+        i = argv.index("--folder")
+        if i + 1 >= len(argv):
+            out(USAGE)
+            return 2
+        folder = argv[i + 1]
+        del argv[i:i + 2]
+    if len(argv) != 2 or argv[0] not in ("superuser", "superuser-password"):
+        out(USAGE)
+        return 2
+    if folder is None:
+        from . import remote
+        folder = remote.settings_folder()
+    if who is None:
+        try:
+            who = f"Windows account {getpass.getuser()}" if os.name == "nt" \
+                else f"account {getpass.getuser()}"
+        except Exception:                        # noqa: BLE001
+            who = LOCAL_COMMAND
+    us = Users(folder)
+    if not os.path.exists(us.path):
+        out(f"No users file in {folder}. Start LTC Player once first.")
+        return 1
+    try:
+        if argv[0] == "superuser":
+            out(us.promote_local(argv[1], who))
+        else:
+            ask = read_password or getpass.getpass
+            pw = ask("Temporary password (6 or more characters): ")
+            if pw != ask("The same again: "):
+                out("The two did not match. Nothing was changed.")
+                return 1
+            out(us.superuser_password_local(argv[1], pw, who))
+    except ValueError as e:
+        out(str(e))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

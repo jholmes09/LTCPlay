@@ -1172,6 +1172,12 @@ class Handler(BaseHTTPRequestHandler):
             perm = users_mod.classify(route, body)
             if perm == "safety" or perm is None:
                 return False
+            if perm == users_mod.UPLOAD:
+                # The nightly upload: the engine's one test answers it
+                # (remote.Remote.upload_refused, users.superuser_here),
+                # with the words of a route that is not there. This
+                # check's own words would name the setting.
+                return False
         except Exception:                        # noqa: BLE001
             return False
         try:

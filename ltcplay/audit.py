@@ -269,7 +269,8 @@ def verify_folder(folder, sent=None, today=None):
             want = older[-1][1] if older else ""
             if want and r["start_link"] != want:
                 problems.append(f"{name}: does not follow on from "
-                                f"{older[-1][0]}, as sent to the server")
+                                f"{older[-1][0]}, as recorded before that day was "
+                                f"removed here")
         elif before[1] is not None and r["start_link"] != before[1]:
             problems.append(f"{name}: does not follow on from {before[0]}: "
                             f"a day file was removed, replaced or edited")

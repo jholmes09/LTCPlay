@@ -2219,6 +2219,15 @@ def cmd_gen(args):
     return 0
 
 
+def cmd_superuser(args):
+    """users.main: the SuperUser, from this PC's command line only."""
+    from . import users as users_mod
+    argv = [args.cmd, args.name]
+    if args.folder:
+        argv += ["--folder", args.folder]
+    return users_mod.main(argv)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="ltcplay", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2486,6 +2495,20 @@ def main(argv=None):
                     help="the settings folder holding ltcplay_remote.json "
                          "(default: this machine's)")
     wx.set_defaults(func=cmd_weather)
+
+    # The SuperUser (users.py, 2026-11-13): made only here, on the show PC,
+    # by an account that can write the settings folder. On the Windows
+    # show PC: "ltcplay.exe superuser Jeff" in the LTC Player folder.
+    for name, what in (("superuser", "make an existing user the SuperUser "
+                                     "(this PC only)"),
+                       ("superuser-password", "a temporary password for a "
+                                              "SuperUser (this PC only)")):
+        su = sub.add_parser(name, help=what)
+        su.add_argument("name")
+        su.add_argument("--folder", default=None,
+                        help="the settings folder holding ltcplay_users.json "
+                             "(default: this machine's)")
+        su.set_defaults(func=cmd_superuser)
 
     args = ap.parse_args(argv)
     try:

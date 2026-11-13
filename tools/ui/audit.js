@@ -36,7 +36,7 @@ const CASES = process.env.ONLY_CASES ? JSON.parse(process.env.ONLY_CASES) : [
   ["day_jeff", "day", "step_startlist"], ["idle_operator", "day", "step_startlist"], ["idle_operator", "day", "step_fuel"],
   ["idle_operator", "day", "step_purge"], ["day_firing", "day", "step_purge"], ["idle_operator", "day", "step_lasers"], ["idle_operator", "day", "step_hazers"],
   ["day_locked", "day", "step_locks"], ["day_shut", "day"], ["day_shut_jeff", "day", "step_shutlist"], ["day_shut", "day", "step_clean"],
-  ["day_clean_paused", "day", "step_clean"], ["day_shut", "day", "step_locks-shut"], ["day_shut", "day", "step_signout"], ["idle_operator", "day", "shut"], ["idle_operator", "schedule"], ["admin", "settings"], ["signed_out", "show", "signin"],
+  ["day_clean_paused", "day", "step_clean"], ["day_shut", "day", "step_locks-shut"], ["day_shut", "day", "step_signout"], ["idle_operator", "day", "shut"], ["idle_operator", "schedule"], ["admin", "settings"], ["admin", "users"], ["superuser", "users"], ["signed_out", "show", "signin"],
   ["ipad", "show"], ["long_name", "show"], ["long_name_out", "show"], ["no_logo", "show"], ["long_name", "day"],
   ["stale", "day"], ["signed_out", "day", "step_purge"], ["stale", "day", "step_purge"], ["day_shut", "day", "step_clean"],
 ];
