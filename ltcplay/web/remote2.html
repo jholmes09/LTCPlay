@@ -1174,7 +1174,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <input id="ua-pw" type="password" autocomplete="new-password" placeholder="Temporary password" style="flex:1 1 0">
         <button id="ua-add" style="flex:0 0 auto">Add</button>
       </div>
-      <div class="dim" style="font-size:13px">The temporary password is changed by its person at their first sign-in. The last admin cannot be removed or made something else.</div>
+      <div class="dim" style="font-size:13px">The temporary password is changed by its person at their first sign-in. The last admin cannot be removed or made something else. Only a SuperUser changes a SuperUser.</div>
       <div class="row" style="margin-top:8px"><button class="ghost" id="u-clear">Clear sign-in lockouts</button></div>
       <div class="toast" id="ua-msg"></div>
     </section>
@@ -1189,21 +1189,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <h2>Audit log</h2>
       <div class="kv" id="au-state"></div>
       <div class="row" style="margin-top:8px"><button class="ghost" id="au-verify">Check the chain now</button></div>
-      <h2 style="margin-top:12px">Nightly upload</h2>
-      <div class="kv" id="au-up"></div>
       <div id="au-set">
-        <label><input type="checkbox" id="au-en"> Send the audit log to the server every night</label>
-        <label for="au-url">Server address (https://)</label>
-        <input id="au-url" placeholder="https://audit.example.com/ltc">
-        <label for="au-tok">Shared token</label>
-        <input id="au-tok" type="password" autocomplete="off" placeholder="unchanged">
-        <div class="three">
-          <div><label for="au-time">Time of day</label><input id="au-time" placeholder="03:30"></div>
-          <div><label for="au-keep">Keep days here</label><input id="au-keep" type="number" min="90"></div>
-          <div><label for="au-idle">Idle sign out, minutes (0 is off)</label><input id="au-idle" type="number" min="0"></div>
-        </div>
+        <div><label for="au-idle">Idle sign out, minutes (0 is off)</label><input id="au-idle" type="number" min="0"></div>
         <div><label for="au-lastshow">Sign everyone out this many minutes after the last show of the night (0 is off)</label><input id="au-lastshow" type="number" min="0" max="1440"></div>
-        <div class="row" style="margin-top:8px"><button id="au-save">Save</button><button class="ghost" id="au-now">Send now</button></div>
+        <div class="row" style="margin-top:8px"><button id="au-save">Save</button></div>
       </div>
       <div class="toast" id="au-msg"></div>
     </section>
@@ -4802,7 +4791,9 @@ $("user").addEventListener("click", openSignIn);
 // an open pane is read again, so it never shows the one signed out.
 function usersSignedOut(){
   UNEED = false; $("u-newbox").hidden = true;
-  ["u-pw", "u-new", "u-old", "u-new1", "ua-pw", "au-tok"].forEach(id => { $(id).value = ""; });
+  ["u-pw", "u-new", "u-old", "u-new1", "ua-pw"].forEach(id => { $(id).value = ""; });
+  dropUpload();
+  ["u-supw-box", "u-cf-box"].forEach(id => { const e = $(id); if(e) e.remove(); });
   if(TAB === "users") loadUsers();
 }
 // 1.0's code word for word, with two differences: 2.0's header button
@@ -4823,7 +4814,7 @@ let UV = null, UNEED = false;
 function uMsg(id, t, bad){ const el = $(id); el.textContent = t || ""; el.className = "toast" + (bad ? " bad" : ""); }
 async function loadUsers(){
   try{ UV = await getJSON("/api/remote/users", 3000); }
-  catch(e){ uMsg("u-msg", e.message, true); return; }
+  catch(e){ uMsg("u-msg", e.message, true); dropUpload(); return; }
   const me = UV.me || {};
   $("u-in").hidden = !me.name;
   $("u-form").hidden = !!me.name;
@@ -4831,15 +4822,41 @@ async function loadUsers(){
   fill($("u-name"), UV.names || [], true);
   $("u-admin").hidden = !(UV.local && UV.may_admin && UV.active !== undefined);
   $("u-audit").hidden = !UV.local;
+  // The superuser role is offered only to a SuperUser on this show PC.
+  const ur = $("ua-role"), su = [...ur.options].find(o => o.value === "superuser");
+  if(UV.may_superuser && !su) ur.add(new Option("superuser"));
+  if(!UV.may_superuser && su) su.remove();
+  // A SuperUser's changes ask for their own password again: one field,
+  // only on a SuperUser's screen; cleared after each change.
+  let sp = $("u-supw-box");
+  if(UV.may_superuser && !sp){
+    sp = document.createElement("div"); sp.id = "u-supw-box";
+    sp.innerHTML = `<label for="u-supw">Your password, for SuperUser changes</label><input id="u-supw" type="password" autocomplete="current-password">`;
+    $("ua-msg").parentNode.insertBefore(sp, $("ua-msg"));
+  }
+  if(!UV.may_superuser && sp) sp.remove();
+  // A SuperUser this program made, reading as an admin now: Confirm.
+  let cf = $("u-cf-box");
+  if(UV.may_confirm && !cf){
+    cf = document.createElement("div"); cf.id = "u-cf-box";
+    cf.innerHTML = `<label for="u-cfpw">Confirm you are a SuperUser: your password</label><input id="u-cfpw" type="password" autocomplete="current-password">` +
+      `<div class="row" style="margin-top:8px"><button id="u-cf">Confirm SuperUser</button></div>`;
+    $("u-in").appendChild(cf);
+    $("u-cf").addEventListener("click", () => { const pw = $("u-cfpw").value; $("u-cfpw").value = ""; uAdmin({op:"confirm-superuser", my_password:pw}); });
+  }
+  if(!UV.may_confirm && cf) cf.remove();
   renderUserList();
   renderMatrix();
   renderAudit();
+  renderUpload();
 }
 function renderUserList(){
   const rows = (UV.users || []).map(u => {
     const pw = !u.password_set ? "chooses one at first sign-in" : (u.temporary ? "temporary" : "set") +
       (u.locked_s ? ", locked " + u.locked_s + " s" : "");
     const roles = (UV.roles || []).map(r => `<option${r === u.role ? " selected" : ""}>${esc(r)}</option>`).join("");
+    // A SuperUser, seen by anyone but a SuperUser here: read only.
+    if(u.edit === false) return `<tr><td>${esc(u.name)}</td><td>${esc(u.role)}</td><td>${esc(pw)}</td><td></td></tr>`;
     return `<tr><td>${esc(u.name)}</td><td><select data-role="${esc(u.name)}">${roles}</select></td><td>${esc(pw)}</td>` +
       `<td><button class="ghost" data-reset="${esc(u.name)}">Reset password</button> <button class="ghost" data-remove="${esc(u.name)}">Remove</button></td></tr>`;
   }).join("");
@@ -4874,28 +4891,38 @@ function renderMatrix(){
   $("um-save").hidden = !edit;
 }
 function renderAudit(){
-  const a = UV.audit || {}, w = a.writer || {}, c = a.chain, u = a.upload || {};
+  const a = UV.audit || {}, w = a.writer || {}, c = a.chain;
   $("au-state").textContent = (w.fault ? "FAULT: " + w.fault + ". " : "Writing. ") +
     (w.written || 0) + " line(s) written since the engine started" + (w.lost ? ", " + w.lost + " lost" : "") + ". " +
     (c ? ("Chain checked " + c.checked_at + ": " + (c.ok ? "OK" : "BROKEN") + ", " + c.files + " file(s), " + c.lines + " line(s)" +
       ((c.problems || []).length ? ". " + c.problems.join(" ") : "")) : "Chain not checked yet.");
-  $("au-up").textContent = (u.enabled ? ("On, to " + (u.host || "?") + " at " + u.time + ".") : "Off.") +
-    " Last upload: " + (u.last_upload_at || "never") + ". Days waiting: " + ((u.pending_days || []).join(", ") || "none") + "." +
-    (u.last_error ? " Last error: " + u.last_error : "") + (u.config_error ? " Settings problem: " + u.config_error : "") +
-    ((u.changed_since_sent || []).length ? " CHANGED SINCE SENT: " + u.changed_since_sent.join(", ") : "");
   const busy = document.activeElement && $("au-set").contains(document.activeElement);
   if(!busy){
-    $("au-en").checked = !!u.enabled;
-    $("au-time").value = u.time || "03:30";
-    $("au-keep").value = u.keep_days || 90;
     $("au-idle").value = UV.idle_signout_min || 0;
     $("au-lastshow").value = UV.signout_after_last_show_min == null ? 10 : UV.signout_after_last_show_min;
-    $("au-tok").placeholder = u.token_set ? "saved (type to replace)" : "not set";
   }
   const may = !!UV.may_settings;
   $("au-set").querySelectorAll("input,button").forEach(el => { el.disabled = !may; });
 }
+// A SuperUser's own card: its code is not on this page. The engine sends
+// its state only to a SuperUser signed in on this show PC's rack screen,
+// and only then is the card's script fetched (refused to everyone else)
+// and the card made.
+function dropUpload(){ const c = $("u-upload"); if(c) c.remove(); }
+let UPLOAD_JS = null;
+function renderUpload(){
+  if(!(UV && UV.local && UV.upload)){ dropUpload(); return; }
+  if(window.ltcUploadCard){ window.ltcUploadCard(UV); return; }
+  if(UPLOAD_JS) return;
+  UPLOAD_JS = document.createElement("script");
+  UPLOAD_JS.src = "/api/remote/upload-card.js";
+  UPLOAD_JS.onload = () => { if(window.ltcUploadCard) renderUpload(); };
+  UPLOAD_JS.onerror = () => { UPLOAD_JS.remove(); UPLOAD_JS = null; };
+  document.head.appendChild(UPLOAD_JS);
+}
 async function uAdmin(body, route){
+  const sp = $("u-supw");
+  if(sp && sp.value){ body.my_password = sp.value; sp.value = ""; }
   try{ const r = await post("/api/remote/" + (route || "users"), body); uMsg("ua-msg", r.text); }
   catch(e){ uMsg("ua-msg", e.message, true); }
   loadUsers();
@@ -4960,21 +4987,12 @@ $("au-save").addEventListener("click", async () => {
     uMsg("au-msg", "Sign out after the last show has to be a whole number of minutes, 0 (off) to 1440. Nothing was saved.", true);
     return;
   }
-  const body = {enabled:$("au-en").checked, url:$("au-url").value.trim() || undefined, time:$("au-time").value.trim(),
-    keep_days:parseInt($("au-keep").value, 10) || 90};
-  if($("au-tok").value) body.token = $("au-tok").value;
-  if(body.url === undefined) delete body.url;
   try{
-    const r = await post("/api/remote/audit-settings", body);
     await post("/api/remote/idle-signout", {minutes:parseInt($("au-idle").value, 10) || 0});
-    await post("/api/remote/last-show-signout", {minutes:lastShow});
+    const r = await post("/api/remote/last-show-signout", {minutes:lastShow});
     uMsg("au-msg", r.text);
   }catch(e){ uMsg("au-msg", e.message, true); }
-  $("au-tok").value = "";
   loadUsers();
-});
-$("au-now").addEventListener("click", async () => {
-  try{ const r = await post("/api/remote/audit-upload-now", {}); uMsg("au-msg", r.text); }catch(e){ uMsg("au-msg", e.message, true); }
 });
 
 

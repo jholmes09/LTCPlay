@@ -13138,8 +13138,8 @@ def build():
  # role matrix; then passwords, the lockout, the last admin, the chain,
  # the never-blocking writer and the nightly upload's acknowledgement.
  ('users: a safety press is restricted like any other', 'ltcplay/users.py',
-  '    if perm == "safety" or perm is None:\n        return True\n    if role is None or role not in ROLES:',
-  '    if perm is None:\n        return True\n    if role is None or role not in ROLES:'),
+  '    if perm == "safety" or perm is None:\n        return True\n    if perm in SUPERUSER_PERMS:',
+  '    if perm is None:\n        return True\n    if perm in SUPERUSER_PERMS:'),
 
  ('users: a purge turned off is an arming press', 'ltcplay/users.py',
   '                body.get("on") is False:\n            return "safety"',
@@ -13186,8 +13186,8 @@ def build():
   '                pass\n            del users[real]'),
 
  ('users: the last admin can be demoted', 'ltcplay/users.py',
-  '            if users[real].get("role") == "admin" and role != "admin" and \\',
-  '            if False and \\'),
+  '            if users[real].get("role") in ADMIN_ROLES and \\\n                    role not in ADMIN_ROLES and \\',
+  '            if False and \\\n                    role not in ADMIN_ROLES and \\'),
 
  ('users: a temporary password signs in as it is', 'ltcplay/users.py',
   '        if first or must:',
@@ -13206,8 +13206,8 @@ def build():
   '                           "changed": self._stamp(), "must_change": False,'),
 
  ("users: an admin's reset is not temporary", 'ltcplay/users.py',
-  '        real = self._set_pw(name, pw, temporary=True)',
-  '        real = self._set_pw(name, pw, temporary=False)'),
+  '        real = self._set_pw(name, pw, temporary=True, by=by)',
+  '        real = self._set_pw(name, pw, temporary=False, by=by)'),
 
  ('users: an admin can be locked out of managing users', 'ltcplay/users.py',
   'FIXED = {("admin", "users"): True}',
@@ -15857,7 +15857,7 @@ def build():
 
  ("fuel: an operator may undo a refill",
   "ltcplay/fuel.py",
-  "    return _may(ctx, users, (\"admin\",), \"undo a refill\")",
+  "    return _may(ctx, users, UNDO_ROLES, \"undo a refill\")",
   "    return _may(ctx, users, REFILL_ROLES, \"undo a refill\")"),
 
  ("fuel: without sign-in a network device may refill",
@@ -23478,7 +23478,7 @@ def build():
   "  $(\"u-audit\").hidden = false;"),
 
  ("ui 2.0 Users: the shared token is written into its field",
-  "ltcplay/web/remote2.html",
+  "ltcplay/web/upload_card.js",
   "    $(\"au-tok\").placeholder = u.token_set ?",
   "    $(\"au-tok\").value = u.token || \"\";\n    $(\"au-tok\").placeholder = u.token_set ?"),
 
@@ -23529,8 +23529,8 @@ def build():
 
  ("ui 2.0 Users: the header's Sign out leaves a typed token in the pane",
   "ltcplay/web/remote2.html",
-  "[\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\", \"au-tok\"].forEach(id => { $(id).value = \"\"; });",
-  "[\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });"),
+  "  [\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });\n  dropUpload();\n",
+  "  [\"u-pw\", \"u-new\", \"u-old\", \"u-new1\", \"ua-pw\"].forEach(id => { $(id).value = \"\"; });\n"),
 
  ("ui 2.0 Users: the header's Sign out does not read the open pane again",
   "ltcplay/web/remote2.html",
@@ -24268,6 +24268,322 @@ def build():
   'ltcplay/web/remote2.html',
   '  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";\n  if(names === "all")',
   '  if(names === "all")'),
+
+ # The SuperUser (2026-11-13): the nightly upload is the SuperUser's alone,
+ # and only a SuperUser changes a SuperUser (users.py, remote.py, web.py).
+ ("superuser: the upload follows a stored matrix", "ltcplay/users.py",
+  "        # Never from a matrix: the role alone.\n        return role == SUPERUSER",
+  "        return role == SUPERUSER or ((matrix or {}).get(role) or {}).get(perm) is True"),
+
+ ("superuser: an admin may use the upload", "ltcplay/users.py",
+  "        # Never from a matrix: the role alone.\n        return role == SUPERUSER",
+  "        return role in ADMIN_ROLES"),
+
+ ("superuser: no route is the upload's", "ltcplay/users.py",
+  '    return n in UPLOAD_ROUTES or "upload" in n',
+  "    return False"),
+
+ ("superuser: a later upload route is anyone's", "ltcplay/users.py",
+  '    return n in UPLOAD_ROUTES or "upload" in n',
+  "    return n in UPLOAD_ROUTES"),
+
+ ("superuser: classify does not name a later upload route", "ltcplay/users.py",
+  "        if is_upload_route(name):\n            return UPLOAD\n",
+  ""),
+
+ ("superuser: an iPad sign-in is a SuperUser here", "ltcplay/users.py",
+  '            session.get("local") is True and bool(session.get("name"))',
+  '            bool(session.get("name"))'),
+
+ ("superuser: Tailscale is a SuperUser here", "ltcplay/users.py",
+  "        return local is True and not tailscale and \\",
+  "        return local is True and \\"),
+
+ ("superuser: an iPad request is a SuperUser here", "ltcplay/users.py",
+  "        return local is True and not tailscale and \\",
+  "        return not tailscale and \\"),
+
+ ("superuser: with no users the upload is open", "ltcplay/users.py",
+  "            return self.active() and allowed(None, role, perm)",
+  "            return allowed(None, role, perm) or not self.active()"),
+
+ ("superuser: a SuperUser's admin rows can be turned off", "ltcplay/users.py",
+  "FIXED.update({(SUPERUSER, p): True for p in PERM_KEYS})\n",
+  ""),
+
+ ("superuser: an admin adds a SuperUser", "ltcplay/users.py",
+  '            _need_superuser(by, f"add {name} as {SUPERUSER}")',
+  "            pass"),
+
+ ("superuser: an admin changes a SuperUser", "ltcplay/users.py",
+  '            _need_superuser(by, f"{what} {real} ({SUPERUSER})")',
+  "            pass"),
+
+ ("superuser: an admin makes a SuperUser", "ltcplay/users.py",
+  '                _need_superuser(by, f"make {real} {SUPERUSER}")',
+  "                pass"),
+
+ ("superuser: anyone at all is a SuperUser's rank", "ltcplay/users.py",
+  "    if by != SUPERUSER:\n        raise RankRefused(what)",
+  "    if False:\n        raise RankRefused(what)"),
+
+ ("superuser: the last SuperUser can be removed", "ltcplay/users.py",
+  '            if users[real].get("role") == SUPERUSER and \\\n                    not self._supers(users, without=real):',
+  '            if False and \\\n                    not self._supers(users, without=real):'),
+
+ ("superuser: the last SuperUser can be demoted", "ltcplay/users.py",
+  '            if users[real].get("role") == SUPERUSER and role != SUPERUSER \\',
+  "            if False \\"),
+
+ ("superuser: an admin resets a SuperUser's password", "ltcplay/users.py",
+  '                self._guard_super(users, real, by, "reset the password of")',
+  "                pass"),
+
+ ("superuser: a SuperUser's password can be cleared", "ltcplay/users.py",
+  '                if pw is None and users[real].get("role") == SUPERUSER:',
+  "                if False:"),
+
+ ("superuser: a SuperUser with no password is claimed", "ltcplay/users.py",
+  '            if u is not None and u.get("role") == SUPERUSER and (',
+  "            if False and ("),
+
+ ("superuser: an admin's temporary password signs in as a SuperUser", "ltcplay/users.py",
+  '                    first or (must and u.get("reset_by") not in',
+  '                    first or (False and u.get("reset_by") not in'),
+
+ ("superuser: a first run makes a SuperUser", "ltcplay/users.py",
+  "                if r not in ROLES or r == SUPERUSER:",
+  "                if r not in ROLES:"),
+
+ ("superuser: a SuperUser's column can be turned off", "ltcplay/users.py",
+  "                    if c == SUPERUSER and v is not True:",
+  "                    if False:"),
+
+ ("superuser: the command line promotes a claimable name", "ltcplay/users.py",
+  '            if u.get("pw") is None or u.get("must_change"):',
+  "            if False:"),
+
+ ("superuser: the command line's grant is not from the command line", "ltcplay/users.py",
+  "                           source=str(x.get(\"source\") or LOCAL_COMMAND))",
+  '                           source="")'),
+
+ ("superuser: the engine never refuses an upload route", "ltcplay/remote.py",
+  '        if self.upload_refused(name, ctx, "POST"):\n            return 404, {"error": UPLOAD_REFUSED}, {}',
+  '        if False:\n            return 404, {"error": UPLOAD_REFUSED}, {}'),
+
+ ("superuser: everyone gets the upload's card", "ltcplay/remote.py",
+  "            su = self.superuser_here(ctx)\n",
+  "            su = True\n"),
+
+ ("superuser: everyone may change a SuperUser on the screen", "ltcplay/remote.py",
+  '            out["users"] = [dict(x, edit=su or x.get("role") !=',
+  '            out["users"] = [dict(x, edit=True or x.get("role") !='),
+
+ ("superuser: every change is made with a SuperUser's rank", "ltcplay/remote.py",
+  "        if self.superuser_here(ctx):\n            return users_mod.SUPERUSER",
+  "        if True:\n            return users_mod.SUPERUSER"),
+
+ ("superuser: a refused SuperUser change is not audited", "ltcplay/remote.py",
+  '            self._audit_rank("superuser-refused", ctx, e.what)\n',
+  ""),
+
+ ("superuser: a refused upload press is not audited", "ltcplay/remote.py",
+  '        self._audit_rank("upload-refused", ctx, f"{method} {name}")\n',
+  ""),
+
+ ("superuser: an upload change is not audited", "ltcplay/remote.py",
+  '                    "upload-settings", ctx, ", ".join(said) or "no change",',
+  '                    "settings", ctx, ", ".join(said) or "no change",'),
+
+ ("superuser: the role check names the upload to an admin", "ltcplay/web.py",
+  "            if perm == users_mod.UPLOAD:\n                # The nightly upload",
+  "            if False:\n                # The nightly upload"),
+
+ ("superuser: a SuperUser may not undo a refill", "ltcplay/fuel.py",
+  'UNDO_ROLES = ("admin", "superuser")',
+  'UNDO_ROLES = ("admin",)'),
+
+ ("superuser: a SuperUser may not log a refill", "ltcplay/fuel.py",
+  'REFILL_ROLES = ("operator", "admin", "superuser")',
+  'REFILL_ROLES = ("operator", "admin")'),
+
+ ("ui 2.0 Users: an admin gets the upload card", "ltcplay/web/remote2.html",
+  "  if(!(UV && UV.local && UV.upload)){ dropUpload(); return; }",
+  "  if(!UV){ dropUpload(); return; }"),
+
+ ("ui 2.0 Users: an admin may change a SuperUser's row", "ltcplay/web/remote2.html",
+  '    if(u.edit === false) return `<tr>',
+  '    if(false) return `<tr>'),
+
+ ("ui 2.0 Users: superuser stays offered to an admin", "ltcplay/web/remote2.html",
+  "  if(!UV.may_superuser && su) su.remove();\n",
+  ""),
+
+ # The cold review of #251 (M1 to M6) and Jeff's 2026-11-13 rule: no
+ # screen a non-SuperUser sees names the upload's settings file.
+ ("superuser: a hand-made SuperUser is trusted", "ltcplay/users.py",
+  '            u["role"] = "admin"\n            u["su_untrusted"] = True\n',
+  '            u["su_untrusted"] = True\n'),
+
+ ("superuser: any fingerprint is this engine's", "ltcplay/users.py",
+  "                  isinstance(fp, str) and\n                  hmac.compare_digest(fp, self._fp(key, n, u)) and\n",
+  "                  isinstance(fp, str) and\n"),
+
+ ("superuser: a SuperUser removed outside the engine is not said", "ltcplay/users.py",
+  "                if gone:\n",
+  "                if False:\n"),
+
+ ("superuser: a changed SuperUser record raises no alert", "ltcplay/users.py",
+  "            if alerts and self.on_alert is not None:",
+  "            if False:"),
+
+ ("superuser: a change found by another process is never audited", "ltcplay/users.py",
+  '            for t in self._tamper:\n                self._pend(doc, "superuser-set-changed", "unknown",',
+  '            for t in ():\n                self._pend(doc, "superuser-set-changed", "unknown",'),
+
+ ("superuser: a SuperUser's session never ends by itself", "ltcplay/users.py",
+  "                and now - s[\"seen\"] > SUPERUSER_IDLE_S]",
+  "                and False]"),
+
+ ("superuser: a SuperUser's session lasts an hour", "ltcplay/users.py",
+  "SUPERUSER_IDLE_S = 15 * 60",
+  "SUPERUSER_IDLE_S = 60 * 60"),
+
+ ("superuser: an upload change needs no password again", "ltcplay/remote.py",
+  '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")',
+  '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-settings")'),
+
+ ("superuser: a reset leaves the SuperUser signed in", "ltcplay/users.py",
+  "        self._end_sessions(name)\n        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n            self._confirm_fails.pop(",
+  "        with self._lock:\n            self._fails.pop((\"name\", name.lower()), None)\n            self._confirm_fails.pop("),
+
+ ("superuser: a stale signal is taken", "ltcplay/users.py",
+  "            elif abs(self._wall() - at) > SIGNAL_MAX_AGE_S:",
+  "            elif False:"),
+
+ ("superuser: the running engine is never told of a reset", "ltcplay/users.py",
+  "        real = self._change(fn)\n        self._signal(real)\n",
+  "        real = self._change(fn)\n"),
+
+ ("superuser: any password makes a SuperUser", "ltcplay/users.py",
+  '        ok = check_password(str(by_password or ""), rec) if rec else False',
+  "        ok = True"),
+
+ ("superuser: anyone's password makes the first SuperUser", "ltcplay/users.py",
+  "            by = real if \" \".join(str(by_name or \"\").split()).lower() == \\\n                real.lower() else None",
+  "            by = {n.lower(): n for n in users}.get(\n                \" \".join(str(by_name or \"\").split()).lower())"),
+
+ ("superuser: no lock across processes", "ltcplay/users.py",
+  "            with _file_lock(self.lock_path):\n                return self._change_locked(fn)",
+  "            if True:\n                return self._change_locked(fn)"),
+
+ ("superuser: the users routes' own upload check is gone", "ltcplay/remote.py",
+  "        if users_mod.is_upload_route(name) and \\\n                not self.superuser_here(ctx):\n            return 404, {\"error\": UPLOAD_REFUSED}, {}\n        # Everything else",
+  "        if False:\n            return 404, {\"error\": UPLOAD_REFUSED}, {}\n        # Everything else"),
+
+ ("superuser: a GET of the card's script is anyone's", "ltcplay/remote.py",
+  '        if self.upload_refused(name, ctx, "GET"):\n            return 404, {"error": UPLOAD_REFUSED}\n',
+  '        if False:\n            return 404, {"error": UPLOAD_REFUSED}\n'),
+
+ ("superuser: an admin's upload row attempt is not audited", "ltcplay/remote.py",
+  '                    self._audit_rank("superuser-refused", ctx,\n                                     "role matrix: the upload row")',
+  "                    pass"),
+
+ ("superuser: the upload row has its own words", "ltcplay/users.py",
+  '                        raise ValueError(f"{p} is not a row of the matrix.")',
+  '                        raise ValueError(f"{p} is not a row of the matrix." + (" It is the SuperUser\'s." if p in SUPERUSER_PERMS else ""))'),
+
+ ("superuser: the audit card says where the settings are", "ltcplay/remote.py",
+  '                                 if k != "folder"}',
+  "                                 if True}"),
+
+ ("superuser: an admin is told the upload's settings file", "ltcplay/remote.py",
+  '        out = {"writer": None, "chain": None}\n',
+  '        out = {"writer": None, "chain": None, "settings": "ltcplay_audit.json"}\n'),
+
+ # The verification review of #251 (B1, M2, M3, M6).
+ ("superuser: the first SuperUser path opens again", "ltcplay/users.py",
+  "        if not supers and self.ever_superuser():",
+  "        if False:"),
+
+ ("superuser: the command asks before it refuses the first path again", "ltcplay/users.py",
+  "        elif us.ever_superuser(doc):",
+  "        elif False:"),
+
+ ("superuser: the audit log's history is not asked", "ltcplay/users.py",
+  '            if any(r.get("action") in ("superuser-set",',
+  '            if False and any(r.get("action") in ("superuser-set",'),
+
+ ("superuser: a missing key or set record trusts the SuperUsers", "ltcplay/users.py",
+  "        if missing and not self._lockdown:\n            self._lockdown = True",
+  "        if False:\n            self._lockdown = True"),
+
+ ("superuser: a missing fingerprint is not said", "ltcplay/users.py",
+  '            missing.append("a SuperUser\'s fingerprint")',
+  "            pass"),
+
+ ("superuser: a forged key and set are believed", "ltcplay/users.py",
+  "                  (known is None or n.lower() in known))",
+  "                  True)"),
+
+ ("superuser: the command's change is taken without its audit line", "ltcplay/users.py",
+  '            if any(x["id"] in ids for x in want):',
+  "            if want:"),
+
+ ("superuser: a password changed outside may confirm", "ltcplay/users.py",
+  "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER and \\\n                self._known_pw.get(str(name).lower()) == _pw_digest(u)",
+  "                isinstance(u, dict) and u.get(\"role\") != SUPERUSER"),
+
+ # The last round of #251: no recovery code; Jeff's own way back is the
+ # emergency procedure in SUPERUSER.md (the SuperUser files removed by
+ # hand), and the password typed again has its own counter.
+ ("superuser: the SuperUser files removed by hand never reopen the first path", "ltcplay/users.py",
+  "                self._known is not None)",
+  "                self._known is not None or True)"),
+
+ ("superuser: a save with no SuperUser makes the SuperUser's files", "ltcplay/users.py",
+  '            doc.pop("su_set", None)\n            return\n',
+  '            doc.pop("su_set", None)\n'),
+
+ ("superuser: the first SuperUser made again by hand raises no alert", "ltcplay/users.py",
+  "                       alert=again)",
+  "                       alert=False)"),
+
+ ("superuser: a wrong password typed again locks the sign-in out", "ltcplay/users.py",
+  "                self._failed(keys, now, self._confirm_fails)",
+  "                self._failed(keys, now)"),
+
+ ("superuser: a SuperUser changed outside is said on every beat", "ltcplay/users.py",
+  "        new = [f for f in found if f not in self._said]",
+  "        new = list(found)"),
+
+ ("superuser: the engine's own save is said as a change outside", "ltcplay/users.py",
+  "                    if set(str(x) for x in names) - known:",
+  "                    if set(str(x) for x in names) != known:"),
+
+ ("superuser: the password typed again can be guessed forever", "ltcplay/users.py",
+  "            if self._locked(keys, now, self._confirm_fails):",
+  "            if False:"),
+
+ ("superuser: the command's audit line comes after its change, or never", "ltcplay/users.py",
+  "                hook(said)\n",
+  "                pass\n"),
+
+ ("superuser: a command's missing audit line is not said", "ltcplay/users.py",
+  '                    if x["id"] not in ids:',
+  "                    if False:"),
+
+ ("superuser: a replayed signal is taken", "ltcplay/users.py",
+  '            elif str(doc.get("nonce")) in self._seen_nonces():',
+  "            elif False:"),
+
+ ("superuser: a SuperUser change needs no password again", "ltcplay/remote.py",
+  "                if su_change and not u.confirm(",
+  "                if False and not u.confirm("),
+
+ ("superuser: Send now needs no password", "ltcplay/remote.py",
+  '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")',
+  '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")'),
 ]
 
 
