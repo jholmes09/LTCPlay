@@ -60,8 +60,10 @@ sign-in.
   under way, and the screen is view only straight away. It does not disarm
   anything or stop live flame programming: use Disarm all or Stop for that.
 - **If the users file is damaged or missing** after users were set up, an
-  alert says so on every screen and every control is locked except Stop,
-  Hold, Acknowledge and the disarms. Nobody can sign in. A good
+  alert on every screen says "Users file cannot be used." (or "cannot be
+  opened." while another program holds it) and "Only Stop, Hold,
+  Acknowledge, Disarm work.": every other control is locked. Nobody can
+  sign in. Its Details say the reason and the folder under More. A good
   `ltcplay_users.json` put back in the settings folder is used at once, with
   no restart. To start over with no users: close LTC Player, remove
   `ltcplay_users.json` and `ltcplay_users.made` from the settings folder
@@ -369,14 +371,14 @@ differ) never sound. Every other alert repeats its note every 30 seconds
 | booth_clean_ready.wav, booth_clean_done.wav | the wave flamer cleaning routine, once it is built (PR #159); silent until then |
 
 **START / STOP.** While nothing is running the key reads START NOW. Once
-Run has been pressed and playback is going it reads STOP RUN: hold it for
+Run has been pressed and playback is going it reads STOP ALL: hold it for
 half a second to Stop. Stop first turns every flame group off, at once,
 then does exactly what the Rack screen's Stop does: live flame programming
 ends, every flame group is sent off again through the show's flame link
 (so each group needs a fresh arm), the
 outputs go dark, and the schedule goes on Hold: no show starts until
 Resume (Jeff, 2026-10-30). Run stays on, so the key keeps reading STOP
-RUN after a Stop; that is expected. The deck's Stop is a complete halt:
+ALL after a Stop; that is expected. The deck's Stop is a complete halt:
 every laser is disarmed too. Nothing latches: Resume carries on. A tap
 does nothing; let go before the ring fills
 and nothing is sent.
@@ -915,6 +917,21 @@ channel, and is either ARMED or DISARMED.
   each one again (wait a second after a Stop).
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
+- **Hazer test (Startup page, Purge step, 2026-11-11).** Tap **Hazer
+  test: On** to run every hazer at its levels with show control off
+  and no show; tap **Hazer test: Off** to stop it. It reads On with a
+  countdown (and HAZE ON in the top bar) only when the engine says so,
+  Not known with no contact.
+  - Off by itself after 60 s.
+  - Off on Stop, a show or show control starting.
+  - Off if this screen goes quiet 10 s.
+  It needs the arm row (as arming a hazer), and every check arming a
+  hazer has; it never arms a hazer. Set a Haze level first.
+- **Arm all hazers (same place).** One tap arms every hazer through the
+  same checks as arming one, and says which did not arm
+  ("2 of 3 hazers armed: Hazer 2 refused"). A name flamesafe does not
+  report as a hazer is skipped and named. With all armed it reads
+  **Disarm all hazers** (Hazers off).
 
 ## The fireball's fuel pump
 
@@ -2607,8 +2624,8 @@ flamesafe and LTC Player have the same aim list. Asked is what the show
 asked for on those slots, sent is what flamesafe really sent: 0 while the
 group is not armed (it then reads held or disarmed), by design: the head
 then sits at its end stop. Hover
-the line to read all of it. If it says NOT loaded, an Aim slots alert says
-the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
+the line to read all of it. If it says NOT loaded, an alert says "Wave
+flamer aim lists differ." and, under More in its Details, the same in full: flamesafe's list, LTC Player's list, the flamesafe.json LTC
 Player read when it started, and what to do (put the aim list in the
 flamesafe.json flamesafe uses, check LTC Player reads that same file, then
 quit LTC Player and start it again). It is display only: it never holds

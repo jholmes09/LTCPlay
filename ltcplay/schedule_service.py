@@ -1148,11 +1148,10 @@ class Service:
     # show is skipped; only shows added tonight are dropped. Each change is
     # a sentence of its own.
     REBUILT_WHAT = (
-        "Shows that already happened keep their status and their numbers, "
-        "and a show taken off tonight's list or skipped stays skipped. A "
-        "Delay or move of a show still to come is kept, and a time from the "
-        "file too close to a delayed show is skipped. Shows added tonight "
-        "are dropped. Each change is said below.")
+        "Past shows keep their status and numbers. A show taken off or "
+        "skipped stays skipped. A Delay or move still to come is kept; a "
+        "file time too close to a delayed show is skipped. Shows added "
+        "tonight are dropped. Each change is said below.")
     REBUILT_RESTART = (
         "The schedule file changed after tonight's list was saved, so "
         "tonight is rebuilt from the new schedule. " + REBUILT_WHAT)
