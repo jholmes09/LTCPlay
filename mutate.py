@@ -668,6 +668,46 @@ MUTATIONS = [
   "              \"--no-browser\", \"--network-if-saved\"]",
   "              \"--no-browser\"]"),
 
+ ("release tags: a gpl-* tag builds a release again",
+  ".github/workflows/windows-app.yml",
+  '    tags: ["ltc-*"]\n',
+  '    tags: ["ltc-*", "gpl-*"]\n'),
+
+ ("release tags: the installer's version keeps the ltc- prefix",
+  ".github/workflows/windows-app.yml",
+  '            v="${GITHUB_REF_NAME#ltc-}"\n',
+  '            v="${GITHUB_REF_NAME#gpl-}"\n'),
+
+ ("release tags: Run workflow on an old gpl- tag builds it",
+  ".github/workflows/windows-app.yml",
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n',
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^(ltc|gpl)-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n'),
+
+ ("release tags: a gpl-* tag is silent in the selftest run",
+  ".github/workflows/selftest.yml",
+  '          if [[ "$REF" == refs/tags/gpl-* ]]; then\n',
+  '          if false; then\n'),
+
+ ("release tags: the updater no longer reads an ltc- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("gpl-",)\n'),
+
+ ("release tags: the updater no longer reads an old gpl- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("ltc-",)\n'),
+
+ ("release tags: an ltc- or gpl- stamp is compared as text again",
+  "packaging/windows/updater.py",
+  "    c, i = release_number(candidate), release_number(installed)\n",
+  "    c, i = str(candidate).strip(), str(installed).strip()\n"),
+
+ ("release tags: the rollback no longer reads a prefixed release",
+  "packaging/windows/supervisor.py",
+  "    return updater.release_number(ver)\n",
+  "    return str(ver).replace(\"gpl-\", \"\")\n"),
+
  ("show network: a saved public, VPN or link-local address is served on",
   "ltcplay/cli.py",
   "    if not remote_mod.is_rfc1918(saved):",
@@ -2014,8 +2054,8 @@ MUTATIONS = [
   '        if length_s is None:\n            length_s = 1e6\n        if False:'),
 
  ('play and halt race each other', 'ltcplay/clock.py',
-  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")',
-  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Press Run first.")'),
+  '        with self._lock:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")',
+  '        if True:\n            if not self._live:\n                raise ClockConfigError("Nothing is running. Turn show control on first.")'),
 
  ('an unknown hour is taken as the show', 'ltcplay/clock.py',
   '    role = zones.get(h)\n',
@@ -2853,8 +2893,8 @@ MUTATIONS = [
 
  ("pump: an ON from a stale or ageless screen is taken",
   "ltcplay/remote.py",
-  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"The fuel pump was not turned on: the press came from a \"",
-  "        if False:\n            why = (\"The fuel pump was not turned on: the press came from a \""),
+  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"Fuel pump NOT turned on.\\n\"",
+  "        if False:\n            why = (\"Fuel pump NOT turned on.\\n\""),
 
  ("pump: a start that raised leaves the link naming the pump",
   "ltcplay/fuelpump.py",
@@ -3058,6 +3098,14 @@ MUTATIONS = [
   "ltcplay/web/remote2.html",
   "  if(n !== P_SAID) return j;\n",
   ""),
+
+ # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
+ # their rows when the step is taller than its panel, so the sections
+ # under them (the timed purge, the hazer test) are drawn over them
+ ("ui 2.0 DAY: a step's buttons shrink and the rows under them overlap them",
+  "ltcplay/web/remote2.html",
+  "#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 0 auto}",
+  "#d-ctl{display:flex;flex-direction:column;gap:var(--gap);min-height:0;min-width:0;flex:1 1 auto}"),
 
  # interface 2.0's Resume sheet (play-from cues part 3): start at a cue
  ("ui 2.0 cue: Start at a cue goes with no question",
@@ -10218,7 +10266,7 @@ def build():
  ("pixels: the look-in-show CUES FAULT names a button the Fire & Ice "
   "screens do not have",
   'ltcplay/fire_ice.py',
-  '                "Programming: Show file card, Stop, then Run. "\n',
+  '                "Programming: End rehearsal, then Start rehearsal. "\n',
   '                "Programming screen: press Follow timecode. "\n'),
 
  ("pixels: the look-in-show CUES FAULT sends a 2.0 screen to 1.0, not to "
@@ -17183,6 +17231,16 @@ def build():
   "  if(sch.stop_held && !isLive(st)) return {tone:\"warn\", icon:\"pause\", text:\"Held after Stop: press Resume.\"};",
   ""),
 
+ ("big button: Resume says Carries on under it again",
+  "ltcplay/web/remote2.html",
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "" : "No contact"};',
+  'label:"Resume", icon:"play", tone:"green", off:!fresh || !sch.attached, why:fresh ? "Carries on" : "No contact"};'),
+
+ ("big button: a Stop's Hold no longer says why under Resume",
+  "ltcplay/web/remote2.html",
+  'why:fresh ? "Held after Stop" : "No contact"};',
+  'why:fresh ? "" : "No contact"};'),
+
  ("scheduler: a Stop's Hold is not kept in tonight's file",
   "ltcplay/schedule.py",
   "    if m.stop_hold:\n        doc[\"stop_hold\"] = True\n",
@@ -17212,7 +17270,7 @@ def build():
 
  ("ui2 page: Run off turns Run off without asking",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\"))) return;\n",
+  "  if(!(await (reh ? confirmBox(\"End rehearsal?\", REHEARSAL_END_CONFIRM, \"Yes, end it\", \"red\") : confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\")))) return;\n",
   ""),
 
  # Cold review of #191 round 3.
@@ -17932,8 +17990,8 @@ def build():
 
  ("Rack screen: Run never becomes Stop while Run is starting",
   "ltcplay/web/remote_rules.js",
-  "  if(!(show.running || show.starting)) return {mode:\"run\"",
-  "  if(!show.running) return {mode:\"run\""),
+  "  if(!(show.running || show.starting))\n    return {mode:\"run\"",
+  "  if(!show.running)\n    return {mode:\"run\""),
 
  ("Rack screen: a press is not decided by what was seen at touch-down",
   "ltcplay/web/remote_rules.js",
@@ -19420,6 +19478,21 @@ def build():
  ("ui2 page: one system to check is not named", "ltcplay/web/remote2.html",
   "  const text = probs.length === 1 ?",
   "  const text = false ?"),
+
+ ("systems rows: a row says its state word twice again",
+  "ltcplay/web/remote2.html",
+  '  if(bare === lw || bare === "ok") rest = "";',
+  '  if(false) rest = "";'),
+
+ ("systems rows: a row cuts its own verb when it starts like the state",
+  "ltcplay/web/remote2.html",
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[.:,]/.test(rest.slice(word.length)))',
+  '  else if(rest.toLowerCase().indexOf(lw) === 0 && /^[\\s.:,]/.test(rest.slice(word.length)))'),
+
+ ("systems rows: a row drops what its words add",
+  "ltcplay/web/remote2.html",
+  '  if(!rest) return {head:x.label + ": " + word, rest:""};',
+  '  return {head:x.label + ": " + word, rest:""};'),
 
  ("ui2 page: a system not set up here reads Check", "ltcplay/web/remote2.html",
   "  if(state !== \"bad\" && SYS_OFF.test(w.trim())) state = \"off\";\n",
@@ -22066,8 +22139,8 @@ def build():
 
  ("review180: rack screen 2.0 says only Press Run, whatever the warning asks",
   "ltcplay/web/remote2.html",
-  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Press Run.\", loc)",
-  "do:runWarnWords(\"Press Run.\", loc)"),
+  "do:runWarnWords(sch.run_warning.split(\"will NOT start. \")[1] || \"Turn show control on.\", loc)",
+  "do:runWarnWords(\"Turn show control on.\", loc)"),
 
  ("play-from cues: a cue right at the end of the show audio is saved",
   "ltcplay/play_from.py",
@@ -23132,12 +23205,12 @@ def build():
 
  ("ui 2.0 Programming: Run starts with no question",
   "ltcplay/web/remote2.html",
-  "  if(!(await confirmBox(prog ? \"Run in Programming?\"",
-  "  if(false && !(await confirmBox(prog ? \"Run in Programming?\""),
+  "  if(!(await confirmBox(prog ? \"Start rehearsal?\"",
+  "  if(false && !(await confirmBox(prog ? \"Start rehearsal?\""),
 
  ("ui 2.0 Programming: Run off goes with no question",
   "ltcplay/web/remote2.html",
-  "    const sure = await confirmBox(\"Turn Run off?\", RUN_OFF_CONFIRM, \"Yes, Run off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
+  "    const sure = ((ST && ST.transport) || {}).programming\n      ? await confirmBox(\"End rehearsal?\", REHEARSAL_END_CONFIRM, \"Yes, end it\", \"red\")\n      : await confirmBox(\"Turn show control off?\", RUN_OFF_CONFIRM, \"Yes, turn off\", \"red\");\n    if(!sure) return;\n    if(runLook(ST, stale()).mode !== \"runoff\")",
   "    if(runLook(ST, stale()).mode !== \"runoff\")"),
 
  ("ui 2.0 Programming: the session is pressable signed out",
@@ -23370,6 +23443,90 @@ def build():
   "ltcplay/web/remote2.html",
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
+
+ # Less prose on the Schedule tab's cards (Jeff, 2026-11-11).
+ ("less prose: the arming card stops naming a laser arm",
+  "ltcplay/web/remote2.html",
+  'turn a laser test on and arm a laser; this screen can without the switch.";',
+  'turn a laser test on; this screen can without the switch.";'),
+
+ ("less prose: Restart the engine no longer says it is refused during a show",
+  "ltcplay/web/remote2.html",
+  '"Restarts the show engine on the saved address. Refused while a show runs or a group is armed.',
+  '"Restarts the show engine on the saved address.'),
+
+ # Less prose in the rules (Jeff, 2026-11-11).
+ ("less prose: arming off no longer says to arm from the Stream Deck",
+  'ltcplay/web/remote_rules.js',
+  'const ARMING_OFF = "Arming from a screen is switched off. Arm from the Stream Deck, or turn it on',
+  'const ARMING_OFF = "Arming from a screen is switched off. Or turn it on'),
+
+ ("less prose: Programming's Stop explains itself again",
+  "ltcplay/web/remote_rules.js",
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"tap twice"}',
+  '  return stopShows(st) ? {mode:"stop", label:"Stop", sub:"end the show, rig dark"}'),
+
+ # Less prose, engine answers and alerts (Jeff, 2026-11-11).
+ ("less prose: the Morning check runs two shows' CUES FAULTs together",
+  'ltcplay/remote.py',
+  '                        "text": "\\n\\n".join(faults) if faults else',
+  '                        "text": " ".join(faults) if faults else'),
+
+ ('less prose: the preroll alert hides what failed behind More',
+  'ltcplay/preroll.py',
+  '            f"- Failed: {\', \'.join(i[\'name\'] for i in bad)}.\\n"\n            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "',
+  '            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "'),
+
+ ('less prose: the CUES FAULT says what to render only behind More',
+  'ltcplay/fire_ice.py',
+  '            f"Render these again in xLights: {names}.\\n"',
+  '            f"Render these again in xLights.\\n"'),
+
+ ('less prose: the schedule save answer runs its warnings into one line',
+  'ltcplay/remote.py',
+  '                   "".join(f"- {w}\\n" for w in warns) if warns else "") +',
+  '                   " ".join(warns) + "\\n" if warns else "") +'),
+
+ ('less prose: the stale pump press says no way forward',
+  'ltcplay/remote.py',
+  '                   "Wait for the screen to be live, then press again.\\n"',
+  '                   ""'),
+
+ # Less prose (Jeff, 2026-11-11): bullets and paragraph breaks.
+ ("less prose: an alert's one-line text keeps its bullet marks",
+  "ltcplay/alerts.py",
+  '        text = " ".join(" ".join(ln[2:] if ln.startswith("- ") else ln',
+  '        text = " ".join(" ".join(ln if ln.startswith("- ") else ln'),
+
+ ("less prose: an alert drops its line breaks before the rack screen",
+  "ltcplay/alerts.py",
+  '        if "\\n" in self.full:\n            out["full"]',
+  '        if False:\n            out["full"]'),
+
+ ("less prose: opText writes the engine's words as markup",
+  "ltcplay/web/remote2.html",
+  '      list.appendChild(document.createElement("li")).textContent = line.slice(2).trim();',
+  '      list.appendChild(document.createElement("li")).innerHTML = line.slice(2).trim();'),
+
+ ("less prose: the audio alert's names leave More for the bullets",
+  "ltcplay/audiowatch.py",
+  '            f"- Why: No show can start without it.\\n"',
+  '            f"- Why: No show can start without it, {show_file}.\\n"'),
+
+ ("less prose: the aim alert's file path leaves More for the bullets",
+  "ltcplay/remote.py",
+  '                f"- Do: Tell Jeff.\\n"',
+  '                f"- Do: Tell Jeff, {path}.\\n"'),
+
+ ("less prose: the late frame alert's numbers leave More for the bullets",
+  "ltcplay/remote.py",
+  '                   "- Why: A flame pulse may be cut short.\\n"',
+  '                   "- Why: A flame pulse may be cut short, worst {w} ms.\\n"'),
+
+ ("less prose: the users alert's file names leave More for the bullets",
+  "ltcplay/remote.py",
+  '                    f"- Do: Put a good users file back.\\n"',
+  '                    f"- Do: Put {users_mod.USERS_MARK} back.\\n"'),
 
  # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
  # starts with flames off and says where; the supervisor starts neither
@@ -23685,8 +23842,8 @@ def build():
 
  ('hazer test: a quiet screen leaves it on',
   'ltcplay/hazertest.py',
-  '        if now - r["page"] > PAGE_QUIET_S:\n',
-  '        if False:\n'),
+  '            if now - e["page"] > PAGE_QUIET_S:\n',
+  '            if False:\n'),
 
  ('hazer test: ON needs no permission (not the arm row)',
   'ltcplay/users.py',
@@ -23700,8 +23857,8 @@ def build():
 
  ('hazer test: ON from the show network without screen_arming',
   'ltcplay/remote.py',
-  '            why = ("The hazer test from a device on the show network needs "\n',
-  '            return 200, {}\n            why = ("The hazer test from a device on the show network needs "\n'),
+  '            why = ("Hazers not turned on: this device may not turn hazers "\n',
+  '            return 200, {}\n            why = ("Hazers not turned on: this device may not turn hazers "\n'),
 
  ('hazer test: Stop leaves it on at the engine',
   'ltcplay/remote.py',
@@ -23740,8 +23897,8 @@ def build():
 
  ('hazer test: the page shows On with no contact',
   'ltcplay/web/remote2.html',
-  '  const known = !isSt && v.state !== "unknown";\n',
-  '  const known = true;\n'),
+  'function hztKnown(v){ return !stale() && !!v && v.available === true && v.state !== "unknown" && Array.isArray(v.hazers); }',
+  'function hztKnown(v){ return !!v && v.available === true && Array.isArray(v.hazers); }'),
 
  ('arm all hazers: every entry armed whatever its type',
   'ltcplay/hazers.py',
@@ -23775,8 +23932,8 @@ def build():
 
  ('hazer test: the timer never checks its starter is still signed in',
   'ltcplay/hazertest.py',
-  '        gone = self._sign_in_gone(r.get("token", ""), r.get("who", ""))\n',
-  '        gone = ""\n'),
+  '            gone = self._sign_in_gone(e.get("token", ""), e.get("who", ""))\n',
+  '            gone = ""\n'),
 
  ('hazer test: a running test ignores flamesafe going stale',
   'ltcplay/hazertest.py',
@@ -23810,8 +23967,8 @@ def build():
 
  ('hazer test: the Stream Deck is not told it runs',
   'ltcplay/remote.py',
-  '                                     "test": self._ht_running(),\n',
-  '                                     "test": False,\n'),
+  '                                     "test": self._ht_names(),\n',
+  '                                     "test": [],\n'),
 
  ('hazer test: a show state that cannot be read is idle',
   'ltcplay/remote.py',
@@ -23825,18 +23982,18 @@ def build():
 
  ('hazer test: it drives the hazers while a show cue plays or the gate is shut',
   'ltcplay/flamelink.py',
-  '                tgate and not self._haze_live\n',
-  '                True\n'),
+  '                tgate and not self._haze_live else frozenset()\n',
+  '                True else frozenset()\n'),
 
  ('hazer test: the status reads on past its hard end',
   'ltcplay/flamelink.py',
-  '                "hazer_test_on": self.hazer_test_live_now(),\n',
-  '                "hazer_test_on": self._htest_on,\n'),
+  '            if not 0 <= now - beat <= HAZER_TEST_HOLD_S:\n                return frozenset()\n            return frozenset(n for n, u in dict(until).items() if now < u)\n',
+  '            return frozenset(dict(until))\n'),
 
  ('hazer test: the page cannot send Off without contact',
   'ltcplay/web/remote2.html',
-  '  if(!hztConfirmedOff(v)){ hazerTestOff(); return; }\n',
-  '  if(v && v.on === true){ hazerTestOff(); return; }\n'),
+  '  if(!hztKnown(v)) return {mode: "off", label: "Turn off"};\n',
+  '  if(!hztKnown(v)) return {mode: "on", label: "Turn on"};\n'),
 
  ("hazer test: the rack screen's hazer tiles read DISARMED during it",
   'ltcplay/web/remote2.html',
@@ -23899,13 +24056,13 @@ def build():
 
  ("show control: Start now says Run is off from the sentence again",
   "ltcplay/web/remote_rules.js",
-  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
-  "sub:/^Run has not been pressed/.test(String(b.text)) ? \"Run is off\""),
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Show control is off\"",
+  "sub:/^Run has not been pressed/.test(String(b.text)) ? \"Show control is off\""),
 
  ("show control: Start now reads a missing Run boolean as on",
   "ltcplay/web/remote_rules.js",
-  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Run is off\"",
-  "sub:(st && st.show && st.show.show_control_on === false) ? \"Run is off\""),
+  "sub:!(st && st.show && st.show.show_control_on === true) ? \"Show control is off\"",
+  "sub:(st && st.show && st.show.show_control_on === false) ? \"Show control is off\""),
 
  ("show control: the status ignores the Run gate",
   "ltcplay/remote.py",
@@ -23922,10 +24079,97 @@ def build():
   "            if not (cs.get(\"running\") or cs.get(\"starting\")):\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)",
   "            if False:\n                return False\n            gate = getattr(self.schedule, \"run_gate\", None)"),
 
+ # Cold review of #240 (Jeff, 2026-11-11): Stop leaves show control on, so
+ # a refusal while it is on says turn it off, never press Stop.
+ ('show control: the timed purge refusal says press Stop again',
+  'ltcplay/remote.py',
+  '                       False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
+  '                       False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
+
+ ('show control: a new show file refusal says press Stop again',
+  'ltcplay/remote.py',
+  '            return 409, ("A show file is running. Turn show control off "\n                         "first (End rehearsal in a rehearsal), then make "',
+  '            return 409, ("A show file is running. Press Stop first, then "\n                         "make "'),
+
+ ('show control: the rig-not-answering line says Stop and Run again',
+  'ltcplay/display.py',
+  'f"and the switch. Turn show control off and on (on the Mac page: "\n                f"Stop, then Run) after it is back, or the socket "',
+  'f"and the switch. Stop and Run after it is back, or the socket "'),
+
  ("hazer test: show control's state unreadable is read as off",
   'ltcplay/remote.py',
   '                return "show control\'s state could not be read"\n',
   '                cs = {}\n'),
+
+ ('hazer test: the link runs every hazer, not only the selected ones',
+  'ltcplay/flamelink.py',
+  '            for n in (test if test else self._hazers_on):\n',
+  '            for n in (self._hazers if test else self._hazers_on):\n'),
+
+ ('hazer test: a second On restarts a hazer already running (its 60 s extended)',
+  'ltcplay/hazertest.py',
+  '        new = [n for n in names if n not in self.running()]\n',
+  '        new = list(names)\n'),
+
+ ('hazer test: a name the engine does not have is dropped, the rest turned on',
+  'ltcplay/hazertest.py',
+  '    bad = [n for n in raw if n not in known]\n',
+  '    bad = []\n'),
+
+ ('hazer test: Off needs screen_arming like On (Off no longer always works)',
+  'ltcplay/remote.py',
+  '            ht.stop(why, who=who, screen=device, system=False)\n            return 200, {"ok": True, "text": "Every hazer OFF."}\n',
+  '            pass\n'),
+
+ ('hazer test: All on is refused ("all" is not read)',
+  'ltcplay/remote.py',
+  '        if sel == "all":\n            sel = ht.names()\n',
+  '        if False:\n            sel = ht.names()\n'),
+
+ ("hazer test: the page's All off sends a selection, not every hazer",
+  'ltcplay/web/remote2.html',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(null));\n',
+  '$("hzt-alloff").addEventListener("click", () => hztOff(["Hazer 1"]));\n'),
+
+ ("hazer test: the page's All on sends nothing",
+  'ltcplay/web/remote2.html',
+  '$("hzt-allon").addEventListener("click", () => hztOn("all"));\n',
+  ''),
+
+ ("arm all hazers: the show screen's button is never disabled",
+  'ltcplay/web/remote2.html',
+  '  ab.disabled = al.mode !== "arm" || !!al.why;\n',
+  '  ab.disabled = false;\n'),
+
+ ('arm all hazers: the show screen reads a state not known as known',
+  'ltcplay/web/remote2.html',
+  '  if(!known) return {mode: "none", state: "Not known", why: ""};\n',
+  '  if(false) return {mode: "none", state: "Not known", why: ""};\n'),
+
+ ("hazer test: one screen's beat keeps every screen's hazers on",
+  'ltcplay/hazertest.py',
+  '                if (isinstance(page, str) and page and e["owner"] == page) \\\n                        or e["rid"] == run:\n',
+  '                if True:\n'),
+
+ ("hazer test: signing out ends every person's hazers",
+  'ltcplay/hazertest.py',
+  '            mine = [n for n, e in r["names"].items()\n                    if e.get("token") == token]\n',
+  '            mine = list(r["names"])\n'),
+
+ ('hazer test: the link extends a hazer already running',
+  'ltcplay/flamelink.py',
+  '                    if n not in running:\n                        until[n] = mine + s\n',
+  '                    until[n] = mine + s\n'),
+
+ ("hazer test: the page's reason comes from every hazer, not the ticked ones",
+  'ltcplay/web/remote2.html',
+  '  const rows = v.hazers.filter(h => names.includes(h.name) && h.on === false);\n',
+  '  const rows = v.hazers.filter(h => h.on === false);\n'),
+
+ ('hazer test: the page lets an iPad with arming off press Turn on',
+  'ltcplay/web/remote2.html',
+  '  if(!(ME && ME.local) && !(s.arming && s.arming.enabled)) return "Arming off here";\n  if(names === "all")',
+  '  if(names === "all")'),
 ]
 
 
