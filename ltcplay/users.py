@@ -301,6 +301,23 @@ def fireball_on_wanted(body):
     return isinstance(c, dict) and any(v is True for v in c.values())
 
 
+# Who may change the Tailscale logins allowed in (Jeff, 2026-11-13: "I want
+# to specify who gets in"): a SuperUser, on the show PC only.
+# TODO(#251): the SuperUser role arrives with PR #251 (branch
+# superuser-role). Until it is merged this is the admin; when it lands,
+# change TAILSCALE_ALLOWLIST_ROLE to its SuperUser role name. That is the
+# one line to change (selftest test_tailscale_allow_list pins it).
+TAILSCALE_ALLOWLIST_ROLE = "admin"
+
+
+def may_edit_tailscale_allowlist(user, local):
+    """True only for a signed-in user ({"name", "role"}, or None) whose
+    role is TAILSCALE_ALLOWLIST_ROLE, on the show PC itself (`local`).
+    Nobody signed in, any other role, or any other screen: False."""
+    role = (user or {}).get("role") if isinstance(user, dict) else None
+    return bool(local) and role == TAILSCALE_ALLOWLIST_ROLE
+
+
 def classify(route, body=None):
     """"safety", a key of PERMS, or None, for one POST. A press that only
     takes risk away is "safety" whatever its route: a purge selection

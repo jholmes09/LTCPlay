@@ -53915,6 +53915,25 @@ def test_tailscale_allow_list():
         check(st == 403, f"never from Tailscale: {st} {out}")
         check(U.classify("/api/remote/tailscale", {"logins": []}) ==
               "users", "classified: the Users row")
+        # Who may edit it: ONE function, the admin until PR #251's
+        # SuperUser lands; then TAILSCALE_ALLOWLIST_ROLE is the one line
+        # to change (and this pin with it).
+        check(U.TAILSCALE_ALLOWLIST_ROLE == "admin",
+              "the allow list's editor role is pinned (admin until #251)")
+        may = U.may_edit_tailscale_allowlist
+        check(may({"name": "Jeff", "role": "admin"}, True) is True and
+              may({"name": "Jeff", "role": "admin"}, False) is False and
+              may({"name": "Ollie", "role": "operator"}, True) is False and
+              may({"name": "Vic", "role": "viewer"}, True) is False and
+              may(None, True) is False and may({}, True) is False,
+              "only that role, signed in, on the show PC")
+        rm.users = None
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
+                           {"logins": ["eve@example.com"]}, client=loop)
+        check(st == 403 and "eve@example.com" not in
+              RM.load_settings(R.work)["tailscale_logins"],
+              f"nobody signed in (no users): never changed: {st} {out}")
+        rm.users = us
     finally:
         D.server_close()
         R.close()

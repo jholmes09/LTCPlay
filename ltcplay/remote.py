@@ -3226,7 +3226,18 @@ class Remote:
         """POST tailscale {"logins": [...]}: the allow list of Tailscale
         logins, on the show PC only (LOCAL_ONLY; the role matrix's Users
         row, admin, users.classify). Saved whole; empty lets nobody in.
-        Takes effect within TAILSCALE_WHOIS_S."""
+        Takes effect within TAILSCALE_WHOIS_S. Only who
+        users.may_edit_tailscale_allowlist allows (the admin until PR
+        #251's SuperUser lands), signed in, on the show PC."""
+        me = getattr(ctx, "session", None) or {}
+        if not users_mod.may_edit_tailscale_allowlist(
+                {"name": me.get("name"), "role": me.get("role")}
+                if me.get("name") else None, ctx.local):
+            return 403, {"error": f"Only a signed-in "
+                                  f"{users_mod.TAILSCALE_ALLOWLIST_ROLE} on "
+                                  f"the show PC may change who gets in. "
+                                  f"Nothing was changed.",
+                         "role_refused": True}
         try:
             logins = check_tailscale_logins(body.get("logins"))
             save_settings(self.folder, tailscale_logins=logins)

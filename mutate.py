@@ -773,6 +773,16 @@ MUTATIONS = [
   "            return \"users\"\n",
   ""),
 
+ ("tailscale: anyone on the show PC may change who gets in",
+  "ltcplay/users.py",
+  "    return bool(local) and role == TAILSCALE_ALLOWLIST_ROLE",
+  "    return bool(local)"),
+
+ ("tailscale: the engine never asks who may change the allow list",
+  "ltcplay/remote.py",
+  "        if not users_mod.may_edit_tailscale_allowlist(",
+  "        if False and users_mod.may_edit_tailscale_allowlist("),
+
  # -- the show network from another machine (Jeff, 2026-10-28: the page
  #    never opened from his Mac): the RFC 1918 picker, the card's view, the
  #    firewall rule read, the wrong-name page, the fallback to this PC

@@ -3804,5 +3804,7 @@
 "tailscale: the engine does not ask for a sign-in itself": "test_tailscale_acts_as_an_ipad_signed_in",
 "tailscale: wrong passwords from Tailscale lock the name out": "test_tailscale_sign_in_lockout_is_its_own",
 "tailscale: the audit line names no login": "test_tailscale_allow_list",
-"tailscale: the allow list is a Settings press": "test_tailscale_allow_list"
+"tailscale: the allow list is a Settings press": "test_tailscale_allow_list",
+"tailscale: anyone on the show PC may change who gets in": "test_tailscale_allow_list",
+"tailscale: the engine never asks who may change the allow list": "test_tailscale_allow_list"
 }
