@@ -1160,7 +1160,13 @@ def render_age_sentence(nm_path, stale, show=""):
     if len(stale) > 6:
         names += f" and {len(stale) - 6} more"
     of = f" in {show}" if show else ""
-    return (f"CUES FAULT{of}: flame cues will be zero. {len(stale)} "
+    # A headline, what to do, the rest behind More (Jeff, 2026-11-11:
+    # less prose). Plain lines, no bullets: the Run refusal and the
+    # Check card read it as one line.
+    return (f"CUES FAULT{of}: flame cues are off.\n"
+            f"Render these again in xLights: {names}.\n"
+            f"\n"
+            f"More: flame cues will be zero. {len(stale)} "
             f"render(s) are older than {nm_path}: {names}. The layout was "
             f"saved after they were rendered, so which channels are the "
             f"flames cannot be trusted and every flame cue in them is "
