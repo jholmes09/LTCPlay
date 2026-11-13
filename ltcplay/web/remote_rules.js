@@ -625,7 +625,9 @@ const RUN_OFF_CONFIRM = "Stop everything (as Stop does), then stop playback, so 
 // screen (review of #144, F7). Before a show, what Start now would be
 // refused with (the engine's start_blocked) is on the button; while the
 // show audio loads Start now still works and waits for it (F2), and while
-// it waits the button reads Loading, starting when ready.
+// it waits the button reads Loading, starting when ready. Whether Run is
+// on is the engine's boolean (show.show_control_on), never its sentence;
+// anything but true is off.
 function startLook(st, stale, waiting){
   const sch = (st && st.schedule) || {};
   // Stop wherever there is something for it to stop (stopShows): a show
@@ -651,7 +653,7 @@ function startLook(st, stale, waiting){
     return {mode:"start", label:"Start now", sub:"audio loading",
             disabled:!fresh, title:String(b.text), why:""};
   if(b && b.text)
-    return {mode:"start", label:"Start now", sub:/^Run has not been pressed/.test(String(b.text)) ? "Run is off" : "not ready, tap for why",
+    return {mode:"start", label:"Start now", sub:!(st && st.show && st.show.show_control_on === true) ? "Run is off" : "not ready, tap for why",
             disabled:!fresh, title:String(b.text), why:String(b.text)};
   return {mode:"start", label:"Start now", sub:"", disabled:!fresh, title:"", why:""};
 }
