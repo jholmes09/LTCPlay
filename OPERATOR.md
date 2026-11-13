@@ -2696,86 +2696,26 @@ nothing fires.
 
 ### Open the page over Tailscale
 
-**Off unless you turn it on.**
+Only for the people the SuperUser has let in (SUPERUSER.md).
 
-- Schedule tab, "Remote access over Tailscale", Turn on.
-- Then Restart the engine, between shows, flames disarmed.
-- Use the installer again: it adds the firewall rule.
+**Type the name, not the address.**
 
-**Type the address the card gives.**
-
-- Like `http://100.101.102.103:7878/`, nothing else works.
-- The card says: listening, and the firewall rule.
-- No Tailscale running: the card says so, nothing listens.
-
-**Only the logins you list get in.**
-
-- Same card: Tailscale logins allowed in, one per line.
-- Empty means nobody. Only an admin can change it.
-- People's logins only: tagged devices never get in.
-- Tailscale on this PC says who each device is.
+- `http://ignite-player.tail342a0a.ts.net:7878/`
+- Shared from another tailnet: always this full name.
+- Nothing else answers: no other name, no https.
 
 **Then it works like an iPad.**
 
 - Sign in to do anything that needs a role.
-- Arming follows "Arming from a screen", as iPads do.
 - Signed out: view, Stop, Hold, Acknowledge, disarm.
+- Signed out by itself after 30 minutes idle.
 
 Tailscale follows the iPad's settings: the role matrix (USERS.md), the
 "Arming from a screen" switch and every rule an iPad has. The one
-difference: from Tailscale every press that needs a role needs a sign-in,
-also when no users are set up. Every page that only shows things is
-readable by every listed login, signed in or not.
-
-**Limit the tailnet to your own devices.**
-
-- Add a Tailscale access rule for port 7878.
-- Only your devices, only the show PC.
-
-In the Tailscale admin console, Access controls, tag the show PC (for
-example `tag:showpc`) and allow only your own login to it on 7878.
-Remove the default rule that lets every device reach every device.
-
-```
-{
-  "tagOwners": {"tag:showpc": ["jeff@example.com"]},
-  "acls": [
-    {"action": "accept", "src": ["jeff@example.com"],
-     "dst": ["tag:showpc:7878"]}
-  ]
-}
-```
-
-**Never share routes from the show PC.**
-
-- No subnet routes, no exit node, ever.
-- Not from any device that reaches the show LAN.
-- The card warns if this PC shares routes.
-
-Shared routes would let tailnet devices reach the flame controllers
-directly, past the engine, and make them arrive with a show network
-address, so the allow list would not even be asked. In the tailnet
-policy, approve no routes and no exit node for anything:
-`"autoApprovers": {"routes": {}, "exitNode": []}`, and never approve one
-by hand in the admin console's Machines page.
-
-A Tailscale sign-in signs out by itself after 30 minutes with no press,
-so a lost phone does not stay signed in all night. The Users screen's
-idle sign out can make that shorter, never longer. It does not change
-what a signed-in person may do.
-
-**Never use Tailscale Serve or Funnel here.**
-
-- TCP Serve makes everyone the rack screen.
-- Turn them off: `tailscale serve reset`.
-
-For example `tailscale serve --tcp 7878 tcp://127.0.0.1:7878` carries no
-proxy headers, so the engine would take every tailnet device for this PC.
-
-Turning it off: Turn off (the door closes at once, during a show too),
-then use the installer again (that removes the rule). Tailscale Serve and
-Funnel are still refused. Every press from Tailscale, and every refusal,
-is in the audit log as "Tailscale at <address> (<login>)".
+difference: from Tailscale every press that needs a role needs a sign-in.
+The 30 minutes stop a forgotten phone staying signed in; they do not
+change what a signed-in person may do. Every press and every refusal is in
+the audit log as "Tailscale at <address> (<login>)".
 
 ## What it will not do
 

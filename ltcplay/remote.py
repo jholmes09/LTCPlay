@@ -395,6 +395,12 @@ UPLOAD_REFUSED = "no such thing here"
 # The nightly upload card's script (web/upload_card.js): served only to a
 # SuperUser signed in on this show PC's rack screen, never part of the page.
 UPLOAD_CARD_ROUTE = "upload-card.js"
+# The Tailscale card's script (web/tailscale_card.js) and its routes: only
+# users.may_manage_tailscale (a SuperUser on the show PC); everyone else
+# gets the answer of a route that is not there.
+TAILSCALE_CARD_ROUTE = "tailscale-card.js"
+TAILSCALE_CARD_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "web", "tailscale_card.js")
 UPLOAD_CARD_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "web", "upload_card.js")
 # An upload change without the SuperUser's own password typed again.
@@ -1100,11 +1106,16 @@ def is_tailscale_address(text):
         str(ip) != TAILSCALE_SERVICE_IP
 
 
-def tailscale_host_ok(host_header, address, port):
+def tailscale_host_ok(host_header, address, port, names=()):
     """The Tailscale door's Host check: exactly "<its address>:<port>",
-    the way a browser sends it for http://100.x.y.z:7878/. Nothing else:
-    no name, no missing port, no other address."""
-    return str(host_header or "").strip().lower() == f"{address}:{port}"
+    the way a browser sends it for http://100.x.y.z:7878/, or exactly one
+    of this PC's own MagicDNS names (tailscale_dns_names, learned with the
+    address) with the same port: "ignite-player.tail342a0a.ts.net:7878" or
+    "ignite-player:7878". Nothing else: no other name, no missing port, no
+    other address. The peer and its login are checked apart from this."""
+    h = str(host_header or "").strip().lower()
+    return h == f"{address}:{port}" or \
+        h in {f"{n}:{port}" for n in names or () if n}
 
 
 def tailscale_sign_in_refusal(route, body, ctx):
@@ -1190,6 +1201,50 @@ def tailscale_whois(ip, run=None, cli=None):
         return None
     return {"login": login, "node": name[:80],
             "tagged": bool(tags) or login == TAILSCALE_TAGGED}
+
+
+_DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def tailscale_dns_names(run=None, cli=None):
+    """This PC's own MagicDNS names from `tailscale status --json` (full
+    path, a short timeout): Self.DNSName without its trailing dot (like
+    ignite-player.tail342a0a.ts.net) and Self.HostName (like
+    ignite-player), lower case, each a plain DNS name (no wildcard, no
+    other characters). [] when it cannot be told: the Tailscale door then
+    answers to its address only (fail closed on names). Never raises."""
+    me = _tailscale_self(run, cli)
+    out = []
+    for raw in (str((me or {}).get("DNSName") or "").rstrip("."),
+                str((me or {}).get("HostName") or "")):
+        n = raw.strip().lower()
+        if n and len(n) <= 253 and \
+                all(_DNS_LABEL.match(x) for x in n.split(".")) and \
+                n not in out:
+            out.append(n)
+    return out
+
+
+def _tailscale_self(run=None, cli=None):
+    """`tailscale status --json`'s "Self", or None. Never raises."""
+    path = tailscale_cli() if cli is None else cli
+    if not path:
+        return None
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = run([path, "status", "--json"], capture_output=True, text=True,
+                timeout=TAILSCALE_WHOIS_TIMEOUT_S, **kw)
+        if p.returncode != 0:
+            return None
+        me = (json.loads(p.stdout or "null") or {}).get("Self")
+        return me if isinstance(me, dict) else None
+    except Exception:                            # noqa: BLE001
+        return None
 
 
 def tailscale_routes(run=None, cli=None):
@@ -1307,6 +1362,7 @@ def find_tailscale(run=None, cli=None, found=None):
     for a in ts:
         if a in mine:
             return {"state": "found", "address": a,
+                    "names": tailscale_dns_names(run=run, cli=path),
                     "head": "Tailscale is running",
                     "bullets": [f"This PC's Tailscale address is {a}."]}
     return {"state": "not_here", "address": None,
@@ -2363,6 +2419,16 @@ class Remote:
         name = route[len("/api/remote/"):]
         if self.upload_refused(name, ctx, "GET"):
             return 404, {"error": UPLOAD_REFUSED}
+        if self.tailscale_card_refused(name, ctx, "GET"):
+            return 404, {"error": UPLOAD_REFUSED}
+        if name == TAILSCALE_CARD_ROUTE:
+            # The Tailscale card's script: a SuperUser here only (above).
+            try:
+                with open(TAILSCALE_CARD_JS, encoding="utf-8") as fh:
+                    return 200, fh.read(), \
+                        "application/javascript; charset=utf-8"
+            except OSError:
+                return 404, {"error": UPLOAD_REFUSED}
         if name == UPLOAD_CARD_ROUTE:
             # The upload card's script: a SuperUser here only (above).
             try:
@@ -2450,6 +2516,8 @@ class Remote:
         # answer as a route that is not there. Before everything else, so
         # no other route's check can say more.
         if self.upload_refused(name, ctx, "POST"):
+            return 404, {"error": UPLOAD_REFUSED}, {}
+        if self.tailscale_card_refused(name, ctx, "POST"):
             return 404, {"error": UPLOAD_REFUSED}, {}
         if getattr(ctx, "tailscale", False):
             # Remote access over Tailscale: a press that needs a role needs
@@ -2849,6 +2917,11 @@ class Remote:
                 # a word of it (selftest walks the answer).
                 out["may_superuser"] = True
                 out["upload"] = self.upload_view()
+                # The Tailscale card (users.may_manage_tailscale): only
+                # here, so no other screen asks for it at all.
+                out["tailscale_card"] = bool(users_mod.may_manage_tailscale(
+                    getattr(ctx, "session", None), ctx.local,
+                    bool(getattr(ctx, "tailscale", False))))
                 out["perms"] = list(out.get("perms") or []) + [
                     {"key": k, "label": l}
                     for k, l in users_mod.SUPERUSER_ROWS]
@@ -2929,6 +3002,23 @@ class Remote:
         except Exception:                        # noqa: BLE001
             pass
         self._audit_rank("upload-refused", ctx, f"{method} {name}")
+        return True
+
+    def tailscale_card_refused(self, name, ctx, method):
+        """True (and an audit line that does not name the feature) when
+        `name` is one of the Tailscale card's routes and
+        users.may_manage_tailscale says no. Fails closed."""
+        try:
+            if name not in users_mod.TAILSCALE_ROUTES:
+                return False
+            if users_mod.may_manage_tailscale(
+                    getattr(ctx, "session", None),
+                    getattr(ctx, "local", False),
+                    bool(getattr(ctx, "tailscale", False))):
+                return False
+        except Exception:                        # noqa: BLE001
+            pass
+        self._audit_rank("superuser-route-refused", ctx, method)
         return True
 
     def superuser_alert(self, found):
@@ -3411,6 +3501,11 @@ class Remote:
         found = self.tailscale_found()
         addr = found.get("address")
         url = page_url(ts_listen, port) if ts_listen else None
+        # The URL to type by name (MagicDNS): the full name, the one a
+        # device shared in from another tailnet can use.
+        names = [n for n in listen.get("tailscale_names") or [] if "." in n]
+        name_url = f"http://{names[0]}:{port}/" if ts_listen and names \
+            else None
         fw_state, fw_text = self.tailscale_firewall_view()
         restart = None
         unsaved = getattr(self, "_tailscale_unsaved", "")
@@ -3474,6 +3569,8 @@ class Remote:
         if on and not logins and len(bullets) < 3:
             bullets.append("Nobody gets in: add Tailscale logins.")
         return {"on": on, "error": err, "port": port, "logins": logins,
+                "name_url": name_url,
+                "names": list(listen.get("tailscale_names") or []),
                 "found": found["state"], "address": addr,
                 "listening": ts_listen, "url": url,
                 "firewall": {"state": fw_state, "text": fw_text},
@@ -3588,12 +3685,11 @@ class Remote:
         logins, on the show PC only (LOCAL_ONLY; the role matrix's Users
         row, admin, users.classify). Saved whole; empty lets nobody in.
         Takes effect within TAILSCALE_WHOIS_S. Only who
-        users.may_edit_tailscale_allowlist allows (the admin until PR
-        #251's SuperUser lands), signed in, on the show PC."""
-        me = getattr(ctx, "session", None) or {}
+        users.may_edit_tailscale_allowlist allows (a SuperUser, signed in
+        on the show PC's rack screen)."""
         if not users_mod.may_edit_tailscale_allowlist(
-                {"name": me.get("name"), "role": me.get("role")}
-                if me.get("name") else None, ctx.local):
+                getattr(ctx, "session", None), ctx.local,
+                bool(getattr(ctx, "tailscale", False))):
             return 403, {"error": f"Only a signed-in "
                                   f"{users_mod.TAILSCALE_ALLOWLIST_ROLE} on "
                                   f"the show PC may change who gets in. "

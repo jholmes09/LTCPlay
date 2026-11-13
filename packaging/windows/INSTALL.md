@@ -181,66 +181,15 @@ networks: either turn that off for this network, or make it Private
 Network profile type: Private network). Never put remote access software,
 a tunnel or a port forward on the show PC.
 
-## Open the page over Tailscale
+## Remote access over Tailscale
 
-**Off unless you turn it on.**
-
-- Rack screen, Schedule tab, "Remote access over Tailscale".
-- Turn on, then Restart the engine between shows.
-- Use this installer again for the firewall rule.
-
-The installer adds a second Windows Firewall rule, "LTC Player Tailscale
-page", only while that setting is on: port 7878, for ltcplay.exe only,
-from 100.64.0.0/10 only, to this PC's own 100.64.0.0/10 address only (the
-Tailscale adapter), on any network type. Every install deletes it first,
-so after turning the setting off, using the installer again removes it;
-uninstall removes it too. Nothing else is opened. The engine listens on
-this PC's own Tailscale address only (found with Tailscale's own
-`tailscale ip -4` and this PC's address list), never on every interface.
-Tailscale Serve and Funnel are proxies and stay refused.
-
-Only the Tailscale logins on the card's allow list get in (empty means
-nobody; an admin edits it on the show PC). For every connection the
-engine asks this PC's own Tailscale who the device is
-(`C:\Program Files\Tailscale\tailscale.exe whois --json <address>`,
-answers kept 3 seconds, so a hand edit of the list takes effect within
-3 seconds); no answer, a tagged device, or a login not on the list, is
-refused. Past that a Tailscale device is an iPad on the show network, and
-signs in for anything that needs a role.
-
-Run Setup from the same Windows account that runs LTC Player: Setup reads
-the setting from that account's `%LOCALAPPDATA%\ltcplay`. If another
-administrator account runs it, the rule is not added and the card says
-"Setup ran from another Windows account."
-
-Limit the tailnet with a Tailscale access rule, so only your own devices
-reach port 7878 on the show PC (Tailscale admin console, Access
-controls), and remove the default allow-everything rule:
-
-```
-{
-  "tagOwners": {"tag:showpc": ["jeff@example.com"]},
-  "acls": [
-    {"action": "accept", "src": ["jeff@example.com"],
-     "dst": ["tag:showpc:7878"]}
-  ]
-}
-```
-
-Never advertise subnet routes or an exit node from the show PC, or from
-any device that can reach the show LAN: tailnet devices could then reach
-the flame controllers directly, past the engine, and would arrive with a
-show network address, so the allow list would not be asked. In the
-tailnet policy approve no routes and no exit node
-(`"autoApprovers": {"routes": {}, "exitNode": []}`), and never approve
-one by hand. The rack screen's card warns when `tailscale status` says
-this PC shares routes.
-
-Never run Tailscale Serve in TCP mode on the show PC, for example
-`tailscale serve --tcp 7878 tcp://127.0.0.1:7878`: it carries no proxy
-headers and hands every tailnet device to the engine as this PC itself,
-the rack screen, with all its authority. `tailscale serve reset` turns
-every Serve and Funnel off.
+Off unless the SuperUser turns it on; SUPERUSER.md, "Remote access over
+Tailscale", has everything about it. The installer adds a second Windows
+Firewall rule, "LTC Player Tailscale page", only while it is on (TCP 7878,
+ltcplay.exe only, from and to 100.64.0.0/10 only), deletes it on every
+install first and on uninstall, and opens nothing else. Never advertise
+subnet routes (the show LAN 10.112.4.0/24 above all) or an exit node from
+the show PC.
 
 ## The booth alert notes
 

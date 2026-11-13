@@ -1528,6 +1528,8 @@ def _cmd_serve(args):
         flamesafe_config = flamesafe_config or rs["flamesafe_config"]
     network_fallback, network_note = _network_if_saved(args)
     tailscale, tailscale_note = _tailscale_if_on(args)
+    # This PC's own MagicDNS names, learned with the address.
+    tailscale_names = tuple(getattr(_tailscale_if_on, "names", ()) or ())
     if flamesafe_config is None and fire_ice is not None:
         # Fire & Ice: the flame link's own flamesafe config also feeds the
         # remote page's flame lamps, and (through its status_mirror_port)
@@ -1550,7 +1552,8 @@ def _cmd_serve(args):
                               network_fallback=network_fallback,
                               network_note=network_note,
                               tailscale=tailscale,
-                              tailscale_note=tailscale_note)
+                              tailscale_note=tailscale_note,
+                              tailscale_names=tailscale_names)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1686,7 +1689,9 @@ def _tailscale_if_on(args, load=None, find=None):
     ltcplay_remote.json (OFF unless it says so). The address is this PC's
     own Tailscale IPv4 address, in 100.64.0.0/10, found by
     remote.find_tailscale; (None, why) when Tailscale is not installed,
-    not running, or its address is not this PC's. Never raises."""
+    not running, or its address is not this PC's. Its MagicDNS names are
+    left in _tailscale_if_on.names. Never raises."""
+    _tailscale_if_on.names = ()
     if not (getattr(args, "network_if_saved", False) or
             getattr(args, "network", False)):
         return None, ""
@@ -1705,6 +1710,7 @@ def _tailscale_if_on(args, load=None, find=None):
                        f"({type(e).__name__})", "bullets": []}
     addr = got.get("address")
     if got.get("state") == "found" and remote_mod.is_tailscale_address(addr):
+        _tailscale_if_on.names = tuple(got.get("names") or ())
         return addr, ""
     why = " ".join([str(got.get("head") or "Tailscale not found") + "."] +
                    [str(b) for b in got.get("bullets") or []])

@@ -160,8 +160,7 @@ PERMS = (
     ("checklist", "Tick the Morning and Shutdown checklists"),
     ("show_files", "Show files and setup: the show folder, the schedule, "
                    "reload, the machine layout"),
-    ("settings", "Settings: the show network, remote access over "
-                 "Tailscale, arming from a screen, live "
+    ("settings", "Settings: the show network, arming from a screen, live "
                  "flame programming, moving Programming playback from an "
                  "iPad while flames follow it, the timecode input, the "
                  "announcement output, idle sign out, "
@@ -269,9 +268,10 @@ REMOTE_ROUTES = {
     "loop": "show", "follow": "show",
     "arm-hold": "arm",
     "network": "settings", "screen-arming": "settings",
-    # Remote access over Tailscale (2026-11-12): turning it on is the
-    # Settings row; off only takes something away (classify).
-    "tailscale": "settings",
+    # Remote access over Tailscale: never the role matrix's; only
+    # may_manage_tailscale (remote.py), which answers everyone else like a
+    # route that is not there.
+    "tailscale": None,
     # Check the rig (preroll.py): an admin's, between shows.
     "preroll-check": "settings",
     # Continue anyway after a failed rig check: a run press (Show row).
@@ -413,21 +413,30 @@ def fireball_on_wanted(body):
     return isinstance(c, dict) and any(v is True for v in c.values())
 
 
-# Who may change the Tailscale logins allowed in (Jeff, 2026-11-13: "I want
-# to specify who gets in"): a SuperUser, on the show PC only.
-# TODO(#251): the SuperUser role arrives with PR #251 (branch
-# superuser-role). Until it is merged this is the admin; when it lands,
-# change TAILSCALE_ALLOWLIST_ROLE to its SuperUser role name. That is the
-# one line to change (selftest test_tailscale_allow_list pins it).
-TAILSCALE_ALLOWLIST_ROLE = "admin"
+# Who may see and change anything about remote access over Tailscale (Jeff,
+# 2026-11-13: "the Tailscale settings ... me, as a superuser, would set up"):
+# the whole card (on and off, the logins allowed in, the address, the
+# firewall and route status, Restart) and its routes. THE single switch:
+# this role, through may_manage_tailscale, on top of superuser_here (a
+# SuperUser signed in on the show PC's own rack screen, never Tailscale).
+TAILSCALE_ALLOWLIST_ROLE = SUPERUSER
+TAILSCALE_ROUTES = ("tailscale", "tailscale-card.js")
 
 
-def may_edit_tailscale_allowlist(user, local):
-    """True only for a signed-in user ({"name", "role"}, or None) whose
-    role is TAILSCALE_ALLOWLIST_ROLE, on the show PC itself (`local`).
-    Nobody signed in, any other role, or any other screen: False."""
-    role = (user or {}).get("role") if isinstance(user, dict) else None
-    return bool(local) and role == TAILSCALE_ALLOWLIST_ROLE
+def may_manage_tailscale(session, local, tailscale=False):
+    """True only for superuser_here() whose role is TAILSCALE_ALLOWLIST_ROLE.
+    Everyone else is never told the card exists (remote.py answers its
+    routes like a route that is not there)."""
+    try:
+        return superuser_here(session, local, tailscale) and \
+            (session or {}).get("role") == TAILSCALE_ALLOWLIST_ROLE
+    except Exception:                            # noqa: BLE001
+        return False
+
+
+def may_edit_tailscale_allowlist(session, local, tailscale=False):
+    """The allow list's editor: may_manage_tailscale (one switch)."""
+    return may_manage_tailscale(session, local, tailscale)
 
 
 def classify(route, body=None):
@@ -483,12 +492,6 @@ def classify(route, body=None):
             return "safety"
         if name == "screen-arming" and body.get("on") is False:
             # Switching arming from a screen OFF only takes risk away.
-            return "safety"
-        if name == "tailscale" and "logins" in body:
-            # Who may come in over Tailscale: the Users row (admin).
-            return "users"
-        if name == "tailscale" and body.get("on") is False:
-            # Remote access over Tailscale OFF only takes something away.
             return "safety"
         if name == "live-flame" and body.get("on") is not True:
             # Live flame programming OFF (anything but the JSON word true

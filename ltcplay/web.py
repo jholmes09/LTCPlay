@@ -1411,9 +1411,14 @@ class Handler(BaseHTTPRequestHandler):
             # exactly this address and port. The checks below still run.
             if not remote_mod.is_tailscale_address(self.client_address[0]):
                 return TAILSCALE_PEER_REFUSAL
-            if not remote_mod.tailscale_host_ok(self.headers.get("Host"),
-                                                bind, port):
+            if not remote_mod.tailscale_host_ok(
+                    self.headers.get("Host"), bind, port,
+                    getattr(self.server, "tailscale_names", ())):
                 return HOST_REFUSAL
+            # Its address or one of its own names: the plain Host check
+            # below then reads the name that was used.
+            bind = str(self.headers.get("Host")).strip().lower() \
+                .rsplit(":", 1)[0]
         if not remote_mod.host_ok(self.headers.get("Host"), self._local(),
                                   bind, port):
             return HOST_REFUSAL
@@ -2863,7 +2868,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           madmapper=None, beyond=None, fire_ice=None,
           remote_folder=None, flamesafe_config=None, flame_disarm=None,
           accounts=False, config_watch=None, network_fallback=False,
-          network_note="", tailscale=None, tailscale_note=""):
+          network_note="", tailscale=None, tailscale_note="",
+          tailscale_names=()):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
     GPL show runs exactly the program it ran before the scheduler existed.
@@ -3129,6 +3135,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     if tailscale:
         door, ts_why = _tailscale_door(httpd, tailscale, control, port)
         httpd.tailscale_door_server = door
+        if door is not None:
+            # This PC's own MagicDNS names, learned with the address: the
+            # door answers to them too (tailscale_host_ok), nothing else.
+            door.tailscale_names = tuple(tailscale_names or ())
     # Turning the setting off closes the door now (remote.set_tailscale).
     httpd.remote.tailscale_close = lambda: close_tailscale_door(httpd)
     _say_listening(httpd, on_network, network_why, ts_why)
@@ -3577,7 +3587,9 @@ def _say_listening(httpd, on_network, why="", ts_why=""):
         if ts:
             addrs.append(ts)
         httpd.remote.listen = {"addresses": addrs, "port": port, "why": why,
-                               "tailscale": ts, "tailscale_why": ts_why}
+                               "tailscale": ts, "tailscale_why": ts_why,
+                               "tailscale_names": list(getattr(
+                                   door, "tailscale_names", ()) or ())}
         line = ("The engine's page listens on " +
                 " and ".join(f"{a}:{port}" for a in addrs) +
                 ("." if on_network else

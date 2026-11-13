@@ -1074,21 +1074,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pbar"><button class="b green" id="net-save"><svg class="i"><use href="#i-check"/></svg>Save address</button></div>
           <div class="pline" id="net-msg" role="status"></div>
         </div>
-        <!-- Remote access over Tailscale (Jeff, 2026-11-12 and 2026-11-13):
-             off unless turned on here, on the show PC only (Settings row).
-             Only the Tailscale logins listed here get in (Users row); then
-             the device is an iPad on the show network, signed in to act. -->
-        <div class="card col" id="ts-card" hidden>
-          <div class="t"><b>Remote access over Tailscale</b><span>Your own device, by its Tailscale address.</span></div>
-          <div class="pline" id="ts-status"><b id="ts-head"></b><ul id="ts-bul" style="margin:4px 0 0 18px;padding:0"></ul></div>
-          <div class="pline" id="ts-facts"></div>
-          <div class="pbar"><button class="b green" id="ts-on"><svg class="i"><use href="#i-power"/></svg>Turn on</button><button class="b redline" id="ts-restart" hidden><svg class="i"><use href="#i-reset"/></svg>Restart the engine</button></div>
-          <label class="fl" for="ts-logins"><span>Tailscale logins allowed in, one per line</span></label>
-          <textarea class="f" id="ts-logins" rows="3" placeholder="andy@example.com" autocomplete="off"></textarea>
-          <div class="pline" id="ts-pw">Long passwords matter: Tailscale reaches past the venue.</div>
-          <div class="pbar"><button class="b green" id="ts-logins-save"><svg class="i"><use href="#i-check"/></svg>Save logins</button></div>
-          <div class="pline" id="ts-msg" role="status"></div>
-        </div>
+        <div id="ts-slot"></div>
       </div>
       <!-- The fireball timeline (fireball_timeline.py, Jeff 2026-10-30):
            per show file, a start timecode and a duration for each stage.
@@ -3655,55 +3641,26 @@ $("net-restart").addEventListener("click", async () => {
   catch(e){ $("net-msg").textContent = e.message; }
 });
 $("net-pick").addEventListener("change", () => { if($("net-pick").value) $("net-addr").value = $("net-pick").value; });
-// Remote access over Tailscale (show PC only): a headline, up to three
-// bullets, the facts (the address to type, listening, the firewall rule)
-// and the logins allowed in.
-let TS_VIEW = null;
-function renderTailscale(v, keepLogins){
-  TS_VIEW = v || {};
-  setText($("ts-head"), TS_VIEW.head || "");
-  $("ts-bul").innerHTML = (TS_VIEW.bullets || []).slice(0, 3).map(b => `<li>${esc(b)}</li>`).join("");
-  const fw = (TS_VIEW.firewall || {}).state || "";
-  const fwWord = fw === "present" ? "yes" : fw === "none" ? "not needed" : fw ? "no" : "not checked";
-  $("ts-facts").innerHTML = [
-    TS_VIEW.url ? `Address: <b>${esc(TS_VIEW.url)}</b>` : "Address: none yet",
-    "Listening: " + (TS_VIEW.listening ? "yes" : "no"),
-    "Firewall rule: " + fwWord,
-    "Logins allowed: " + ((TS_VIEW.logins || []).length || "none")].map(t => `<div>${t}</div>`).join("");
-  const may = mayRow(ST, "settings");
-  $("ts-on").innerHTML = `<svg class="i"><use href="#i-power"/></svg>` + (TS_VIEW.on ? "Turn off" : "Turn on");
-  $("ts-on").className = "b " + (TS_VIEW.on ? "redline" : "green");
-  if(TS_VIEW.on) $("ts-on").dataset.safe = ""; else delete $("ts-on").dataset.safe;
-  // Off only takes something away: never held back by the Settings row.
-  $("ts-on").disabled = !TS_VIEW.on && !may;
-  const r = TS_VIEW.restart || {};
-  $("ts-restart").hidden = !r.needed;
-  $("ts-restart").disabled = !r.offered || !may;
-  $("ts-restart").title = r.why || "";
-  if(!keepLogins) $("ts-logins").value = (TS_VIEW.logins || []).join("\n");
-  $("ts-logins-save").disabled = !mayRow(ST, "users");
-}
+// A SuperUser's own card (the upload card's pattern): its code is not on
+// this page. Only a SuperUser signed in on this show PC's rack screen gets
+// an answer from its route; only then is its script fetched and the card
+// made. Everyone else: nothing, not even an empty card.
+let TS_JS = null;
 async function loadTailscale(){
-  try{ renderTailscale(await getJSON("/api/remote/tailscale", 3000)); }
-  catch(e){ $("ts-msg").textContent = e.message; }
+  let v = null;
+  try{
+    const u = await getJSON("/api/remote/users", 3000);
+    if(u && u.tailscale_card === true) v = await getJSON("/api/remote/tailscale", 3000);
+  }catch(e){ v = null; }
+  if(!v){ $("ts-slot").innerHTML = ""; return; }
+  if(window.ltcTailscaleCard){ window.ltcTailscaleCard(v); return; }
+  if(TS_JS) return;
+  TS_JS = document.createElement("script");
+  TS_JS.src = "/api/remote/tailscale-card.js";
+  TS_JS.onload = () => { if(window.ltcTailscaleCard) window.ltcTailscaleCard(v); };
+  TS_JS.onerror = () => { TS_JS.remove(); TS_JS = null; };
+  document.head.appendChild(TS_JS);
 }
-$("ts-on").addEventListener("click", async () => {
-  const on = !(TS_VIEW && TS_VIEW.on);
-  if(on && !(await confirmBox("Turn on Tailscale access?", "Only the logins listed here get in. Each acts as an iPad, signed in. Applies after a restart.", "Yes, turn on", "green"))) return;
-  try{ const j = await post("/api/remote/tailscale", {on:on}); $("ts-msg").textContent = j.note || ""; renderTailscale(j); }
-  catch(e){ $("ts-msg").textContent = e.message; }
-});
-$("ts-logins-save").addEventListener("click", async () => {
-  const logins = $("ts-logins").value.split(/\s+/).map(x => x.trim()).filter(Boolean);
-  try{ const j = await post("/api/remote/tailscale", {logins:logins}); $("ts-msg").textContent = j.note || ""; renderTailscale(j); }
-  catch(e){ $("ts-msg").textContent = e.message; }
-});
-$("ts-restart").addEventListener("click", async () => {
-  const sure = await confirmBox("Restart the engine?", "Only between shows, every flame group disarmed. flamesafe and the Stream Deck keep running.", "Yes, restart", "green");
-  if(!sure) return;
-  try{ const j = await post("/api/remote/reload-engine", {}); $("ts-msg").textContent = j.text; }
-  catch(e){ $("ts-msg").textContent = e.message; }
-});
 $("net-save").addEventListener("click", () => saveNetwork($("net-addr").value));
 // Settings changed on disk, and Reload engine.
 function cfgNote(cc){
@@ -3733,7 +3690,6 @@ $("rc-run").addEventListener("click", async () => {
 // The cards on this machine only, as 1.0's whoami.
 function toolsWhoami(){
   $("admin").hidden = !ME.local;
-  $("ts-card").hidden = !ME.local;
   $("deck-op").hidden = !ME.local;
   $("folders").hidden = !ME.local;
   $("info-device").textContent = ME.device || "";

@@ -669,10 +669,6 @@ MUTATIONS = [
   "            if False:\n"
   "                return TAILSCALE_PEER_REFUSAL"),
 
- ("tailscale: the door takes any Host", "ltcplay/remote.py",
-  "    return str(host_header or \"\").strip().lower() == f\"{address}:{port}\"",
-  "    return True"),
-
  ("tailscale: on by default", "ltcplay/remote.py",
   "           \"screen_arming\": False, \"purge_arming\": True, \"booth_alert\": None,\n"
   "           \"tailscale_remote\": False,",
@@ -788,21 +784,34 @@ MUTATIONS = [
   "            return f\"Tailscale at {self.ip} ({self.login or 'unknown'})\"",
   "            return f\"Tailscale at {self.ip}\""),
 
- ("tailscale: the allow list is a Settings press", "ltcplay/users.py",
-  "        if name == \"tailscale\" and \"logins\" in body:\n"
-  "            # Who may come in over Tailscale: the Users row (admin).\n"
-  "            return \"users\"\n",
-  ""),
+ ("tailscale: the door takes any Host", "ltcplay/remote.py",
+  "    return h == f\"{address}:{port}\" or \\\n"
+  "        h in {f\"{n}:{port}\" for n in names or () if n}",
+  "    return True"),
 
- ("tailscale: anyone on the show PC may change who gets in",
+ ("tailscale: the door takes any name on its port", "ltcplay/remote.py",
+  "        h in {f\"{n}:{port}\" for n in names or () if n}",
+  "        h.endswith(f\":{port}\")"),
+
+ ("tailscale: the door forgets its MagicDNS names", "ltcplay/web.py",
+  "                    getattr(self.server, \"tailscale_names\", ())):",
+  "                    ()):"),
+
+ ("tailscale: a wildcard MagicDNS name is taken", "ltcplay/remote.py",
+  "                all(_DNS_LABEL.match(x) for x in n.split(\".\")) and \\",
+  "                True and \\"),
+
+ ("tailscale: anyone on the show PC may manage Tailscale",
   "ltcplay/users.py",
-  "    return bool(local) and role == TAILSCALE_ALLOWLIST_ROLE",
-  "    return bool(local)"),
+  "        return superuser_here(session, local, tailscale) and \\\n"
+  "            (session or {}).get(\"role\") == TAILSCALE_ALLOWLIST_ROLE",
+  "        return bool(local)"),
 
- ("tailscale: the engine never asks who may change the allow list",
-  "ltcplay/remote.py",
-  "        if not users_mod.may_edit_tailscale_allowlist(",
-  "        if False and users_mod.may_edit_tailscale_allowlist("),
+ ("tailscale: the card's routes answer an admin", "ltcplay/remote.py",
+  "            if users_mod.may_manage_tailscale(\n"
+  "                    getattr(ctx, \"session\", None),",
+  "            if True or users_mod.may_manage_tailscale(\n"
+  "                    getattr(ctx, \"session\", None),"),
 
  ("tailscale: a tagged device gets in", "ltcplay/remote.py",
   "            if ans.get(\"tagged\") or (login and not is_user_login(login)):",
