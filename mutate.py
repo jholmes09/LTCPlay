@@ -668,6 +668,46 @@ MUTATIONS = [
   "              \"--no-browser\", \"--network-if-saved\"]",
   "              \"--no-browser\"]"),
 
+ ("release tags: a gpl-* tag builds a release again",
+  ".github/workflows/windows-app.yml",
+  '    tags: ["ltc-*"]\n',
+  '    tags: ["ltc-*", "gpl-*"]\n'),
+
+ ("release tags: the installer's version keeps the ltc- prefix",
+  ".github/workflows/windows-app.yml",
+  '            v="${GITHUB_REF_NAME#ltc-}"\n',
+  '            v="${GITHUB_REF_NAME#gpl-}"\n'),
+
+ ("release tags: Run workflow on an old gpl- tag builds it",
+  ".github/workflows/windows-app.yml",
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n',
+  '            if [[ ! "$GITHUB_REF_NAME" =~ ^(ltc|gpl)-[0-9]+(\\.[0-9]+){1,3}$ ]]; then\n'),
+
+ ("release tags: a gpl-* tag is silent in the selftest run",
+  ".github/workflows/selftest.yml",
+  '          if [[ "$REF" == refs/tags/gpl-* ]]; then\n',
+  '          if false; then\n'),
+
+ ("release tags: the updater no longer reads an ltc- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("gpl-",)\n'),
+
+ ("release tags: the updater no longer reads an old gpl- release",
+  "packaging/windows/updater.py",
+  'RELEASE_PREFIXES = ("ltc-", "gpl-")\n',
+  'RELEASE_PREFIXES = ("ltc-",)\n'),
+
+ ("release tags: an ltc- or gpl- stamp is compared as text again",
+  "packaging/windows/updater.py",
+  "    c, i = release_number(candidate), release_number(installed)\n",
+  "    c, i = str(candidate).strip(), str(installed).strip()\n"),
+
+ ("release tags: the rollback no longer reads a prefixed release",
+  "packaging/windows/supervisor.py",
+  "    return updater.release_number(ver)\n",
+  "    return str(ver).replace(\"gpl-\", \"\")\n"),
+
  ("show network: a saved public, VPN or link-local address is served on",
   "ltcplay/cli.py",
   "    if not remote_mod.is_rfc1918(saved):",
