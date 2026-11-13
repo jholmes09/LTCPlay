@@ -101,6 +101,20 @@ FREE_FLOOR_MB = 500         # below this, logging stops to leave the room
 # normally it is a few milliseconds; this bounds it even if a wake-up is
 # missed. Each batch is flushed and fsynced before the writer moves on.
 MAX_LINE_WAIT_S = 1.0
+# The watchdog (Windows stress round 3: on 9 November the night files
+# stopped at 13:19 while the engine ran on, and nothing said so). It looks
+# every WATCH_S, on a thread of its own: a line waiting longer than
+# STALL_S while the logging is not stopped, a writer thread that is gone,
+# or night files that no longer end with what was written to them, raise
+# the logging health flag with a sentence. Never an engine alert: a
+# logging problem must never hold a show.
+WATCH_S = 2.0
+STALL_S = 15.0
+DISK_CHECK_S = 60.0         # how often the files are read back
+DISK_ANSWER_S = 5.0         # a read back the disk does not answer in this
+# The morning summary's check of the files: no line for longer than this
+# while a show was running is a gap in the logging.
+LOG_GAP_S = 600.0
 LOCK_TRIES = 5
 LOCK_WAIT_S = 0.02
 SUMMARY_LIST_MAX = 25       # one page: longer lists point at the journal
@@ -502,7 +516,8 @@ class Logbook:
                  flame_provider=None, memory=MEMORY_LINES,
                  keep_days=KEEP_DAYS, opener=None, disk_usage=None,
                  sleep=None, retry_s=RETRY_S, free_floor_mb=FREE_FLOOR_MB,
-                 durable=True, state=None, night=None, fsync=None):
+                 durable=True, state=None, night=None, fsync=None,
+                 mono=None, stall_s=STALL_S):
         self.folder = os.path.abspath(folder or default_folder())
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._tz = tz
@@ -544,6 +559,22 @@ class Logbook:
         self._writer = None
         self._wake = threading.Event()
         self._closing = False
+        # The watchdog's state (see WATCH_S).
+        self._mono = mono or _time.monotonic
+        self.stall_s = stall_s
+        self._wait_since = None     # monotonic: the oldest waiting line
+        self.stalled_why = ""
+        self.stalled_at = None
+        self._stall_writes = 0
+        self.disk_why = ""
+        self.writer_restarts = 0
+        self._watcher = None
+        self._disk_check = None     # [thread, started (monotonic), result]
+        self._disk_checked = None
+        self._on_disk = {}          # path: (size after the write, its bytes)
+        self._newest_at = None      # the newest event made
+        self._disk_newest_at = None     # the newest event written
+        self._made = {}             # night: [ids this run made], in order
         where = synced_folder(self.folder)
         self.warning = (f"The night logs are in {self.folder}, which is "
                         f"inside {where}. Logs belong on this machine only; "
@@ -664,7 +695,16 @@ class Logbook:
                 self._dropped += 1
                 first = (self._dropped_span or (old["at"], old["at"]))[0]
                 self._dropped_span = (first, old["at"])
+            if not self._pending:
+                self._wait_since = self._mono()
             self._pending.append([rec, set()])
+            self._newest_at = rec.get("at")
+            # What this run made, per night, so the morning summary can
+            # say whether every one of them is in the files.
+            made = self._made.setdefault(str(rec.get("night")), [])
+            made.append(rec.get("id"))
+            while len(self._made) > 3:
+                del self._made[min(self._made)]
 
     def _kick(self):
         if self._writer is not None:
@@ -683,11 +723,18 @@ class Logbook:
     def start_writer(self):
         """From here on record() never touches the disk itself."""
         if self._writer is None:
-            self._writer = threading.Thread(target=self._write_loop,
-                                            daemon=True,
-                                            name="ltcplay-journal")
-            self._writer.start()
+            self._writer = self._new_writer()
+            self._watcher = threading.Thread(target=self._watch_loop,
+                                             daemon=True,
+                                             name="ltcplay-journal-watch")
+            self._watcher.start()
         return self
+
+    def _new_writer(self):
+        t = threading.Thread(target=self._write_loop, daemon=True,
+                             name="ltcplay-journal")
+        t.start()
+        return t
 
     def threaded(self):
         return self._writer is not None
@@ -700,8 +747,188 @@ class Logbook:
                 self.drain()
             except Exception as e:
                 # drain() never raises; if it ever does, the logging stops
-                # out loud rather than the thread going quiet.
-                self._stop(self.clock(), self._why(e))
+                # out loud rather than the thread going quiet. Even a stop
+                # that cannot be written up never ends this thread: a
+                # writer that is gone is a silent gap.
+                try:
+                    self._stop(self.clock(), self._why(e))
+                except Exception as e2:
+                    self.stopped_why = self.stopped_why or (
+                        f"ltcplay could not write a line or say why "
+                        f"({type(e2).__name__}); that is a bug in ltcplay")
+
+    # -- the watchdog -------------------------------------------------------
+    def _watch_loop(self):
+        while not self._closing:
+            _time.sleep(WATCH_S)
+            try:
+                self.watch()
+            except Exception:
+                pass            # the next look tries again; never the show
+
+    def watch(self, now=None):
+        """One look by the watchdog. Never raises, never touches the disk on
+        the caller's thread (the read back has a thread of its own) and
+        never holds a show: what it finds is the logging health flag, with
+        a sentence, and a fault line in the journal (on the page at once,
+        in the files once they take lines again). Returns health()."""
+        now = now or self.clock()
+        if self._closing:
+            return self.health()
+        self._watch_writer(now)
+        self._watch_stall(now)
+        self._watch_disk(now)
+        return self.health()
+
+    def _system_line(self, now, action, outcome, reason, text, fault=True,
+                     data=None):
+        local = self.local(now)
+        self._queue(build_event(
+            at=local, night=self.current_night(now),
+            state=self.current_state(), actor="system", action=action,
+            outcome=outcome, reason=reason, fault=fault, text=text,
+            id=f"{self._run}-{next(self._ids)}", data=data))
+        if self._writer is not None:
+            self._wake.set()
+
+    def _watch_writer(self, now):
+        """A writer thread that is gone is started again, out loud."""
+        t = self._writer
+        if t is None or t.is_alive() or self._closing:
+            return
+        self.writer_restarts += 1
+        waiting = self.pending()
+        self._writer = self._new_writer()
+        self._system_line(
+            now, "logging watchdog", "writer restarted",
+            "the journal's writer had stopped",
+            f"The journal's writer had stopped without saying why, so it "
+            f"was started again at {self.local(now):%H:%M:%S}. {waiting} "
+            f"line(s) were waiting; they are written now, in order. The "
+            f"show is not affected.",
+            data={"restarts": self.writer_restarts, "waiting": waiting})
+
+    def _watch_stall(self, now):
+        """Lines waiting longer than stall_s while the logging is not
+        stopped: the writer is stuck (most likely in a write the disk
+        does not answer) and nothing else would ever say so."""
+        with self._lock:
+            waiting = len(self._pending)
+            since = self._wait_since if waiting else None
+            newest, on_disk = self._newest_at, self._disk_newest_at
+        waited = (self._mono() - since) if since is not None else 0.0
+        if waiting and not self.stopped_why and waited > self.stall_s:
+            last = (f"the newest line in the files is from {_hms(on_disk)}"
+                    if on_disk else "nothing has reached the files yet")
+            why = (f"nothing has been written for {fmt_span(waited)} while "
+                   f"{waiting} line(s) wait: {last}, the newest event is "
+                   f"from {_hms(newest)}. The writer may be stuck on the "
+                   f"disk")
+            if not self.stalled_why:
+                self.stalled_at = now
+                self.stalled_why = why
+                self._stall_writes = self.writes
+                self._system_line(
+                    now, "logging stalled", "stalled", why,
+                    f"Logging to disk is stuck: {why}. The show carries "
+                    f"on. Every line is kept in memory and written, in "
+                    f"order, once the disk answers.",
+                    data={"waited_s": round(waited, 1), "waiting": waiting})
+            self.stalled_why = why
+        elif self.stalled_why and (not waiting or self.writes >
+                                   self._stall_writes):
+            # Written again since it was stuck: the disk answers.
+            was, since_at = self.stalled_why, self.stalled_at
+            self.stalled_why = ""
+            self.stalled_at = None
+            self._system_line(
+                now, "logging resumed", "resumed", was,
+                f"Logging to disk resumed at {self.local(now):%H:%M:%S}. It "
+                f"had been stuck since {self.local(since_at):%H:%M:%S}; the "
+                f"lines from that time are written above this one.",
+                fault=False,
+                data={"stopped_at": self.local(since_at).isoformat(
+                    timespec="seconds"), "why": was})
+
+    def _watch_disk(self, now):
+        """Every DISK_CHECK_S: do the night files still end with what was
+        written to them? On a thread of its own, waited for DISK_ANSWER_S
+        at most, so a disk that does not answer is itself the finding."""
+        t = self._mono()
+        box = self._disk_check
+        if box is not None:
+            thread, started, result = box
+            if thread.is_alive():
+                if t - started > DISK_ANSWER_S and not self.disk_why:
+                    self._disk_problem(now, (
+                        f"the disk did not answer a read of the night files "
+                        f"in {DISK_ANSWER_S:g} s"))
+                return
+            self._disk_check = None
+            if result:
+                self._disk_problem(now, result[0])
+            elif self.disk_why:
+                self.disk_why = ""
+                self._system_line(
+                    now, "logging check", "files read back",
+                    "the night files read back correctly",
+                    f"The night files read back correctly again at "
+                    f"{self.local(now):%H:%M:%S}.", fault=False)
+        if self.stopped_why or (self._disk_checked is not None and
+                                0 <= t - self._disk_checked < DISK_CHECK_S):
+            return
+        with self._lock:
+            snap = dict(self._on_disk)
+        if not snap:
+            return
+        self._disk_checked = t
+        result = []
+        thread = threading.Thread(target=self._read_back,
+                                  args=(snap, result), daemon=True,
+                                  name="ltcplay-journal-readback")
+        self._disk_check = [thread, t, result]
+        thread.start()
+
+    @staticmethod
+    def _read_back(snap, result):
+        for path, (size, tail) in sorted(snap.items()):
+            name = os.path.basename(path)
+            try:
+                have = os.path.getsize(path)
+                if have < size:
+                    result.append(
+                        f"{path} is shorter than ltcplay wrote it ({have} "
+                        f"bytes, not {size}): another program cut or "
+                        f"replaced it")
+                    return
+                with open(path, "rb") as fh:
+                    fh.seek(size - len(tail))
+                    got = fh.read(len(tail))
+                if got != tail:
+                    result.append(
+                        f"{path} no longer holds the last line ltcplay "
+                        f"wrote to it: another program replaced it")
+                    return
+            except FileNotFoundError:
+                result.append(f"{name} is gone from {os.path.dirname(path)} "
+                              f"after ltcplay wrote to it: another program "
+                              f"moved or removed it")
+                return
+            except OSError as e:
+                result.append(f"{path} could not be read back "
+                              f"({e.strerror or e})")
+                return
+
+    def _disk_problem(self, now, why):
+        first = not self.disk_why
+        self.disk_why = why
+        if first:
+            self._system_line(
+                now, "logging check", "files wrong", why,
+                f"The night files did not read back as written at "
+                f"{self.local(now):%H:%M:%S}: {why}. The show carries on; "
+                f"lines from here on are still written.",
+                data={"why": why})
 
     def close(self, wait_s=0.5):
         """Stop the writer and write what is left, if the disk will take it
@@ -790,6 +1017,9 @@ class Logbook:
             with self._lock:
                 while self._pending and id(self._pending[0]) in done:
                     self._pending.popleft()
+                # The lines still waiting came after this batch was taken:
+                # their wait starts now, at the latest.
+                self._wait_since = self._mono() if self._pending else None
             self.last_write_at = now
             if self.stopped_why:
                 self._resumed(now)
@@ -821,9 +1051,30 @@ class Logbook:
 
     def _append(self, path, todo, stream, encode):
         new = not os.path.exists(path)
+        # A file this run wrote to, now gone or shorter, is found here, at
+        # the next write, not only at the next read back: the write below
+        # would otherwise start it afresh and hide it.
+        with self._lock:
+            had = self._on_disk.get(path)
+        if had is not None:
+            try:
+                size = None if new else os.path.getsize(path)
+            except OSError:
+                size = None
+            if new:
+                self._disk_problem(self.clock(), (
+                    f"{os.path.basename(path)} is gone from "
+                    f"{os.path.dirname(path)} after ltcplay wrote to it: "
+                    f"another program moved or removed it"))
+            elif size is not None and size < had[0]:
+                self._disk_problem(self.clock(), (
+                    f"{path} is shorter than ltcplay wrote it ({size} "
+                    f"bytes, not {had[0]}): another program cut or "
+                    f"replaced it"))
         cut = path not in self._tails_ok and not new and \
             os.path.getsize(path) > 0 and not _tail(path, 1).endswith(b"\n")
         fh = self._opener(path)
+        data = b""
         try:
             if cut:
                 # A full disk cut the last line short. Finish it; never
@@ -837,6 +1088,18 @@ class Logbook:
                                                 "a line")
                 e[1].add(stream)
                 self.writes += 1
+                self._disk_newest_at = e[0].get("at")
+            # For the watchdog's read back: the file's size now and the
+            # bytes it must end with.
+            try:
+                size = fh.tell()
+            except (AttributeError, OSError, ValueError):
+                size = None
+            if isinstance(size, int) and data:
+                with self._lock:
+                    self._on_disk[path] = (size, data)
+                    while len(self._on_disk) > 4:
+                        del self._on_disk[min(self._on_disk)]
             if self.durable:
                 # On the disk, not in the operating system's memory, before
                 # the writer moves on: a crash or a power cut after this
@@ -972,12 +1235,26 @@ class Logbook:
                         f"{pending} line(s) are waiting in memory and will "
                         f"be written when the disk takes them again; it is "
                         f"tried every {self.retry_s:g} s.{dropped}")
+        elif self.stalled_why:
+            sentence = (f"Logging to disk is stuck since "
+                        f"{self.local(self.stalled_at):%H:%M:%S}: "
+                        f"{self.stalled_why}. The show is not affected. "
+                        f"{pending} line(s) are waiting in memory and will "
+                        f"be written, in order, once the disk answers.")
+        elif self.disk_why:
+            sentence = (f"The night files did not read back as written: "
+                        f"{self.disk_why}. The show is not affected; lines "
+                        f"are still being written to {self.folder}.")
         elif self.last_write_at is None:
             sentence = f"Logging to {self.folder}. Nothing written yet."
         else:
             sentence = (f"Logging to {self.folder}. Last written "
                         f"{fmt_span(age(self.last_write_at))} ago.")
-        return {"ok": not self.stopped_why, "sentence": sentence,
+        bad = bool(self.stopped_why or self.stalled_why or self.disk_why)
+        return {"ok": not bad, "sentence": sentence,
+                "stalled": bool(self.stalled_why),
+                "disk_check": self.disk_why or None,
+                "writer_restarts": self.writer_restarts,
                 "warning": self.warning or None,
                 "folder": self.folder,
                 "as_of": self.local(now).isoformat(timespec="seconds"),
@@ -1438,11 +1715,19 @@ class Logbook:
         self.drain(force=True)
         recs, note, cut = self._read_night(night)
         mism, mnote = self._mismatches(night)
+        with self._lock:
+            made = list(self._made.get(night, ()))
+            waiting = [r["id"] for r, _d in self._pending]
+        files = check_files(self.folder, night,
+                            windows=(_windows_from_slots(slots)
+                                     if slots is not None else None),
+                            made=made, waiting=waiting,
+                            now=self.clock() if slots is not None else None)
         text = summary_text(night, recs, slots=slots, mismatches=mism,
                             mismatch_note=mnote, health=self.health(),
                             written=self.local(), build=version_info(),
                             read_note=note, closed_by=closed_by,
-                            cut_lines=cut)
+                            cut_lines=cut, files=files)
         path = os.path.join(self.folder, summary_name(night))
         tmp = f"{path}.{os.getpid()}.new"
         try:
@@ -1531,6 +1816,160 @@ def _shows_from_records(recs):
     return [shows[k] for k in sorted(shows)]
 
 
+def _windows_from_records(recs):
+    """[(show, start, end or None)] from the journal alone: when each show
+    started and when it ended, as aware datetimes."""
+    out = {}
+    for r in recs:
+        n = r.get("show")
+        if not n or r.get("outcome") == "refused":
+            continue
+        st = _status_of(r.get("reason"))
+        at = _parse_at(r.get("at"))
+        if at is None or at.utcoffset() is None:
+            continue
+        if st == "STARTED":
+            out[n] = [at, None]
+        elif st in ("DONE", "ABORTED", "FAULT") and n in out and \
+                out[n][1] is None:
+            out[n][1] = at
+    return [(n, a, b) for n, (a, b) in sorted(out.items())]
+
+
+def _windows_from_slots(slots):
+    out = []
+    for s in slots or ():
+        a = _parse_at(s.get("started_at")) if s.get("started_at") else None
+        b = _parse_at(s.get("ended_at")) if s.get("ended_at") else None
+        if a is not None and a.utcoffset() is not None:
+            out.append((s.get("show"), a, b))
+    return out
+
+
+def _lines_kept(raws):
+    """The non-empty lines of a file, without a line cut short that was
+    then written again whole right after it (a partial write retried):
+    that is one event, not two."""
+    rows = [r.rstrip(b"\r\n") for r in raws if r.strip(b"\r\n\x00 ")]
+    return [r for i, r in enumerate(rows)
+            if not (i + 1 < len(rows) and len(r) < len(rows[i + 1])
+                    and rows[i + 1].startswith(r.lstrip(b"\x00")))]
+
+
+def check_files(folder, night, *, windows=None, made=(), waiting=(),
+                now=None, gap_s=LOG_GAP_S):
+    """Do the night files hold the whole night? Read from the files
+    themselves, never from what the writer believes it wrote.
+
+    Counts the journal's lines and the machine log's records (they are
+    written from the same events, so they agree), finds every id this run
+    made that is in neither the machine log nor still waiting (`made`,
+    `waiting`), and every time gap: no line for longer than `gap_s` while a
+    show was running, or a show's start or end with no line for it, unless
+    the gap ends at the program starting again (it was not running, which
+    the summary lists under Restarts). `windows` is [(show, start, end or
+    None)] as aware datetimes; None works them out from the machine log.
+
+    Returns {"complete", "journal_lines", "machine_records", "cut",
+    "missing", "gaps": [{"from", "to", "seconds", "why"}], "problems":
+    [sentence]}. Never raises."""
+    night = str(night)
+    jpath = os.path.join(folder, journal_name(night))
+    mpath = os.path.join(folder, machine_name(night))
+    problems, recs, cut, ids = [], [], 0, set()
+    jlines = 0
+    try:
+        with open(jpath, "rb") as fh:
+            jlines = len(_lines_kept(fh))
+    except FileNotFoundError:
+        problems.append(f"There is no journal file {journal_name(night)}.")
+    except OSError as e:
+        problems.append(f"The journal file {jpath} could not be read "
+                        f"({e.strerror or e}).")
+    try:
+        with open(mpath, "rb") as fh:
+            for raw in _lines_kept(fh):
+                try:
+                    r = json.loads(raw.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    cut += 1
+                    continue
+                if isinstance(r, dict):
+                    recs.append(r)
+                    ids.add(r.get("id"))
+    except FileNotFoundError:
+        problems.append(f"There is no machine log {machine_name(night)}.")
+    except OSError as e:
+        problems.append(f"The machine log {mpath} could not be read "
+                        f"({e.strerror or e}).")
+    if not problems and jlines != len(recs) + cut:
+        short = ("journal file" if jlines < len(recs) + cut
+                 else "machine log")
+        problems.append(f"The journal file has {jlines} line(s) and the "
+                        f"machine log {len(recs) + cut}; they are written "
+                        f"from the same events, so the {short} is missing "
+                        f"lines.")
+    if cut:
+        problems.append(f"{cut} line(s) in the machine log were cut short.")
+    wait = set(waiting)
+    missing = [i for i in made if i not in ids and i not in wait]
+    if missing:
+        problems.append(f"{len(missing)} line(s) ltcplay made tonight are "
+                        f"not in the machine log.")
+    if windows is None:
+        windows = _windows_from_records(recs)
+    times = []
+    for r in recs:
+        at = _parse_at(r.get("at"))
+        if at is not None and at.utcoffset() is not None:
+            times.append((at, r))
+    gaps = []
+
+    def gap(a, b, why):
+        for g in gaps:
+            if g["from"] == a.isoformat(timespec="seconds"):
+                return
+        gaps.append({"from": a.isoformat(timespec="seconds"),
+                     "to": b.isoformat(timespec="seconds"),
+                     "seconds": round((b - a).total_seconds(), 1),
+                     "why": why})
+
+    # The files keep milliseconds; the scheduler's times have microseconds:
+    # every comparison below allows the millisecond the files cut.
+    events = []
+    for n, a, b in windows:
+        events.append((a, f"show {n} started"))
+        if b is not None:
+            events.append((b, f"show {n} ended"))
+    pairs = list(zip(times, times[1:]))
+    if times and now is not None and now > times[-1][0]:
+        pairs.append((times[-1], (now, None)))
+    for (a, _ra), (b, rb) in pairs:
+        # A clock set back gives a negative span: never a gap below.
+        span = (b - a).total_seconds()
+        if rb is not None and rb.get("action") == "program start":
+            continue                    # ltcplay was not running
+        inside = [w for t, w in events
+                  if (t - a).total_seconds() > 0.001
+                  and (b - t).total_seconds() > 5]
+        if inside and span > 60:
+            gap(a, b, f"no line for {inside[0]}")
+            continue
+        if span > gap_s:
+            for n, s, e in windows:
+                # Overlapping by more than the millisecond the files cut.
+                if (b - s).total_seconds() > 0.001 and (
+                        e is None or (e - a).total_seconds() > 0.001):
+                    gap(a, b, f"no line while show {n} ran")
+                    break
+    for g in gaps:
+        problems.append(f"No line from {_hms(g['from'])} to {_hms(g['to'])} "
+                        f"({fmt_span(g['seconds'])}, {g['why']}).")
+    return {"complete": not problems, "journal_lines": jlines,
+            "machine_records": len(recs), "cut": cut,
+            "missing": len(missing), "gaps": gaps, "problems": problems}
+
+
 def _bullets(rows, empty, limit=SUMMARY_LIST_MAX):
     if not rows:
         return [f"- {empty}"]
@@ -1548,7 +1987,7 @@ def _md(text):
 
 def summary_text(night, recs, *, slots=None, mismatches=(),
                  mismatch_note="", health=None, written=None, build=None,
-                 read_note="", closed_by="", cut_lines=0):
+                 read_note="", closed_by="", cut_lines=0, files=None):
     """The nightly summary, one page of Markdown, from a night's records.
 
     `slots` is tonight's list as the scheduler holds it, each a dict with
@@ -1624,11 +2063,25 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
         flame_line = mismatch_note.rstrip(".") + "."
     else:
         flame_line = f"{flame_count}."
+    # "complete" is said only when the files themselves agree (check_files):
+    # never from what the writer believes it wrote (Windows stress round 3,
+    # 9 November: the files stopped at 13:19 and nothing said so).
+    files_bad = files is not None and not files.get("complete")
     if health and not health.get("ok"):
         log_line = health.get("sentence", "stopped")
+    elif log_gaps and files is not None and not files_bad:
+        # Stopped for a while, and every line was written after all.
+        log_line = (f"complete. The journal file has {files['journal_lines']}"
+                    f" line(s) and the machine log the same number; it "
+                    f"stopped and resumed {len(log_gaps)} time(s) and lost "
+                    f"no line; see Logging below.")
     elif log_gaps:
         log_line = (f"stopped and resumed {len(log_gaps)} time(s); see "
                     f"Logging below.")
+    elif files is not None:
+        log_line = (f"complete. The journal file has {files['journal_lines']}"
+                    f" line(s) and the machine log the same number, with no "
+                    f"gap while a show ran.")
     else:
         log_line = "complete, every line written."
     if cut_lines:
@@ -1637,6 +2090,16 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
         log_line = (f"{cut_lines} line(s) in the machine log were cut short, "
                     f"most likely by a power cut or a crash; the lines after "
                     f"them are whole." + (f" {also}" if also else ""))
+    if files_bad:
+        when = "; ".join(f"{_hms(g['from'])} to {_hms(g['to'])}"
+                         for g in files.get("gaps") or ())
+        also = log_line if log_gaps or cut_lines or (
+            health and not health.get("ok")) else ""
+        said = [p for p in files.get("problems") or ()
+                if not (cut_lines and "were cut short" in p)]
+        log_line = " ".join(
+            ["INCOMPLETE" + (f", gaps {when}" if when else "") + "."]
+            + said + ([f"Also: {also}"] if also else []))
     when = written.strftime("%H:%M:%S (%z)") if written else "--"
     status = (build or {}).get("status", "version unknown")
     out = [f"# Night summary: {long_date(night)}", "",
@@ -1711,9 +2174,11 @@ def summary_text(night, recs, *, slots=None, mismatches=(),
         out += _bullets(flame_rows, "None.")
     out += ["", "## Restarts", ""]
     out += _bullets([r["line"] for r in restarts], "None.")
-    if log_gaps or (health and not health.get("ok")):
+    if log_gaps or (health and not health.get("ok")) or files_bad:
         out += ["", "## Logging", ""]
         out += _bullets([r["line"] for r in log_gaps]
                         + ([health["sentence"]] if health
-                           and not health.get("ok") else []), "Complete.")
+                           and not health.get("ok") else [])
+                        + (list(files.get("problems") or ())
+                           if files_bad else []), "Complete.")
     return "\n".join(out) + "\n"

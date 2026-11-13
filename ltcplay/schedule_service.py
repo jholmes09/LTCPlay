@@ -2052,7 +2052,13 @@ class Service:
             rows.append({"show": s.n, "planned": planned,
                          "status": s.status, "reason": s.reason,
                          "started": hms(s.fired_at),
-                         "ended": hms(s.ended_at)})
+                         "ended": hms(s.ended_at),
+                         # For the summary's check of the files: when the
+                         # show ran, so a gap while it ran is found.
+                         "started_at": (s.fired_at.isoformat()
+                                        if s.fired_at else None),
+                         "ended_at": (s.ended_at.isoformat()
+                                      if s.ended_at else None)})
         return rows
 
     def _write_summary(self, how="", m=None):
@@ -3877,7 +3883,9 @@ class Service:
         small: it is taken 5 times a second and never written to disk."""
         m, now = self.machine, self.clock()
         snap = {"state": self._state_name(),
-                "logging_ok": not self.logbook.stopped_why}
+                "logging_ok": not (self.logbook.stopped_why
+                                   or self.logbook.stalled_why
+                                   or self.logbook.disk_why)}
         if m is not None:
             nxt = m.next_slot()
             snap.update(
