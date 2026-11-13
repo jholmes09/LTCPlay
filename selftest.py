@@ -50866,9 +50866,11 @@ def test_flame_frame_timing_alert_and_systems_line():
     al = rm.alerts.open()
     r = row()
     check(len(al) == 1 and al[0].kind == "timing" and
-          al[0].text.startswith("Flame frames late: 1 in the last hour, "
-                                "worst 178 ms") and
-          "nothing was changed" in al[0].text and
+          al[0].text.startswith("Flame frames late, last hour: 1. ") and
+          "worst 178 ms" in al[0].text and
+          "Nothing was changed" in al[0].text and
+          _op_shaped(al[0].full) and "worst" not in
+          al[0].full.split("\n\n")[0] and
           "\u2013" not in al[0].text and "\u2014" not in al[0].text,
           f"a frame 178 ms late: the alert, in plain words: "
           f"{[a.text for a in al]}")
@@ -50886,7 +50888,7 @@ def test_flame_frame_timing_alert_and_systems_line():
     rm._frame_timing_work()
     al = rm.alerts.open()
     check(len(al) == 1 and al[0].text.startswith(
-        "Flame frames late: 2 in the last hour, worst 178 ms"),
+        "Flame frames late, last hour: 2.") and "worst 178 ms" in al[0].text,
           f"a new late frame raises it again: {[a.text for a in al]}")
     print("  ok")
 
@@ -70428,8 +70430,9 @@ def test_aim_slots_are_seen_on_the_rack_screen():
           al[0].kind == "aim" and
           "flamesafe has 1, 7, 13 and LTC Player has none" in al[0].text
           and path in al[0].text and "quit LTC Player and start it again"
-          in al[0].text and "Stop, Hold and Disarm all work as "
-          "usual" in al[0].text,
+          in al[0].text and "Stop, Hold and Disarm all still work" in
+          al[0].text and _op_shaped(al[0].full) and path not in
+          al[0].full.split("\n\n")[0],
           f"a difference is an aim alert saying what to do: "
           f"{[x.text for x in al]}")
     check(v["groups"][1]["aim"]["loaded"] is False and
@@ -79218,6 +79221,8 @@ def test_users_file_broken_or_lost_locks_and_says_so():
               U.USERS_MARK in ua[0]["text"] and
               rem.users.folder in ua[0]["text"] and
               "backup" not in ua[0]["text"] and
+              _op_shaped(ua[0].get("full")) and U.USERS_MARK not in
+              ua[0]["full"].split("\n\n")[0] and
               s2["me"]["view_only"] is True,
               f"the alert says why and what to do, on every screen: "
               f"{ua} {s2.get('me')}")
@@ -79260,7 +79265,8 @@ def test_users_file_broken_or_lost_locks_and_says_so():
         check(len(ua) == 1 and "cannot be opened just now" in ua[0]["text"]
               and "antivirus" in ua[0]["text"] and
               U.USERS_MARK not in ua[0]["text"] and
-              "remove" not in ua[0]["text"],
+              "remove" not in ua[0]["text"] and
+              _op_shaped(ua[0].get("full")),
               f"held: wait and check, never delete: {ua}")
     finally:
         httpd.server_close()
@@ -98281,6 +98287,24 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
 
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
+def _op_shaped(full):
+    """Jeff's rule for operator text (2026-11-11): a headline of 6 words or
+    fewer, then 1 to 3 "- " bullets of 8 words or fewer, then anything
+    more after a blank line, starting "More:". The view's booth note may
+    end it."""
+    full = str(full or "")
+    tail = "\n\nBooth speaker not available."
+    full = full[:-len(tail)] if full.endswith(tail) else full
+    parts = full.split("\n\n")
+    head = parts[0].split("\n")
+    bullets = [x[2:] for x in head[1:]]
+    return (len(head[0].split()) <= 6 and 1 <= len(bullets) <= 3 and
+            all(x.startswith("- ") for x in head[1:]) and
+            all(len(x.split()) <= 8 for x in bullets) and
+            all(p.startswith("More: ") for p in parts[1:]) and
+            "\u2013" not in full and "\u2014" not in full)
+
+
 def _ui2_pages():
     here = os.path.dirname(os.path.abspath(__file__))
     one = remote1_pinned()
@@ -114311,9 +114335,20 @@ def test_ui2_show_pc_tools_are_1_0s():
     ii = one.find('<div id="info" hidden>')
     ij = one.find('</div>\n</div>\n', ii) + 13
     info = one[ii:ij]
-    check(ii > 0 and info.count("the Programming screen") == 2 and
-          info.replace("the Programming screen", "the Schedule tab") in two,
-          "the info panel is 1.0's, its Programming screen the Schedule tab")
+    # The one other named difference (Jeff, 2026-11-11: less prose):
+    # Leaving this window is a headline, three bullets and More.
+    leave1 = ('<div class="kv">This window is only a view. Closing it '
+              'never stops a show')
+    l1 = info.find(leave1)
+    l1e = info.find("</div>\n", l1) + 7
+    leave2 = two.find('<div class="kv"><b>Closing this window is safe.</b>')
+    leave2 = two[leave2:two.find("</div>\n", leave2) + 7]
+    info2 = info[:l1] + leave2 + info[l1e:] if l1 > 0 else info
+    check(ii > 0 and l1 > 0 and info.count("the Programming screen") == 2
+          and info2.replace("the Programming screen", "the Schedule tab")
+          in two,
+          "the info panel is 1.0's, its Programming screen the Schedule tab, "
+          "Leaving this window in bullets")
     hp = two[two.find('$("help").addEventListener('):]
     hp = hp[:hp.find("\n});\n")]
     check('{label:"This LTC Player", value:"info", cls:"blue", '

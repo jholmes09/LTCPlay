@@ -452,6 +452,7 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #info h2{font:700 calc(var(--fs) - 4px)/1.2 var(--caps);letter-spacing:.2em;text-transform:uppercase;color:var(--gold);margin:14px 0 4px}
 #info h2:first-child{margin-top:0}
 #info .kv{color:var(--cream)} #info .kv b{color:var(--gold)}
+#info .kvl{margin:4px 0;padding-left:1.1em} #info .kvl li{margin:4px 0} #info .kv .dim{color:var(--muted)}
 #info .vers{color:var(--muted);-webkit-user-select:text;user-select:text;word-break:break-all}
 #info .row{display:flex;flex-wrap:wrap;gap:var(--gap);margin-top:14px}
 #info button{font:inherit;min-height:56px;padding:0 20px;border-radius:10px;border:2px solid var(--line);background:var(--panel2);color:var(--cream);font-weight:700}
@@ -1230,7 +1231,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="kv" id="info-mode"></div>
     <div class="kv" style="margin-top:4px;color:var(--muted)">SHOW: a show file is running for real and the scheduler starts each show at its time. PROGRAMMING: a rehearsal is running; the scrubbing controls work and the scheduler starts nothing. NOT RUNNING: no show file is running; nothing reaches the rig until Run is pressed on the Schedule tab. To switch between Show and Programming: the Show and Programming switch on the Schedule tab's Show file card, then Run (Stop first if something is running).</div>
     <h2>Leaving this window</h2>
-    <div class="kv">This window is only a view. Closing it never stops a show: the engine runs on its own. It is an ordinary window: the Minimize, Maximize and Close buttons are at its top right. To minimize without them, press the <kbd>Windows</kbd> key + <kbd>Down arrow</kbd> (twice if it is maximized); <kbd>Alt</kbd>+<kbd>F4</kbd> closes it, or use the button below. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</div>
+    <div class="kv"><b>Closing this window is safe.</b><ul class="kvl"><li>The show keeps running without it.</li><li>Minimize: <kbd>Windows</kbd> key + <kbd>Down arrow</kbd>.</li><li>Close: <kbd>Alt</kbd>+<kbd>F4</kbd>, or the button below.</li></ul><span class="dim">More: this window is only a view; the engine runs on its own. The Minimize, Maximize and Close buttons are at its top right. Press <kbd>Down arrow</kbd> twice if it is maximized. A folder opened from this page comes to the front; if you do not see it, it is on the taskbar.</span></div>
     <div class="row">
       <button id="info-exit" class="ghost" hidden>Close this window</button>
       <button id="info-close">Back</button>
