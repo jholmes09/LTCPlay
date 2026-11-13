@@ -41,6 +41,7 @@ import glob
 import hashlib
 import http.server
 import json
+import re
 import os
 import socket
 import subprocess
@@ -440,21 +441,35 @@ def save_tailscale_on():
         json.dump(doc, fh, indent=2)
 
 
-def tailscale_card_check():
-    """The engine with Tailscale access on but no Tailscale here: its card
-    reads the rule as present and nothing listens for Tailscale."""
-    st, body = get("/api/remote/tailscale", timeout=40)
-    try:
-        card = json.loads(body) if st == 200 else {}
-    except ValueError:
-        card = {}
-    check(card.get("on") is True and card.get("listening") is None and
-          (card.get("firewall") or {}).get("state") == "present",
-          f"the Tailscale card does not say: on, not listening (no "
-          f"Tailscale here), rule present: {st} {body[:600]!r}")
-    if card:
-        NOTES.append(f"Tailscale card: {card.get('head')}: "
-                     f"{' '.join(card.get('bullets') or [])}"[:400])
+def tailscale_card_check(logs):
+    """The engine with Tailscale access on but no Tailscale here. Its card
+    is a SuperUser's only (users.may_manage_tailscale): to this unsigned
+    check it answers exactly like a route that is not there, and so does
+    its script. Nothing listens for Tailscale: the engine's log says why
+    and names no 100.64 address it listens on. (The rule itself:
+    check_tailscale_rule.)"""
+    for path in ("/api/remote/tailscale", "/api/remote/tailscale-card.js"):
+        st, body = get(path, timeout=40)
+        try:
+            out = json.loads(body)
+        except ValueError:
+            out = None
+        check(st == 404 and out == {"error": "no such thing here"},
+              f"{path} is not the SuperUser's own here, yet it did not "
+              f"answer like a missing route: {st} {body[:300]!r}")
+    log_text = (read_text(os.path.join(logs, "engine.log")) or
+                b"").decode("utf-8", "replace")
+    said = [ln for ln in log_text.splitlines()
+            if "page listens on" in ln]
+    ts = re.compile(r"\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])"
+                    r"\.[0-9]+\.[0-9]+:[0-9]+")
+    check(bool(said) and not ts.search(said[-1]),
+          f"the engine says it listens on a Tailscale address with no "
+          f"Tailscale here: {said[-1:]}")
+    check("Tailscale" in log_text,
+          "the engine's log does not say why nothing listens for Tailscale")
+    NOTES.append("Tailscale card: SuperUser only (404 to this check); "
+                 "nothing listens for Tailscale here")
 
 
 def private_ipv4():
@@ -941,7 +956,7 @@ def main(installer, version=""):
                      "the person's own copy")
         check_firewall_rule("after the update")
         check_tailscale_rule("after the update", True)
-        tailscale_card_check()
+        tailscale_card_check(logs)
         if net_ip:
             network_check(net_ip, logs)
 

@@ -56280,7 +56280,7 @@ def test_show_network_card_firewall_and_wrong_name_page():
                  'get("/api/remote/network"',
                  'check_tailscale_rule("after install", False)',
                  'check_tailscale_rule("after the update", True)',
-                 "firewall_rule(TAILSCALE_RULE)", "tailscale_card_check()"):
+                 "firewall_rule(TAILSCALE_RULE)", "tailscale_card_check(logs)"):
         check(want in smoke, f"the smoke test checks {want!r}")
     print("  ok")
 
