@@ -15,6 +15,8 @@ own emergency access ("In an emergency", below). See "The honest limit".
   nights waiting, errors).
 - **SuperUser changes:** adding, changing the role of, resetting or
   removing a SuperUser, or making someone one.
+- **Remote access over Tailscale:** on or off, who gets in, its address
+  and name, the firewall and route warnings, Restart (below).
 
 For anyone else the upload's card is not on the Users screen at all (not
 greyed out: not there). Its script is not sent to their screen, its row
@@ -191,6 +193,78 @@ password, and Save.
 
 Your server needs a receiver: `tools/audit_receiver.py` is one, and
 `tools/AUDIT_RECEIVER_README.md` says how to run it.
+
+## Remote access over Tailscale (off until you switch it on)
+
+Your card, on the rack screen's Schedule tab, signed in there. Nobody else
+sees it, its script or its routes (they answer like a route that is not
+there), exactly like the upload's card.
+
+**Switch it on.**
+
+- Turn on, then Restart the engine between shows.
+- Use the installer again: it adds the firewall rule.
+- The card says: URL, address, listening, firewall rule.
+
+**Say who gets in.**
+
+- One Tailscale login per line, as Tailscale shows it.
+- Empty means nobody. People's logins only, no tagged devices.
+- Changes count within 3 seconds.
+
+The show PC is `ignite-player.tail342a0a.ts.net` (100.75.53.81); the URL
+to give people is `http://ignite-player.tail342a0a.ts.net:7878/`. The page
+also answers to `ignite-player:7878` on your own devices, and to the
+address, and to nothing else. Your own login is
+`jeffholmespresents@gmail.com`. Andy uses his own Tailscale account: share
+only the show PC to him from the Tailscale admin console (Machines, the
+show PC, Share), and once he accepts, add his login exactly as Tailscale
+shows it. A shared user must use the full name. The login is what counts,
+never a device's address. For every connection the engine asks this PC's
+own Tailscale who it is (`tailscale whois`); no answer, a tagged device or
+a login not on your list is refused and audited.
+
+Past that, a device on Tailscale is an iPad on the show network: the same
+role matrix and the same "Arming from a screen". Every press that needs a
+role needs a sign-in there, and a Tailscale sign-in ends by itself after
+30 minutes with no press (the idle sign out can make that shorter, never
+longer). Use long passwords: Tailscale reaches past the venue. Tailscale
+cannot prove anyone is at the rig.
+
+**Never share routes from the show PC.**
+
+- No subnet routes, no exit node, ever.
+- Not the show LAN, 10.112.4.0/24, above all.
+- The card warns if this PC shares routes.
+
+Shared routes would let tailnet devices reach the flame controllers
+directly, past the engine, and arrive with a show network address, so
+your list would not be asked. In the tailnet policy approve no routes and
+no exit node: `"autoApprovers": {"routes": {}, "exitNode": []}`. Limit the
+tailnet to your own devices on 7878:
+
+```
+{
+  "tagOwners": {"tag:showpc": ["jeffholmespresents@gmail.com"]},
+  "acls": [
+    {"action": "accept", "src": ["jeffholmespresents@gmail.com"],
+     "dst": ["tag:showpc:7878"]}
+  ]
+}
+```
+
+(A shared device reaches only the shared show PC. If you tag the show PC,
+keep your own login on it as above, and remove the default allow-all
+rule.)
+
+**Never use Tailscale Serve, Funnel or HTTPS here.**
+
+- They are refused as proxies.
+- TCP Serve would make everyone the rack screen.
+- Turn them off: `tailscale serve reset`.
+
+Turning it off: Turn off (the door closes at once, during a show too),
+then use the installer again, which removes the rule.
 
 ## The honest limit
 

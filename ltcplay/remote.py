@@ -92,6 +92,13 @@ card (network_view) says what is saved, where the engine listens, whether
 that rule is there (read with netsh, never changed) and the address to
 type. A request by another name for this PC gets a short page naming that
 address (web.wrong_host_page); the Host check is not loosened.
+
+Remote access over Tailscale (Jeff, 2026-11-12) is the one exception to
+"one address": OFF unless turned on, it adds a second door on this PC's
+own Tailscale address, for the Tailscale logins on an allow list only;
+past that a device there is an iPad that signs in to act (Jeff,
+2026-11-13). See "remote access over Tailscale" below (TAILSCALE_NET,
+tailscale_whois).
 """
 import contextlib
 import hmac
@@ -275,14 +282,14 @@ PRACTICE_REFUSED_ROUTES = ("start-now", "start-at-cue", "resume",
                            "schedule-file", "show-folder", "show-select",
                            "show-file-new", "reload-engine")
 PRACTICE_ENDS_ROUTES = ("hold", "pause", "follow")
-GET_ROUTES = ("whoami", "status", "network", "deck-input",
+GET_ROUTES = ("whoami", "status", "network", "tailscale", "deck-input",
               "announce-outputs", "preshow-audio") + \
     MORNING_GET_ROUTES + FUEL_GET_ROUTES + FIREBALL_GET_ROUTES + \
     CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES + FIREBALL_TIMELINE_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
-    "network", "screen-arming", "alert", "live-flame",
+    "network", "tailscale", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone", "preshow-audio") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
     CLEANING_POST_ROUTES + HAZER_POST_ROUTES + PLAY_FROM_POST_ROUTES + \
@@ -339,6 +346,8 @@ LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",
 # set on the show machine itself, Settings permission, like the
 # announcement output beside it.
 LOCAL_ONLY = LOCAL_ONLY | {"preshow-audio"}
+# Remote access over Tailscale (2026-11-12): switched on the show PC only.
+LOCAL_ONLY = LOCAL_ONLY | frozenset(("tailscale",))
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -396,6 +405,12 @@ UPLOAD_REFUSED = "no such thing here"
 # The nightly upload card's script (web/upload_card.js): served only to a
 # SuperUser signed in on this show PC's rack screen, never part of the page.
 UPLOAD_CARD_ROUTE = "upload-card.js"
+# The Tailscale card's script (web/tailscale_card.js) and its routes: only
+# users.may_manage_tailscale (a SuperUser on the show PC); everyone else
+# gets the answer of a route that is not there.
+TAILSCALE_CARD_ROUTE = "tailscale-card.js"
+TAILSCALE_CARD_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "web", "tailscale_card.js")
 UPLOAD_CARD_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "web", "upload_card.js")
 # An upload change without the SuperUser's own password typed again.
@@ -414,7 +429,11 @@ PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-forwarded-host",
                  "true-client-ip", "x-client-ip", "x-cluster-client-ip",
                  "fastly-client-ip", "client-ip", "x-proxyuser-ip",
                  "x-original-url", "x-rewrite-url", "cf-ray",
-                 "x-amzn-trace-id", "ngrok-trace-id")
+                 "x-amzn-trace-id", "ngrok-trace-id",
+                 # Tailscale Serve and Funnel (2026-11-12): proxies too.
+                 "tailscale-user-login", "tailscale-user-name",
+                 "tailscale-user-profile-pic", "tailscale-headers-info",
+                 "tailscale-funnel-request")
 
 LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1", "[::1]")
 
@@ -694,8 +713,11 @@ def load_settings(folder=None):
     # 10 minutes unless an admin sets it lower; never more than
     # fuelpump.MAX_LIMIT_S (600 s), read and written. The default run is
     # always 5 minutes.
+    # tailscale_remote (Jeff, 2026-11-12): OFF unless the file says true.
+    # On, the engine also listens on this PC's own Tailscale address.
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
+           "tailscale_remote": False, "tailscale_logins": [],
            "alert_pixels": None,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
            "purge_timed_s": TIMED_DEFAULT_S,
@@ -718,6 +740,7 @@ def settings_from_doc(doc, path, out=None):
     if out is None:
         out = {"show_network_address": None, "flamesafe_config": None,
                "screen_arming": False, "purge_arming": True,
+               "tailscale_remote": False, "tailscale_logins": [],
                "booth_alert": None, "alert_pixels": None,
                "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
                "purge_timed_s": TIMED_DEFAULT_S,
@@ -738,6 +761,16 @@ def settings_from_doc(doc, path, out=None):
         if v is not True and v is not False:
             raise ValueError(f"{path}: screen_arming must be true or false.")
         out["screen_arming"] = v
+    if "tailscale_remote" in doc:
+        # Only the JSON word true turns it on, as for screen_arming.
+        v = doc["tailscale_remote"]
+        if v is not True and v is not False:
+            raise ValueError(f"{path}: tailscale_remote must be true or "
+                             f"false.")
+        out["tailscale_remote"] = v
+    if "tailscale_logins" in doc:
+        out["tailscale_logins"] = check_tailscale_logins(
+            doc["tailscale_logins"], path)
     if "purge_arming" in doc:
         v = doc["purge_arming"]
         if v is not True and v is not False:
@@ -1021,6 +1054,370 @@ def page_url(address, port=FIXED_PORT):
     if ":" in a:
         a = f"[{a}]"
     return f"http://{a}:{port}/"
+
+
+# ------------------------------------------- remote access over Tailscale --
+# Jeff (2026-11-12): open the page from his own device over Tailscale,
+# "similar to how an iPad would". OFF unless ltcplay_remote.json says
+# "tailscale_remote": true (the Schedule tab's card on the show PC, the
+# Settings row). On, the engine ALSO listens on this PC's own Tailscale
+# IPv4 address (web.serve's `tailscale`), never on 0.0.0.0 and never on any
+# other address, and that door answers only a peer in 100.64.0.0/10 that
+# names exactly that address and port. Tailscale Serve and Funnel are
+# proxies: their requests carry forwarding headers (PROXY_HEADERS) and are
+# refused like any other proxy.
+#
+# Who gets in, and what they may do (Jeff, 2026-11-13, option A): only a
+# Tailscale login on the allow list ("tailscale_logins" in
+# ltcplay_remote.json, empty = nobody; an admin edits it on the show PC),
+# asked of this PC's own Tailscale for every connection (tailscale_whois,
+# cached briefly); a lookup that fails, or a login not on the list, is
+# refused. Past that, a Tailscale device is an iPad on the show network:
+# the same role matrix, the same "Arming from a screen" switch, the same
+# show-PC-only settings. One difference: every press that needs a role
+# (users.classify: anything but a safety press) needs a signed-in person
+# from Tailscale, users set up or not (tailscale_sign_in_refusal).
+# Signed out, the allowed login sees the page and may Stop, Hold,
+# Acknowledge and disarm, like a signed-out iPad.
+TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+# Tailscale's own service address (MagicDNS): never this PC's.
+TAILSCALE_SERVICE_IP = "100.100.100.100"
+TAILSCALE_FIREWALL_RULE = "LTC Player Tailscale page"
+# A press that needs a role, from Tailscale with nobody signed in.
+TAILSCALE_SIGN_IN_WORDS = "Sign in first. Tailscale needs a sign-in."
+# A Tailscale login that is not on the allow list, or cannot be told.
+TAILSCALE_LOGIN_WORDS = "This Tailscale login is not allowed here."
+# How long one answer of `tailscale whois`, and one read of the allow
+# list, is kept: a hand edit of the list takes effect within this.
+TAILSCALE_WHOIS_S = 3.0
+# A tagged device (a server, not a person) is never let in, whatever the
+# list says (cold review of #244, M3).
+TAILSCALE_TAGGED = "tagged-devices"
+# A tagged device refused is audited at most this often per address.
+TAILSCALE_TAGGED_AUDIT_S = 60.0
+TAILSCALE_WHOIS_TIMEOUT_S = 3.0
+TAILSCALE_LOGINS_MAX = 20
+# What the installer last read for the second firewall rule
+# (installer.iss TailscaleOn): the LOCALAPPDATA it read and on or off, in
+# %PROGRAMDATA%\LTC Player.
+TAILSCALE_SETUP_FILE = "tailscale-setup.txt"
+TAILSCALE_NETS_WORDS = ("100.64.0.0/10", "100.64.0.0-100.127.255.255")
+
+
+def is_tailscale_address(text):
+    """True for an IPv4 address in 100.64.0.0/10 (Tailscale's, which is
+    also the carrier-grade NAT range), other than Tailscale's own service
+    address. Never 0.0.0.0, loopback or anything else."""
+    try:
+        ip = ipaddress.ip_address(str(text or "").strip())
+    except ValueError:
+        return False
+    return ip.version == 4 and ip in TAILSCALE_NET and \
+        str(ip) != TAILSCALE_SERVICE_IP
+
+
+def tailscale_host_ok(host_header, address, port, names=()):
+    """The Tailscale door's Host check: exactly "<its address>:<port>",
+    the way a browser sends it for http://100.x.y.z:7878/, or exactly one
+    of this PC's own MagicDNS names (tailscale_dns_names, learned with the
+    address) with the same port: "ignite-player.tail342a0a.ts.net:7878" or
+    "ignite-player:7878". Nothing else: no other name, no missing port, no
+    other address. The peer and its login are checked apart from this."""
+    h = str(host_header or "").strip().lower()
+    return h == f"{address}:{port}" or \
+        h in {f"{n}:{port}" for n in names or () if n}
+
+
+def tailscale_sign_in_refusal(route, body, ctx):
+    """TAILSCALE_SIGN_IN_WORDS when a POST from the Tailscale surface needs
+    a role (users.classify: not a safety press, not harmless) and nobody
+    is signed in on that page; else "". The role matrix then asks as for
+    an iPad. Fails closed: a body that cannot be classified needs a
+    sign-in."""
+    from . import users as users_mod
+    try:
+        perm = users_mod.classify(route, body)
+    except Exception:                            # noqa: BLE001
+        perm = "unknown"
+    if perm in ("safety", None) or getattr(ctx, "user", ""):
+        return ""
+    return TAILSCALE_SIGN_IN_WORDS
+
+
+def check_tailscale_logins(value, path="ltcplay_remote.json"):
+    """The allow list as stored: a list of Tailscale login names (like
+    "andy@example.com"), each one word, at most TAILSCALE_LOGINS_MAX; an
+    empty list lets nobody in. ValueError with a sentence otherwise."""
+    if not isinstance(value, list) or \
+            len(value) > TAILSCALE_LOGINS_MAX:
+        raise ValueError(f"{path}: tailscale_logins must be a list of at "
+                         f"most {TAILSCALE_LOGINS_MAX} Tailscale logins.")
+    out = []
+    for v in value:
+        if not isinstance(v, str) or not v.strip() or \
+                len(v.strip()) > 254 or re.search(r"\s", v.strip()) or \
+                not is_user_login(v):
+            raise ValueError(f"{path}: {v!r} is not a person's Tailscale "
+                             f"login (like andy@example.com).")
+        if v.strip().lower() not in out:
+            out.append(v.strip().lower())
+    return out
+
+
+def is_user_login(text):
+    """True for a person's Tailscale login (name@domain, or a GitHub-style
+    name@github): never "tagged-devices", a tag:, or anything without an
+    @."""
+    t = str(text or "").strip().lower()
+    return bool(t) and "@" in t and not t.startswith("@") and \
+        not t.endswith("@") and t != TAILSCALE_TAGGED and \
+        not t.startswith("tag:")
+
+
+def tailscale_whois(ip, run=None, cli=None):
+    """{"login", "node", "tagged"} for the peer at `ip`, asked of this
+    PC's own Tailscale (`tailscale whois --json <ip>`, by its full path, a
+    short timeout): its login lower case, its device name, and whether it
+    is a tagged device (a server, never a person). None when it cannot be
+    told (Tailscale missing, not running, no answer, an answer that names
+    nobody). Only an address in 100.64.0.0/10 is ever asked. Never
+    raises."""
+    if not is_tailscale_address(ip):
+        return None
+    path = tailscale_cli() if cli is None else cli
+    if not path:
+        return None
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = run([path, "whois", "--json", str(ipaddress.ip_address(ip))],
+                capture_output=True, text=True,
+                timeout=TAILSCALE_WHOIS_TIMEOUT_S, **kw)
+        if p.returncode != 0:
+            return None
+        doc = json.loads(p.stdout or "null") or {}
+        login = (doc.get("UserProfile") or {}).get("LoginName")
+        node = doc.get("Node") or {}
+        tags = node.get("Tags") or []
+        name = str(node.get("ComputedName") or node.get("Name") or "")
+    except Exception:                            # noqa: BLE001
+        return None
+    login = str(login or "").strip().lower()
+    if not login and not tags:
+        return None
+    return {"login": login, "node": name[:80],
+            "tagged": bool(tags) or login == TAILSCALE_TAGGED}
+
+
+_DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def tailscale_dns_names(run=None, cli=None):
+    """This PC's own MagicDNS names from `tailscale status --json` (full
+    path, a short timeout): Self.DNSName without its trailing dot (like
+    ignite-player.tail342a0a.ts.net) and Self.HostName (like
+    ignite-player), lower case, each a plain DNS name (no wildcard, no
+    other characters). [] when it cannot be told: the Tailscale door then
+    answers to its address only (fail closed on names). Never raises."""
+    me = _tailscale_self(run, cli)
+    out = []
+    for raw in (str((me or {}).get("DNSName") or "").rstrip("."),
+                str((me or {}).get("HostName") or "")):
+        n = raw.strip().lower()
+        if n and len(n) <= 253 and \
+                all(_DNS_LABEL.match(x) for x in n.split(".")) and \
+                n not in out:
+            out.append(n)
+    return out
+
+
+def _tailscale_self(run=None, cli=None):
+    """`tailscale status --json`'s "Self", or None. Never raises."""
+    path = tailscale_cli() if cli is None else cli
+    if not path:
+        return None
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = run([path, "status", "--json"], capture_output=True, text=True,
+                timeout=TAILSCALE_WHOIS_TIMEOUT_S, **kw)
+        if p.returncode != 0:
+            return None
+        me = (json.loads(p.stdout or "null") or {}).get("Self")
+        return me if isinstance(me, dict) else None
+    except Exception:                            # noqa: BLE001
+        return None
+
+
+def tailscale_routes(run=None, cli=None):
+    """True when `tailscale status --json` says this PC offers subnet
+    routes or is an exit node (the card warns: tailnet devices could reach
+    the show LAN, and the flame controllers, past the engine), False when
+    it says neither, None when it cannot be told. Read only, by its full
+    path, a short timeout. Never raises."""
+    path = tailscale_cli() if cli is None else cli
+    if not path:
+        return None
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = run([path, "status", "--json"], capture_output=True, text=True,
+                timeout=TAILSCALE_WHOIS_TIMEOUT_S, **kw)
+        if p.returncode != 0:
+            return None
+        me = (json.loads(p.stdout or "null") or {}).get("Self") or {}
+    except Exception:                            # noqa: BLE001
+        return None
+    own = set(me.get("TailscaleIPs") or [])
+    extra = [a for a in (me.get("AllowedIPs") or [])
+             if str(a).split("/")[0] not in own]
+    return bool(me.get("ExitNodeOption") or me.get("PrimaryRoutes") or
+                extra)
+
+
+# Where Tailscale's command line program is, by where its installer puts
+# it. Started by its full path, never a bare name a folder on PATH could
+# answer to.
+TAILSCALE_CLI_WINDOWS = ("Tailscale", "tailscale.exe")
+TAILSCALE_CLI_MAC = ("/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                     "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale",
+                     "/usr/bin/tailscale")
+TAILSCALE_READ_S = 30.0
+
+
+def tailscale_cli(windows=None, exists=None):
+    """The full path of Tailscale's command line program, or None."""
+    windows = (os.name == "nt") if windows is None else windows
+    exists = exists or os.path.isfile
+    if windows:
+        import ntpath
+        for root in (os.environ.get("ProgramFiles"),
+                     os.environ.get("ProgramW6432"), r"C:\Program Files"):
+            if root:
+                path = ntpath.join(root, *TAILSCALE_CLI_WINDOWS)
+                if exists(path):
+                    return path
+        return None
+    for path in TAILSCALE_CLI_MAC:
+        if exists(path):
+            return path
+    return None
+
+
+def _tailscale_route_ipv4():
+    """The address this PC sends from towards Tailscale's own service
+    address: its Tailscale address while Tailscale is up. Nothing is
+    sent (a UDP socket's connect only picks the route). "" on any
+    error."""
+    try:
+        k = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            k.connect((TAILSCALE_SERVICE_IP, 9))
+            return k.getsockname()[0]
+        finally:
+            k.close()
+    except OSError:
+        return ""
+
+
+def find_tailscale(run=None, cli=None, found=None):
+    """{"state", "address", "head", "bullets"} for this PC's Tailscale
+    address. state: "found" (address is this PC's own Tailscale IPv4),
+    "not_installed", "not_running" or "not_here" (Tailscale names an
+    address this PC does not have). Both have to agree: Tailscale's own
+    program says which address is Tailscale's (`tailscale ip -4`), and
+    this PC's own address list (the name service and the route towards
+    Tailscale) says the PC has it. A carrier's 100.64 address that is not
+    Tailscale's is never taken. `run`, `cli` and `found` replace the
+    program, its path and the address list (tests). Never raises."""
+    path = tailscale_cli() if cli is None else cli
+    if not path:
+        return {"state": "not_installed", "address": None,
+                "head": "Tailscale is not installed",
+                "bullets": ["Install Tailscale on this PC first.",
+                            "Nothing listens for Tailscale now."]}
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = run([path, "ip", "-4"], capture_output=True, text=True,
+                timeout=10, **kw)
+        words = [w.strip() for w in (p.stdout or "").split()
+                 if w.strip()] if p.returncode == 0 else []
+    except Exception:                            # noqa: BLE001
+        words = []
+    ts = [w for w in words if is_tailscale_address(w)]
+    if not ts:
+        return {"state": "not_running", "address": None,
+                "head": "Tailscale is not running",
+                "bullets": ["Start Tailscale and sign in.",
+                            "Nothing listens for Tailscale now."]}
+    mine = list(found) if found is not None else \
+        _local_ipv4s() + [_tailscale_route_ipv4()]
+    for a in ts:
+        if a in mine:
+            return {"state": "found", "address": a,
+                    "names": tailscale_dns_names(run=run, cli=path),
+                    "head": "Tailscale is running",
+                    "bullets": [f"This PC's Tailscale address is {a}."]}
+    return {"state": "not_here", "address": None,
+            "head": "Tailscale address not found",
+            "bullets": ["Tailscale named an address this PC lacks.",
+                        "Restart Tailscale, then restart the engine."]}
+
+
+def tailscale_firewall_state(run=None, windows=None, find=None):
+    """("present" | "off" | "wide" | "missing" | "unknown" | "none", words)
+    for the second firewall rule, TAILSCALE_FIREWALL_RULE, read with
+    netsh like firewall_rule_state. "wide": the rule is there but not
+    limited to 100.64.0.0/10. Read only. Never raises."""
+    windows = (os.name == "nt") if windows is None else windows
+    if not windows:
+        return ("none", "Not Windows: no firewall rule needed.")
+    exe = (find or system_tool)(*NETSH)
+    if exe is None:
+        return ("unknown", "The firewall rule could not be read.")
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        # One command line as typed, the full path first, as above.
+        cmd = (f'"{exe}" advfirewall firewall show rule '
+               f'name="{TAILSCALE_FIREWALL_RULE}" verbose')
+        p = run(cmd, capture_output=True, text=True, timeout=10, **kw)
+        text = (p.stdout or "") + (p.stderr or "")
+    except Exception:                            # noqa: BLE001
+        return ("unknown", "The firewall rule could not be read.")
+    if p.returncode:
+        return ("missing", "Firewall rule missing. Use the installer again.")
+    low = [ln.strip().lower() for ln in text.splitlines()]
+    enabled = [ln.split(":", 1)[1].strip() for ln in low
+               if ln.startswith("enabled:")]
+    if enabled and all(v == "no" for v in enabled):
+        return ("off", "Firewall rule is off. Use the installer again.")
+    remote = [ln.split(":", 1)[1].strip() for ln in low
+              if ln.startswith("remoteip:")]
+    if not remote or any(r not in TAILSCALE_NETS_WORDS for r in remote):
+        return ("wide", "Firewall rule too wide. Use the installer again.")
+    return ("present", "Firewall rule lets Tailscale in.")
 
 
 def looks_proxied(headers):
@@ -1394,12 +1791,19 @@ class Ctx:
     show network, and who is signed in on that page, if anyone (users.py;
     nobody has to be). `session` is users.Users.session()'s dict."""
 
-    def __init__(self, local, ip, session=None, token="", window=""):
+    def __init__(self, local, ip, session=None, token="", window="",
+                 tailscale=False, login=""):
         self.local = local
         self.ip = ip
         self.session = session
         self.token = token
         self.window = window
+        # Came in over Tailscale (web.py: the Tailscale door, or a peer in
+        # 100.64.0.0/10 on any door but loopback). Never the machine
+        # itself, whatever else is said. `login`: the Tailscale login this
+        # PC's own Tailscale named for the peer (on the allow list).
+        self.tailscale = bool(tailscale) and not local
+        self.login = str(login or "") if self.tailscale else ""
 
     @property
     def user(self):
@@ -1408,17 +1812,24 @@ class Ctx:
 
     @property
     def source(self):
-        """The audit log's source: the device, and the page's window id."""
+        """The audit log's source: the device, and the page's window id.
+        From Tailscale exactly "Tailscale at <address> (<login>)"."""
+        if self.tailscale:
+            return self.device
         return f"{self.device} {self.window}".strip()
 
     @property
     def screen(self):
-        """The screen-list name the scheduler checks."""
+        """The screen-list name the scheduler checks. A Tailscale device
+        is the show network's screen kind, "iPad" (Jeff, 2026-11-13: it
+        follows the iPad's settings)."""
         return "Rack screen" if self.local else "iPad"
 
     @property
     def device(self):
         """What the journal calls it: the surface, never a person."""
+        if self.tailscale:
+            return f"Tailscale at {self.ip} ({self.login or 'unknown'})"
         return "Rack screen" if self.local else f"iPad at {self.ip}"
 
 
@@ -1983,6 +2394,10 @@ class Remote:
             screen = ctx.screen
             if ctx.local:
                 screen = str(body.get("screen") or "").strip() or screen
+            if getattr(ctx, "tailscale", False):
+                # The journal names the surface too (Jeff, 2026-11-12).
+                return (f"{self.signed_in_name(ctx, body)}, {ctx.device}",
+                        screen, True)
             return self.signed_in_name(ctx, body), screen, True
         if ctx.local:
             who = str(body.get("who") or "").strip()
@@ -2019,6 +2434,16 @@ class Remote:
         name = route[len("/api/remote/"):]
         if self.upload_refused(name, ctx, "GET"):
             return 404, {"error": UPLOAD_REFUSED}
+        if self.tailscale_card_refused(name, ctx, "GET"):
+            return 404, {"error": UPLOAD_REFUSED}
+        if name == TAILSCALE_CARD_ROUTE:
+            # The Tailscale card's script: a SuperUser here only (above).
+            try:
+                with open(TAILSCALE_CARD_JS, encoding="utf-8") as fh:
+                    return 200, fh.read(), \
+                        "application/javascript; charset=utf-8"
+            except OSError:
+                return 404, {"error": UPLOAD_REFUSED}
         if name == UPLOAD_CARD_ROUTE:
             # The upload card's script: a SuperUser here only (above).
             try:
@@ -2060,6 +2485,10 @@ class Remote:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
             return 200, self.network_view()
+        if name == "tailscale":
+            if not ctx.local:
+                return 403, {"error": "Only on the show machine itself."}
+            return 200, self.tailscale_view()
         if name == "announce-outputs":
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
@@ -2107,6 +2536,15 @@ class Remote:
         # no other route's check can say more.
         if self.upload_refused(name, ctx, "POST"):
             return 404, {"error": UPLOAD_REFUSED}, {}
+        if self.tailscale_card_refused(name, ctx, "POST"):
+            return 404, {"error": UPLOAD_REFUSED}, {}
+        if getattr(ctx, "tailscale", False):
+            # Remote access over Tailscale: a press that needs a role needs
+            # a signed-in person (web.py asks the same first).
+            why = tailscale_sign_in_refusal(route, body, ctx)
+            if why:
+                return 403, {"error": why, "tailscale_refused": "sign in",
+                             "role_refused": True}, {}
         if name in REMOVED_ROUTES:
             # A page from before the change: told plainly, nothing done.
             return 410, {"error": REMOVED_ROUTES[name], "removed": True}, {}
@@ -2130,6 +2568,8 @@ class Remote:
                     "The rig is checked" if name == "preroll-check" else
                     "The announcement output is picked"
                     if name == "announce-output" else
+                    "Remote access over Tailscale is switched"
+                    if name == "tailscale" else
                     "The test tone is played"
                     if name == "announce-test-tone" else
                     "Pre-show audio is set"
@@ -2139,6 +2579,8 @@ class Remote:
                                   f"from here. Nothing was changed."}, {}
         if name == "network":
             return (*self.set_network(body),) + ({},)
+        if name == "tailscale":
+            return (*self.set_tailscale(body, ctx),) + ({},)
         if name == "screen-arming":
             return (*self.set_screen_arming(body, ctx),) + ({},)
         if name == "preroll-check":
@@ -2168,10 +2610,12 @@ class Remote:
                                          self.users, haze=self.haze),) + ({},)
         if name in MORNING_POST_ROUTES:
             return (*self.morning_post(name, body, ctx),) + ({},)
-        if name == "fuel-refill" and self.morning is not None:
+        if name in ("fuel-refill", "fuel-undo") and \
+                self.morning is not None:
             # The Fuel step's Arrange (morning.Arrangement): while this
             # device arranges the machine rows, no refill is logged from
             # it, whatever its page let through. A drag is never a refill.
+            # An Undo from Refills and notes is held back the same way.
             why = self.morning.rows_refill_refusal(ctx.device)
             if why:
                 return 409, {"error": why}, {}
@@ -2410,6 +2854,9 @@ class Remote:
     def whoami(self, ctx):
         out = {"local": ctx.local, "device": ctx.device,
                "screen": ctx.screen, "fresh_s": FRESH_S}
+        if getattr(ctx, "tailscale", False):
+            # Remote access over Tailscale: which login this page is.
+            out["tailscale"] = {"login": ctx.login}
         u = self.users
         if u is not None:
             s = getattr(ctx, "session", None) or {}
@@ -2513,6 +2960,11 @@ class Remote:
                 # a word of it (selftest walks the answer).
                 out["may_superuser"] = True
                 out["upload"] = self.upload_view()
+                # The Tailscale card (users.may_manage_tailscale): only
+                # here, so no other screen asks for it at all.
+                out["tailscale_card"] = bool(users_mod.may_manage_tailscale(
+                    getattr(ctx, "session", None), ctx.local,
+                    bool(getattr(ctx, "tailscale", False))))
                 out["perms"] = list(out.get("perms") or []) + [
                     {"key": k, "label": l}
                     for k, l in users_mod.SUPERUSER_ROWS]
@@ -2602,6 +3054,23 @@ class Remote:
         self._audit_rank("upload-refused", ctx, f"{method} {name}")
         return True
 
+    def tailscale_card_refused(self, name, ctx, method):
+        """True (and an audit line that does not name the feature) when
+        `name` is one of the Tailscale card's routes and
+        users.may_manage_tailscale says no. Fails closed."""
+        try:
+            if name not in users_mod.TAILSCALE_ROUTES:
+                return False
+            if users_mod.may_manage_tailscale(
+                    getattr(ctx, "session", None),
+                    getattr(ctx, "local", False),
+                    bool(getattr(ctx, "tailscale", False))):
+                return False
+        except Exception:                        # noqa: BLE001
+            pass
+        self._audit_rank("superuser-route-refused", ctx, method)
+        return True
+
     def superuser_alert(self, found):
         """users.Users.on_alert: the SuperUsers in the users file changed
         outside this program (users.Users._trust). A display only alert on
@@ -2672,9 +3141,18 @@ class Remote:
         cookie = (f"{users_mod.COOKIE}=%s; HttpOnly; SameSite=Strict; "
                   f"Path=/")
         if name == "signin":
+            # From Tailscale the lockout counts that address only, so the
+            # tailnet can never lock a name out on the rack screen or an
+            # iPad (cold review of #244, M3).
             ok, text, token, needs_new = u.sign_in(
                 body.get("name"), body.get("password"), ctx.local,
-                ctx.source, new_password=body.get("new_password"))
+                ctx.source, new_password=body.get("new_password"),
+                from_only=(f"Tailscale at {ctx.ip}"
+                           if getattr(ctx, "tailscale", False) else False))
+            if ok and token and getattr(ctx, "tailscale", False):
+                # The session is this login's, from this address, only
+                # (web.py ends it if another presents it).
+                u.bind_tailscale(token, ctx.login, ctx.ip)
             if not ok:
                 return 401, {"error": text, "needs_new_password": needs_new}, {}
             return 200, {"ok": True, "text": text}, {
@@ -2986,6 +3464,309 @@ class Remote:
             note = ("Saved. Quit the Web ltcplay window and start it again "
                     "on the show network to use it.")
         return 200, dict(view, ok=True, note=note)
+
+    # -- remote access over Tailscale (Jeff, 2026-11-12) ------------------
+    def tailscale_logins(self):
+        """The allow list (check_tailscale_logins), read at most every
+        TAILSCALE_WHOIS_S. A file that cannot be read lets nobody in."""
+        now = self.clock()
+        got = getattr(self, "_ts_logins_cache", None)
+        if got is None or now - got[0] >= TAILSCALE_WHOIS_S:
+            try:
+                logins = list(load_settings(self.folder).get(
+                    "tailscale_logins") or [])
+            except ValueError:
+                logins = []
+            got = (now, logins)
+            self._ts_logins_cache = got
+        return got[1]
+
+    def tailscale_login(self, ip):
+        """(login or None, why, seen) for the Tailscale peer at `ip`: its
+        login, when this PC's own Tailscale names one AND it is on the
+        allow list; `seen` is whatever login Tailscale named, for the
+        audit. Asked of Tailscale at most every TAILSCALE_WHOIS_S per
+        address. Fails closed: no answer, an error or an unlisted login is
+        (None, TAILSCALE_LOGIN_WORDS, seen). Never raises."""
+        login = ""
+        try:
+            now = self.clock()
+            cache = getattr(self, "_ts_whois_cache", None)
+            if cache is None:
+                cache = self._ts_whois_cache = {}
+            got = cache.get(ip)
+            if got is None or now - got[0] >= TAILSCALE_WHOIS_S:
+                fn = getattr(self, "_tailscale_whois", None) or \
+                    tailscale_whois
+                got = (now, fn(ip))
+                cache[ip] = got
+                if len(cache) > 256:
+                    cache.pop(next(iter(cache)))
+            ans = got[1]
+            if isinstance(ans, str):
+                ans = {"login": ans, "node": "", "tagged": False}
+            ans = ans if isinstance(ans, dict) else {}
+            login = str(ans.get("login") or "").strip().lower()
+            if ans.get("tagged") or (login and not is_user_login(login)):
+                # A tagged device, or no person's login: never in.
+                self._tailscale_tagged_audit(ip, ans)
+                return None, TAILSCALE_LOGIN_WORDS, \
+                    login or TAILSCALE_TAGGED
+            allowed = self.tailscale_logins()
+            if login and login in allowed:
+                return login, "", login
+        except Exception:                        # noqa: BLE001
+            pass
+        return None, TAILSCALE_LOGIN_WORDS, login
+
+    def _tailscale_tagged_audit(self, ip, ans):
+        """One audit line "refused: tagged device" with its node name, at
+        most every TAILSCALE_TAGGED_AUDIT_S per address. Never raises."""
+        try:
+            now = self.clock()
+            seen = getattr(self, "_ts_tagged_said", None)
+            if seen is None:
+                seen = self._ts_tagged_said = {}
+            if now - seen.get(ip, -1e18) < TAILSCALE_TAGGED_AUDIT_S:
+                return
+            seen[ip] = now
+            if self.audit is not None:
+                self.audit.event(
+                    user="unsigned", surface="web", action="tailscale",
+                    target=f"node={ans.get('node') or 'unknown'}",
+                    result="refused", reason="tagged device",
+                    source=f"Tailscale at {ip} "
+                           f"({ans.get('login') or TAILSCALE_TAGGED})")
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def tailscale_view(self):
+        """The Schedule tab's Remote access over Tailscale card on the show
+        PC (GET tailscale, LOCAL_ONLY): on or off, the address to type,
+        whether the engine listens on it, the firewall rule, and whether a
+        restart is needed. A bold headline and up to three short bullets.
+        Read only."""
+        try:
+            on = bool(load_settings(self.folder).get("tailscale_remote"))
+            err = None
+        except ValueError as e:
+            on, err = False, str(e)
+        listen = getattr(self, "listen", None) or {}
+        port = listen.get("port") or FIXED_PORT
+        ts_listen = listen.get("tailscale") or None
+        found = self.tailscale_found()
+        addr = found.get("address")
+        url = page_url(ts_listen, port) if ts_listen else None
+        # The URL to type by name (MagicDNS): the full name, the one a
+        # device shared in from another tailnet can use.
+        names = [n for n in listen.get("tailscale_names") or [] if "." in n]
+        name_url = f"http://{names[0]}:{port}/" if ts_listen and names \
+            else None
+        fw_state, fw_text = self.tailscale_firewall_view()
+        restart = None
+        unsaved = getattr(self, "_tailscale_unsaved", "")
+        if unsaved and not ts_listen:
+            head, bullets = "Closed now, setting not saved", [
+                "The settings file could not be written.",
+                "It opens again after a restart."]
+        elif err:
+            head, bullets = "Settings file cannot be read", [
+                "Fix ltcplay_remote.json in Settings and logs."]
+        elif not on and not ts_listen:
+            head, bullets = "Off: Tailscale cannot reach this", [
+                "Turn on to open the page remotely.",
+                "Stop, Hold and disarm only, signed out."]
+        elif not on:
+            head, bullets = "Off: restart the engine", [
+                "Still listening until the engine restarts.",
+                "Restart between shows, every flame disarmed."]
+        elif found["state"] != "found" and not ts_listen:
+            head, bullets = found["head"], list(found["bullets"])
+        elif not ts_listen and listen.get("tailscale_why"):
+            head, bullets = "Could not listen on Tailscale", [
+                "Restart Tailscale, then restart the engine."]
+        elif not ts_listen:
+            head, bullets = "On: restart the engine", [
+                "Restart between shows, every flame disarmed."]
+        else:
+            head, bullets = "On: listening on Tailscale", [
+                f"Type {url} on your device."]
+            if addr and addr != ts_listen:
+                bullets.append("Tailscale address changed. Restart "
+                               "the engine.")
+        if (on and not ts_listen and found["state"] == "found") or \
+                (not on and ts_listen) or \
+                (on and ts_listen and addr and addr != ts_listen):
+            reason = self.reload_engine_refusal()
+            restart = {"needed": True, "offered": reason is None,
+                       "why": reason or ""}
+        if (on or ts_listen) and self.tailscale_routes_view():
+            # Never subnet routes or an exit node from here (cold review
+            # of #244, M1): first, whatever else is said.
+            bullets = ["This PC shares routes: turn that off."] + \
+                bullets[:2]
+        if on and fw_state == "missing" and self.tailscale_setup_other():
+            # Setup read another Windows account's settings (an elevated
+            # account that is not this one), so it did not add the rule.
+            bullets = bullets[:2] + ["Setup ran from another Windows "
+                                     "account."]
+        elif on and fw_state not in ("present", "none") and \
+                len(bullets) < 3:
+            bullets.append(fw_text)
+        elif not on and fw_state in ("present", "off", "wide") and \
+                len(bullets) < 3:
+            # Removed by the installer, which needs Windows' permission.
+            bullets.append("Use the installer again to remove the rule.")
+        try:
+            logins = list(load_settings(self.folder).get(
+                "tailscale_logins") or [])
+        except ValueError:
+            logins = []
+        if on and not logins and len(bullets) < 3:
+            bullets.append("Nobody gets in: add Tailscale logins.")
+        return {"on": on, "error": err, "port": port, "logins": logins,
+                "name_url": name_url,
+                "names": list(listen.get("tailscale_names") or []),
+                "found": found["state"], "address": addr,
+                "listening": ts_listen, "url": url,
+                "firewall": {"state": fw_state, "text": fw_text},
+                "restart": restart, "head": head, "bullets": bullets[:3]}
+
+    def tailscale_setup_other(self, read=None, env=None):
+        """True when the installer last read the setting from another
+        Windows account's LOCALAPPDATA than this engine's (TAILSCALE_SETUP_
+        FILE, written by installer.iss TailscaleOn). False when it cannot
+        be told. Never raises."""
+        env = os.environ if env is None else env
+        try:
+            path = os.path.join(env.get("PROGRAMDATA") or r"C:\ProgramData",
+                                "LTC Player", TAILSCALE_SETUP_FILE)
+            text = (read or (lambda p: open(p, encoding="utf-8-sig",
+                                            errors="replace").read()))(path)
+            lines = [ln.strip() for ln in str(text).splitlines()]
+            mine = str(env.get("LOCALAPPDATA") or "").strip()
+            return bool(lines and mine and
+                        os.path.normcase(lines[0].rstrip("\\/")) !=
+                        os.path.normcase(mine.rstrip("\\/")))
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def tailscale_routes_view(self):
+        """tailscale_routes(), asked at most every TAILSCALE_READ_S; True
+        only when it says so. Never raises."""
+        try:
+            now = self.clock()
+            got = getattr(self, "_ts_routes_cache", None)
+            if got is None or now - got[0] >= TAILSCALE_READ_S:
+                fn = getattr(self, "_tailscale_routes", None) or \
+                    tailscale_routes
+                got = (now, fn())
+                self._ts_routes_cache = got
+            return got[1] is True
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def tailscale_found(self):
+        """find_tailscale(), asked at most every TAILSCALE_READ_S."""
+        now = self.clock()
+        got = getattr(self, "_tailscale_cache", None)
+        if got is None or now - got[0] >= TAILSCALE_READ_S:
+            fn = getattr(self, "_tailscale_find", None) or find_tailscale
+            got = (now, fn())
+            self._tailscale_cache = got
+        return got[1]
+
+    def tailscale_firewall_view(self):
+        """tailscale_firewall_state(), read at most every FIREWALL_READ_S."""
+        now = self.clock()
+        got = getattr(self, "_ts_firewall_cache", None)
+        if got is None or now - got[0] >= FIREWALL_READ_S:
+            got = (now, tailscale_firewall_state(
+                run=getattr(self, "_firewall_run", None),
+                windows=getattr(self, "_firewall_windows", None),
+                find=getattr(self, "_tool_find", None)))
+            self._ts_firewall_cache = got
+        return got[1]
+
+    def set_tailscale(self, body, ctx):
+        """POST tailscale {"on": true|false}, on the show PC only
+        (LOCAL_ONLY; the role matrix's Settings row to turn it on,
+        users.py). Only the JSON words true and false. Off closes the
+        Tailscale door at once (close_tailscale_door), before anything is
+        saved, during a show too; a save that then fails says so on the
+        card. On is saved here and starts listening at the engine's next
+        restart (Restart the engine, between shows with every flame group
+        disarmed, refused during a show)."""
+        if "logins" in body:
+            return self.set_tailscale_logins(body, ctx)
+        on = body.get("on")
+        if not isinstance(on, bool):
+            return 400, {"error": "on has to be true or false. Nothing was "
+                                  "changed."}
+        who = ctx.user or "unsigned"
+        screen = ctx.screen
+        if not on:
+            # Off closes the Tailscale door FIRST, during a show too: it
+            # only takes access away (cold review of #244, M1). A save that
+            # fails below never leaves it open (verification, m2).
+            close = getattr(self, "tailscale_close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:                # noqa: BLE001
+                    pass
+        try:
+            save_settings(self.folder, tailscale_remote=on)
+        except (ValueError, OSError) as e:
+            self._tailscale_cache = None
+            if on:
+                return 409, {"error": f"{e} Nothing was changed."}
+            self._tailscale_unsaved = str(e)
+            return 500, dict(self.tailscale_view(), error=(
+                "Tailscale closed now. Setting not saved."), detail=str(e))
+        self._tailscale_unsaved = ""
+        self._tailscale_cache = None
+        self._journal(who, screen, "tailscale", "on" if on else "off",
+                      f"{who} switched remote access over Tailscale "
+                      f"{'ON' if on else 'OFF'} on the {screen}. "
+                      + ("It takes effect when the engine restarts." if on
+                         else "The Tailscale door is closed now."))
+        view = self.tailscale_view()
+        return 200, dict(view, ok=True,
+                         note="Saved. Restart the engine to apply." if on
+                         else "Off. Tailscale is closed now.")
+
+    def set_tailscale_logins(self, body, ctx):
+        """POST tailscale {"logins": [...]}: the allow list of Tailscale
+        logins, on the show PC only (LOCAL_ONLY; the role matrix's Users
+        row, admin, users.classify). Saved whole; empty lets nobody in.
+        Takes effect within TAILSCALE_WHOIS_S. Only who
+        users.may_edit_tailscale_allowlist allows (a SuperUser, signed in
+        on the show PC's rack screen)."""
+        if not users_mod.may_edit_tailscale_allowlist(
+                getattr(ctx, "session", None), ctx.local,
+                bool(getattr(ctx, "tailscale", False))):
+            return 403, {"error": f"Only a signed-in "
+                                  f"{users_mod.TAILSCALE_ALLOWLIST_ROLE} on "
+                                  f"the show PC may change who gets in. "
+                                  f"Nothing was changed.",
+                         "role_refused": True}
+        try:
+            logins = check_tailscale_logins(body.get("logins"))
+            save_settings(self.folder, tailscale_logins=logins)
+        except ValueError as e:
+            return 400, {"error": f"{e} Nothing was changed."}
+        except OSError as e:
+            return 500, {"error": f"ltcplay_remote.json could not be "
+                                  f"written ({e}). Nothing was changed."}
+        self._ts_logins_cache = None
+        self._ts_whois_cache = {}
+        who = ctx.user or "unsigned"
+        self._journal(who, ctx.screen, "tailscale logins", "saved",
+                      f"{who} set the Tailscale logins allowed in: "
+                      f"{', '.join(logins) or 'nobody'}.")
+        return 200, dict(self.tailscale_view(), ok=True,
+                         note="Saved. Logins: " + str(len(logins)) + ".")
 
     def set_screen_arming(self, body, ctx):
         """POST screen-arming {"on": true|false}, on the show machine only

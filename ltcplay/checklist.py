@@ -59,6 +59,16 @@ TALLY_BACKOFF_S = (5.0, 15.0, 60.0, 300.0)
 PAYLOAD_VERSION = 1
 
 
+
+_TAILSCALE_DEVICE = re.compile(r"^Tailscale at \S+ \((.+)\)$")
+
+
+def tailscale_login_of(device):
+    """The Tailscale login in a device name like "Tailscale at 100.88.1.2
+    (andy@example.com)", or "" for any other device."""
+    m = _TAILSCALE_DEVICE.match(str(device or ""))
+    return m.group(1) if m else ""
+
 class ChecklistConfigError(ValueError):
     pass
 
@@ -585,7 +595,10 @@ class ChecklistService:
                "step": sid if step else "", "step_text": step["text"] if step
                else "", "state": state, "note": note, "who": who,
                "device": str(device or ""), "ip": str(ip or ""),
-               "surface": str(surface or "")}
+               "surface": str(surface or ""),
+               # The Tailscale login a tick came from, "" for any other
+               # surface (remote.Ctx.device: "Tailscale at <ip> (<login>)").
+               "login": tailscale_login_of(device)}
         try:
             rec = self.chain.append(rec)
         except OSError as e:

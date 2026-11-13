@@ -181,6 +181,16 @@ networks: either turn that off for this network, or make it Private
 Network profile type: Private network). Never put remote access software,
 a tunnel or a port forward on the show PC.
 
+## Remote access over Tailscale
+
+Off unless the SuperUser turns it on; SUPERUSER.md, "Remote access over
+Tailscale", has everything about it. The installer adds a second Windows
+Firewall rule, "LTC Player Tailscale page", only while it is on (TCP 7878,
+ltcplay.exe only, from and to 100.64.0.0/10 only), deletes it on every
+install first and on uninstall, and opens nothing else. Never advertise
+subnet routes (the show LAN 10.112.4.0/24 above all) or an exit node from
+the show PC.
+
 ## The booth alert notes
 
 The installer ships the booth speaker's recorded alert notes into the

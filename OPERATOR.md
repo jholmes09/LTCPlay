@@ -2758,6 +2758,29 @@ disarms with one press. Disarm on the page is one press. The journal says which 
 physical key switch on the flame system is still the master: off means
 nothing fires.
 
+### Open the page over Tailscale
+
+Only for the people the SuperUser has let in (SUPERUSER.md).
+
+**Type the name, not the address.**
+
+- `http://ignite-player.tail342a0a.ts.net:7878/`
+- Shared from another tailnet: always this full name.
+- Nothing else answers: no other name, no https.
+
+**Then it works like an iPad.**
+
+- Sign in to do anything that needs a role.
+- Signed out: view, Stop, Hold, Acknowledge, disarm.
+- Signed out by itself after 30 minutes idle.
+
+Tailscale follows the iPad's settings: the role matrix (USERS.md), the
+"Arming from a screen" switch and every rule an iPad has. The one
+difference: from Tailscale every press that needs a role needs a sign-in.
+The 30 minutes stop a forgotten phone staying signed in; they do not
+change what a signed-in person may do. Every press and every refusal is in
+the audit log as "Tailscale at <address> (<login>)".
+
 ## What it will not do
 
 It will not play audio and it will not start on a schedule.
