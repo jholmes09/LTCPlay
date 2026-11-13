@@ -2853,8 +2853,8 @@ MUTATIONS = [
 
  ("pump: an ON from a stale or ageless screen is taken",
   "ltcplay/remote.py",
-  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"The fuel pump was not turned on: the press came from a \"",
-  "        if False:\n            why = (\"The fuel pump was not turned on: the press came from a \""),
+  "        if seen is None or seen != seen or \\\n                abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:\n            why = (\"Fuel pump NOT turned on.\\n\"",
+  "        if False:\n            why = (\"Fuel pump NOT turned on.\\n\""),
 
  ("pump: a start that raised leaves the link naming the pump",
   "ltcplay/fuelpump.py",
@@ -23138,6 +23138,68 @@ def build():
   "ltcplay/web/remote2.html",
   "#t-users input[type=checkbox]{width:56px;height:56px;",
   "#t-users input[type=checkbox]{width:40px;height:40px;"),
+
+ # Less prose, engine answers and alerts (Jeff, 2026-11-11).
+ ("less prose: the Morning check runs two shows' CUES FAULTs together",
+  'ltcplay/remote.py',
+  '                        "text": "\\n\\n".join(faults) if faults else',
+  '                        "text": " ".join(faults) if faults else'),
+
+ ('less prose: the preroll alert hides what failed behind More',
+  'ltcplay/preroll.py',
+  '            f"- Failed: {\', \'.join(i[\'name\'] for i in bad)}.\\n"\n            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "',
+  '            f"- The show will not start by itself.\\n"\n            f"- Do: Fix it, then Resume and Start now.\\n"\n            f"\\n"\n            f"More: The rig check before {label} FAILED: "'),
+
+ ('less prose: the CUES FAULT says what to render only behind More',
+  'ltcplay/fire_ice.py',
+  '            f"Render these again in xLights: {names}.\\n"',
+  '            f"Render these again in xLights.\\n"'),
+
+ ('less prose: the schedule save answer runs its warnings into one line',
+  'ltcplay/remote.py',
+  '                   "".join(f"- {w}\\n" for w in warns) if warns else "") +',
+  '                   " ".join(warns) + "\\n" if warns else "") +'),
+
+ ('less prose: the stale pump press says no way forward',
+  'ltcplay/remote.py',
+  '                   "Wait for the screen to be live, then press again.\\n"',
+  '                   ""'),
+
+ # Less prose (Jeff, 2026-11-11): bullets and paragraph breaks.
+ ("less prose: an alert's one-line text keeps its bullet marks",
+  "ltcplay/alerts.py",
+  '        text = " ".join(" ".join(ln[2:] if ln.startswith("- ") else ln',
+  '        text = " ".join(" ".join(ln if ln.startswith("- ") else ln'),
+
+ ("less prose: an alert drops its line breaks before the rack screen",
+  "ltcplay/alerts.py",
+  '        if "\\n" in self.full:\n            out["full"]',
+  '        if False:\n            out["full"]'),
+
+ ("less prose: opText writes the engine's words as markup",
+  "ltcplay/web/remote2.html",
+  '      list.appendChild(document.createElement("li")).textContent = line.slice(2).trim();',
+  '      list.appendChild(document.createElement("li")).innerHTML = line.slice(2).trim();'),
+
+ ("less prose: the audio alert's names leave More for the bullets",
+  "ltcplay/audiowatch.py",
+  '            f"- Why: No show can start without it.\\n"',
+  '            f"- Why: No show can start without it, {show_file}.\\n"'),
+
+ ("less prose: the aim alert's file path leaves More for the bullets",
+  "ltcplay/remote.py",
+  '                f"- Do: Tell Jeff.\\n"',
+  '                f"- Do: Tell Jeff, {path}.\\n"'),
+
+ ("less prose: the late frame alert's numbers leave More for the bullets",
+  "ltcplay/remote.py",
+  '                   "- Why: A flame pulse may be cut short.\\n"',
+  '                   "- Why: A flame pulse may be cut short, worst {w} ms.\\n"'),
+
+ ("less prose: the users alert's file names leave More for the bullets",
+  "ltcplay/remote.py",
+  '                    f"- Do: Put a good users file back.\\n"',
+  '                    f"- Do: Put {users_mod.USERS_MARK} back.\\n"'),
 
  # flamesafe.json that is not valid JSON (Jeff, 2026-11-06): the engine
  # starts with flames off and says where; the supervisor starts neither
