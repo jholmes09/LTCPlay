@@ -30573,6 +30573,132 @@ def test_journal_waiting_lines_are_capped_and_counted():
     print("  ok")
 
 
+def test_journal_held_file_and_clock_set_back():
+    section("journal on Windows (stress round 3, 2026-11-10): another "
+            "program holding the journal file stops only that file, the "
+            "machine log keeps every line, the stop names the file, every "
+            "held line is written once it is let go; a clock set back while "
+            "stopped does not keep the journal off for the size of the step")
+    S = _sched()
+    if S is None:
+        return
+    import errno
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 13, 19)]
+    b = _book(J, work, now, durable=False)
+    jpath = os.path.join(work, J.journal_name("2026-11-14"))
+    mpath = os.path.join(work, J.machine_name("2026-11-14"))
+    held = [False]
+
+    def opener(path):
+        # Windows: a reader that opened the file without letting others
+        # write makes our append fail with a sharing violation, which
+        # Python raises as PermissionError with the file's name.
+        if held[0] and path == jpath:
+            raise PermissionError(errno.EACCES, "The process cannot access "
+                                  "the file because it is being used by "
+                                  "another process", path)
+        return J._open_append(path)
+
+    b._opener = opener
+
+    def line(i):
+        b.record(actor="scheduler", action="note", outcome="done",
+                 reason="r", text=f"Event {i} of the night.")
+
+    def texts(path):
+        if path == mpath:
+            return [r["text"] for r in _jsonl_rows(path) if r]
+        return _lines(path)
+
+    line(0)
+    held[0] = True
+    for i in range(1, 4):
+        now[0] += timedelta(seconds=10)
+        line(i)
+    # Stopped at the first held line; tried again every retry_s, the
+    # machine log first: it gets every line while the journal stays held.
+    now[0] += timedelta(seconds=b.retry_s + 1)
+    b.drain()
+    m = texts(mpath)
+    check([t for t in m if t.startswith("Event ")] ==
+          [f"Event {i} of the night." for i in range(4)],
+          f"the machine log kept every line while the journal was held: "
+          f"{m}")
+    check(not any("Event 1 " in x for x in texts(jpath)),
+          f"the journal file got none of them: {texts(jpath)}")
+    want = (f"this machine refused to let ltcplay write to {jpath} (The "
+            f"process cannot access the file because it is being used by "
+            f"another process). Another program may have it open; close "
+            f"that program")
+    check(b.stopped_why == want and want in b.health()["sentence"],
+          f"the stop names the file and what to do: {b.stopped_why!r}")
+    held[0] = False
+    now[0] += timedelta(seconds=b.retry_s + 1)
+    line(4)
+    j = texts(jpath)
+    ev = [x for x in j if "Event " in x]
+    check(len(ev) == 5 and all(f"Event {i} of the night." in ev[i]
+                               for i in range(5)) and
+          any("Logging to disk resumed" in x for x in j) and
+          not b.stopped_why,
+          f"let go: every held line written, in order, and the resume "
+          f"said: {j}")
+    # Stopped again, then the clock is set back an hour (a time server
+    # step, or a hand edit): the next line is tried at once, not an hour
+    # and 30 s later.
+    held[0] = True
+    now[0] += timedelta(seconds=5)
+    line(5)
+    check(b.stopped_why, "held again: stopped")
+    held[0] = False
+    now[0] -= timedelta(hours=1)
+    line(6)
+    check(not b.stopped_why and
+          any("Event 6 of the night." in x for x in texts(jpath)),
+          f"a clock set back while stopped: written at once: "
+          f"{b.stopped_why!r}")
+    # And forward in time still waits out retry_s, as before.
+    held[0] = True
+    line(7)
+    held[0] = False
+    now[0] += timedelta(seconds=b.retry_s - 5)
+    line(8)
+    check(b.stopped_why and not any("Event 8 " in x
+                                    for x in texts(jpath)),
+          "inside retry_s after a stop: not tried again yet")
+    now[0] += timedelta(seconds=6)
+    line(9)
+    check(not b.stopped_why and
+          any("Event 9 of the night." in x for x in texts(jpath)),
+          "after retry_s: written")
+    # The free space look, every FREE_CHECK_S: a clock set back does not
+    # put it off for the size of the step either.
+    looks = []
+
+    def usage(path):
+        looks.append(now[0])
+        return types.SimpleNamespace(free=10_000 * 1e6)
+
+    import types
+    c = _book(J, tempfile.mkdtemp(), now, durable=False, disk_usage=usage)
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="First.")
+    now[0] += timedelta(seconds=5)
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Second.")
+    check(len(looks) == 1, f"inside FREE_CHECK_S: looked once: {looks}")
+    now[0] -= timedelta(hours=1)
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Third.")
+    check(len(looks) == 2, f"a clock set back: looked again at once: "
+                           f"{looks}")
+    print("  ok")
+
+
 def test_journal_a_clean_stop_reads_as_one():
     section("journal: a clean stop is written, so the next start can tell "
             "it from a crash")
@@ -59462,6 +59588,19 @@ def test_remote_transport_on_the_show_audio():
         check(any("on the show audio" in (r.get("text") or "")
                   for r in R.svc.journal),
               "Play from is not journaled as on the show audio")
+        # Windows stress round 3 (2026-11-10): the box's grey example was
+        # taken for a typed time. An empty box is still refused, nothing
+        # played, and the refusal says the grey words are an example.
+        n = len(calls)
+        st, _h, out = R.ask("POST", "/api/remote/play-from",
+                            {"at": "", "seen": R.seen()})
+        R.settle()
+        check(st != 200 and out.get("error") ==
+              "Nothing to play from: the box is empty. Type a timecode "
+              "(example: 00:01:30:00) or a cue name; the grey example in "
+              "the box is not a value." and calls[n:] == [],
+              f"an empty Play from is refused in words, nothing played: "
+              f"{st} {out} {calls[n:]}")
         # Review of #142, finding 2: Hold and Abort from a screen or the
         # Stream Deck while Programming plays pause and stop the playback,
         # not the scheduler's Hold (which would leave the music running).
@@ -96465,6 +96604,29 @@ def test_preroll_late_allowance_is_for_its_show_only():
                                  S.MISSED),
               f"grace {grace}, allowance {allow}, {off} s late: starts "
               f"{got}, want {starts}")
+    # Windows stress round 3 (2026-11-10): a show its rig check pushed past
+    # the limit says the rig check took the time, not only how late; a
+    # show missed with no rig check in the way says only how late.
+    rule = _one_night_rule(S, grace=120)
+    m = S.new_night(rule, _date(2026, 11, 14))
+    m = S.step(m, S.Event(S.BOOT_DONE, "system"), _den(S, 17, 0)).machine
+    at = _den(S, 18, 0, 0) + __import__("datetime").timedelta(seconds=121)
+    o = S.step(m, S.Event(S.TICK, "scheduler", late_show=1, late_ok_s=20),
+               at)
+    want = ("MISSED (late by 2m 1s: the rig check before it took the "
+            "time, and a show more than 2m 0s late is not started)")
+    check(o.machine.slot(1).reason == want and
+          any(want in n.text for n in o.log),
+          f"missed by its rig check: said so: {o.machine.slot(1).reason!r}")
+    p = S.step(m, S.Event(S.TICK, "scheduler"), at)
+    check(p.machine.slot(1).reason == "MISSED (late by 2m 1s)",
+          f"missed with no rig check in the way: only how late: "
+          f"{p.machine.slot(1).reason!r}")
+    q = S.step(m, S.Event(S.TICK, "scheduler", late_show=2, late_ok_s=20),
+               at)
+    check(q.machine.slot(1).reason == "MISSED (late by 2m 1s)",
+          f"another show's rig check: only how late: "
+          f"{q.machine.slot(1).reason!r}")
     print("  ok")
 
 
@@ -100972,6 +101134,21 @@ async function presses(){
   sb.click(); await wait(400);
   res.stop_after_two = n("/api/remote/stop");
   res.sheet_after = !document.getElementById("sheet").hidden;
+  // A lone tap, as drawn (Windows stress round 3, 2026-11-10): both lines
+  // inside the button, the window counted down, then "Not sent" for a
+  // moment, then back; nothing sent.
+  await wait(1500);
+  const inb = el => { const r = el.getBoundingClientRect(), br = sb.getBoundingClientRect();
+    return r.height > 0 && r.top >= br.top - 0.5 && r.bottom <= br.bottom + 0.5 && r.left >= br.left - 0.5 && r.right <= br.right + 0.5; };
+  const two = () => [document.getElementById("stop-l").textContent, document.getElementById("stop-s").textContent,
+    inb(document.getElementById("stop-l")), inb(document.getElementById("stop-s"))];
+  const sent0 = n("/api/remote/stop");
+  res.lone = [two()];
+  sb.click(); await wait(300); res.lone.push(two());
+  await wait(1000); res.lone.push(two());
+  await wait(2200); res.lone.push(two());
+  await wait(2400); res.lone.push(two());
+  res.lone_sent = n("/api/remote/stop") - sent0;
   window.__live = false; await wait(2600);
   // Run off (cold review of #191, B1): with Run on and nothing playing it
   // is in Stop's place, full colour; it asks, then sends run-off.
@@ -103226,7 +103403,7 @@ def test_ui2_show_tab_in_a_browser():
         # with Run on (cold review of #191), each a few polls long.
         got = _rack_screen_in_chromium(chrome, page, status, sz,
                                        measure_js=_UI2_MEASURE_JS,
-                                       frag=frag, budget_ms=30000
+                                       frag=frag, budget_ms=40000
                                        if frag.startswith("?presses")
                                        else 15000)
         for (w, h), res in got.items():
@@ -103335,6 +103512,16 @@ def test_ui2_show_tab_in_a_browser():
                       f"{where}: with a show live Stop is solid red, its "
                       f"first tap sends nothing and asks nothing, its "
                       f"second sends Stop: {p}")
+                check(p and p.get("lone") == [
+                          ["Stop show", "tap twice", True, True],
+                          ["Tap again", "to stop (3)", True, True],
+                          ["Tap again", "to stop (2)", True, True],
+                          ["Not sent", "tap twice", True, True],
+                          ["Stop show", "tap twice", True, True]] and
+                      p.get("lone_sent") == 0,
+                      f"{where}: a lone tap is drawn, both lines inside the "
+                      f"button: the countdown, then Not sent, then Stop "
+                      f"show again, and nothing is sent: {p and p.get('lone')}")
                 check(p and p["arm_beats"] >= 2 and
                       p["arm_released_while_held"] == 0 and
                       p["arm_released"] >= 1 and
@@ -114277,6 +114464,17 @@ def test_ui2_programming_tab_makes_1_0_presses():
                  'id="p-follow" data-tr', 'id="p-pf-line" hidden',
                  'id="p-pf-warn" role="alert" hidden'):
         check(need in pane, f"the Programming cards have {need}")
+    # Windows stress round 3 (2026-11-10): Play from's grey words are
+    # plainly an example, never taken for a typed time; a visible label
+    # says what to type.
+    check('placeholder="Example: 00:01:30:00"' in pane and
+          'placeholder="00:01:30:00"' not in pane and
+          '<label class="pline" for="p-at" id="p-at-l">Play from: type a '
+          'timecode or a cue name.</label>' in pane and
+          "#p-at::placeholder{font-style:italic;color:var(--muted);"
+          "opacity:1}" in two,
+          "Play from's box shows 'Example: 00:01:30:00' in muted italics, "
+          "under a label that says what to type")
     check(pane.count(" data-tr disabled") == 11,
           "each session control starts disabled, until the first status "
           "says it may be pressed")
@@ -116161,6 +116359,7 @@ if __name__ == "__main__":
         test_journal_a_show_past_midnight_keeps_its_night,
         test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight,
         test_journal_waiting_lines_are_capped_and_counted,
+        test_journal_held_file_and_clock_set_back,
         test_journal_a_clean_stop_reads_as_one,
         test_journal_screens_come_from_a_list,
         test_journal_summary_lists_every_fault,

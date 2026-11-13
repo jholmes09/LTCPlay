@@ -765,8 +765,13 @@ class Logbook:
 
     def _drain(self, force):
         now = self.clock()
+        # Waits out retry_s after a stop, on the wall clock. A clock set
+        # back while stopped (now before the stop itself) tries at once:
+        # otherwise the wait would grow by the whole step, and the journal
+        # would stay off for that long (Windows stress round 3, 2026-11-10).
         if self.stopped_why and not force and self._retry_at is not None \
-                and now < self._retry_at:
+                and self._retry_at - timedelta(seconds=self.retry_s) <= now \
+                < self._retry_at:
             return False
         why = self._low_space(now)
         if why:
@@ -853,13 +858,20 @@ class Logbook:
         if e.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", -1)):
             return "the disk is full"
         if e.errno in (errno.EACCES, errno.EPERM):
+            # The file, when the refusal names one: on Windows that is
+            # most often another program holding that file open (Windows
+            # stress round 3, 2026-11-10: the journal stopped while the
+            # machine log beside it went on).
+            where = e.filename or self.folder
+            held = (" Another program may have it open; close that "
+                    "program." if e.filename else "")
             return (f"this machine refused to let ltcplay write to "
-                    f"{self.folder} ({e.strerror or e})")
+                    f"{where} ({e.strerror or e}).{held}").rstrip(".")
         return f"writing to {self.folder} failed ({e.strerror or e})"
 
     def _low_space(self, now):
         due = self._free_at is None or self.stopped_why or \
-            (now - self._free_at).total_seconds() >= FREE_CHECK_S
+            not 0 <= (now - self._free_at).total_seconds() < FREE_CHECK_S
         if due:
             try:
                 self._free_mb = self._disk_usage(self.folder).free / 1e6
