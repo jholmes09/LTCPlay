@@ -2943,6 +2943,17 @@ tab, and the hardware e-stop always works.
   and Lock is one tap per machine with Undo. The Purge step has the
   machine map and Arrange; the checklist steps have Verify records, the
   PDF and Export all.
+- DAY tab, machine rows. The Fuel step shows the tanks one row per type
+  (all Wave Flamers on one row, all G-Flames on another); a row wraps only
+  when its tanks cannot fit. The Purge step's group buttons and Machines
+  follow the same rows. Arrange on the Fuel step (show PC, Show files
+  permission) moves tanks: drag one, or tap it and press Left, Right,
+  Row up, Row down or New row. While ARRANGING no refill is logged, from
+  the page or the engine. Save layout writes `ltcplay_arrangement.json`
+  (both steps read it; the journal keeps who and the rows before and
+  after), Cancel or leaving the step forgets, Default rows (asks first)
+  goes back to one row per type. A new machine joins the end of its
+  type's row; a broken file is said once and the default rows are shown.
 - DAY tab, Fireball, fuel and timed purge.
   The Fireball step (Startup, only when the show has a fireball group):
   a pad per channel. Fuel Charge, Air Charge and Purge stay on until

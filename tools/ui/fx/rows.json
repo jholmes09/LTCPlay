@@ -1,0 +1,364 @@
+{
+ "notes": "The machine rows (morning.Arrangement): 16 machines of 3 types, ground-6 not in the saved rows (a new machine: the end of the G-Flames row), gone-9 in the rows but not a machine (left out). selftest.py's machine rows tests and fake_engine.js's day_rows scenario read it.",
+ "machines": [
+  {
+   "id": "ground-1",
+   "name": "Ground 1",
+   "kind": "gflame",
+   "group": "front row"
+  },
+  {
+   "id": "ground-2",
+   "name": "Ground 2",
+   "kind": "gflame",
+   "group": "front row"
+  },
+  {
+   "id": "ground-3",
+   "name": "Ground 3",
+   "kind": "gflame",
+   "group": "front row"
+  },
+  {
+   "id": "ground-4",
+   "name": "Ground 4",
+   "kind": "gflame",
+   "group": "front row"
+  },
+  {
+   "id": "ground-5",
+   "name": "Ground 5",
+   "kind": "gflame",
+   "group": "front row"
+  },
+  {
+   "id": "ground-6",
+   "name": "Ground 6",
+   "kind": "gflame",
+   "group": "front row"
+  },
+  {
+   "id": "scaffold-1",
+   "name": "Scaffold 1",
+   "kind": "gflame",
+   "group": "cat-walk"
+  },
+  {
+   "id": "scaffold-2",
+   "name": "Scaffold 2",
+   "kind": "gflame",
+   "group": "cat-walk"
+  },
+  {
+   "id": "scaffold-3",
+   "name": "Scaffold 3",
+   "kind": "gflame",
+   "group": "cat-walk"
+  },
+  {
+   "id": "wave-1",
+   "name": "Wave Flamer 1",
+   "kind": "waver",
+   "group": "wave flamer"
+  },
+  {
+   "id": "wave-2",
+   "name": "Wave Flamer 2",
+   "kind": "waver",
+   "group": "wave flamer"
+  },
+  {
+   "id": "wave-3",
+   "name": "Wave Flamer 3",
+   "kind": "waver",
+   "group": "wave flamer"
+  },
+  {
+   "id": "wave-4",
+   "name": "Wave Flamer 4",
+   "kind": "waver",
+   "group": "wave flamer"
+  },
+  {
+   "id": "wave-5",
+   "name": "Wave Flamer 5",
+   "kind": "waver",
+   "group": "wave flamer"
+  },
+  {
+   "id": "wave-6",
+   "name": "Wave Flamer 6",
+   "kind": "waver",
+   "group": "wave flamer"
+  },
+  {
+   "id": "fireball",
+   "name": "Fireball",
+   "kind": "fireball",
+   "group": "fireball"
+  }
+ ],
+ "groups": {
+  "Ground G-Flames": [
+   "ground-1",
+   "ground-2",
+   "ground-3",
+   "ground-4",
+   "ground-5",
+   "ground-6"
+  ],
+  "Scaffold G-Flames": [
+   "scaffold-1",
+   "scaffold-2",
+   "scaffold-3"
+  ],
+  "Scaffold Wavers": [
+   "wave-1",
+   "wave-2",
+   "wave-3",
+   "wave-4",
+   "wave-5",
+   "wave-6"
+  ],
+  "Fireball": [
+   "fireball"
+  ]
+ },
+ "arrangement": {
+  "rows": [
+   {
+    "kind": "waver",
+    "label": "Wave Flamers",
+    "machines": [
+     "wave-6",
+     "wave-5",
+     "wave-4",
+     "wave-3",
+     "wave-2",
+     "wave-1"
+    ]
+   },
+   {
+    "kind": "gflame",
+    "label": "G-Flames",
+    "machines": [
+     "scaffold-1",
+     "scaffold-2",
+     "scaffold-3",
+     "ground-1",
+     "ground-2",
+     "ground-3",
+     "ground-4",
+     "ground-5",
+     "gone-9"
+    ]
+   },
+   {
+    "kind": "fireball",
+    "label": "Fireball",
+    "machines": [
+     "fireball"
+    ]
+   }
+  ],
+  "saved": true,
+  "problem": "",
+  "file": "ltcplay_arrangement.json"
+ },
+ "units": [
+  {
+   "id": "ground-1",
+   "name": "Ground 1",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "ground-2",
+   "name": "Ground 2",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": true,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "ground-3",
+   "name": "Ground 3",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "ground-4",
+   "name": "Ground 4",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "ground-5",
+   "name": "Ground 5",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "ground-6",
+   "name": "Ground 6",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "scaffold-1",
+   "name": "Scaffold 1",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "scaffold-2",
+   "name": "Scaffold 2",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "scaffold-3",
+   "name": "Scaffold 3",
+   "kind": "gflame",
+   "shows_left": 12,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "wave-1",
+   "name": "Wave Flamer 1",
+   "kind": "waver",
+   "shows_left": 3,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "wave-2",
+   "name": "Wave Flamer 2",
+   "kind": "waver",
+   "shows_left": 3,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "wave-3",
+   "name": "Wave Flamer 3",
+   "kind": "waver",
+   "shows_left": 3,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "wave-4",
+   "name": "Wave Flamer 4",
+   "kind": "waver",
+   "shows_left": 3,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "wave-5",
+   "name": "Wave Flamer 5",
+   "kind": "waver",
+   "shows_left": 3,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  },
+  {
+   "id": "wave-6",
+   "name": "Wave Flamer 6",
+   "kind": "waver",
+   "shows_left": 3,
+   "percent": 40,
+   "refill_soon": false,
+   "color": "",
+   "locked": false,
+   "status": "ok"
+  }
+ ],
+ "expect": {
+  "fuel": [
+   [
+    "wave-6",
+    "wave-5",
+    "wave-4",
+    "wave-3",
+    "wave-2",
+    "wave-1"
+   ],
+   [
+    "scaffold-1",
+    "scaffold-2",
+    "scaffold-3",
+    "ground-1",
+    "ground-2",
+    "ground-3",
+    "ground-4",
+    "ground-5",
+    "ground-6"
+   ]
+  ],
+  "groups": [
+   "Scaffold Wavers",
+   "Scaffold G-Flames",
+   "Ground G-Flames",
+   "Fireball"
+  ]
+ }
+}

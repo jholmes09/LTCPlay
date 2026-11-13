@@ -53,6 +53,7 @@ ltcplay_disarm_ids.json
 # is locked out. Only ltcplay/ltcplay_morning.example.json is committed.
 ltcplay_morning.json
 ltcplay_morning_layout.json
+ltcplay_arrangement.json
 ltcplay_lockout.json
 
 # Users and the audit log (USERS.md): password hashes, the upload token

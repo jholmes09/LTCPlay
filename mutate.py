@@ -11297,6 +11297,54 @@ def build():
   '    if want == "leave":',
   '    if want == "never":'),
 
+ # -- the machine rows (morning.Arrangement; Jeff, 2026-11-13) -----------
+ # The Fuel step's Arrange: a press while arranging must never log a
+ # refill (the page draws no refill button, Refill all is off, and the
+ # engine refuses the arranging screen's refills). And both steps must
+ # read the one rows file, falling back to the default when it is wrong.
+ ("rows: the engine logs a refill from a screen that is arranging",
+  "ltcplay/remote.py",
+  "            why = self.morning.rows_refill_refusal(ctx.device)\n",
+  "            why = \"\"\n"),
+
+ ("rows: the arranging beat is never recorded",
+  "ltcplay/morning.py",
+  """        if on:
+            first = device not in self._rows_arranging""",
+  """        if False:
+            first = device not in self._rows_arranging"""),
+
+ ("ui 2.0: an arranging tank is drawn as a refill button",
+  "ltcplay/web/remote2.html",
+  '        if(FU_ARR) return `<button class="b mv ',
+  '        if(false) return `<button class="b mv '),
+
+ ("ui 2.0: Refill all stays on while arranging",
+  "ltcplay/web/remote2.html",
+  '    $("fu-all").disabled = !f.may_refill || !units.length || !!FU_ARR;',
+  '    $("fu-all").disabled = !f.may_refill || !units.length;'),
+
+ ("rows: the saved rows file is never used",
+  "ltcplay/morning.py",
+  '        return fit_rows(cfg, rows), True, ""',
+  '        return default_rows(cfg), True, ""'),
+
+ ("rows: a rows file of another format is used",
+  "ltcplay/morning.py",
+  """        if not isinstance(doc, dict) or \\
+                doc.get("arrangement_format") != ARRANGEMENT_FORMAT:""",
+  """        if not isinstance(doc, dict):"""),
+
+ ("ui 2.0: the Fuel step ignores the saved rows",
+  "ltcplay/web/remote2.html",
+  "  return rowsFor(FU_ARR ? {rows:FU_ARR.rows} : (MO && MO.arrangement), units);",
+  "  return rowsFor(FU_ARR ? {rows:FU_ARR.rows} : null, units);"),
+
+ ("ui 2.0: the Purge step's Machines ignore the saved rows",
+  "ltcplay/web/remote2.html",
+  '+ rowsFor(mo.arrangement, mo.machines || [])',
+  '+ rowsFor(null, mo.machines || [])'),
+
  # -- the Morning and Shutdown page (Jeff, 2026-10-17; MORNING.md) --------
  # The purge, the lockout and the laser tests: each one a way flames could
  # fire unintentionally, or fail to stop (MORNING.md's threat table).

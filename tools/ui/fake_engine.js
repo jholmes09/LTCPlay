@@ -155,6 +155,9 @@ const SCENARIOS = {
   day_shut: s => { s.schedule.next = null; s.countdown = null; },
   day_shut_jeff: s => { s.schedule.next = null; s.countdown = null; s.me = me("Jeff", "admin"); },
   day_jeff: s => { s.me = me("Jeff", "admin"); },
+  // The machine rows (morning.Arrangement): 16 machines of 3 types in
+  // saved rows, one new and one gone (fx/rows.json).
+  day_rows: s => { s.me = me("Jeff", "admin"); },
   day_firing: s => s,
   day_locked: s => s,
   day_clean_paused: s => { s.schedule.next = null; s.countdown = null; s.cleaning = {available: true, state: "paused", text: "Waiting: hold for the purge bursts"}; },
@@ -181,6 +184,11 @@ function dayState(name, st){
   sh.total = 3; sh.done = 0;
   if(/^day_shut|^day_clean/.test(name)){ const su = lists.find(l => l.id !== "shutdown"); su.steps.forEach(x => { x.done = true; }); su.done = su.total; }
   const fu = FX("fuel");
+  if(name === "day_rows"){
+    const rw = FX("rows");
+    Object.assign(mo, {machines: rw.machines, groups: rw.groups, arrangement: rw.arrangement});
+    Object.assign(fu, {units: rw.units, unit_ids: rw.units.map(u => u.id)});
+  }
   if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
   else if(st.me.role !== "admin" && st.me.role !== "superuser") fu.may_undo = false;
   const wc = {available: true, problem: "", state: "idle", running: false, holder: null, mine: false, run: null, armed: "disarmed",
@@ -358,6 +366,11 @@ class FakeEngine {
       case "/api/remote/checklist-tick": { const l = this.mo.checklists.checklists.find(x => x.id === body.checklist); const st2 = l && l.steps.find(x => x.id === body.step);
         if(st2){ st2.done = !!body.done; st2.who = body.who; st2.at = "18:00"; l.done = l.steps.filter(x => x.done).length; } return ok("Ticked."); }
       case "/api/remote/checklist-note": return ok("Noted.");
+      case "/api/remote/arrangement":
+        if(body.beat === true) return {code: 200, body: {ok: true, arranging: body.arranging === true}};
+        this.mo.arrangement = body.reset === true ? {rows: [], saved: false, problem: ""} :
+          {rows: (body.rows || []).map(r => ({kind: r.kind, machines: r.machines})), saved: true, problem: ""};
+        return {code: 200, body: {ok: true, text: body.reset === true ? "Rows back to one per type." : "Rows saved.", arrangement: this.mo.arrangement}};
       case "/api/remote/fuel-refill": (this.fu.units || []).forEach(u => { if(body.all || u.id === body.unit){ u.refill_soon = false; u.shows_left = 12; u.percent = 100; } }); return ok("Refill logged.");
       case "/api/remote/cleaning-beat": { const w = this.wc; this.wcBeats = (this.wcBeats || 0) + 1;
         if(body.hold && this.wcBeats >= 8){ w.state = w.state === "paused" ? "phase2" : "phase1"; w.running = true; w.progress = {phase: w.state === "phase2" ? 2 : 1, text: "running", left_s: 20, elapsed_s: 1}; this.wcBeats = 0; }
