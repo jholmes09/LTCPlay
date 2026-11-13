@@ -11,6 +11,7 @@ const clone = o => JSON.parse(JSON.stringify(o));
 
 const PERMS = ["show", "arm", "unlock", "checklist", "show_files", "settings", "users"];
 const ROLE_MAY = {
+  superuser: Object.fromEntries(PERMS.map(p => [p, true])),
   admin: Object.fromEntries(PERMS.map(p => [p, true])),
   operator: {show: true, arm: true, unlock: true, checklist: true, show_files: false, settings: false, users: false},
   viewer: Object.fromEntries(PERMS.map(p => [p, false])),
@@ -93,6 +94,9 @@ const SCENARIOS = {
   // announcements and a hazer's arm are refused there, so they say why.
   ipad: s => { s.me.local = false; s.me.device = "iPad"; s.arming = Object.assign({}, s.arming || {}, {enabled: false}); },
   admin: s => { s.me = me("Jeff", "admin"); },
+  // The SuperUser (users.py, 2026-11-13): the only view with the nightly
+  // upload's card (fx/real_users_superuser.json); an admin's has none.
+  superuser: s => { s.me = me("Jeff", "superuser"); },
   show_pending: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
     s.flames.groups.forEach(g => g.armed = "armed"); s.subsystems[3].word = "armed"; },
   running: s => { Object.assign(s.schedule, {state: "SHOW", running: 4, next: {show: 5, start: "19:50", in_s: 1500, in_s_exact: 1500}});
@@ -184,7 +188,7 @@ function dayState(name, st){
     Object.assign(fu, {units: rw.units, unit_ids: rw.units.map(u => u.id)});
   }
   if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
-  else if(st.me.role !== "admin") fu.may_undo = false;
+  else if(st.me.role !== "admin" && st.me.role !== "superuser") fu.may_undo = false;
   const wc = {available: true, problem: "", state: "idle", running: false, holder: null, mine: false, run: null, armed: "disarmed",
     settings: {armed_s: 2, disarmed_s: 3, cycles: 5, burst_on_s: 0.5, burst_off_s: 1.5, max_burst_min: 5}, progress: null};
   if(name === "day_clean_paused") Object.assign(wc, {state: "paused", running: true, progress: {phase: 1, text: "waiting for the go-ahead hold", left_s: null, elapsed_s: 42}});
@@ -222,7 +226,7 @@ function routesFor(name, st){
     served_at: Date.now()};
   const wx = FX("weather");
   r["/api/remote/weather"] = wx;
-  const users = FX("real_users");
+  const users = FX(st.me.role === "superuser" ? "real_users_superuser" : "real_users");
   users.me = {name: st.me.user, role: st.me.role};
   users.users.forEach(u => u.password_set = true);
   r["/api/remote/users"] = users;

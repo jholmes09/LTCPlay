@@ -38,7 +38,8 @@ JOURNAL_NIGHTS = 14
 
 # Never in the bundle whatever they are called: the users' password hashes
 # and the audit upload's token (users.py, auditsend.py).
-NEVER_FILES = ("ltcplay_users.json", "ltcplay_audit.json")
+NEVER_FILES = ("ltcplay_users.json", "ltcplay_audit.json",
+               "ltcplay_users_key.json", "ltcplay_users_signal.json")
 
 
 def wanted(name):
@@ -239,7 +240,8 @@ def self_test():
     for bad in ("show.wav", "render.fseq", "ltcplay_output.lock",
                 "ltcplay_remote_pins.json", "api_token.txt", "my key.json",
                 "logo.png", "LTC Player Setup x.exe", "secret-note.txt",
-                "ltcplay_users.json", "ltcplay_audit.json"):
+                "ltcplay_users.json", "ltcplay_audit.json",
+                "ltcplay_users_key.json", "ltcplay_users_signal.json"):
         if wanted(bad):
             raise RuntimeError(f"{bad} would go in the bundle")
     for good in ("engine.log", "engine.log.2", "supervisor.log",

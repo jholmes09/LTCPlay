@@ -10622,7 +10622,7 @@ def test_schedule_late_limit_round_two():
                   f"+{off} s with Run off: quietly MISSED: {s1.status}")
         else:
             check(tried and tried[-1]["outcome"] == "refused" and
-                  "Run has not been pressed" in tried[-1]["text"] and
+                  "Show control is off" in tried[-1]["text"] and
                   s1.status in (S2.FAULT, S2.MISSED),
                   f"+{off} s with Run off: refused in words, not started: "
                   f"{s1.status} {[(r['outcome'], r['text']) for r in tried]}")
@@ -16676,8 +16676,9 @@ def test_schedule_run_warning_says_only_what_is_true():
     svc.run_gate = lambda: True
     svc.preroll = types.SimpleNamespace(skip=lambda: "Programming Run")
     w = svc._run_warning(now)
-    check(w == "A Programming Run is in force: the 18:00 show (show 1) "
-              "will NOT start. Press Stop, choose Show, then Run.",
+    check(w == "A rehearsal is on: the 18:00 show (show 1) "
+              "will NOT start. End rehearsal, choose Show, then turn show "
+              "control on.",
           f"a Programming Run says the show will not start: {w!r}")
     _no_dashes(w, "programming run warning")
     svc.preroll = types.SimpleNamespace(skip=lambda: "")
@@ -16699,8 +16700,9 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
     S, svc = n.S, n.svc
     from datetime import timedelta
     sv = svc.state_view()
-    check(sv.get("run_warning") == "Run is off: the 18:00 show (show 1) "
-                                   "will NOT start. Press Run.",
+    check(sv.get("run_warning") == "Show control is off: the 18:00 show "
+                                   "(show 1) will NOT start. Turn show "
+                                   "control on.",
           f"Run off with show 1 to come: {sv.get('run_warning')!r}")
     _no_dashes(sv.get("run_warning"), "run warning")
     check(not svc._run_pressed(), "and nothing pressed Run")
@@ -16734,14 +16736,14 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
           "however far the next show is")
     svc.machine = m0
     n.now[0] = was
-    check("Run is off: the 18:00 show (show 1) will NOT start" in
+    check("Show control is off: the 18:00 show (show 1) will NOT start" in
           svc.tonight_words(), "the answer to a save says it too")
     # On Hold, Run alone would not start it: the warning names Resume too
     # (review of PR #180), from what stands, not from a fixed sentence.
     svc._apply(_op(S, S.HOLD_ON))
     check(svc.state_view().get("run_warning") ==
-          "Run is off: the 18:00 show (show 1) will NOT start. Press Run, "
-          "then Resume.", f"on Hold it says Resume as well: "
+          "Show control is off: the 18:00 show (show 1) will NOT start. "
+          "Turn show control on, then Resume.", f"on Hold it says Resume as well: "
                           f"{svc.state_view().get('run_warning')!r}")
     # Abort and its Reset are removed (2026-10-30): no warning names Reset.
     check("Reset" not in svc.state_view().get("run_warning", ""),
@@ -16774,7 +16776,7 @@ def test_schedule_run_off_says_the_next_show_will_not_start():
           '"warn"' in two,
           "2.0 shows it in the alert slot, a fault only when urgent")
     check('do:runWarnWords(sch.run_warning.split("will NOT start. ")[1] || '
-          '"Press Run.", loc)' in two and
+          '"Turn show control on.", loc)' in two and
           'what:sch.run_warning.split(":")[0]' in two,
           "2.0 takes its headline and its press from the engine's sentence "
           "(Resume on a Hold, a Programming Run), not fixed words; only "
@@ -23262,7 +23264,7 @@ def test_artnet_timecode_never_drifts_from_its_clock():
         check(False, "a stopped clock played a cue")
         m.halt()
     except ValueError as e:
-        check("Run" in str(e), f"the refusal should say to press Run: {e}")
+        check("show control" in str(e), f"the refusal should say to turn show control on: {e}")
     try:
         m2x = _master(C, out=_TcOut())[1]
         m2x.start()
@@ -24458,7 +24460,7 @@ def test_a_stopped_cue_hands_the_rig_back():
             sess.clock_play("Show")
             check(False, "a stopped clock played a cue")
         except SessionError as e:
-            check("Run" in str(e), f"the refusal should say to press Run: {e}")
+            check("show control" in str(e), f"the refusal should say to turn show control on: {e}")
         except Exception as e:
             check(False, f"clock_play let {type(e).__name__} escape: {e}")
         sess.stop()
@@ -29907,7 +29909,8 @@ def test_journal_cold_read():
                    encoding="utf-8").read()
     check("- Restarts: 1 (18:22:30)." in summary,
           "the summary counts the restart after the torn line")
-    check("- Logging: 1 line(s) in the machine log were cut short" in
+    check("- Logging: INCOMPLETE. Also: 1 line(s) in the machine log "
+          "were cut short" in
           summary, "and says a line was cut short")
     print("  ok")
 
@@ -30338,7 +30341,8 @@ def test_journal_a_torn_last_line_after_a_power_cut():
     text = open(path, encoding="utf-8").read()
     check("- Restarts: 2 (18:10:00, 18:20:00)." in text,
           f"both restarts are counted: {text[:500]}")
-    check("- Logging: 1 line(s) in the machine log were cut short" in text,
+    check("- Logging: INCOMPLETE. Also: 1 line(s) in the machine log "
+          "were cut short" in text,
           "and the summary says a line was cut short")
     print("  ok")
 
@@ -30568,6 +30572,689 @@ def test_journal_waiting_lines_are_capped_and_counted():
     check(resumed and "11 line(s) from 18:00:00 to 18:00:09 were not "
                       "written" in resumed[0],
           f"the resume line says which lines were lost: {resumed}")
+    print("  ok")
+
+
+def test_journal_held_file_and_clock_set_back():
+    section("journal on Windows (stress round 3, 2026-11-10): another "
+            "program holding the journal file stops only that file, the "
+            "machine log keeps every line, the stop names the file, every "
+            "held line is written once it is let go; a clock set back while "
+            "stopped does not keep the journal off for the size of the step")
+    S = _sched()
+    if S is None:
+        return
+    import errno
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import journal as J
+    work = tempfile.mkdtemp()
+    now = [_den(S, 13, 19)]
+    b = _book(J, work, now, durable=False)
+    jpath = os.path.join(work, J.journal_name("2026-11-14"))
+    mpath = os.path.join(work, J.machine_name("2026-11-14"))
+    held = [False]
+
+    def opener(path):
+        # Windows: a reader that opened the file without letting others
+        # write makes our append fail with a sharing violation, which
+        # Python raises as PermissionError with the file's name.
+        if held[0] and path == jpath:
+            raise PermissionError(errno.EACCES, "The process cannot access "
+                                  "the file because it is being used by "
+                                  "another process", path)
+        return J._open_append(path)
+
+    b._opener = opener
+
+    def line(i):
+        b.record(actor="scheduler", action="note", outcome="done",
+                 reason="r", text=f"Event {i} of the night.")
+
+    def texts(path):
+        if path == mpath:
+            return [r["text"] for r in _jsonl_rows(path) if r]
+        return _lines(path)
+
+    line(0)
+    held[0] = True
+    for i in range(1, 4):
+        now[0] += timedelta(seconds=10)
+        line(i)
+    # Stopped at the first held line; tried again every retry_s, the
+    # machine log first: it gets every line while the journal stays held.
+    now[0] += timedelta(seconds=b.retry_s + 1)
+    b.drain()
+    m = texts(mpath)
+    check([t for t in m if t.startswith("Event ")] ==
+          [f"Event {i} of the night." for i in range(4)],
+          f"the machine log kept every line while the journal was held: "
+          f"{m}")
+    check(not any("Event 1 " in x for x in texts(jpath)),
+          f"the journal file got none of them: {texts(jpath)}")
+    want = (f"this machine refused to let ltcplay write to {jpath} (The "
+            f"process cannot access the file because it is being used by "
+            f"another process). Another program may have it open; close "
+            f"that program")
+    check(b.stopped_why == want and want in b.health()["sentence"],
+          f"the stop names the file and what to do: {b.stopped_why!r}")
+    held[0] = False
+    now[0] += timedelta(seconds=b.retry_s + 1)
+    line(4)
+    j = texts(jpath)
+    ev = [x for x in j if "Event " in x]
+    check(len(ev) == 5 and all(f"Event {i} of the night." in ev[i]
+                               for i in range(5)) and
+          any("Logging to disk resumed" in x for x in j) and
+          not b.stopped_why,
+          f"let go: every held line written, in order, and the resume "
+          f"said: {j}")
+    # Stopped again, then the clock is set back an hour (a time server
+    # step, or a hand edit): the next line is tried at once, not an hour
+    # and 30 s later.
+    held[0] = True
+    now[0] += timedelta(seconds=5)
+    line(5)
+    check(b.stopped_why, "held again: stopped")
+    held[0] = False
+    now[0] -= timedelta(hours=1)
+    line(6)
+    check(not b.stopped_why and
+          any("Event 6 of the night." in x for x in texts(jpath)),
+          f"a clock set back while stopped: written at once: "
+          f"{b.stopped_why!r}")
+    # And forward in time still waits out retry_s, as before.
+    held[0] = True
+    line(7)
+    held[0] = False
+    now[0] += timedelta(seconds=b.retry_s - 5)
+    line(8)
+    check(b.stopped_why and not any("Event 8 " in x
+                                    for x in texts(jpath)),
+          "inside retry_s after a stop: not tried again yet")
+    now[0] += timedelta(seconds=6)
+    line(9)
+    check(not b.stopped_why and
+          any("Event 9 of the night." in x for x in texts(jpath)),
+          "after retry_s: written")
+    # The free space look, every FREE_CHECK_S: a clock set back does not
+    # put it off for the size of the step either.
+    looks = []
+
+    def usage(path):
+        looks.append(now[0])
+        return types.SimpleNamespace(free=10_000 * 1e6)
+
+    import types
+    c = _book(J, tempfile.mkdtemp(), now, durable=False, disk_usage=usage)
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="First.")
+    now[0] += timedelta(seconds=5)
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Second.")
+    check(len(looks) == 1, f"inside FREE_CHECK_S: looked once: {looks}")
+    now[0] -= timedelta(hours=1)
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Third.")
+    check(len(looks) == 2, f"a clock set back: looked again at once: "
+                           f"{looks}")
+    print("  ok")
+
+
+def test_journal_watchdog_flags_a_silent_gap():
+    section("journal watchdog (Windows stress round 3: the night files "
+            "stopped at 13:19 on 9 November while the engine ran on): a "
+            "writer stuck on the disk, a writer thread that is gone, and "
+            "files another program cut or the disk does not read back each "
+            "raise the logging health flag with a sentence; none of it "
+            "holds a show")
+    S = _sched()
+    if S is None:
+        return
+    import tempfile
+    import threading
+    from datetime import timedelta
+    from ltcplay import journal as J
+    now = [_den(S, 13, 19, 4, d=(2026, 11, 9))]
+    mono = [1000.0]
+    work = tempfile.mkdtemp()
+    b = _book(J, work, now, durable=False, mono=lambda: mono[0])
+    # The files' read back is tested on its own below.
+    b._watch_disk = lambda now: None
+
+    def line(text):
+        return b.record(actor="scheduler", action="note", outcome="done",
+                        reason="r", text=text)
+
+    def step(s):
+        now[0] += timedelta(seconds=s)
+        mono[0] += s
+
+    line("Show 1 started on schedule at 13:19.")
+    # The writer is stuck in a write the disk never answers: an alive
+    # thread that takes nothing.
+    gate = threading.Event()
+    stuck = threading.Thread(target=gate.wait, daemon=True)
+    stuck.start()
+    b._writer = stuck
+    step(6)
+    line("Event two.")
+    step(14)
+    h = b.watch()
+    check(h["ok"] and not h["stalled"],
+          f"14 s of waiting is not a stall yet (STALL_S is 15): {h}")
+    step(2)
+    h = b.watch()
+    want = ("Logging to disk is stuck since 13:19:26: nothing has been "
+            "written for 16s while 1 line(s) wait: the newest line in the "
+            "files is from 13:19:04, the newest event is from 13:19:10. The "
+            "writer may be stuck on the disk. The show is not affected. 2 "
+            "line(s) are waiting in memory and will be written, in order, "
+            "once the disk answers.")
+    check(not h["ok"] and h["stalled"] and h["sentence"] == want,
+          f"a writer stuck on the disk raises the flag, with a sentence: "
+          f"{h['sentence']!r}")
+    check(b.memory[-1]["line"] ==
+          "13:19:26  Logging to disk is stuck: nothing has been written for "
+          "16s while 1 line(s) wait: the newest line in the files is from "
+          "13:19:04, the newest event is from 13:19:10. The writer may be "
+          "stuck on the disk. The show carries on. Every line is kept in "
+          "memory and written, in order, once the disk answers." and
+          b.memory[-1]["fault"] and
+          b.memory[-1]["action"] == "logging stalled",
+          f"and a fault line on the page at once: {b.memory[-1]['line']!r}")
+    step(2)
+    b.watch()
+    check(sum(r["action"] == "logging stalled" for r in b.memory) == 1,
+          "said once, not on every look")
+    # The disk answers again: every waiting line is written, in order,
+    # and the resume is said.
+    b._writer = None
+    b.drain()
+    b._writer = stuck
+    step(2)
+    h = b.watch()
+    check(h["ok"] and b.memory[-1]["line"] ==
+          "13:19:30  Logging to disk resumed at 13:19:30. It had been stuck "
+          "since 13:19:26; the lines from that time are written above this "
+          "one.", f"the disk answers: the flag clears, said: "
+          f"{b.memory[-1]['line']!r}")
+    texts = _lines(os.path.join(work, J.journal_name("2026-11-09")))
+    check([x[10:] for x in texts][:3] ==
+          ["Show 1 started on schedule at 13:19.", "Event two.",
+           "Logging to disk is stuck: nothing has been written for 16s "
+           "while 1 line(s) wait: the newest line in the files is from "
+           "13:19:04, the newest event is from 13:19:10. The writer may be "
+           "stuck on the disk. The show carries on. Every line is kept in "
+           "memory and written, in order, once the disk answers."],
+          f"the stuck lines reach the file in order: {texts}")
+    # A writer thread that is gone is started again, out loud.
+    gate.set()
+    stuck.join()
+    h = b.watch()
+    check(b.writer_restarts == 1 and b._writer.is_alive() and
+          b.memory[-1]["line"] ==
+          "13:19:30  The journal's writer had stopped without saying why, "
+          "so it was started again at 13:19:30. 1 line(s) were waiting; "
+          "they are written now, in order. The show is not affected.",
+          f"a dead writer is started again: {b.memory[-1]['line']!r}")
+    b.close()
+    # The files read back: another program cut the journal file (an
+    # editor's Save), or the disk does not answer a read.
+    work2 = tempfile.mkdtemp()
+    c = _book(J, work2, now, durable=False, mono=lambda: mono[0])
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    c.watch()
+    c._disk_check[0].join()
+    check(c.watch()["ok"] and not c.disk_why, "files as written read back")
+    jp = os.path.join(work2, J.journal_name("2026-11-09"))
+    with open(jp, "wb") as fh:
+        fh.write(b"x\n")
+    step(61)
+    c.watch()
+    c._disk_check[0].join()
+    h = c.watch()
+    check(not h["ok"] and h["sentence"] ==
+          f"The night files did not read back as written: {jp} is shorter "
+          f"than ltcplay wrote it (2 bytes, not 15): another program cut or "
+          f"replaced it. The show is not affected; lines are still being "
+          f"written to {work2}.", f"a cut file is found: {h['sentence']!r}")
+    os.remove(jp)
+    c.disk_why = ""
+    step(61)
+    c.watch()
+    c._disk_check[0].join()
+    c.watch()
+    check(c.disk_why == f"{J.journal_name('2026-11-09')} is gone from "
+                       f"{work2} after ltcplay wrote to it: another program "
+                       f"moved or removed it",
+          f"a file moved away is found: {c.disk_why!r}")
+    hang = threading.Event()
+    real = J.Logbook.__dict__["_read_back"]
+    J.Logbook._read_back = staticmethod(lambda snap, res: hang.wait())
+    try:
+        c.disk_why = ""
+        step(61)
+        c.watch()
+        step(J.DISK_ANSWER_S + 1)
+        c.watch()
+        check(c.disk_why == "the disk did not answer a read of the night "
+                            "files in 5 s",
+              f"a disk that does not answer a read: {c.disk_why!r}")
+    finally:
+        hang.set()
+        J.Logbook._read_back = real
+    # A writer whose stop cannot be written up still never ends.
+    e = _book(J, tempfile.mkdtemp(), now, durable=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("the disk said something odd")
+    e.drain = boom
+    e._stop = boom
+    t = threading.Thread(target=e._write_loop, daemon=True)
+    t.start()
+    e._wake.set()
+    for _ in range(100):
+        if e.stopped_why:
+            break
+        time.sleep(0.01)
+    alive = t.is_alive()
+    e._closing = True
+    e._wake.set()
+    t.join(2)
+    check(alive and e.stopped_why == "ltcplay could not write a line or "
+          "say why (RuntimeError); that is a bug in ltcplay",
+          f"the writer lives on, stopped out loud: {e.stopped_why!r}")
+    # Started for real, the watchdog has its own thread.
+    d = _book(J, tempfile.mkdtemp(), now, durable=False).start_writer()
+    check(d._watcher is not None and d._watcher.is_alive(),
+          "start_writer starts the watchdog beside the writer")
+    d.close()
+    _no_dashes(" ".join(r["line"] for r in b.memory), "watchdog lines")
+    print("  ok")
+
+
+def test_journal_summary_checks_the_files():
+    section("journal: the morning summary says Logging: complete only when "
+            "the files agree, line for line and with no gap while a show "
+            "ran; otherwise Logging: INCOMPLETE with the gap times")
+    S = _sched()
+    if S is None:
+        return
+    import errno
+    import json
+    import tempfile
+    from datetime import timedelta
+    from ltcplay import journal as J
+    night = "2026-11-09"
+
+    def at(h, m, s=0):
+        return _den(S, h, m, s, d=(2026, 11, 9))
+
+    def run_night(work, opener=None):
+        now = [at(12, 55)]
+        b = _book(J, work, now, durable=False)
+        if opener:
+            b._opener = opener(b)
+        b.record(actor="system", action="note", outcome="done", reason="r",
+                 text="Night opens.")
+        slots = []
+        for i, (h, m) in enumerate(((13, 0), (13, 15), (13, 30), (13, 45)),
+                                   1):
+            now[0] = at(h, m)
+            st = now[0]
+            b.record(actor="scheduler", action="START_SHOW", outcome="fired",
+                     reason="FIRED", show=i,
+                     text=f"Show {i} started on schedule at {h}:{m:02d}.")
+            now[0] = st + timedelta(seconds=444)
+            b.record(actor="scheduler", action="SHOW_ENDED", outcome="done",
+                     reason="DONE", show=i, text=f"Show {i} finished.")
+            slots.append({"show": i, "planned": f"{h}:{m:02d}",
+                          "status": "DONE", "reason": "DONE",
+                          "started": f"{st:%H:%M:%S}",
+                          "ended": f"{now[0]:%H:%M:%S}",
+                          "started_at": st.isoformat(),
+                          "ended_at": now[0].isoformat()})
+        now[0] = at(14, 0)
+        return b, slots, now
+
+    def logging_line(path):
+        text = open(path, encoding="utf-8").read()
+        return [x for x in text.splitlines() if x.startswith("- Logging:")]
+
+    work = tempfile.mkdtemp()
+    b, slots, _now = run_night(work)
+    p = b.write_summary(night, state="OFF", slots=slots)
+    check(logging_line(p) == [
+        "- Logging: complete. The journal file has 9 line(s) and the "
+        "machine log the same number, with no gap while a show ran."],
+        f"a whole night: complete, with the count: {logging_line(p)}")
+    # The same night with every line after 13:19 lost from both files (the
+    # 9 November pattern), read back by the next morning's check.
+    names = (J.journal_name(night), J.machine_name(night))
+    for n in names:
+        path = os.path.join(work, n)
+        keep = open(path, "rb").read().splitlines(True)[:4]
+        with open(path, "wb") as fh:
+            fh.write(b"".join(keep))
+    f = J.check_files(work, night, windows=J._windows_from_slots(slots),
+                      made=b._made[night], now=at(14, 0))
+    check(not f["complete"] and f["journal_lines"] == 4 and
+          f["machine_records"] == 4 and f["missing"] == 6 and
+          f["gaps"] == [{"from": "2026-11-09T13:15:00-07:00",
+                         "to": "2026-11-09T14:00:00-07:00",
+                         "seconds": 2700.0,
+                         "why": "no line for show 2 ended"}],
+          f"lines lost after 13:15: missing and the gap found: {f}")
+    text = J.summary_text(night, [], slots=slots, files=f,
+                          health={"ok": True})
+    want = ("- Logging: INCOMPLETE, gaps 13:15:00 to 14:00:00. 6 line(s) "
+            "ltcplay made tonight are not in the machine log. No line from "
+            "13:15:00 to 14:00:00 (45m 0s, no line for show 2 ended).")
+    check(want in text.splitlines(), f"said plainly, with the gap times: "
+          f"{[x for x in text.splitlines() if 'Logging' in x]}")
+    check("## Logging" in text, "and the Logging section lists why")
+    _no_dashes(text, "an incomplete summary")
+    # A gap while a show ran, with no line missing from memory (the files
+    # from another run, say): found by time alone.
+    f2 = J.check_files(work, night, windows=[
+        (9, at(13, 20), at(13, 45))], now=at(14, 0))
+    check([g["why"] for g in f2["gaps"]] == ["no line for show 9 started"],
+          f"a show's start with no line: {f2['gaps']}")
+    f3 = J.check_files(work, night, windows=[
+        (9, at(13, 15), at(14, 30))], now=at(14, 0))
+    check([(g["why"], g["seconds"]) for g in f3["gaps"]] ==
+          [("no line while show 9 ran", 2700.0)],
+          f"no line for 45m while a show ran: {f3['gaps']}")
+    # The scheduler hands the check each show's times.
+    work5 = tempfile.mkdtemp()
+    now5 = [_den(S, 17, 30)]
+    svc = _svc(S, work5, now5).start(thread=False)
+    now5[0] = _den(S, 18, 0)
+    svc.tick()
+    rows = svc._slot_rows(svc.machine)
+    from datetime import datetime as _dt
+    check(_dt.fromisoformat(rows[0]["started_at"]) == _den(S, 18, 0) and
+          rows[0]["ended_at"] is None and rows[1]["started_at"] is None,
+          f"each show's start and end time go to the summary's check: "
+          f"{rows[:2]}")
+    # The journal file held by another program all night (Windows stress
+    # round 3): the machine log has every line, the journal does not.
+    work3 = tempfile.mkdtemp()
+    jpath = os.path.join(work3, J.journal_name(night))
+
+    def holder(book):
+        def opener(path):
+            if path == jpath and book.clock() >= at(13, 19):
+                raise PermissionError(errno.EACCES, "The process cannot "
+                                      "access the file because it is being "
+                                      "used by another process", path)
+            return J._open_append(path)
+        return opener
+    c, slots3, _n = run_night(work3, opener=holder)
+    p3 = c.write_summary(night, state="OFF", slots=slots3)
+    got = logging_line(p3)
+    check(len(got) == 1 and got[0].startswith(
+        "- Logging: INCOMPLETE. The journal file has 4 line(s) and the "
+        "machine log 10; they are written from the same events, so the "
+        "journal file is missing lines. Also: Logging to disk stopped at "
+        "13:22:24: "
+        "this machine refused to let ltcplay write to " + jpath),
+        f"a held journal file: INCOMPLETE, with the counts: {got}")
+    # A night with a restart in it: the gap while ltcplay was not running
+    # is a restart, never a logging gap.
+    recs = [{"id": "1", "at": at(13, 0).isoformat(), "line": "a",
+             "action": "START_SHOW", "show": 1, "reason": "FIRED"},
+            {"id": "2", "at": at(13, 40).isoformat(), "line": "b",
+             "action": "program start", "show": None, "reason": "x"}]
+    work4 = tempfile.mkdtemp()
+    with open(os.path.join(work4, J.machine_name(night)), "w") as fh:
+        fh.write("".join(json.dumps(r) + "\n" for r in recs))
+    with open(os.path.join(work4, J.journal_name(night)), "w") as fh:
+        fh.write("a\nb\n")
+    f4 = J.check_files(work4, night)
+    check(f4["complete"] and not f4["gaps"],
+          f"a gap that ends at a restart is not a logging gap: {f4}")
+    print("  ok")
+
+
+def test_journal_check_and_watchdog_edges():
+    section("journal (review of #245): a real night on a microsecond clock "
+            "reads complete; a file moved away is found at the next write; "
+            "a partial write retried is one line; a stop with no line lost "
+            "still reads complete; lines made and lines waiting go through "
+            "the real summary; a replaced file, a good read back after a bad "
+            "one, a clock set back, lines arriving mid write and a stopped "
+            "disk each say exactly what they are")
+    S = _sched()
+    if S is None:
+        return
+    import errno
+    import tempfile
+    import threading
+    from datetime import timedelta
+    from ltcplay import journal as J
+    night = "2026-11-14"
+
+    def logging_line(text):
+        return [x for x in text.splitlines() if x.startswith("- Logging:")]
+
+    # 1. The real scheduler on a clock with microseconds: show ends land a
+    # fraction of a millisecond after the line the file keeps for them.
+    work = tempfile.mkdtemp()
+    now = [_den(S, 17, 30, 0, 123456)]
+    svc = _svc(S, work, now).start(thread=False)
+    for hm in ((18, 0, 0, 123456), (18, 7, 20, 987654), (18, 20, 0, 456789),
+               (18, 27, 20, 999999), (18, 40, 0, 1)):
+        now[0] = _den(S, *hm)
+        svc.tick()
+    now[0] = _den(S, 18, 47, 20, 500500)
+    svc.tick()
+    now[0] = _den(S, 18, 50, 0, 123456)
+    svc._apply(_op(S, S.END_NIGHT, confirmed=True))
+    text = open(os.path.join(work, "nights", J.summary_name(night)),
+                encoding="utf-8").read()
+    got = logging_line(text)
+    check(len(got) == 1 and got[0].startswith("- Logging: complete. "),
+          f"a real night on a microsecond clock is complete: {got}")
+    nights = os.path.join(work, "nights")
+    ends = [J._parse_at(r["at"]) for r in _jsonl_rows(os.path.join(
+        nights, J.machine_name(night))) if r and r.get("show") == 1]
+    for shift in (0.0004, -0.0004):
+        f = J.check_files(nights, night, windows=[
+            (1, ends[0] + timedelta(seconds=shift),
+             ends[-1] + timedelta(seconds=shift))])
+        check(not f["gaps"], f"a show time {shift * 1000:+.1f} ms from its "
+                             f"line is that line: {f['gaps']}")
+    # 2. Moved away, and another line written before any read back.
+    work2 = tempfile.mkdtemp()
+    now2 = [_den(S, 13, 19, 4)]
+    b = _book(J, work2, now2, durable=False)
+    b.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    os.remove(os.path.join(work2, J.machine_name(night)))
+    b.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Two.")
+    check(b.disk_why == f"{J.machine_name(night)} is gone from {work2} "
+                        f"after ltcplay wrote to it: another program moved "
+                        f"or removed it" and not b.health()["ok"],
+          f"a file moved away is found at the next write: {b.disk_why!r}")
+    b2 = _book(J, tempfile.mkdtemp(), now2, durable=False)
+    b2.record(actor="scheduler", action="note", outcome="done", reason="r",
+              text="One, a long first line.")
+    jp2 = os.path.join(b2.folder, J.journal_name(night))
+    with open(jp2, "wb") as fh:
+        fh.write(b"x\n")
+    b2.record(actor="scheduler", action="note", outcome="done", reason="r",
+              text="Two.")
+    check(b2.disk_why == f"{jp2} is shorter than ltcplay wrote it (2 bytes, "
+                         f"not 34): another program cut or replaced it",
+          f"a file cut shorter is found at the next write: {b2.disk_why!r}")
+    # 3. The read back: a file replaced with the same size, then a good
+    # read back clears the flag, out loud.
+    mono = [0.0]
+    c = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    jp = os.path.join(c.folder, J.journal_name(night))
+    data = open(jp, "rb").read()
+    with open(jp, "wb") as fh:
+        fh.write(data.replace(b"One.", b"Won."))
+    c.watch()
+    c._disk_check[0].join()
+    c.watch()
+    check(c.disk_why == f"{jp} no longer holds the last line ltcplay wrote "
+                        f"to it: another program replaced it",
+          f"a file replaced with the same size is found: {c.disk_why!r}")
+    c.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Two.")
+    mono[0] += J.DISK_CHECK_S + 1
+    c.watch()
+    c._disk_check[0].join()
+    c.watch()
+    check(not c.disk_why and c.health()["ok"] and c.memory[-1]["line"] ==
+          "13:19:04  The night files read back correctly again at "
+          "13:19:04.", f"a good read back clears it, said: "
+          f"{c.memory[-1]['line']!r}")
+    # 4. Lines that arrive while a batch is being written wait from then,
+    # not from the first line of the batch.
+    d = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+    gate = threading.Event()
+    idle = threading.Thread(target=gate.wait, daemon=True)
+    idle.start()
+    d._writer = idle                 # nothing drains but this test
+    real = d._opener
+    late, looked = [], []
+
+    def opener(path):
+        if not late:
+            late.append(1)
+            mono[0] += 20
+            d.record(actor="scheduler", action="note", outcome="done",
+                     reason="r", text="Arrived mid write.")
+        elif len(late) == 3 and not looked:
+            # The next batch is in the disk; the watchdog looks now.
+            mono[0] += 5
+            d._watch_stall(d.clock())
+            looked.append(bool(d.stalled_why))
+        late.append(1)
+        return real(path)
+    d._opener = opener
+    d.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="First.")
+    d.drain()
+    check(looked == [False],
+          f"a line that arrived mid write has waited 5 s, not 25 s: "
+          f"{looked}")
+    gate.set()
+    d._writer = None
+    # 5. A stopped disk is flagged as stopped, never also as stuck.
+    e = _book(J, tempfile.mkdtemp(), now2, durable=False,
+              mono=lambda: mono[0])
+
+    def refuse(path):
+        raise OSError(errno.EIO, "I/O error", path)
+    e._opener = refuse
+    e.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Kept in memory.")
+    mono[0] += 60
+    e.watch()
+    check(e.stopped_why and not e.stalled_why and
+          not any(r["action"] == "logging stalled" for r in e.memory),
+          "a stop already flagged is not called stuck as well")
+    # 6. The summary's own lists, through the real path: a line lost from
+    # both files is missing; lines still waiting for a held disk are not.
+    work6 = tempfile.mkdtemp()
+    now6 = [_den(S, 12, 0)]
+    g = _book(J, work6, now6, durable=False)
+    for i in range(3):
+        g.record(actor="scheduler", action="note", outcome="done",
+                 reason="r", text=f"Line {i}.")
+    for n in (J.journal_name(night), J.machine_name(night)):
+        path = os.path.join(work6, n)
+        keep = open(path, "rb").read().splitlines(True)[:-1]
+        with open(path, "wb") as fh:
+            fh.write(b"".join(keep))
+    got = logging_line(open(g.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(got == ["- Logging: INCOMPLETE. 1 line(s) ltcplay made tonight are "
+                  "not in the machine log."],
+          f"a line made and lost is counted: {got}")
+    work7 = tempfile.mkdtemp()
+    h = _book(J, work7, now6, durable=False)
+    h.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Written.")
+    h._opener = refuse
+    h.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Waiting.")
+    h._opener = J._open_append
+    held = [True]
+    real_drain = h.drain
+
+    def no_disk(force=False, timeout=None):
+        return False if held[0] else real_drain(force, timeout)
+    h.drain = no_disk
+    got = logging_line(open(h.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(h.pending() and len(got) == 1 and
+          "not in the machine log" not in got[0],
+          f"lines still waiting for the disk are waiting, not lost: {got}")
+    # 7. A partial write retried is one line; a clock set back is no gap.
+    work8 = tempfile.mkdtemp()
+    k = _book(J, work8, now6, durable=False)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="One.")
+    jp8 = os.path.join(work8, J.journal_name(night))
+    full = open(jp8, "rb").read()
+    with open(jp8, "wb") as fh:
+        fh.write(full[:6] + b"\n" + full)
+    f8 = J.check_files(work8, night)
+    check(f8["complete"] and f8["journal_lines"] == 1,
+          f"a line cut short and written again whole is one line: {f8}")
+    with open(jp8, "ab") as fh:
+        fh.write(b"12:00:01  An extra line.\n")
+    check(J.check_files(work8, night)["problems"] ==
+          ["The journal file has 2 line(s) and the machine log 1; they are "
+           "written from the same events, so the machine log is missing "
+           "lines."], "the file that is short is named")
+    now6[0] = _den(S, 13, 0)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Late.")
+    now6[0] = _den(S, 11, 0)
+    k.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Clock set back.")
+    f9 = J.check_files(work8, night, windows=[(1, _den(S, 10, 0), None)])
+    check(not [g_ for g_ in f9["gaps"] if g_["to"].startswith(
+        "2026-11-14T11:00")], f"a clock set back is no gap: {f9['gaps']}")
+    # 8. Stopped, resumed and nothing lost: still complete.
+    work9 = tempfile.mkdtemp()
+    m = _book(J, work9, now6, durable=False)
+    m._opener = refuse
+    m.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Held.")
+    m._opener = J._open_append
+    now6[0] += timedelta(seconds=m.retry_s + 1)
+    m.record(actor="scheduler", action="note", outcome="done", reason="r",
+             text="Written again.")
+    got = logging_line(open(m.write_summary(night, state="OFF", slots=[]),
+                            encoding="utf-8").read())
+    check(len(got) == 1 and got[0].startswith(
+        "- Logging: complete. The journal file has 4 line(s) and the "
+        "machine log the same number; it stopped and resumed 1 time(s) and "
+        "lost no line"), f"a stop that lost nothing is complete: {got}")
+    # 9. The scheduler's ring buffer says the logging is not well when the
+    # watchdog says so.
+    svc.logbook.stalled_why = "stuck"
+    check(svc._snapshot()["logging_ok"] is False,
+          "a stuck writer reads as logging not ok in the ring buffer")
+    svc.logbook.stalled_why = ""
+    svc.logbook.disk_why = "cut"
+    check(svc._snapshot()["logging_ok"] is False,
+          "and so does a file that did not read back")
+    svc.logbook.disk_why = ""
     print("  ok")
 
 
@@ -33620,7 +34307,7 @@ def test_audio_master_loads_all_or_nothing():
         del sa.open
     check(why is not None and "could not be loaded" in why
           and "could only be read to" in why
-          and "press Stop and Run again" in why and not am.playing,
+          and "turn show control off and on again" in why and not am.playing,
           f"a cue read only halfway could still be started: {why}")
     check(am.snapshot()["audio"]["ready"]["show"] == "failed",
           "the page shows a half-read cue as ready")
@@ -33633,7 +34320,7 @@ def test_audio_master_loads_all_or_nothing():
     real_open(music, "wb").write(raw[:len(raw) // 2])
     why = reload_and_play()
     check(why is not None and "could not be loaded" in why
-          and "press Stop and Run again" in why and not am.playing,
+          and "turn show control off and on again" in why and not am.playing,
           f"a cue cut short after checking could still be started: {why}")
     # Every stem swapped for a whole, consistent, but shorter file after
     # the show was checked: still refused, on the lengths it was checked at.
@@ -42146,7 +42833,7 @@ def test_fire_ice_show_outputs():
     # Nothing running: nothing is playing, and music refuses in words.
     check(show.playing() is False, "nothing running: nothing playing")
     r = show.music_hold(0.25)
-    check(not r.ok and "Run" in r.sentence,
+    check(not r.ok and "show control" in r.sentence,
           f"music with nothing running is refused: {r}")
     check(show.music_frozen() is None, "no clock: frozen is unknown")
     check(not show.pixels_fade_out(0.25).ok, "pixels need a running show")
@@ -42798,7 +43485,7 @@ def test_schedule_never_touches_the_rig_before_run():
     starts = [r for r in svc.journal if r.get("action") == "automatic start"]
     check(len(starts) >= 3 and
           all(r["outcome"] == "refused" and
-              "Run has not been pressed" in r["text"] for r in starts),
+              "Show control is off" in r["text"] for r in starts),
           f"every show that came due (18:00, 18:20, 18:40, 19:00) was "
           f"tried and refused because Run was not pressed: "
           f"{[(r['outcome'], r['text']) for r in starts]}")
@@ -42984,13 +43671,13 @@ def test_refused_starts_say_why_and_what_to_press():
     _fi_walk(n, 18, 1)
     s1 = [s for s in svc.machine.slots if s.n == 1]
     check(s1 and s1[0].status == S.FAULT and R.RUN_OFF in s1[0].reason and
-          "press Run on the Programming screen" in s1[0].reason,
+          "Turn show control on, then Start now" in s1[0].reason,
           f"the slot's status on the rack screen names the reason and what "
           f"to press: {s1}")
     check(got and got[-1][0] == "start" and
-          got[-1][1].startswith("Show 1 did not start: Run has not been "
-                                "pressed") and
-          "press Run on the Programming screen, then Start now" in got[-1][1]
+          got[-1][1].startswith("Show 1 did not start: Show control is "
+                                "off") and
+          "Turn show control on, then Start now" in got[-1][1]
           and "Nothing was sent to the rig" in got[-1][1],
           f"the alert says why and what to press, never only that the show "
           f"did not start: {got[-1:]}")
@@ -43005,8 +43692,8 @@ def test_refused_starts_say_why_and_what_to_press():
           f"{sv.get('start_blocked')}")
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is False and r["text"].startswith(
-              "Start now was refused: Run has not been pressed") and
-          "press Run on the Programming screen" in r["text"] and
+              "Start now was refused: Show control is off") and
+          "Turn show control on, then Start now" in r["text"] and
           "Nothing was started" in r["text"],
           f"Start now with Run off says why at once: {r}")
     check(len(svc.machine.slots) == slots0,
@@ -43293,7 +43980,7 @@ def test_refused_starts_say_why_and_what_to_press():
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is False and "did not load" in r["text"] and
           "show.wav could not be read" in r["text"] and
-          "press Stop and Run again" in r["text"],
+          "turn show control off and on again" in r["text"],
           f"audio that failed to load: says which and what to press: {r}")
     clk._load_failed = {}
     clk._device_ok, clk._fault = False, "The interface was unplugged."
@@ -43333,7 +44020,10 @@ def test_refused_starts_say_why_and_what_to_press():
                  "NEVER_CONFIRMED", "SHOW_START_ERROR"):
         text = getattr(R, name)
         _no_dashes(text, f"ShowRunner.{name}")
-        check("press" in text and not text.rstrip().endswith("."),
+        # What to press: a button ("press ...") or the switch ("turn show
+        # control on/off", Jeff 2026-11-11).
+        check(("press" in text or "turn show control" in text.lower()) and
+              not text.rstrip().endswith("."),
               f"ShowRunner.{name} says what to press and ends without a "
               f"full stop (it is wrapped in FAULT (...)): {text!r}")
     # F8: a failure reported too late to be a failed start (the show runs
@@ -43410,8 +44100,8 @@ def test_reset_says_how_the_rig_stands():
         {"link": "lost"}, {"link": "lost"}, {"connected": False},
         dict(ann, items=[{"name": "Delayed", "available": False}]))
     for part in ("Audio NOT READY (lost): check the show audio interface, "
-                 "then press Stop and Run.",
-                 "Pixels NOT READY: Run is not pressed. Press Run.",
+                 "then turn show control off and on.",
+                 "Pixels NOT READY: show control is off. Turn it on.",
                  "Flame link NOT READY: flamesafe is not connected. Start "
                  "flamesafe.",
                  "Timecode NOT READY: MadMapper (10.250.1.1) is not taking "
@@ -43586,7 +44276,7 @@ t(startLook({schedule:{attached:true, state:"STANDBY"}, show:{running:true}}, fa
 t(startLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false, false).sub === "tap twice" &&
   runLook({schedule:{attached:true, state:"SHOW"}, show:{running:true, show_control_on:true}}, false).sub === "tap twice", "a live show: Stop, tap twice");
 const off = startLook({schedule:{attached:true, state:"STANDBY", start_blocked:{text:"Run has not been pressed, so nothing may reach the rig; press Run", loading:false}}, show:{running:false}}, false, false);
-t(off.mode === "start" && off.sub === "Run is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
+t(off.mode === "start" && off.sub === "Show control is off" && /^Run has not been pressed/.test(off.why), "Run off: says so, and the why: " + JSON.stringify(off));
 // "Run is off" on Start now is the engine's boolean, never its sentence
 // (show control, PR 1); anything but true is off, never on.
 const blk = (text, on) => ({schedule:{attached:true, state:"STANDBY", start_blocked:{text:text, loading:false}}, show:{running:true, show_control_on:on}});
@@ -43594,13 +44284,17 @@ t(startLook(blk("Run has not been pressed, so nothing may reach the rig; press R
 t(startLook(blk("the show audio interface is not available", true), false, false).sub === "not ready, tap for why", "Run on, blocked for another reason: not ready");
 for(const v of [false, undefined, null, "true", 1]){
   const lk = startLook(blk("Fireball practice is on", v), false, false);
-  t(lk.sub === "Run is off" && lk.why === "Fireball practice is on", "the boolean " + JSON.stringify(v) + ": Run is off, with the engine's own why: " + JSON.stringify(lk));
+  t(lk.sub === "Show control is off" && lk.why === "Fireball practice is on", "the boolean " + JSON.stringify(v) + ": Show control is off, with the engine's own why: " + JSON.stringify(lk));
 }
 // Run becomes Stop while Run is in force and there is something to stop;
 // with nothing to stop it is Run off (Stop no longer turns Run off).
 const att = (st, show, extra) => Object.assign({schedule:{attached:true, state:st}, show:show}, extra || {});
-t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Run", "Run becomes Stop while a show is live");
-t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Run off", "Run in force, nothing to stop: Run off");
+t(runLook(att("SHOW", {running:true})).mode === "stop" && runLook(att("STANDBY", {running:false})).mode === "run" && runLook(null).label === "Show control on", "Run becomes Stop while a show is live");
+// Its words (Jeff, 2026-11-11): Show control on/off; Programming's Run is
+// a rehearsal (Start rehearsal, End rehearsal). The modes are the same.
+t(runLook(att("STANDBY", {running:false}), false, "show").label === "Show control on" && runLook(att("STANDBY", {running:false}), false, "programming").label === "Start rehearsal" && runLook(att("STANDBY", {running:false}), false, "programming").mode === "run", "Run's words: Show control on, or Start rehearsal with Programming picked");
+t(runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").label === "End rehearsal" && runLook(att("STANDBY", {running:true}, {transport:{programming:true}}), false, "show").mode === "runoff" && runLook(att("STANDBY", {running:true}), false, "programming").label === "Show control off", "Run off's words: End rehearsal while a rehearsal is in force, else Show control off");
+t(runLook(att("STANDBY", {running:true})).mode === "runoff" && runLook(att("STANDBY", {running:true})).label === "Show control off", "Run in force, nothing to stop: Run off");
 t(runLook(att("HOLD", {running:false, starting:true})).mode === "runoff", "Run starting with nothing to stop: Run off (F4 now)");
 t(runLook({schedule:{attached:false}, show:{running:true}}).mode === "stop" && runLook({schedule:{attached:false}, show:{running:false, starting:true}}).mode === "stop", "no scheduler: Run playing or starting is the show, so Stop");
 t(runLook(att("STANDBY", {running:true}, {transport:{programming:true, playhead:"show_audio", playing:true}})).mode === "stop", "Programming playback on: Stop");
@@ -43627,10 +44321,10 @@ t(JSON.stringify(stopLines(null, false)) === '["Stop show","tap twice"]' && JSON
 t(stopLeftS(3000) === 3 && stopLeftS(2001) === 3 && stopLeftS(2000) === 2 && stopLeftS(10) === 1 && stopLeftS(-50) === 1, "the countdown: whole seconds left, never 0: " + stopLeftS(2000));
 t(stopTapStep({at:1000, kind:"mouse"}, 1500, "touch", false).fire === false, "a different pointer kind is a first tap");
 t(stopTapKind({pointerType:"pen"}) === "pen" && stopTapKind({detail:0}) === "key", "the tap's kind");
-t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Run is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, Run is off");
+t(/^Stopped\. The show ended/.test(stopWords({stopped:true, show:{ok:true}, flames:{disarmed:true}, lasers:{disarmed:true}})) && /Show control is off/.test(stopWords({stopped:true, run_on:false})), "Run off's answer: the show ended, show control is off");
 const held = stopWords({stopped:true, run_on:true, show:{ok:true}, hold:{ok:true, text:""}, flames:{disarmed:true}});
-t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Run is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
-t(/Run is still on/.test(stopWords({stopped:true, run_on:true})), "a Stop with nothing to hold says Run is still on");
+t(/^Stopped\. The show ended/.test(held) && /on Hold/.test(held) && /Resume/.test(held) && !/Show control is off/.test(held), "Stop's answer: the show ended, the schedule is on Hold, Run stays on: " + held);
+t(/Show control is still on/.test(stopWords({stopped:true, run_on:true})), "a Stop with nothing to hold says show control is still on");
 t(/did NOT work: show/.test(stopWords({stopped:true, failed:["show"], flames:{disarmed:true}})), "a failed step is named");
 t(/did NOT work: playback stop/.test(stopWords({stopped:false, failed:["playback stop"]})), "a failed playback stop is named");
 t(/^Stopped\. /.test(stopWords({stopped:false, failed:[]})), "nothing was playing: still Stopped, no false failure");
@@ -44208,7 +44902,7 @@ def test_fire_ice_runner_reports_the_show():
     _settle(svc, c)
     rows = [r for r in svc.journal if r.get("action") == "automatic start"]
     check(rows and rows[-1]["outcome"] == "refused" and
-          "Run has not been pressed" in rows[-1]["text"],
+          "Show control is off" in rows[-1]["text"],
           f"no Run: the start is refused in words: {rows[-1:]}")
     n.w.runner.poll()
     _settle(svc, c)
@@ -47772,7 +48466,7 @@ def test_every_show_start_clears_the_pixels():
     # 2.0's Schedule tab: from its pane to the next one.
     sched2 = rack2[rack2.find('id="t-schedule"'):]
     sched2 = sched2[:sched2.find('<section class="pane"')]
-    check("Programming: Show file card, Stop, then Run." in said and
+    check("Programming: End rehearsal, then Start rehearsal." in said and
           "On 2.0: the Schedule tab's Show file card." in said and
           "Open in 1.0" not in said and len(said.split()) <= 30 and
           '<div class="card col" id="p-run-card" hidden>' in sched2 and
@@ -51814,64 +52508,536 @@ def test_mutate_never_runs_stale_bytecode():
     print("  ok")
 
 
-def test_mutate_shards_fit_their_time_limit():
-    section("the mutate shards: one shard count for a whole sweep in "
-            "selftest.yml and nightly-mutate.yml, small enough that a shard "
-            "ends far inside its 340 minute limit at the speed measured on "
-            "2026-11-09 (32 shards of 135 ran out at 340), at most 16 at "
-            "once so 4 of the account's 20 job slots stay free")
-    import ast
+def test_release_tags_are_ltc_only():
+    section("release tags: a new release is tagged ltc-YYYY.MM.DD.N and only "
+            "an ltc-* tag builds the installer (no workflow trigger names a "
+            "gpl- tag, and a gpl-* tag fails the selftest run with the "
+            "reason); the updater and the rollback still read the old gpl- "
+            "names, so an old install is offered the new release by its "
+            "date digits")
     import re
-    wfdir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         ".github", "workflows")
-    st = open(os.path.join(wfdir, "selftest.yml"), encoding="utf-8").read()
-    nm = open(os.path.join(wfdir, "nightly-mutate.yml"),
-              encoding="utf-8").read()
-    full = re.findall(r"^\s*FULL_SHARDS=(\d+)\s*$", st, re.M)
-    night = re.findall(r"^\s*NSHARDS: (\d+)\s*$", nm, re.M)
-    check(len(full) == 1 and len(night) == 1 and full == night,
-          f"one shard count, the same in both workflows: selftest.yml "
-          f"{full}, nightly-mutate.yml {night}")
-    n = int(full[0]) if full else 0
-    check('"$FULL_SHARDS"' in st and "release tag: every mutation, ubuntu "
-          "and windows, $FULL_SHARDS shards each" in st and
-          "if (( k > FULL_SHARDS )); then k=$FULL_SHARDS; fi" in st,
-          "a release tag, a change with no base and the affected cap all "
-          "use FULL_SHARDS")
-    check("needs.plan.outputs.shards" in nm and
-          "--shard ${{ matrix.shard }}/${{ needs.plan.outputs.nshards }}" in nm
-          and 'int(os.environ["N"])' in nm and "/32" not in nm,
-          "the nightly sweep's matrix, --shard and timeout report all read "
-          "the one count")
-    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
-        par = [int(x) for x in re.findall(r"max-parallel: (\d+)", text)]
-        check(par == [16], f"{name}: max-parallel {par}, want [16] (20 job "
-              "slots, 4 left free)")
-        check(re.findall(r"timeout-minutes: 340\b", text) and
-              re.findall(r"timeout-minutes: 355\b", text),
-              f"{name}: the 340 minute step limit and the 355 minute job "
-              "limit stay as the backstop")
-    tree = ast.parse(open(os.path.join(os.path.dirname(os.path.abspath(
-        __file__)), "mutate.py"), encoding="utf-8").read(), "mutate.py")
+    here = os.path.dirname(os.path.abspath(__file__))
+    wfdir = os.path.join(here, ".github", "workflows")
+    names = sorted(n for n in os.listdir(wfdir) if n.endswith((".yml",
+                                                               ".yaml")))
+    check("windows-app.yml" in names and "selftest.yml" in names,
+          f"the workflows are where this test reads them: {names}")
+    texts = {}
+    for n in names:
+        texts[n] = open(os.path.join(wfdir, n), encoding="utf-8").read()
+        # The trigger block: from "on:" to the next top-level key. Comments
+        # may name the old tag (as history); a pattern may not.
+        m = re.search(r"^on:\s*\n(.*?)(?=^\S)", texts[n], re.M | re.S)
+        block = m.group(1) if m else ""
+        live = "\n".join(ln.split("#", 1)[0] for ln in block.splitlines())
+        check("gpl" not in live.lower(),
+              f"{n}: a trigger still names a gpl- tag, so a release could "
+              f"be cut under the old name: "
+              f"{[ln.strip() for ln in live.splitlines() if 'gpl' in ln.lower()]}")
+    wa = texts.get("windows-app.yml", "")
+    tags = re.findall(r"^\s*tags:\s*(\[.*?\])\s*$", wa, re.M)
+    check(tags == ['["ltc-*"]'],
+          f"windows-app.yml builds a release for ltc-* tags only: {tags}")
+    check('v="${GITHUB_REF_NAME#ltc-}"' in wa and "#gpl-" not in wa,
+          "the installer's version is the tag without ltc- (ltc-2026.11.14.1 "
+          "-> 2026.11.14.1, as on the rack screen and the installer's name)")
+    check('if [[ ! "$GITHUB_REF_NAME" =~ ^ltc-[0-9]+(\\.[0-9]+){1,3}$ ]]; '
+          'then' in wa,
+          "Run workflow pointed at an old gpl- tag (or any tag that is not "
+          "ltc- and a dated number) fails with the reason, never builds")
+    check('--title "LTC Player release $VER"' in wa and
+          '"LTC Player $TAG"' not in wa,
+          "the Release's title is the dated number, never the tag name")
+    # The refusal lives in .github/scripts/mutate_plan.py's mode (the CI
+    # diet, #255): the changes job asks it first, under set -euo pipefail,
+    # so a gpl-* tag stops the run red with the reason before anything
+    # else is decided. test_mutate_shards_fit_their_time_limit runs it.
+    st = texts.get("selftest.yml", "")
+    ask = st.find('python3 .github/scripts/mutate_plan.py mode "$EVENT" '
+                  '"$REF" "$BASE_REF" | tee')
+    check(ask > 0 and st.rfind("set -euo pipefail", 0, ask) > 0
+          and st.find("say ", ask) > ask,
+          "selftest.yml asks mutate_plan.py first, so a gpl-* tag fails "
+          "with the reason before anything else is decided")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "mutate_plan", os.path.join(here, ".github", "scripts",
+                                    "mutate_plan.py"))
+    plan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plan)
+    m_, why_ = plan.mode("push", "refs/tags/gpl-2026.11.14.1", "")
+    check(m_ == "refuse" and "ltc-YYYY.MM.DD.N" in why_
+          and plan.mode("push", "refs/tags/ltc-2026.11.14.1", "")[0] == "none",
+          "a gpl-* tag is refused with the reason; an ltc-* tag is not: "
+          f"{m_} {why_!r}")
+    sp = os.path.join(here, "packaging", "windows")
+    sys.path.insert(0, sp)
+    for m_ in ("supervisor", "ltcwin", "updater"):
+        sys.modules.pop(m_, None)
+    was = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        import updater as U
+        import supervisor as S
+    finally:
+        sys.dont_write_bytecode = was
+    try:
+        for old, want in (("ltc-2026.11.14.1", "2026.11.14.1"),
+                          ("gpl-2026.10.30.1", "2026.10.30.1"),
+                          ("GPL-2026.09.15.10", "2026.09.15.10"),
+                          ("2026.11.14.1", "2026.11.14.1"),
+                          ("bench-2026.11.13-abc1234",
+                           "bench-2026.11.13-abc1234")):
+            check(U.release_number(old) == want,
+                  f"updater reads {old} as {U.release_number(old)!r}, "
+                  f"want {want!r}")
+        check(U.is_release("ltc-2026.11.14.1") and
+              U.is_release("gpl-2026.09.15.10") and
+              U.is_release("2026.10.30.1") and
+              not U.is_release("bench-2026.11.13-abc1234") and
+              not U.is_release("ltc-") and not U.is_release(""),
+              "ltc- and gpl- release names are releases; bench and empty "
+              "are not")
+        for new, old in (("2026.11.14.1", "2026.10.30.1"),
+                         ("2026.11.14.1", "gpl-2026.10.30.1"),
+                         ("ltc-2026.11.14.1", "gpl-2026.09.15.10"),
+                         ("2026.11.14.2", "ltc-2026.11.14.1")):
+            check(U.is_newer(new, old) and not U.is_newer(old, new),
+                  f"{new} is newer than {old} by its date digits, and "
+                  f"never the other way round")
+        check(not U.is_newer("2026.10.30.1", "gpl-2026.10.30.1") and
+              not U.is_newer("ltc-2026.11.14.1", "2026.11.14.1"),
+              "the same number with or without its prefix is up to date")
+        lines = list(U.self_test())
+        check(any("ltc- release is newer than a gpl- one" in ln
+                  for ln in lines),
+              f"the updater's own self-check proves the ltc- release: "
+              f"{lines}")
+        for v_, want in (("ltc-2026.11.14.1", (2026, 11, 14, 1)),
+                         ("gpl-2026.10.30.1", (2026, 10, 30, 1)),
+                         ("2026.09.15.10", (2026, 9, 15, 10)),
+                         ("bench-2026.11.13-abc1234", ())):
+            got = S._installer_key_for_version(v_)
+            check(got == want, f"the rollback reads {v_} as {got}, want "
+                               f"{want}")
+        import tempfile
+        d = tempfile.mkdtemp()
+        try:
+            files = []
+            for i, n in enumerate(("LTC Player Setup ltc-2026.11.14.1.exe",
+                                   "LTC Player Setup 2026.09.15.10.exe",
+                                   "LTC Player Setup gpl-2026.10.30.1.exe",
+                                   "LTC Player Setup 2026.11.14.2.exe")):
+                p = os.path.join(d, n)
+                with open(p, "wb") as fh:
+                    fh.write(b"x")
+                os.utime(p, (1000 + i, 1000 + i))
+                files.append(p)
+            order = [os.path.basename(p) for p in
+                     sorted(files, key=S._installer_key)]
+            check(order == ["LTC Player Setup 2026.09.15.10.exe",
+                            "LTC Player Setup gpl-2026.10.30.1.exe",
+                            "LTC Player Setup ltc-2026.11.14.1.exe",
+                            "LTC Player Setup 2026.11.14.2.exe"],
+                  f"saved installers sort by their date digits, whatever "
+                  f"the prefix, so Roll back picks the one before: {order}")
+        finally:
+            import shutil as _sh
+            _sh.rmtree(d, ignore_errors=True)
+    finally:
+        if sp in sys.path:
+            sys.path.remove(sp)
+        for m_ in ("supervisor", "ltcwin", "updater"):
+            sys.modules.pop(m_, None)
+    for doc in (os.path.join(here, "CLAUDE.md"),
+                os.path.join(sp, "INSTALL.md")):
+        t = open(doc, encoding="utf-8").read()
+        check("ltc-YYYY.MM.DD.N" in t and "gpl-YYYY" not in t,
+              f"{os.path.relpath(doc, here)} names new release tags "
+              f"ltc-YYYY.MM.DD.N")
+    print("  ok")
+
+
+def test_mutate_shards_fit_their_time_limit():
+    section("the mutate shards (the CI diet, 2026-11-13): only a PR into "
+            "main runs them per PR; one rule for how many and how many at "
+            "once in selftest.yml, nightly-mutate.yml and weekly-mutate.yml "
+            "(.github/scripts/mutate_plan.py); a shard ends far inside its "
+            "340 minute limit; never more at once than the job slots minus "
+            "the reserve; shards that trust the selftest job need it")
+    import importlib.util
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "mutate_plan", os.path.join(here, ".github", "scripts",
+                                    "mutate_plan.py"))
+    plan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plan)
+
+    # Who runs shards: a PR into main, nothing else.
+    for event, ref, base, want in (
+            ("pull_request", "refs/pull/9/merge", "main", "affected"),
+            ("pull_request", "refs/pull/9/merge", "bench-build", "none"),
+            ("pull_request", "refs/pull/9/merge", "haze-fluid-tracker", "none"),
+            ("pull_request", "refs/pull/9/merge", "", "none"),
+            ("push", "refs/heads/main", "", "none"),
+            ("push", "refs/tags/ltc-2026.11.20.1", "", "none"),
+            ("push", "refs/tags/gpl-2026.11.20.1", "", "refuse")):
+        got, why = plan.mode(event, ref, base)
+        check(got == want and why,
+              f"{event} {ref} into {base or '(none)'}: {got}, want {want}")
+    # A gpl-* tag (the old release name) builds nothing: the changes job
+    # stops red with the reason, and no shard, no sweep starts.
+    import subprocess as _sp
+    r = _sp.run([sys.executable, os.path.join(here, ".github", "scripts",
+                                              "mutate_plan.py"),
+                 "mode", "push", "refs/tags/gpl-2026.11.20.1", ""],
+                capture_output=True, text=True, timeout=60)
+    check(r.returncode == 1 and "mode=refuse" in r.stdout
+          and "::error::gpl-2026.11.20.1 uses the old release tag name"
+          in r.stdout and "ltc-YYYY.MM.DD.N" in r.stdout,
+          f"a gpl-* tag is refused with the reason, exit 1: "
+          f"{r.returncode} {r.stdout[-300:]!r}")
+
+    # mutate-safety on a bench-build PR: a touched safety file's own
+    # mutations; the whole core only when a core file changed; nothing for
+    # docs, wording or the page.
+    for changed, want in (
+            (["README.md", "ltcplay/web/remote2.html", "ltcplay/remote.py"],
+             []),
+            (["ltcplay/users.py", "TESTING.md"], ["ltcplay/users.py"]),
+            (["flamesafe/CONTRACT.md", "flamesafe/flamesafe.example.json"],
+             []),
+            (["ltcplay/fuelpump.py", "ltcplay/laserarm.py"],
+             ["ltcplay/fuelpump.py", "ltcplay/laserarm.py"]),
+            (["flamesafe/link.py"], ["flamesafe/", "flamesafe/link.py",
+                                     "ltcplay/conductor.py",
+                                     "ltcplay/flamelink.py"]),
+            (["ltcplay/conductor.py", "ltcplay/users.py"],
+             ["flamesafe/", "ltcplay/conductor.py", "ltcplay/flamelink.py",
+              "ltcplay/users.py"])):
+        got, why = plan.safety_targets(changed)
+        check(got == want and why,
+              f"mutate-safety for {changed}: {got}, want {want}")
+    check(plan.safety_size(0, {}) == (0, 0)
+          and plan.safety_size(553, {}) == (23, 4)
+          and plan.safety_size(78, {}) == (4, 4)
+          and plan.safety_size(30, {}) == (2, 2)
+          and plan.safety_size(553, {"CI_SLOT_RESERVE": "6",
+                                     "CI_JOB_SLOTS": "40"}) == (23, 6)
+          and plan.safety_size(553, {"MUTATE_SAFETY_AT_ONCE": "2"}) == (23, 2),
+          "mutate-safety runs at most the reserve (4) at once, or "
+          "MUTATE_SAFETY_AT_ONCE")
+    check(plan.nightly_cap({}) == 1500
+          and plan.nightly_cap({"MUTATE_NIGHTLY_MAX": "900"}) == 900,
+          "the nightly cap is 1500 mutations unless MUTATE_NIGHTLY_MAX says")
+    # A matrix holds at most 256 jobs: a list that would need more stops
+    # the plan with a sentence, never a red run with nothing said.
+    for n, oses, ok in ((256 * 45, 1, True), (256 * 45 + 1, 1, False),
+                        (128 * 45, 2, True), (128 * 45 + 1, 2, False)):
+        try:
+            plan.size(n, {}, oses)
+            fine = True
+        except ValueError as e:
+            fine = False
+            check("256 jobs one matrix may hold" in str(e),
+                  f"the matrix limit is said plainly: {e}")
+        check(fine == ok, f"{n} mutations on {oses} OS(es): "
+                          f"{'fits' if fine else 'refused'}")
+
+    # How many: about 25 a shard, at most MUTATE_SHARDS (30), never more
+    # than 45 a shard; at once, never more than the slots minus the reserve.
+    env = {}
+    check(plan.size(0, env) == (0, 0), "nothing to run: no shard")
+    for n, want in ((1, (1, 1)), (25, (1, 1)), (26, (2, 2)),
+                    (400, (16, 16)), (551, (23, 16)), (750, (30, 16)),
+                    (2649, (59, 16)), (4368, (98, 16))):
+        check(plan.size(n, env) == want,
+              f"{n} mutations: {plan.size(n, env)}, want {want}")
+    check(plan.size(750, {"CI_JOB_SLOTS": "40"}) == (30, 30)
+          and plan.size(4368, {"CI_JOB_SLOTS": "40"}) == (98, 36)
+          and plan.size(4368, {"CI_JOB_SLOTS": "60",
+                               "CI_SLOT_RESERVE": "10"}) == (98, 50),
+          "more job slots: more shards at once, the reserve still free")
+    for bad in ({"CI_JOB_SLOTS": "twenty"}, {"CI_JOB_SLOTS": "4",
+                                             "CI_SLOT_RESERVE": "4"},
+                {"MUTATE_SHARDS": "0"}):
+        try:
+            plan.size(100, bad)
+            ok = False
+        except ValueError:
+            ok = True
+        check(ok, f"a repository variable that cannot be right is an "
+                  f"error, never a guess: {bad}")
+    most = 0
+    for n in range(1, 6000, 7):
+        k, at_once = plan.size(n, env)
+        most = max(most, -(-n // k))
+        if not (1 <= at_once <= 16 and at_once <= k):
+            check(False, f"{n} mutations: {k} shards, {at_once} at once")
+            break
+    # Measured 2026-11-13 (536 finished ubuntu shards, --jobs 3): about
+    # 2.8 minutes of a shard a mutation; the sanity run that stands in for
+    # the baseline is a few minutes; the old baseline was 15 to 19.
+    worst = 19 + most * 2.8
+    check(most <= plan.MOST_PER_SHARD and worst <= 150,
+          f"at most {most} mutations a shard, about {worst:.0f} minutes at "
+          f"the measured speed even with a whole baseline; want 150 or less")
+    tree = __import__("ast").parse(open(os.path.join(here, "mutate.py"),
+                                        encoding="utf-8").read())
     total = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "MUTATIONS"
-                for t in node.targets):
+    for node in __import__("ast").walk(tree):
+        if isinstance(node, __import__("ast").Assign) and any(
+                getattr(t, "id", None) == "MUTATIONS" for t in node.targets):
             total = len(node.value.elts)
-    per = -(-total // n) if n else total
-    # Measured in run 42577562836: a baseline of up to 1112 s, then up to
-    # 2.51 minutes a mutation, on ubuntu with --jobs 3.
-    worst = 1112 / 60 + per * 2.51
-    check(total > 1000 and worst <= 150,
-          f"{total} mutations in {n} shards is {per} a shard, about "
-          f"{worst:.0f} minutes at the measured worst; want 150 or less")
-    check("int(os.environ.get(\"NSHARDS\") or 0)" in st and
-          '"no job"' in st,
-          "mutate-report counts a shard that never got a job as red")
-    for name, text in (("selftest.yml", st), ("nightly-mutate.yml", nm)):
-        check("\u2013" not in text and "\u2014" not in text,
+    check(total > 1000 and -(-total // plan.size(total, env)[0]) <= 45,
+          f"the whole list, {total}, fits shards of 45 or fewer")
+
+    # The workflows use that rule and nothing of their own.
+    wfdir = os.path.join(here, ".github", "workflows")
+    text = {}
+    for name in ("selftest.yml", "nightly-mutate.yml", "weekly-mutate.yml"):
+        with open(os.path.join(wfdir, name), encoding="utf-8") as fh:
+            text[name] = fh.read()
+    for name, t in text.items():
+        check("mutate_plan.py size" in t,
+              f"{name}: the shard count comes from mutate_plan.py")
+        par = re.findall(r"max-parallel: (.+)", t)
+        check(par and all(re.fullmatch(
+                  r"\$\{\{ fromJSON\(needs\.\w+\.outputs\."
+                  r"(safety_)?parallel\) \}\}", p.strip()) for p in par),
+              f"{name}: max-parallel is mutate_plan.py's, never a number of "
+              f"its own: {par}")
+        check(re.findall(r"timeout-minutes: 340\b", t) and
+              re.findall(r"timeout-minutes: 355\b", t),
+              f"{name}: the 340 minute step limit and the 355 minute job "
+              f"limit stay as the backstop")
+        check("python3 .github/scripts/shard_timeout.py" in t,
+              f"{name}: a shard that ran out of time is said as such")
+        check(re.search(r"upload-artifact@v4\n\s+if: always\(\)\n\s+"
+                        r"continue-on-error: true\n\s+with:\n\s+name: "
+                        r"mutate-log-", t),
+              f"{name}: an upload error never turns a shard red")
+        check("\u2013" not in t and "\u2014" not in t,
               f"{name} has no em or en dashes")
+        # --trust-baseline only where the shards need a green selftest of
+        # the same commit in the same run: every job that passes it.
+        for job in re.split(r"\n  (?=[\w-]+:\n)",
+                            t.split("\njobs:\n", 1)[-1]):
+            if "--trust-baseline" in job:
+                check(re.match(r"[\w-]+:\n    needs: \[(changes|plan), "
+                               r"selftest\]\n", job),
+                      f"{name}: {job.split(':')[0]} trusts the selftest job "
+                      f"and needs it")
+    st = text["selftest.yml"]
+    check("mutate_plan.py mode \"$EVENT\" \"$REF\" \"$BASE_REF\"" in st
+          and "python3 mutate.py --changed \"$base\" ${core:+\"$core\"} "
+          "--list" in st
+          and "narrow=(--changed \"$BASE\" ${CORE:+\"$CORE\"})" in st,
+          "selftest.yml: the mode is mutate_plan.py's, and a PR into main "
+          "lists and runs its selection with the safety core")
+    check("mutate.py lost --with-core, which its base has" in st,
+          "selftest.yml: a PR into main cannot drop the safety core by "
+          "editing mutate.py")
+    check("int(os.environ.get(\"NSHARDS\") or 0)" in st and '"no job"' in st,
+          "mutate-report counts a shard that never got a job as red")
+    nm = text["nightly-mutate.yml"]
+    check("name: green at ${{ needs.plan.outputs.sha }}" in nm and
+          "sed -n 's/^green at \\([0-9a-f]\\{40\\}\\)$/\\1/p'" in nm and
+          "git merge-base --is-ancestor \"$g\" \"$sha\"" in nm,
+          "the nightly sweep records its green commit and reads the last "
+          "one this commit descends from")
+    check("needs.selftest.result == 'success' && needs.sweep.result == "
+          "'success'" in nm,
+          "a night is recorded green only when its selftest and shards are")
+    for name in ("nightly-mutate.yml", "weekly-mutate.yml"):
+        t = text[name]
+        check("group: mutate-sweeps" in t and
+              "cancel-in-progress: false" in t,
+              f"{name}: one sweep at a time, nightly and weekly together")
+        check(re.search(r"\n  report:\n    needs: \[plan, selftest, sweep\]"
+                        r"\n    if: always\(\)\n", t)
+              and "PLAN: ${{ needs.plan.result }}" in t,
+              f"{name}: the report always runs, and a failed plan is red")
+    check('if [[ "${OFFICIAL:-}" != true ]]; then' in open(
+              os.path.join(here, ".github", "scripts", "sweep_report.sh"),
+              encoding="utf-8").read()
+          and 'env("PLAN") != "success"' in open(
+              os.path.join(here, ".github", "scripts", "sweep_report.sh"),
+              encoding="utf-8").read(),
+          "only the record sweep touches the issue; a failed plan is red")
+    # The night is the evening, Mountain time, and only the record night
+    # moves the marker.
+    check('- cron: "17 2 * * 1-6"' in nm and "19:17 Mountain" in nm,
+          "the nightly sweep starts at 19:17 Mountain Standard Time")
+    check("if: always() && (github.event_name == 'schedule' || (inputs.ref == "
+          "'bench-build' && inputs.base == '')) && needs.plan.result == "
+          "'success'" in nm,
+          "only a scheduled night, or one by hand on bench-build with no "
+          "base of its own, writes the green marker")
+    check("mutate_plan.py nightly-cap" in nm and
+          "safety-targets --with-core" in nm and
+          'narrow=(--targets "$TARGETS")' in nm,
+          "a night over its cap runs the core and the touched safety files")
+    check('- cron: "12 2 * * 0"' in text["weekly-mutate.yml"] and
+          'mutate_plan.py size "$n" "$noses"' in text["weekly-mutate.yml"],
+          "the weekly sweep starts Saturday evening, Mountain time, and "
+          "checks the matrix limit for every OS it runs")
+    with open(os.path.join(wfdir, "sweep-dropped.yml"), encoding="utf-8") as fh:
+        dropped = fh.read()
+    check('workflows: ["nightly mutate", "weekly mutate"]' in dropped and
+          "github.event.workflow_run.conclusion == 'cancelled'" in dropped,
+          "a scheduled sweep dropped from the queue still opens its issue")
+    # mutate-safety: a ready PR that touches a safety file, never required,
+    # the reserve at most at once.
+    check(re.search(r"\n  mutate-safety:\n    needs: \[changes, selftest\]\n"
+                    r"    if: github\.event_name == 'pull_request' && "
+                    r"github\.event\.pull_request\.draft == false", st)
+          and "--targets \"$TARGETS\"" in st,
+          "selftest.yml: mutate-safety runs on a ready PR, its targets only")
+    # An edit that did not move the base runs nothing but ci, and never
+    # cancels the real run.
+    check("github.event.action != 'edited' || github.event.changes.base"
+          in st and st.count("    if: github.event.action != 'edited' || "
+                             "github.event.changes.base\n") == 2,
+          "selftest.yml: an edit of a PR's text runs no selftest or changes")
+    print("  ok")
+
+
+def test_ci_verdict_rules():
+    section("ci, the one required check on main (.github/scripts/"
+            "ci_verdict.sh): green only for a push or a PR into main whose "
+            "selftest, changes and needed shards are green; red when the "
+            "base is not main, the mode is unknown, or a needed shard did "
+            "not pass; an edit of a PR's text copies the last verdict on "
+            "the commit, never invents one")
+    import re
+    import shutil
+    import subprocess as _sp
+    here = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(here, ".github", "scripts", "ci_verdict.sh")
+    with open(script, encoding="utf-8") as fh:
+        src = fh.read()
+    check("\u2013" not in src and "\u2014" not in src,
+          "ci_verdict.sh has no em or en dashes")
+    # Run on ubuntu only: on windows `bash` may be WSL's, not Git's, and
+    # the verdict is run by an ubuntu job anyway.
+    bash = shutil.which("bash")
+    if sys.platform == "win32" or not bash:
+        print("  (the verdict runs are skipped here: no plain bash)")
+    else:
+        with tempfile.TemporaryDirectory() as d:
+            fake = os.path.join(d, "gh")
+            with open(fake, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("#!/bin/sh\n[ -n \"$FAKE_GH\" ] && echo \"$FAKE_GH\"\n"
+                         "[ -n \"$FAKE_GH\" ]\n")
+            os.chmod(fake, 0o755)
+
+            def verdict(**kw):
+                env = {"PATH": d + os.pathsep + os.environ.get("PATH", ""),
+                       "REPO": "o/r", "RUN_ID": "7", "HEAD_SHA": "abc",
+                       "GH_TOKEN": "x"}
+                env.update({k.upper(): v for k, v in kw.items()})
+                r = _sp.run([bash, script], capture_output=True, text=True,
+                            env=env, timeout=60)
+                return r.returncode, r.stdout + r.stderr
+
+            ok = dict(selftest="success", changes="success")
+            cases = [
+                # (what, event, settings, green?)
+                ("a PR into main, nothing to mutate",
+                 dict(event="pull_request", base_ref="main", mode="none",
+                      mutate="skipped", **ok), True),
+                ("a PR into main, every shard green",
+                 dict(event="pull_request", base_ref="main", mode="affected",
+                      mutate="success", **ok), True),
+                ("a push to main", dict(event="push", mode="none",
+                                        mutate="skipped", **ok), True),
+                ("a PR into bench-build, all green",
+                 dict(event="pull_request", base_ref="bench-build",
+                      mode="none", mutate="skipped", **ok), False),
+                ("a PR with no base", dict(event="pull_request", mode="none",
+                                           mutate="skipped", **ok), False),
+                ("the mode is empty (changes failed to say)",
+                 dict(event="pull_request", base_ref="main", mode="",
+                      mutate="skipped", **ok), False),
+                ("an unknown mode", dict(event="pull_request", base_ref="main",
+                                         mode="weird", mutate="skipped", **ok),
+                 False),
+                ("shards skipped while required",
+                 dict(event="pull_request", base_ref="main", mode="affected",
+                      mutate="skipped", **ok), False),
+                ("shards cancelled", dict(event="pull_request", base_ref="main",
+                                          mode="affected", mutate="cancelled",
+                                          **ok), False),
+                ("shards failed", dict(event="pull_request", base_ref="main",
+                                       mode="full", mutate="failure", **ok),
+                 False),
+                ("shards ran with mode none",
+                 dict(event="pull_request", base_ref="main", mode="none",
+                      mutate="success", **ok), False),
+                ("selftest red", dict(event="pull_request", base_ref="main",
+                                      mode="none", mutate="skipped",
+                                      selftest="failure", changes="success"),
+                 False),
+                ("changes red", dict(event="pull_request", base_ref="main",
+                                     mode="none", mutate="skipped",
+                                     selftest="success", changes="failure"),
+                 False),
+                ("a scheduled event", dict(event="schedule", mode="none",
+                                           mutate="skipped", **ok), False),
+                ("a text edit, the last verdict green",
+                 dict(event="pull_request", action="edited", base_ref="main",
+                      fake_gh="success"), True),
+                ("a text edit, the last verdict red",
+                 dict(event="pull_request", action="edited", base_ref="main",
+                      fake_gh="failure"), False),
+                ("a text edit, no verdict to copy (lookup fails)",
+                 dict(event="pull_request", action="edited", base_ref="main"),
+                 False),
+                ("a text edit of a PR into bench-build",
+                 dict(event="pull_request", action="edited",
+                      base_ref="bench-build", fake_gh="success"), False),
+                ("a retarget to main (edited, base changed) judged in full",
+                 dict(event="pull_request", action="edited", base_changed="true",
+                      base_ref="main", mode="affected", mutate="success",
+                      fake_gh="failure", **ok), True),
+                ("a retarget to main with shards not run",
+                 dict(event="pull_request", action="edited", base_changed="true",
+                      base_ref="main", mode="affected", mutate="skipped",
+                      fake_gh="success", **ok), False)]
+            for what, kw, green in cases:
+                code, out = verdict(**kw)
+                check((code == 0) == green,
+                      f"ci for {what}: exit {code}, want "
+                      f"{'green' if green else 'red'}: {out[-300:]!r}")
+
+    # The workflow on main runs exactly this script with the needed jobs'
+    # results, whatever happened to them, and listens for a retarget.
+    with open(os.path.join(here, ".github", "workflows", "selftest.yml"),
+              encoding="utf-8") as fh:
+        st = fh.read()
+    if "\n  ci:\n" in st:
+        ci = st.split("\n  ci:\n", 1)[1]
+        check(ci.startswith("    needs: [selftest, changes, mutate]\n"
+                            "    if: always() && (github.event_name != "
+                            "'pull_request' || github.event.pull_request."
+                            "draft == false)\n"),
+              "ci needs selftest, changes and mutate, and runs whatever "
+              "they did")
+        for line in ("SELFTEST: ${{ needs.selftest.result }}",
+                     "CHANGES: ${{ needs.changes.result }}",
+                     "MUTATE: ${{ needs.mutate.result }}",
+                     "MODE: ${{ needs.changes.outputs.mode }}",
+                     "BASE_REF: ${{ github.base_ref }}",
+                     "ACTION: ${{ github.event.action }}",
+                     "BASE_CHANGED: ${{ github.event.changes.base != null }}",
+                     "\n          bash .github/scripts/ci_verdict.sh\n"):
+            check(line in ci, f"ci passes {line!r}")
+        check(re.search(r"types: \[[^\]]*\bedited\b[^\]]*\]", st)
+              and re.search(r"types: \[[^\]]*\breopened\b[^\]]*\]", st),
+              "main's selftest.yml runs again when a PR is edited "
+              "(retargeted) or reopened")
     print("  ok")
 
 
@@ -52093,7 +53259,8 @@ def test_mutate_fast_path_never_turns_red_green():
     with tempfile.TemporaryDirectory() as tree:
         names = ["m one", "m two"]
 
-        def sweep(behave, hints=None, jobs=1, ci=True, listed=True):
+        def sweep(behave, hints=None, jobs=1, ci=True, listed=True,
+                  extra=()):
             """behave(name, failfast, first, probe) -> (green, stopped in).
             (exit, lines, calls, catchers written)."""
             for i, n in enumerate(names):
@@ -52148,7 +53315,7 @@ def test_mutate_fast_path_never_turns_red_green():
                 sys.argv = (["mutate.py", "--shard", "0/1"]
                             + (["--expected", os.devnull] if listed else [])
                             + ["--hints", hf, "--write-catchers", wf,
-                               "--jobs", str(jobs)])
+                               "--jobs", str(jobs)] + list(extra))
                 with contextlib.redirect_stdout(buf):
                     code = mutate.main()
             finally:
@@ -52329,6 +53496,135 @@ def test_mutate_fast_path_never_turns_red_green():
               and any("FAILS with nothing mutated" in l for l in lines),
               f"a red baseline is run once more, then stops the shard: "
               f"{calls}")
+
+        # --trust-baseline (the CI diet, 2026-11-13): the selftest job of the
+        # same run passed the whole suite on this commit, so no copy runs it
+        # again. Each copy runs its hinted tests first instead (the sanity
+        # run), and every test a caught mutant stopped in is proved green
+        # alone in that copy, or the copy runs its whole baseline after all.
+        trust = ("--trust-baseline", "1200")
+        both = {"m one": "test_guard", "m two": "test_guard"}
+        for jobs in (1, 2):
+            code, lines, calls, learned = sweep(red_in_t_guard, both,
+                                                jobs=jobs, extra=trust)
+            sanity = [c for c in calls if c[0] is None and c[3]]
+            check(code == 0 and not base_runs(calls)
+                  and len(sanity) == jobs
+                  and all(c[2] == "test_guard" for c in sanity)
+                  and "  caught      m one" in lines
+                  and "  caught      m two" in lines
+                  and any(l.startswith("baseline trusted:") for l in lines),
+                  f"--trust-baseline, --jobs {jobs}: no whole baseline, one "
+                  f"sanity run per copy, both caught: {calls} {lines}")
+            check([c for c in calls if c[0] == "m one"] == [
+                      ("m one", True, "test_guard", False, jobs == 1),
+                      ("m one", True, None, False, jobs == 1)],
+                  f"--trust-baseline changes no mutated run: {calls}")
+            check(any(l.startswith("baseline trusted:") and "after 3600 s"
+                      in l for l in lines),
+                  f"the mutant limit is three times the trusted 1200 s: "
+                  f"{lines}")
+        # A sanity run that is red: that copy runs its whole baseline, as
+        # without the option.
+        code, lines, calls, learned = sweep(probe_fails, both, extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and any("sanity run" in l and "was red" in l for l in lines)
+              and not any(l.startswith("baseline trusted:") for l in lines),
+              f"a red sanity run costs the copy its whole baseline: {calls}")
+        # No hint at all: nothing can stand in for the baseline.
+        code, lines, calls, learned = sweep(red_in_t_guard, None,
+                                            extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and any("nothing can stand in for the baseline" in l
+                      for l in lines),
+              f"--trust-baseline without hints runs the baseline: {calls}")
+
+        # A caught mutant that stopped in a test the sanity run did not run
+        # first: that test is proved green alone in the copy, nothing
+        # mutated, once, and the verdict stands.
+        def stop_other(hit, ff, first, probe):
+            if hit is None:
+                return True, ""
+            return False, ("test_guard" if first == "test_guard"
+                           else "test_other")
+        code, lines, calls, learned = sweep(
+            stop_other, {"m one": "test_guard"}, extra=trust)
+        alone = [c for c in calls if c[0] is None and c[3]
+                 and c[2] == "test_other"]
+        check(code == 0 and not base_runs(calls) and len(alone) == 1
+              and "  caught      m one" in lines
+              and "  caught      m two" in lines,
+              f"a stopping test outside the sanity run is proved alone, "
+              f"once per copy: {calls} {lines}")
+
+        # That test is red alone (it needs a test before it): the copy runs
+        # its whole baseline; green, and the verdict stands.
+        def other_red_alone(hit, ff, first, probe):
+            if probe and first == "test_other":
+                return False, "test_other"
+            if hit is None:
+                return True, ""
+            return False, "test_other"
+        code, lines, calls, learned = sweep(
+            other_red_alone, {"m one": "test_guard"}, extra=trust)
+        check(code == 0 and len(base_runs(calls)) == 1
+              and "  caught      m one" in lines
+              and "  caught      m two" in lines,
+              f"a stopping test red alone costs the copy one whole baseline, "
+              f"then the verdicts stand: {calls} {lines}")
+
+        # And that baseline is red: no caught mutation of the copy counts,
+        # the shard says the suite fails with nothing mutated, exit 2.
+        def copy_broken(hit, ff, first, probe):
+            if probe:
+                return first != "test_other", "test_other"
+            return False, "test_other"
+        code, lines, calls, learned = sweep(
+            copy_broken, {"m one": "test_guard"}, extra=trust)
+        check(code == 2 and "  caught      m one" not in lines
+              and any(l.startswith("  NO VERDICT  m one") for l in lines)
+              and any(l.startswith("The suite FAILS with nothing mutated")
+                      for l in lines)
+              and not learned,
+              f"a copy whose baseline is red gives no verdict at all: "
+              f"exit {code}, {lines}")
+
+    # --with-core: on a PR into main every flamesafe, conductor and flame
+    # link mutation runs, whatever the diff, a doc included.
+    with tempfile.TemporaryDirectory() as tree:
+        saved = {k: getattr(mutate, k) for k in ("HERE", "LOCK", "MUTATIONS")}
+        old_argv = sys.argv
+        try:
+            mutate.HERE = tree
+            mutate.LOCK = os.path.join(tree, ".mutating")
+            mutate.MUTATIONS = [
+                ("core a", "flamesafe/composer.py", "x", "y"),
+                ("core b", "ltcplay/conductor.py", "x", "y"),
+                ("core c", "ltcplay/flamelink.py", "x", "y"),
+                ("other d", "ltcplay/remote.py", "x", "y")]
+
+            def listed(*args):
+                sys.argv = ["mutate.py", "--list"] + list(args)
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    code = mutate.main()
+                return code, sorted(l.split(": ", 1)[1] for l in
+                                    buf.getvalue().splitlines()
+                                    if l.startswith("  would run  "))
+            code, got = listed("--files", "README.md")
+            check(code == 0 and got == [],
+                  f"a doc alone selects nothing: {got}")
+            code, got = listed("--files", "README.md", "--with-core")
+            check(code == 0 and got == ["core a", "core b", "core c"],
+                  f"--with-core adds the safety core to a doc: {got}")
+            code, got = listed("--files", "ltcplay/remote.py", "--with-core")
+            check(code == 0 and got == ["core a", "core b", "core c",
+                                        "other d"],
+                  f"--with-core adds the core to a file's own: {got}")
+        finally:
+            for k, v in saved.items():
+                setattr(mutate, k, v)
+            sys.argv = old_argv
 
 
 def test_the_gpl_path_never_loads_the_flame_link():
@@ -54456,7 +55752,7 @@ def test_engine_refuses_run_with_a_bench_hook_outside_the_soak():
                  "LTCPLAY_BENCH_STALLS", "LTCPLAY_BENCH_SENDGAPS",
                  "LTC_TRACEMALLOC", "LTCPLAY_BENCH_SOMETHING_NEW"):
         why = B.run_refusal({name: "1"}, me)
-        check(why and name in why and "Run refused" in why
+        check(why and name in why and "Show control on refused" in why
               and "—" not in why and "–" not in why,
               f"{name} refuses Run in a sentence naming it, no dashes: "
               f"{why}")
@@ -54484,7 +55780,7 @@ def test_engine_refuses_run_with_a_bench_hook_outside_the_soak():
         try:
             c.start("show.json")
         except SessionError as e:
-            check("Run refused" not in str(e),
+            check("Show control on refused" not in str(e),
                   f"with no hook set, Run is not refused for one: {e}")
     finally:
         os.environ.pop("LTCPLAY_BENCH_FAKE_AUDIO", None)
@@ -55302,6 +56598,14 @@ def _run_browser(cmd, limit, env):
     return p.returncode, so or "", se or ""
 
 
+class _RawRoute:
+    """A route _rack_screen_in_chromium answers with this text as it is
+    (a script), not as JSON."""
+
+    def __init__(self, text, ctype="application/javascript; charset=utf-8"):
+        self.text, self.ctype = text, ctype
+
+
 def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                              tries=None, measure_js=None, head_js="",
                              frag="", routes=None, budget_ms=6000,
@@ -55355,6 +56659,8 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                 st["served_at"] = int(time.time() * 1000)
                 return self._out(200, json.dumps(st))
             if p in routes:
+                if isinstance(routes[p], _RawRoute):
+                    return self._out(200, routes[p].text, routes[p].ctype)
                 return self._out(200, json.dumps(routes[p]))
             if p.startswith("/brand/"):
                 return self._out(404, "{}")
@@ -58851,6 +60157,19 @@ def test_remote_transport_on_the_show_audio():
         check(any("on the show audio" in (r.get("text") or "")
                   for r in R.svc.journal),
               "Play from is not journaled as on the show audio")
+        # Windows stress round 3 (2026-11-10): the box's grey example was
+        # taken for a typed time. An empty box is still refused, nothing
+        # played, and the refusal says the grey words are an example.
+        n = len(calls)
+        st, _h, out = R.ask("POST", "/api/remote/play-from",
+                            {"at": "", "seen": R.seen()})
+        R.settle()
+        check(st != 200 and out.get("error") ==
+              "Nothing to play from: the box is empty. Type a timecode "
+              "(example: 00:01:30:00) or a cue name; the grey example in "
+              "the box is not a value." and calls[n:] == [],
+              f"an empty Play from is refused in words, nothing played: "
+              f"{st} {out} {calls[n:]}")
         # Review of #142, finding 2: Hold and Abort from a screen or the
         # Stream Deck while Programming plays pause and stop the playback,
         # not the scheduler's Hold (which would leave the music running).
@@ -76255,7 +77574,7 @@ def test_timed_purge_every_end_cause():
             check_end(m)
         # Run (refused or not).
         if start():
-            m = ended("Run", "Run was pressed")
+            m = ended("Run", "Show control was turned on")
             R.ask("POST", "/api/start", {"timeline": "nope.json"},
                   client=loop)
             check_end(m)
@@ -78824,6 +80143,1530 @@ def _audit_lines(folder):
         with open(os.path.join(folder, n), encoding="utf-8") as fh:
             out += [_j.loads(l) for l in fh if l.strip()]
     return out
+
+
+# ------------------------------------------------ the SuperUser (2026-11-13)
+# Jeff: "The 'upload log' feature is not something I want Andy to be able
+# to turn off. Let's make a SuperUser function that is the only level that
+# can see that." SUPERUSER.md; USERS.md, "The SuperUser"; the cold review
+# of #251 (M1 to M6).
+
+def _su_fast():
+    """The local command line's pause after a wrong password, off for the
+    selftest."""
+    from ltcplay import users as U
+    U.AUTH_FAIL_PAUSE_S = 0.0
+    return U
+
+
+def _su_users(folder=None):
+    """A users file with Jeff a SuperUser (by the local command line, his
+    own password), Andy an admin and Dallen an operator, each with their
+    own password. (Users, folder, notes)."""
+    U = _su_fast()
+    d = folder or tempfile.mkdtemp()
+    notes = []
+    us = U.Users(d, hash_params=_U_FAST,
+                 audit=lambda **kw: notes.append(kw))
+    us.seed((("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator")))
+    for n in ("Jeff", "Andy", "Dallen"):
+        ok, _w, _t, _n = us.sign_in(n, "", True, "Rack screen",
+                                    new_password=f"{n.lower()}-own-pw-1")
+        check(ok, f"{n} chooses a password")
+    said = []
+    rc = U.main(["superuser", "Jeff"], folder=d, who="account showpc",
+                read_password=lambda _p: "jeff-own-pw-1", out=said.append)
+    check(rc == 0 and us.role_of("Jeff") == U.SUPERUSER,
+          f"the local command line makes Jeff a SuperUser: {rc} {said}")
+    us.flush_pending_audit()
+    return us, d, notes
+
+
+def test_superuser_role_and_matrix():
+    section("the SuperUser: one level above admin; every admin row fixed "
+            "on; the upload row is the role's alone, never in a stored "
+            "matrix, never in whoami's may, never ticked by any matrix "
+            "edit, and refused with the same words as any unknown row; an "
+            "older role list reads it as no role (fails closed)")
+    U = _su_fast()
+    check(U.ROLES[0] == U.SUPERUSER == "superuser" and
+          U.ADMIN_ROLES == ("superuser", "admin") and
+          U.COLUMNS == U.ROLES + (U.SIGNED_OUT,),
+          f"roles: {U.ROLES}")
+    check(U.UPLOAD not in U.PERM_KEYS and U.SUPERUSER_PERMS == ("upload",),
+          "the upload row is not a row of the editable matrix")
+    check(all(U.FIXED.get((U.SUPERUSER, p)) is True for p in U.PERM_KEYS),
+          "every admin row is fixed on for a SuperUser")
+    check(not any(s for s in U.SEED_USERS if s[1] == U.SUPERUSER),
+          "a first run never makes a SuperUser")
+    wild = {c: {p: True for p in U.PERM_KEYS + U.SUPERUSER_PERMS}
+            for c in U.COLUMNS}
+    m = U.normalise_matrix(wild)
+    check(all(U.UPLOAD not in row for row in m.values()),
+          "a stored upload cell is dropped, never kept")
+    for role in ("admin", "operator", "viewer", None, "Superuser",
+                 "superuser ", "root", ""):
+        for mx in (wild, m, None, U.DEFAULT_MATRIX):
+            check(not U.allowed(mx, role, U.UPLOAD),
+                  f"{role!r} may never use the upload")
+    check(U.allowed(None, U.SUPERUSER, U.UPLOAD) and
+          all(U.allowed(m, U.SUPERUSER, p) for p in U.PERM_KEYS),
+          "a SuperUser may use the upload and every admin row")
+    off = U.normalise_matrix({"superuser": {p: False for p in U.PERM_KEYS}})
+    check(all(off[U.SUPERUSER][p] for p in U.PERM_KEYS),
+          "a stored SuperUser column off reads back on")
+    us, d, _n = _su_users()
+
+    def err(change):
+        before = open(us.path, "rb").read()
+        try:
+            us.set_matrix(change)
+            return None
+        except ValueError as e:
+            check(open(us.path, "rb").read() == before,
+                  f"{change} left the users file as it was")
+            return type(e).__name__, str(e).replace(
+                "upload", "X").replace("fly", "X")
+    unknown = err({"admin": {"fly": True}})
+    for bad in ({"admin": {"upload": True}}, {"operator": {"upload": True}},
+                {"superuser": {"upload": False}},
+                {"signed_out": {"upload": True}}):
+        check(err(bad) == unknown and unknown is not None,
+              f"{bad}: refused with exactly the words of an unknown row "
+              f"(no tell): {err(bad)} {unknown}")
+    check(err({"superuser": {"settings": False}})[0] == "RankRefused",
+          "a SuperUser's column cannot be turned off")
+    us.set_matrix({"admin": {"show": True}, "viewer": {"show": True}})
+    doc = json.load(open(us.path, encoding="utf-8"))
+    check("upload" not in json.dumps(doc.get("matrix")),
+          "a saved matrix never holds an upload cell")
+    check(not us.may("admin", U.UPLOAD) and us.may(U.SUPERUSER, U.UPLOAD)
+          and not us.may(None, U.UPLOAD),
+          "the live check: admin no, SuperUser yes, nobody no")
+    blank = U.Users(tempfile.mkdtemp(), hash_params=_U_FAST)
+    check(not blank.may(U.SUPERUSER, U.UPLOAD) and
+          blank.may(None, "settings"),
+          "no users: the upload is refused (fail closed)")
+    old_roles = U.ROLES
+    try:
+        U.ROLES = ("admin", "operator", "viewer")
+        before = open(us.path, "rb").read()
+        check(us.role_of("Jeff") is None and
+              not any(U.allowed(U.normalise_matrix(None), "superuser", p)
+                      for p in U.PERM_KEYS) and
+              us.listing() and open(us.path, "rb").read() == before,
+              "an older role list reads a SuperUser as no role, view only, "
+              "and writes nothing")
+    finally:
+        U.ROLES = old_roles
+    for n in ("journal-upload-now", "Journal-Upload", "upload-settings",
+              "upload-card.js"):
+        check(U.is_upload_route(n) and
+              U.classify("/api/remote/" + n, {}) == U.UPLOAD,
+              f"a route that says upload is the SuperUser's: {n}")
+    from ltcplay import fuel as FU
+    import types as _t
+    act = _t.SimpleNamespace(active=lambda: True)
+    for role, refill, undo in (("superuser", True, True),
+                               ("admin", True, True),
+                               ("operator", True, False),
+                               ("viewer", False, False)):
+        c = _t.SimpleNamespace(local=True, session={"name": "X",
+                                                    "role": role})
+        check(FU.may_refill(c, act)[0] is refill and
+              FU.may_undo(c, act)[0] is undo,
+              f"fuel: {role} refill {refill}, undo {undo}")
+    check("upload" not in U.perm_label("settings").lower(),
+          "the Settings row does not name the upload")
+    print("  ok")
+
+
+def test_superuser_every_users_edit_path():
+    section("the SuperUser: only a SuperUser adds, changes the role of, "
+            "resets, clears or removes a SuperUser, or makes one; an admin "
+            "never raises their own role; the last SuperUser stays; a "
+            "SuperUser's password is never cleared or claimed; each "
+            "refusal changes nothing")
+    U = _su_fast()
+    us, d, notes = _su_users()
+
+    def same(fn, what, by):
+        before = open(us.path, "rb").read()
+        try:
+            fn()
+            check(False, f"{what} went through for {by!r}")
+        except U.RankRefused as e:
+            check(str(e) == U.SUPERUSER_ONLY,
+                  f"{what}: refused with the plain sentence: {e}")
+        check(open(us.path, "rb").read() == before,
+              f"{what} by {by!r} changed nothing in the file")
+    for by in ("admin", None, "operator", "viewer", "Superuser", ""):
+        same(lambda: us.add("Kim", U.SUPERUSER, "kim-temp-1", by=by),
+             "add a SuperUser", by)
+        same(lambda: us.set_role("Jeff", "admin", by=by),
+             "demote a SuperUser", by)
+        same(lambda: us.set_role("Jeff", "viewer", by=by),
+             "make a SuperUser a viewer", by)
+        same(lambda: us.set_role("Andy", U.SUPERUSER, by=by),
+             "an admin raising their own role", by)
+        same(lambda: us.set_role("Dallen", U.SUPERUSER, by=by),
+             "make an operator a SuperUser", by)
+        same(lambda: us.set_password("Jeff", "temp-pw-9", by=by),
+             "reset a SuperUser's password", by)
+        same(lambda: us.clear_password("Jeff", by=by),
+             "clear a SuperUser's password", by)
+        same(lambda: us.remove("Jeff", by=by), "remove a SuperUser", by)
+    us.set_role("Dallen", "viewer", by="admin")
+    us.set_password("Dallen", "dallen-temp-2", by="admin")
+    us.clear_password("Dallen", by="admin")
+    us.add("Kim", "operator", "kim-temp-1", by="admin")
+    us.remove("Kim", by="admin")
+    check(us.role_of("Dallen") == "viewer" and "Kim" not in us.names(),
+          "an admin manages everyone but a SuperUser")
+    us.add("Sam", U.SUPERUSER, "sam-temp-1", by=U.SUPERUSER)
+    check(us.role_of("Sam") == U.SUPERUSER, "a SuperUser adds a SuperUser")
+    us.set_role("Sam", "admin", by=U.SUPERUSER)
+    us.set_role("Sam", U.SUPERUSER, by=U.SUPERUSER)
+    us.set_password("Sam", "sam-temp-2", by=U.SUPERUSER)
+    try:
+        us.clear_password("Sam", by=U.SUPERUSER)
+        check(False, "a SuperUser's password was cleared")
+    except ValueError as e:
+        check("never cleared" in str(e), f"never cleared: {e}")
+    us.remove("Sam", by=U.SUPERUSER)
+    for fn, what in ((lambda: us.set_role("Jeff", "admin",
+                                          by=U.SUPERUSER), "demoted"),
+                     (lambda: us.remove("Jeff", by=U.SUPERUSER),
+                      "removed")):
+        before = open(us.path, "rb").read()
+        try:
+            fn()
+            check(False, f"the last SuperUser was {what}")
+        except ValueError as e:
+            check("last SuperUser" in str(e) and
+                  open(us.path, "rb").read() == before,
+                  f"the last SuperUser cannot be {what}: {e}")
+    us.remove("Andy", by="admin")
+    check("Andy" not in us.names(), "with a SuperUser, the last admin may go")
+    try:
+        U.Users(tempfile.mkdtemp(), hash_params=_U_FAST).seed(
+            (("Jeff", U.SUPERUSER), ("Andy", "admin")))
+        check(False, "a first run made a SuperUser")
+    except ValueError:
+        pass
+    # A SuperUser's password is never claimed, even in a record this
+    # build signed: none at all, or a temporary one a SuperUser did not
+    # set (written here through the engine's own save, so it is trusted).
+    for rec in ({"pw": None, "must_change": False},
+                {"pw": U.hash_password("known-to-andy", params=_U_FAST),
+                 "must_change": True, "reset_by": "admin"},
+                {"pw": U.hash_password("known-to-andy", params=_U_FAST),
+                 "must_change": True}):
+        def put(doc, rec=rec):
+            doc["users"]["Jeff"].update(rec)
+            if "reset_by" not in rec:
+                doc["users"]["Jeff"].pop("reset_by", None)
+        us._change(put)
+        check(us.role_of("Jeff") == U.SUPERUSER, "still a SuperUser")
+        for local in (True, False):
+            ok, why, tok, need = us.sign_in(
+                "Jeff", "known-to-andy", local, "Rack screen",
+                new_password="andy-takes-it-1")
+            check(not ok and tok is None and not need,
+                  f"a SuperUser's account is not claimed "
+                  f"({rec.get('reset_by')}, local {local}): {why}")
+        us.clear_lockouts()
+    us.set_password("Jeff", "set-by-su-1", by=U.SUPERUSER)
+    ok, _w, _t, need = us.sign_in("Jeff", "set-by-su-1", True, "Rack screen")
+    check(not ok and need, "a SuperUser's temporary password asks for one")
+    ok, _w, tok, _n = us.sign_in("Jeff", "set-by-su-1", True, "Rack screen",
+                                 new_password="jeff-own-pw-2")
+    check(ok and tok and us.role_of("Jeff") == U.SUPERUSER and
+          "reset_by" not in json.load(open(us.path))["users"]["Jeff"],
+          "and with their own it signs in, still a SuperUser")
+    print("  ok")
+
+
+def test_superuser_changed_outside_the_engine():
+    section("the SuperUser record changed outside the engine (reviews of "
+            "#251, M1, M2, B1): a SuperUser added by hand (even with a "
+            "forged key and set), an older build's password reset (the "
+            "hash alone too) or role change read as admin at once; a "
+            "missing key, set record or fingerprint trusts NO SuperUser "
+            "until one this program made confirms with the password it "
+            "wrote; each is audited (superuser-set-changed) with a display "
+            "only alert; nobody is ever promoted by it")
+    U = _su_fast()
+    from ltcplay import alerts as AL
+    check("superuser" in AL.KINDS and "superuser" in AL.DISPLAY_ONLY and
+          AL.SEVERITY["superuser"] == "warning",
+          "the alert is display only: it never holds a show")
+    us, d, notes = _su_users()
+    got = []
+    us.on_alert = got.append
+
+    def hand(fn):
+        doc = json.load(open(us.path, encoding="utf-8"))
+        fn(doc)
+        U._write_private(us.path, doc)
+        us._doc = None
+
+    def flush():
+        del got[:]
+        n0 = len(notes)
+        us.flush_pending_audit()
+        return [x for x in notes[n0:]
+                if x["action"] == "superuser-set-changed"]
+
+    def back():
+        """Jeff a trusted SuperUser again, through the engine's own save,
+        and nothing left to say."""
+        us._lockdown = False
+        us._change(lambda doc: doc["users"]["Jeff"].update(
+            role="superuser"))
+        flush()
+        check(us.role_of("Jeff") == U.SUPERUSER and not us.lockdown(),
+              "Jeff a SuperUser again")
+    check(flush() == [] and got == [], "a consistent file raises nothing")
+    # 1. Andy adds himself by hand.
+    hand(lambda doc: doc["users"]["Andy"].update(role="superuser"))
+    check(us.role_of("Andy") == "admin" and us.role_of("Jeff") ==
+          U.SUPERUSER and
+          [x for x in us.listing() if x["name"] == "Andy"][0]["unconfirmed"],
+          "a SuperUser added by hand reads as admin at once; Jeff stays")
+    lines = flush()
+    check(lines and lines[0]["user"] == "unknown" and
+          lines[0]["source"] == "outside the engine" and
+          lines[0]["result"] == "error" and "Andy" in lines[0]["reason"] and
+          got and "Andy" in " ".join(got[0]),
+          f"audited and alerted: {lines} {got}")
+    check(json.load(open(us.path))["users"]["Andy"]["role"] == "admin" and
+          flush() == [], "the file is put right once, and says it once")
+    # 2. The same with the key forged: Andy writes a new key, signs
+    # himself and the set with it. The engine's own set (memory) says no.
+    import hmac as _h
+    import hashlib as _hl
+
+    def forge(doc):
+        k = b"k" * 32
+        U._write_private(us.key_path, {"key": k.hex()})
+        doc["users"]["Andy"]["role"] = "superuser"
+        for n in ("Jeff", "Andy"):
+            doc["users"][n]["su_fp"] = us._fp(k, n, doc["users"][n])
+        doc["su_set"] = {"names": ["andy", "jeff"],
+                         "sig": us._mac(k, ["su-set-1", ["andy", "jeff"]])}
+    hand(forge)
+    check(us.role_of("Andy") == "admin",
+          "a forged key and set: Andy, not in the engine's own set, is an "
+          "admin")
+    check(any("differs" in x["reason"] or "Andy" in x["reason"]
+              for x in flush()) and got, "and it is said")
+    back()
+    # 3. An older build resets Jeff's password: only the hash changes
+    # (M2: the hash alone is fingerprinted).
+    newh = U.hash_password("andy-knows", params=_U_FAST)["hash"]
+    hand(lambda doc: doc["users"]["Jeff"]["pw"].update(hash=newh))
+    check(us.role_of("Jeff") == "admin", "a changed hash alone: admin now")
+    check(any("Jeff" in x["reason"] for x in flush()) and got, "said")
+    check(json.load(open(us.path))["users"]["Jeff"]["role"] == "admin",
+          "demoted in the file, never deleted")
+    check(not us.may_confirm("Jeff"),
+          "a password changed outside the engine cannot confirm: whoever "
+          "set it knows it (SUPERUSER.md's emergency procedure is the way "
+          "back)")
+    hand(lambda doc: doc["users"]["Jeff"].update(
+        role="superuser"))
+    us._doc = None
+    check(us.role_of("Jeff") == "admin", "and a hand edit back is no way")
+    flush()
+    # The engine puts the password back as it was for the rest.
+    doc = json.load(open(us.path, encoding="utf-8"))
+    us._change(lambda d2: d2["users"]["Jeff"].update(
+        pw=U.hash_password("jeff-own-pw-1", params=_U_FAST)))
+    us._known_pw["jeff"] = U._pw_digest(json.load(open(us.path))["users"]
+                                        ["Jeff"])
+    back()
+    # 4. An older build makes Jeff an admin: the set changed; Jeff, with
+    # the password this program wrote, may confirm himself.
+    hand(lambda doc: doc["users"]["Jeff"].update(role="admin"))
+    lines = flush()
+    check(any("No longer a SuperUser" in x["reason"] and "jeff" in
+              x["reason"] for x in lines) and got,
+          f"a SuperUser removed outside the engine is said: {lines}")
+    check(us.may_confirm("Jeff") and not us.may_confirm("Andy"),
+          "Jeff may confirm himself; Andy, never one, may not")
+    try:
+        us.confirm_superuser("Andy", "andy-own-pw-1", "Rack screen")
+        check(False, "Andy confirmed himself")
+    except ValueError:
+        pass
+    try:
+        us.confirm_superuser("Jeff", "wrong", "Rack screen")
+        check(False, "a wrong password confirmed")
+    except ValueError:
+        pass
+    us.confirm_superuser("Jeff", "jeff-own-pw-1", "Rack screen")
+    check(us.role_of("Jeff") == U.SUPERUSER and
+          any(n["action"] == "superuser-confirmed" for n in notes),
+          "Jeff confirmed, audited")
+    flush()
+    # 5. B1b: the key, the set record or a fingerprint removed: NO
+    # SuperUser is trusted (lockdown), nobody is promoted, until Jeff
+    # confirms with his password.
+    for what, fn in (("the key", lambda doc: os.remove(us.key_path)),
+                     ("the set record", lambda doc: doc.pop("su_set")),
+                     ("a fingerprint",
+                      lambda doc: doc["users"]["Jeff"].pop("su_fp"))):
+        hand(fn)
+        check(us.role_of("Jeff") == "admin" and us.lockdown(),
+              f"{what} removed: lockdown, Jeff an admin")
+        lines = flush()
+        check(any("Missing" in x["reason"] for x in lines) and got,
+              f"{what}: audited and alerted: {lines}")
+        check(not us.may_confirm("Andy") and us.may_confirm("Jeff"),
+              f"{what}: only Jeff may confirm")
+        us.confirm_superuser("Jeff", "jeff-own-pw-1", "Rack screen")
+        check(us.role_of("Jeff") == U.SUPERUSER and not us.lockdown() and
+              flush() == [], f"{what}: Jeff confirmed; lockdown over")
+    # A restarted engine remembers the set (the second copy) and lockdown.
+    os.remove(us.key_path)
+    fresh = U.Users(d, hash_params=_U_FAST)
+    check(fresh.role_of("Jeff") == "admin" and fresh.lockdown() and
+          fresh.may_confirm("Jeff"),
+          "a restarted engine: the key gone is lockdown, from the second "
+          "copy")
+    fresh.confirm_superuser("Jeff", "jeff-own-pw-1", "Rack screen")
+    us._doc = None
+    us._known = None
+    us._lockdown = False
+    check(us.role_of("Jeff") == U.SUPERUSER, "confirmed")
+    flush()
+    # A SuperUser the local command line seems to have made, with no
+    # line of its own in the audit log: not taken (B1c, B1d).
+    def fake_cli(doc):
+        doc["users"]["Andy"]["role"] = "superuser"
+        doc["pending_audit"] = [{"action": "superuser-set", "user": "x",
+                                 "id": "made-up", "target": "Andy",
+                                 "source": U.LOCAL_COMMAND, "reason": "",
+                                 "at": ""}]
+        U._write_private(os.path.join(d, U.SU_SECOND),
+                         {"names": ["andy", "jeff"], "pw": {}})
+    hand(fake_cli)
+    check(us.role_of("Andy") == "admin",
+          "a pending line and a second copy without the command's own "
+          "audit line make nobody a SuperUser")
+    flush()
+    us._write_second()
+    # Found by another process first: still audited and alerted here.
+    hand(lambda doc: doc["users"]["Andy"].update(role="superuser"))
+    other = U.Users(d, hash_params=_U_FAST)
+    other.set_idle(5)
+    check(any("Andy" in x["reason"] for x in flush()) and got,
+          "found by another process: still audited and alerted here")
+    print("  ok")
+
+
+def test_superuser_session_limit_and_password_again():
+    section("a SuperUser's session ends after SUPERUSER_IDLE_S with no "
+            "press whatever the admin's idle settings say; an admin's "
+            "session is not touched by it; every upload change asks for "
+            "the SuperUser's password again (review of #251, M3)")
+    U = _su_fast()
+    from ltcplay import remote as RM
+    now = [1000.0]
+    d = tempfile.mkdtemp()
+    us, d, notes = _su_users(d)
+    us._clock = lambda: now[0]
+    check(U.SUPERUSER_IDLE_S == 15 * 60, "15 minutes")
+    ok, _w, jt, _n = us.sign_in("Jeff", "jeff-own-pw-1", True, "Rack screen")
+    ok, _w, at, _n = us.sign_in("Andy", "andy-own-pw-1", True, "Rack screen")
+    us.set_idle(0)
+    us.set_last_show(0)
+    now[0] += U.SUPERUSER_IDLE_S - 5
+    us.touch(at)
+    check(us.session(jt) is not None, "Jeff before the limit")
+    now[0] += 10
+    check(us.session(jt) is None and us.session(at) is not None,
+          "Jeff's session ended at the limit; Andy's, with no idle sign "
+          "out, did not")
+    check(any(x["action"] == "sign-out" and x["user"] == "Jeff" and
+              "SuperUser idle" in x["reason"] for x in notes),
+          "audited")
+    ok, _w, jt, _n = us.sign_in("Jeff", "jeff-own-pw-1", True, "Rack screen")
+    us.touch(jt)
+    now[0] += U.SUPERUSER_IDLE_S - 1
+    check(us.session(jt) is not None, "a press keeps it")
+    # The password again, for every upload change.
+    rem = RM.Remote.__new__(RM.Remote)
+    rem.users, rem.audit, rem.uploader, rem.folder = us, None, None, d
+    ctx = RM.Ctx(True, "127.0.0.1", session=us.session(jt), token=jt)
+    for pw in (None, "", "wrong-one", "andy-own-pw-1"):
+        code, out, _h = rem.users_post("audit-settings",
+                                       {"enabled": False, "password": pw},
+                                       ctx)
+        check(code == 403 and out["error"] == RM.UPLOAD_PASSWORD,
+              f"no change without Jeff's own password ({pw!r}): {code}")
+    code, out, _h = rem.users_post("audit-settings",
+                                   {"enabled": False,
+                                    "password": "jeff-own-pw-1"}, ctx)
+    check(code == 200, f"with it: {code} {out}")
+    # The same for Send now, making someone a SuperUser and resetting a
+    # SuperUser's password (verification review of #251, M3).
+    import types as _t
+    ran = []
+    rem.uploader = _t.SimpleNamespace(run=lambda force=False: ran.append(1))
+    for pw in (None, "andy-own-pw-1"):
+        code, out, _h = rem.users_post("audit-upload-now", {"password": pw},
+                                       ctx)
+        check(code == 403 and out["error"] == RM.UPLOAD_PASSWORD,
+              f"Send now without Jeff's password ({pw!r}): {code}")
+    code, out, _h = rem.users_post("audit-upload-now",
+                                   {"password": "jeff-own-pw-1"}, ctx)
+    check(code == 200, f"Send now with it: {code} {out}")
+    for body in ({"op": "role", "name": "Andy", "role": "superuser"},
+                 {"op": "add", "name": "Kim", "role": "superuser",
+                  "password": "kim-temp-1"}):
+        for mine in (None, "wrong-pw-1"):
+            b = dict(body, my_password=mine) if mine else dict(body)
+            code, out, _h = rem.users_post("users", b, ctx)
+            check(code == 403 and out.get("password_again") and
+                  us.role_of(body["name"]) != U.SUPERUSER,
+                  f"{body['op']} a SuperUser without Jeff's password "
+                  f"({mine!r}): {code} {out}")
+        code, out, _h = rem.users_post(
+            "users", dict(body, my_password="jeff-own-pw-1"), ctx)
+        check(code == 200 and us.role_of(body["name"]) == U.SUPERUSER,
+              f"{body['op']} with it: {code} {out}")
+    for body in ({"op": "password", "name": "Andy",
+                  "password": "andy-temp-9"},
+                 {"op": "role", "name": "Andy", "role": "admin"},
+                 {"op": "remove", "name": "Kim"}):
+        code, out, _h = rem.users_post("users", dict(body), ctx)
+        check(code == 403 and out.get("password_again"),
+              f"{body['op']} on a SuperUser without the password: {code}")
+        code, out, _h = rem.users_post(
+            "users", dict(body, my_password="jeff-own-pw-1"), ctx)
+        check(code == 200, f"{body['op']} with it: {code} {out}")
+    # Wrong passwords typed again never count toward the sign-in lockout
+    # (last round of #251): someone at a borrowed SuperUser session
+    # cannot lock Jeff out of signing in. They have their own small
+    # counter, which pauses only the password typed again.
+    us.clear_lockouts()
+    for _i in range(U.FREE_TRIES + 3):
+        check(not us.confirm("Jeff", "wrong-again", "Rack screen"),
+              "a wrong password typed again")
+    check(not us._locked([("name", "jeff"), ("from", "Rack screen")],
+                         us._clock()),
+          "wrong passwords typed again never lock Jeff's sign-in")
+    ok, _w, jt2, _n = us.sign_in("Jeff", "jeff-own-pw-1", True,
+                                 "Rack screen")
+    check(ok and jt2, "Jeff still signs in at once")
+    check(not us.confirm("Jeff", "jeff-own-pw-1", "Rack screen"),
+          "the password typed again pauses after too many wrong ones")
+    now[0] += U.LOCK_MAX_S + 1
+    check(us.confirm("Jeff", "jeff-own-pw-1", "Rack screen"),
+          "and takes the right one after the pause")
+    print("  ok")
+
+
+def test_superuser_local_command_line():
+    section("the SuperUser is made only by the local command line on the "
+            "show PC (ltcplay superuser NAME, the double-click launchers): "
+            "the first one with their own password, every later one and "
+            "every password reset with a CURRENT SuperUser's; passwords "
+            "only asked for, hidden; a held file retried, an error a "
+            "sentence; the running engine told of a reset by a signed "
+            "signal file; no route reaches it")
+    U = _su_fast()
+    d = tempfile.mkdtemp()
+    out = []
+    it = [iter(())]
+
+    def run(argv, answers=(), line="", **kw):
+        it[0] = iter(answers)
+        return U.main(argv, folder=d, who=kw.get("who", "x"),
+                      read_password=lambda _p: next(it[0]),
+                      read_line=lambda _p: line, out=out.append,
+                      pause=kw.get("pause", lambda _s: None))
+    check(run(["superuser", "Jeff"]) == 1 and
+          "Start LTC Player once" in out[-1],
+          f"no users file: nothing made: {out[-1:]}")
+    notes = []
+    us = U.Users(d, hash_params=_U_FAST, audit=lambda **kw: notes.append(kw))
+    us.seed((("Jeff", "admin"), ("Andy", "admin")))
+    before = open(us.path, "rb").read()
+    check(run(["superuser", "Jeff"], ["anything"]) == 1 and
+          open(us.path, "rb").read() == before,
+          f"a name with no password yet is never made one: {out[-1]}")
+    us.sign_in("Jeff", "", True, "Rack screen", new_password="jeff-own-1")
+    us.sign_in("Andy", "", True, "Rack screen", new_password="andy-own-1")
+    for argv in ([], ["superuser"], ["admin", "Jeff"], ["superuser", "Jeff",
+                                                        "jeff-own-1"],
+                 ["superuser", "Jeff", "--folder"], ["superuser", " "]):
+        check(run(argv) == 2, f"usage for {argv} (never a password on "
+                              f"the line)")
+    check(run(["superuser", "Jeff"], ["andy-own-1"]) == 1 and
+          us.role_of("Jeff") == "admin" and "own password" in out[-1],
+          f"the first SuperUser needs their own password: {out[-1]}")
+    try:
+        us.promote_local("Jeff", "x", by_name="Andy",
+                         by_password="andy-own-1")
+        check(False, "the first SuperUser was made with Andy's password")
+    except ValueError:
+        check(us.role_of("Jeff") == "admin",
+              "never with someone else's password, by any name")
+    # A temporary password an admin set (and so knows) is not Jeff's own.
+    us.set_password("Jeff", "andy-set-1", by="admin")
+    check(run(["superuser", "Jeff"], ["andy-set-1"]) == 1 and
+          us.role_of("Jeff") == "admin" and
+          "not chosen their own password" in out[-1],
+          f"never on a temporary password someone else knows: {out[-1]}")
+    us.sign_in("Jeff", "andy-set-1", True, "Rack screen",
+               new_password="jeff-own-1")
+    check(run(["superuser", "Jeff"], ["jeff-own-1"],
+              who="Windows account showpc") == 0 and
+          us.role_of("Jeff") == U.SUPERUSER, f"made: {out[-2:]}")
+    check(out[-1].startswith("Jeff is now a SuperUser") and
+          "su_recovery" not in json.load(open(us.path, encoding="utf-8")),
+          f"no recovery code is made or shown: {out[-1]!r}")
+    # Its own audit line, written before it returned (B1d), with the id
+    # the engine checks.
+    from ltcplay import audit as A
+    ad = A.default_folder(d)
+    cli = [r for n in A.audit_files(ad) if A.parse_name(n)[1] == "cli"
+           for r in A.read_lines(os.path.join(ad, n))[0]
+           if r.get("action") == "superuser-set"]
+    pend = json.load(open(us.path))["pending_audit"]
+    check(len(cli) == 1 and cli[0]["user"] == "Windows account showpc" and
+          cli[0]["target"] == "Jeff" and cli[0].get("id") and
+          pend[-1]["id"] == cli[0]["id"] and
+          A.verify_folder(ad)[0],
+          f"the command's own audit line is in the log, chained: {cli}")
+    check(not [n for n in os.listdir(d) if n.endswith(".tmp")],
+          "written through the atomic write (no temp file left)")
+    check(us.flush_pending_audit() >= 1 and us.flush_pending_audit() == 0,
+          "the engine writes the audit line once")
+    got = [n for n in notes if n["action"] == "superuser-set"]
+    check(len(got) == 1 and got[0]["user"] == "Windows account showpc" and
+          got[0]["source"] == U.LOCAL_COMMAND and got[0]["target"] == "Jeff"
+          and "Jeff's password" in got[0]["reason"],
+          f"audited: who, what, confirmed with whose password: {got}")
+    # Now one exists: a current SuperUser's name and password, always.
+    for line, answers in (("Andy", ["andy-own-1"]), ("Jeff", ["wrong"]),
+                          ("", ["jeff-own-1"]), ("Nobody", ["x"])):
+        check(run(["superuser", "Andy"], answers, line=line) == 1 and
+              us.role_of("Andy") == "admin" and
+              out[-1] == U.Users.NOT_A_SUPERUSER,
+              f"Andy is not made one with {line!r}'s password: {out[-1]}")
+    check(run(["superuser", "Andy"], ["jeff-own-1"], line="jeff") == 0 and
+          us.role_of("Andy") == U.SUPERUSER,
+          f"with Jeff's: made: {out[-3:]}")
+    us.set_role("Andy", "admin", by=U.SUPERUSER)
+    # A password reset: a current SuperUser's password, then the new one
+    # twice; the running engine ends Jeff's sessions and lockout.
+    ok, _w, tok, _n = us.sign_in("Jeff", "jeff-own-1", True, "Rack screen")
+    for _i in range(7):
+        us.sign_in("Jeff", "bad", False, "iPad")
+    check(us.session(tok) is not None and us._locked(
+        [("name", "jeff")], us._clock()), "Jeff signed in, and locked out")
+    check(run(["superuser-password", "Jeff"], ["andy-own-1", "new-temp-1",
+                                               "new-temp-1"],
+              line="Andy") == 1, "never with an admin's password")
+    check(run(["superuser-password", "Jeff"], ["jeff-own-1", "one-temp-1",
+                                               "two-temp-1"],
+              line="Jeff") == 1 and "did not match" in out[-1],
+          "two different entries change nothing")
+    check(run(["superuser-password", "Andy"], ["jeff-own-1", "a-temp-1",
+                                               "a-temp-1"],
+              line="Jeff") == 1, "only for a SuperUser")
+    check(run(["superuser-password", "Jeff"], ["jeff-own-1", "new-temp-1",
+                                               "new-temp-1"],
+              line="Jeff") == 0 and os.path.exists(us.signal_path),
+          f"reset, and the engine signalled: {out[-1]}")
+    sig_txt = open(us.signal_path, encoding="utf-8").read()
+    check(us.consume_signal() is True and not os.path.exists(us.signal_path)
+          and us.session(tok) is None and
+          not us._locked([("name", "jeff")], us._clock()),
+          "the engine took it: Jeff's sessions ended, his lockout cleared")
+    check(any(n["action"] == "superuser-signal" and n["result"] ==
+              "accepted" for n in notes), "audited")
+    ok, _w, tok2, _n = us.sign_in("Jeff", "new-temp-1", True, "Rack screen",
+                                  new_password="jeff-own-x")
+    with open(us.signal_path, "w", encoding="utf-8") as fh:
+        fh.write(sig_txt)
+    check(us.consume_signal() is False and us.session(tok2) is not None and
+          "already used" in notes[-1]["reason"],
+          "the same signal put back inside its time is refused (a replay)")
+    us.set_password("Jeff", "new-temp-1", by=U.SUPERUSER)
+    ok, _w, _t, need = us.sign_in("Jeff", "new-temp-1", True, "Rack screen")
+    check(not ok and need, "the new one is temporary")
+    us.sign_in("Jeff", "new-temp-1", True, "Rack screen",
+               new_password="jeff-own-2")
+    # A signal not signed, stale, or for nobody: ignored and said.
+    key = us._key()
+    t0 = us._wall()
+    for doc, why in (({"name": "Jeff", "at": t0, "nonce": "n",
+                       "sig": "0" * 64}, "not signed"),
+                     ({"name": "Jeff", "at": t0 - 3600, "nonce": "n",
+                       "sig": us._mac(key, ["su-signal-1", "Jeff",
+                                            t0 - 3600, "n"])},
+                      "too old"),
+                     ({"name": "Andy", "at": t0, "nonce": "n",
+                       "sig": us._mac(key, ["su-signal-1", "Andy", t0,
+                                            "n"])},
+                      "names no SuperUser"),
+                     ("not json", "not readable")):
+        ok, _w, tok, _n = us.sign_in("Jeff", "jeff-own-2", True,
+                                     "Rack screen")
+        with open(us.signal_path, "w") as fh:
+            fh.write(doc if isinstance(doc, str) else json.dumps(doc))
+        check(us.consume_signal() is False and us.session(tok) is not None
+              and not os.path.exists(us.signal_path) and
+              why in notes[-1]["reason"],
+              f"a signal {why}: ignored, removed and said")
+    # A file held by the engine (the cross-process lock): tried again.
+    paused = []
+    keep_wait, U.LOCK_WAIT_S = U.LOCK_WAIT_S, 0.1
+    try:
+        with U._file_lock(us.lock_path):
+            rc = run(["superuser", "Andy"], ["jeff-own-2"], line="Jeff",
+                     pause=paused.append)
+    finally:
+        U.LOCK_WAIT_S = keep_wait
+    check(rc == 1 and len(paused) == U.LOCAL_TRIES - 1 and
+          "Another program" in out[-1],
+          f"a held lock: tried {U.LOCAL_TRIES} times, then a sentence: "
+          f"{paused} {out[-1]}")
+    real = U.Users.promote_local
+
+    def boom(*a, **k):
+        raise PermissionError(13, "Access is denied")
+    U.Users.promote_local = boom
+    try:
+        rc = run(["superuser", "Andy"], ["jeff-own-2"], line="Jeff")
+    finally:
+        U.Users.promote_local = real
+    check(rc == 1 and "could not be saved" in out[-1] and
+          "Traceback" not in out[-1], f"an OSError is a sentence: {out[-1]}")
+    # A command's own audit line missing (B1d): the engine says so.
+    got_alert = []
+    us.on_alert = got_alert.append
+    us._audit_id = "not-in-the-log"
+    us._change(lambda doc: us._pend(doc, "superuser-set", "x", "Jeff"))
+    us._audit_id = None
+    del got_alert[:]
+    us.flush_pending_audit()
+    check(any(n["action"] == "superuser-audit-missing" for n in notes) and
+          got_alert, "a command line change with no audit line is said")
+    # B1a: once a SuperUser has existed, the first SuperUser path is shut
+    # while ANY ONE of the SuperUser's files is here (the mark, the key,
+    # the second copy), whatever else is removed: the set record and the
+    # fingerprints in the users file. Removing all three by hand is the
+    # emergency procedure (test_superuser_emergency_procedure_by_hand).
+    def strip(doc):
+        doc.pop("su_set", None)
+        for u in doc["users"].values():
+            u.pop("su_fp", None)
+    files = (us.key_path, os.path.join(d, U.SU_MARK),
+             os.path.join(d, U.SU_SECOND))
+    saved = {f: open(f, "rb").read() for f in files}
+    for left in files:
+        doc = json.load(open(us.path, encoding="utf-8"))
+        strip(doc)
+        U._write_private(us.path, doc)
+        for f in files:
+            if f != left and os.path.exists(f):
+                os.remove(f)
+            elif f == left:
+                with open(f, "wb") as fh:
+                    fh.write(saved[f])
+        for who_ in ("Andy", "Jeff"):
+            check(run(["superuser", who_], []) == 1 and
+                  out[-1] == U.Users.EVER_REFUSED,
+                  f"{who_} cannot take the first SuperUser path while "
+                  f"{os.path.basename(left)} is here, and is not even "
+                  f"asked for a password: {out[-1]}")
+        fresh = U.Users(d, hash_params=_U_FAST)
+        try:
+            fresh.promote_local("Andy", "x", by_name="Andy",
+                                by_password="andy-own-1")
+            check(False, "promote_local took the first SuperUser path "
+                         "again")
+        except ValueError as e:
+            check(str(e) == U.Users.EVER_REFUSED, f"refused: {e}")
+        check(fresh.role_of("Jeff") == "admin" and fresh.role_of("Andy") ==
+              "admin", "and nobody is promoted by any of it")
+    # The packaged show PC has no Python: the same through ltcplay.exe.
+    import builtins
+    import contextlib
+    import getpass
+    import io
+    from ltcplay import cli as CLI
+    keep = (getpass.getpass, builtins.input)
+    getpass.getpass = lambda _p="": "jeff-own-2"
+    builtins.input = lambda _p="": "Jeff"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            rc = CLI.main(["superuser", "Andy", "--folder", d])
+    finally:
+        getpass.getpass, builtins.input = keep
+    check(rc == 1 and U.Users.EVER_REFUSED in buf.getvalue(),
+          f"ltcplay.exe superuser NAME is the same command: "
+          f"{buf.getvalue()!r}")
+    here = os.path.dirname(os.path.abspath(__file__))
+    for f in ("remote.py", "web.py"):
+        src = open(os.path.join(here, "ltcplay", f), encoding="utf-8").read()
+        check("promote_local" not in src and
+              "superuser_password_local" not in src and
+              "users.main" not in src and "users_mod.main" not in src,
+              f"{f} never calls the local command line's changes")
+    # The double-click launchers: in the program folder, asking for the
+    # name in their window; no password on any line.
+    iss = open(os.path.join(here, "packaging", "windows", "installer.iss"),
+               encoding="utf-8").read()
+    for bat, cmd in (("Make me SuperUser.bat", "superuser"),
+                     ("Reset SuperUser sign-in.bat", "superuser-password")):
+        b = open(os.path.join(here, "packaging", "windows", bat),
+                 encoding="utf-8").read()
+        check(f'Source: "{bat}"; DestDir: "{{app}}"' in iss and
+              f'"%~dp0ltcplay.exe" {cmd} "%NAME%"' in b and
+              "set /p" in b and "pause" in b and
+              b.count("ltcplay.exe\" ") == 1,
+              f"{bat}: installed, asks for the name, passes no password")
+        _no_dashes(b, bat)
+    print("  ok")
+
+
+def test_superuser_emergency_procedure_by_hand():
+    section("Jeff's own way back (SUPERUSER.md, \"In an emergency\"): with "
+            "LTC Player stopped, the SuperUser's three files removed by "
+            "hand (and, for a forgotten password, his pw set to null in "
+            "the users file), LTC Player starts, alerts once, trusts no "
+            "SuperUser, and Make me SuperUser makes Jeff a working "
+            "SuperUser again; a users file Jeff hand-edits while LTC "
+            "Player is stopped never bricks it: it starts, alerts once, "
+            "trusts no edited SuperUser for the upload until he confirms "
+            "with his password on the rack screen, and then works")
+    U = _su_fast()
+    from ltcplay import remote as RM
+    import shutil
+
+    def engine(d):
+        """LTC Player started on the settings folder `d`: (Users, notes,
+        alerts, Remote)."""
+        notes, alerts = [], []
+        eng = U.Users(d, hash_params=_U_FAST,
+                      audit=lambda **kw: notes.append(kw))
+        eng.on_alert = alerts.append
+        rem = RM.Remote.__new__(RM.Remote)
+        rem.users, rem.audit, rem.uploader, rem.folder = eng, None, None, d
+        return eng, notes, alerts, rem
+
+    def rack(eng, rem, name, pw, new=None):
+        """Signed in on the rack screen: (ctx, superuser_here)."""
+        ok, why, tok, _n = eng.sign_in(name, pw, True, "Rack screen",
+                                       new_password=new)
+        check(ok, f"{name} signs in on the rack screen: {why}")
+        ctx = RM.Ctx(True, "127.0.0.1", session=eng.session(tok), token=tok)
+        return ctx, rem.superuser_here(ctx)
+
+    def beats(eng, alerts, n=4):
+        """The engine's beats: the alert is raised once, then never
+        again for the same edit."""
+        for _i in range(n):
+            eng.flush_pending_audit()
+            eng._doc = None
+        return len(alerts)
+
+    def make_me_superuser(d, pw, name="Jeff"):
+        out = []
+        rc = U.main(["superuser", name], folder=d, who="account showpc",
+                    read_password=lambda _p: pw, read_line=lambda _p: "",
+                    out=out.append, pause=lambda _s: None)
+        return rc, out
+
+    files = (U.SU_MARK, U.USERS_KEY, U.SU_SECOND, U.USERS_SIGNAL)
+    # 1. The SuperUser role lost (the password known): delete the three
+    # files, start, Make me SuperUser.
+    us, d, _n0 = _su_users()
+    check(all(os.path.exists(os.path.join(d, f)) for f in files[:3]),
+          "a SuperUser leaves the mark, the key and the second copy")
+    us = None                                   # LTC Player stopped
+    for f in files:
+        if os.path.exists(os.path.join(d, f)):
+            os.remove(os.path.join(d, f))
+    eng, notes, alerts, rem = engine(d)
+    check(eng.active() and not eng.broken() and
+          eng.role_of("Jeff") == "admin",
+          f"it starts; Jeff reads as an admin: {eng.broken()!r}")
+    check(beats(eng, alerts) == 1, f"one alert: {alerts}")
+    ctx, here = rack(eng, rem, "Jeff", "jeff-own-pw-1")
+    check(not here and not eng.ever_superuser(),
+          "no SuperUser is trusted for the upload, and no SuperUser file "
+          "came back by itself")
+    rc, out = make_me_superuser(d, "jeff-own-pw-1")
+    check(rc == 0 and "Jeff is now a SuperUser" in out[-1],
+          f"Make me SuperUser takes the first path again: {out}")
+    beats(eng, alerts)
+    check(any(x["action"] == "superuser-set" and "removed by hand" in
+              x["reason"] for x in notes) and len(alerts) == 2,
+          "the engine writes it down with an alert: a SuperUser had been "
+          "made here before")
+    ctx, here = rack(eng, rem, "Jeff", "jeff-own-pw-1")
+    check(here and eng.role_of("Jeff") == U.SUPERUSER and
+          eng.role_of("Andy") == "admin",
+          "Jeff is a working SuperUser on the running engine; Andy is not")
+    code, body, _h = rem.users_post("audit-settings",
+                                    {"enabled": False,
+                                     "password": "jeff-own-pw-1"}, ctx)
+    check(code == 200, f"and the upload's settings take his change: {code} "
+                       f"{body}")
+    eng2, _n2, alerts2, rem2 = engine(d)
+    _c, here = rack(eng2, rem2, "Jeff", "jeff-own-pw-1")
+    check(here and beats(eng2, alerts2) == 0,
+          "after a restart too, with nothing to say")
+    rc, out = make_me_superuser(d, "andy-own-pw-1", "Andy")
+    check(rc == 1 and eng2.role_of("Andy") == "admin" and
+          eng2.ever_superuser(),
+          f"the files are back, so the first path is shut again: {out}")
+    # 2. A forgotten password: the same, and Jeff's "pw" set to null in
+    # the users file, so he chooses a new one on the rack screen.
+    for f in files:
+        if os.path.exists(os.path.join(d, f)):
+            os.remove(os.path.join(d, f))
+    doc = json.load(open(os.path.join(d, U.USERS_FILE), encoding="utf-8"))
+    doc["users"]["Jeff"]["pw"] = None
+    with open(os.path.join(d, U.USERS_FILE), "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)            # a hand edit: no fsync, no
+    eng, notes, alerts, rem = engine(d)         # fingerprints redone
+    check(eng.active() and not eng.broken() and beats(eng, alerts) == 1,
+          f"it starts and alerts once: {alerts}")
+    _c, here = rack(eng, rem, "Jeff", "", new="jeff-new-pw-2")
+    check(not here and not eng.ever_superuser(),
+          "Jeff chooses a new password on the rack screen, as an admin; "
+          "no SuperUser file came back by itself")
+    check(eng.sign_in("Jeff", "", False, "iPad",
+                      new_password="x-taken-1")[0] is False,
+          "(a name with no password is claimed on the rack screen only)")
+    rc, out = make_me_superuser(d, "jeff-new-pw-2")
+    _c, here = rack(eng, rem, "Jeff", "jeff-new-pw-2")
+    check(rc == 0 and here, f"Make me SuperUser: Jeff works again: {out}")
+    beats(eng, alerts)
+    # 3. Any hand edit of the users file while LTC Player is stopped: it
+    # starts, says it once, trusts no edited SuperUser for the upload,
+    # and Jeff confirms with his password on the rack screen.
+    good = tempfile.mkdtemp()
+    shutil.rmtree(good)
+    shutil.copytree(d, good)
+
+    def edit_pw_hash(doc):
+        doc["users"]["Jeff"]["pw"]["hash"] = "00" * 32
+
+    for what, fn, can_confirm in (
+            ("Jeff's role", lambda doc: doc["users"]["Jeff"].update(
+                role="admin"), True),
+            ("the set record", lambda doc: doc.pop("su_set"), True),
+            ("Jeff's fingerprint", lambda doc: doc["users"]["Jeff"].update(
+                su_fp=5), True),
+            ("odd values", lambda doc: doc.update(
+                su_set="x", su_nonces=[1], pending_audit="x"), True),
+            ("a SuperUser added", lambda doc: doc["users"]["Andy"].update(
+                role="superuser"), None),
+            ("the key", None, True),
+            ("Jeff's password hash", edit_pw_hash, False)):
+        shutil.rmtree(d)
+        shutil.copytree(good, d)
+        if fn is None:
+            os.remove(os.path.join(d, U.USERS_KEY))
+        else:
+            doc = json.load(open(os.path.join(d, U.USERS_FILE),
+                                 encoding="utf-8"))
+            fn(doc)
+            with open(os.path.join(d, U.USERS_FILE), "w",
+                      encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=2)
+        eng, notes, alerts, rem = engine(d)
+        check(eng.active() and not eng.broken() and beats(eng, alerts) == 1,
+              f"{what} edited by hand: it starts and alerts once: "
+              f"{eng.broken()!r} {alerts}")
+        ctx, here = rack(eng, rem, "Andy", "andy-own-pw-1")
+        check(not here, f"{what}: Andy is never trusted for the upload")
+        if can_confirm is None:
+            continue
+        if not can_confirm:
+            check(not eng.may_confirm("Jeff") and
+                  eng.role_of("Jeff") == "admin",
+                  f"{what}: no confirm with a password set outside LTC "
+                  f"Player (the emergency procedure is the way)")
+            continue
+        ctx, here = rack(eng, rem, "Jeff", "jeff-new-pw-2")
+        check(not here and eng.role_of("Jeff") == "admin",
+              f"{what}: Jeff is not trusted for the upload yet")
+        code, body, _h = rem.users_post(
+            "users", {"op": "confirm-superuser",
+                      "my_password": "jeff-new-pw-2"}, ctx)
+        check(code == 200, f"{what}: Jeff confirms on the rack screen: "
+                           f"{code} {body}")
+        ctx, here = rack(eng, rem, "Jeff", "jeff-new-pw-2")
+        code, body, _h = rem.users_post("audit-settings",
+                                        {"enabled": False,
+                                         "password": "jeff-new-pw-2"}, ctx)
+        check(here and code == 200 and beats(eng, alerts) == 1,
+              f"{what}: then it works, with nothing more to say: {code} "
+              f"{alerts}")
+    print("  ok")
+
+
+def test_superuser_cross_process_lock():
+    section("every users file change takes a lock across processes: a "
+            "change while another program holds it waits, then says so "
+            "and changes nothing")
+    U = _su_fast()
+    us, d, _n = _su_users()
+    other = U.Users(d, hash_params=_U_FAST)
+    keep = U.LOCK_WAIT_S
+    U.LOCK_WAIT_S = 0.2
+    try:
+        before = open(us.path, "rb").read()
+        with U._file_lock(other.lock_path):
+            try:
+                us.set_idle(7)
+                check(False, "a change went through under another's lock")
+            except ValueError as e:
+                check("Another program" in str(e) and
+                      open(us.path, "rb").read() == before,
+                      f"refused, nothing changed: {e}")
+        us.set_idle(7)
+        check(other.idle_minutes() == 7, "and goes through once it is free")
+    finally:
+        U.LOCK_WAIT_S = keep
+    print("  ok")
+
+
+# Every route the engine answers or names, on every prefix (review of
+# #251, M6): the nightly upload's ("upload": only a SuperUser signed in on
+# the rack screen, everyone else the answer of a route that is not there)
+# and everything else ("plain"). A route added anywhere and not in this
+# table fails test_superuser_route_table, whatever it is called
+# ("journal-send", "nightly-sync"), until it is put in one of the two. A
+# change here is a deliberate change.
+_SU_UPLOAD_ROUTES = ("/api/remote/audit-settings",
+                     "/api/remote/audit-upload-now",
+                     "/api/remote/upload-card.js")
+_SU_PLAIN_ROUTES = (
+    "/", "/api/", "/api/1/currents.json?network=", "/api/announce",
+    "/api/announce/", "/api/announce/play", "/api/announce/status",
+    "/api/announce/stop", "/api/autoreload", "/api/beyond", "/api/beyond/",
+    "/api/beyond/state", "/api/brand", "/api/check", "/api/conductor",
+    "/api/data/metar?ids=", "/api/devices", "/api/find", "/api/go",
+    "/api/input", "/api/log", "/api/madmapper", "/api/madmapper/",
+    "/api/madmapper/state", "/api/override", "/api/reinput",
+    "/api/release", "/api/reload", "/api/remote", "/api/remote/",
+    "/api/remote/.", "/api/remote/alert", "/api/remote/alerts",
+    "/api/remote/all", "/api/remote/announce-",
+    "/api/remote/announce-output", "/api/remote/announce-outputs",
+    "/api/remote/announce-play", "/api/remote/announce-stop",
+    "/api/remote/announce-test-tone", "/api/remote/arm-hold",
+    "/api/remote/arm-release", "/api/remote/audit-verify",
+    "/api/remote/awc", "/api/remote/awc:", "/api/remote/checklist-",
+    "/api/remote/checklist-export", "/api/remote/checklist-note",
+    "/api/remote/checklist-pdf", "/api/remote/checklist-tally-retry",
+    "/api/remote/checklist-tick", "/api/remote/checklist-verify",
+    "/api/remote/cleaning", "/api/remote/cleaning-beat",
+    "/api/remote/cleaning-stop", "/api/remote/clear-lockouts",
+    "/api/remote/continue", "/api/remote/deck-input",
+    "/api/remote/disarm-all", "/api/remote/fireball",
+    "/api/remote/fireball-beat", "/api/remote/fireball-charge-empty",
+    "/api/remote/fireball-off", "/api/remote/fireball-practice",
+    "/api/remote/fireball-timeline", "/api/remote/fireball-timeline-save",
+    "/api/remote/follow", "/api/remote/forecast", "/api/remote/fuel",
+    "/api/remote/fuel-pump", "/api/remote/fuel-refill",
+    "/api/remote/fuel-undo", "/api/remote/group-disarm",
+    "/api/remote/hazer", "/api/remote/hazer-level",
+    "/api/remote/hazer-test", "/api/remote/hazers-arm-all",
+    "/api/remote/hazers-off", "/api/remote/hold",
+    "/api/remote/idle-signout", "/api/remote/jump",
+    "/api/remote/laser-arm", "/api/remote/laser-test",
+    "/api/remote/last-show-signout", "/api/remote/layout",
+    "/api/remote/live-flame", "/api/remote/lock", "/api/remote/loop",
+    "/api/remote/mark-a", "/api/remote/mark-b", "/api/remote/mesonet",
+    "/api/remote/morning", "/api/remote/morning-open",
+    "/api/remote/my-password", "/api/remote/network",
+    "/api/remote/nws_obs", "/api/remote/open-beyond",
+    "/api/remote/open-folder", "/api/remote/pause",
+    "/api/remote/play-from", "/api/remote/play-from-cues",
+    "/api/remote/play-from-cues-save", "/api/remote/preroll-check",
+    "/api/remote/preroll-continue", "/api/remote/purge-clear",
+    "/api/remote/purge-fire", "/api/remote/purge-select",
+    "/api/remote/purge-stop", "/api/remote/purge-timed",
+    "/api/remote/reload-engine", "/api/remote/restart-check",
+    "/api/remote/resume", "/api/remote/role-matrix", "/api/remote/run-off",
+    "/api/remote/schedule-file", "/api/remote/screen",
+    "/api/remote/screen-arming", "/api/remote/scrub-flames",
+    "/api/remote/setup", "/api/remote/show-file-new",
+    "/api/remote/show-folder", "/api/remote/show-select",
+    "/api/remote/signin", "/api/remote/signout",
+    "/api/remote/start-at-cue", "/api/remote/start-now",
+    "/api/remote/status", "/api/remote/stop", "/api/remote/users",
+    "/api/remote/weather", "/api/remote/whoami", "/api/schedule",
+    "/api/schedule/", "/api/schedule/deck-event", "/api/schedule/incident",
+    "/api/schedule/journal", "/api/schedule/logging",
+    "/api/schedule/operator", "/api/schedule/state",
+    "/api/schedule/tonight", "/api/showdir", "/api/skip", "/api/start",
+    "/api/state", "/api/stop", "/api/timelines", "/api/trigger", "/brand/",
+    "/index.html", "/remote", "/remote-logic.js", "/remote1", "/remote2",
+    "/ui",
+)
+
+
+def _su_routes_in_source(src, prefix="/api/remote/"):
+    """Every route a module's source answers or names, by walking its
+    syntax tree, never by searching its text (review of #251, M6): each
+    comparison (==, !=, in, not in) of a dispatch variable ("name" or
+    "route", a handler's parameter or set inside it) with a string or a
+    tuple, list or set of them; each startswith() on one; every *_ROUTES
+    and *_ROUTE table; and every "/api/..." string anywhere (a handler
+    table). A bare name is /api/remote/<name>."""
+    import ast
+    tree = ast.parse(src)
+    out = set()
+
+    def strs(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return [x for e in node.elts for x in strs(e)]
+        if isinstance(node, ast.Dict):
+            return [x for k in node.keys if k is not None
+                    for x in strs(k)]
+        if isinstance(node, ast.Call):
+            return [x for a in node.args for x in strs(a)]
+        if isinstance(node, ast.BinOp):
+            return strs(node.left) + strs(node.right)
+        return []
+
+    def norm(x):
+        return x if x.startswith("/") else prefix + x
+    disp_names = ("name", "route")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and node.value.startswith("/api/"):
+            out.add(node.value)
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            tg = node.targets if isinstance(node, ast.Assign) else \
+                [node.target]
+            if any(isinstance(t, ast.Name) and
+                   t.id.endswith(("_ROUTES", "_ROUTE")) for t in tg) and \
+                    node.value is not None:
+                out |= {norm(x) for x in strs(node.value)}
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            disp = {x.arg for x in a.args + a.kwonlyargs} & set(disp_names)
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Assign):
+                    disp |= {t.id for t in sub.targets
+                             if isinstance(t, ast.Name) and
+                             t.id in disp_names}
+            if not disp:
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Compare) and \
+                        isinstance(sub.left, ast.Name) and \
+                        sub.left.id in disp:
+                    for op, c in zip(sub.ops, sub.comparators):
+                        if isinstance(op, (ast.Eq, ast.NotEq, ast.In,
+                                           ast.NotIn)):
+                            out |= {norm(x) for x in strs(c)}
+                if isinstance(sub, ast.Call) and \
+                        isinstance(sub.func, ast.Attribute) and \
+                        sub.func.attr == "startswith" and \
+                        isinstance(sub.func.value, ast.Name) and \
+                        sub.func.value.id in disp:
+                    out |= {norm(x) for x in strs(sub)}
+    return out
+
+
+def _su_all_routes():
+    """_su_routes_in_source over every module of ltcplay."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    pkg = os.path.join(here, "ltcplay")
+    out = set()
+    for f in sorted(os.listdir(pkg)):
+        if f.endswith(".py"):
+            out |= _su_routes_in_source(
+                open(os.path.join(pkg, f), encoding="utf-8").read())
+    return out
+
+
+def test_superuser_route_table():
+    section("the nightly upload's routes are an explicit table of every "
+            "route on every prefix: a route missing from it fails; each "
+            "upload route is the SuperUser's in the engine's own gate and "
+            "refused to an admin, an operator and nobody with the answer "
+            "of a missing route; the checks inside audit-settings and "
+            "audit-upload-now refuse on their own too (review of #251, "
+            "M6)")
+    U = _su_fast()
+    from ltcplay import remote as RM
+    # The walker finds what a regex missed (the verification review's
+    # case): a tuple comparison in a handler, a route outside /api/.
+    fake = _su_routes_in_source(
+        "def post(self, name, body):\n"
+        "    if name in (\"journal-send-now\", \"night-sync\"):\n"
+        "        return 1\n"
+        "    if name == \"nightly\" or name != \"x\":\n"
+        "        return 2\n"
+        "def do_GET(self):\n"
+        "    route = self.path\n"
+        "    if route == \"/sync-page\" or route.startswith(\"/feed/\"):\n"
+        "        return 3\n"
+        "BACKUP_ROUTES = (\"backup-now\",)\n")
+    check({"/api/remote/journal-send-now", "/api/remote/night-sync",
+           "/api/remote/nightly", "/api/remote/backup-now", "/sync-page",
+           "/feed/"} <= fake,
+          f"the walker finds every kind of route: {sorted(fake)}")
+    real = _su_all_routes()
+    table = dict({r: "plain" for r in _SU_PLAIN_ROUTES},
+                 **{r: "upload" for r in _SU_UPLOAD_ROUTES})
+    check(any(not r.startswith("/api/") for r in real) and
+          {"/", "/remote", "/remote2"} <= set(table),
+          "routes outside /api/ are in the table too")
+    check(not set(_SU_PLAIN_ROUTES) & set(_SU_UPLOAD_ROUTES) and
+          len(real) > 100, f"{len(real)} routes found")
+    check(not (real - set(table)),
+          f"every route is in the table, upload or plain: missing "
+          f"{sorted(real - set(table))}")
+    check(not (set(table) - real),
+          f"the table names no route that is gone: "
+          f"{sorted(set(table) - real)}")
+    for r, kind in sorted(table.items()):
+        if r.startswith("/api/remote/"):
+            n = r[len("/api/remote/"):]
+            check(U.is_upload_route(n) == (kind == "upload"),
+                  f"{r}: the engine's gate says {U.is_upload_route(n)}, "
+                  f"the table {kind}")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator")),
+        transport=lambda *a: (503, "not here"))
+    rem = httpd.remote
+    try:
+        toks = {}
+        for n in ("Andy", "Dallen"):
+            st, out, h = http("/api/remote/signin", {
+                "name": n, "password": "", "new_password":
+                f"{n.lower()}-own-pw-1"})
+            toks[n] = cookie_of(h)
+        _s, miss, _h = http("/api/remote/no-such-route-here", {})
+        for r in _SU_UPLOAD_ROUTES:
+            for who in (None, "Dallen", "Andy"):
+                for body in ({}, None):
+                    st, out, _h = http(r, body, cookie=toks.get(who))
+                    check(st == 404 and out == miss,
+                          f"{'GET' if body is None else 'POST'} {r} as "
+                          f"{who or 'nobody'}: {st} {out}")
+        rem.audit.flush(2.0)
+        ref = [(l["user"], l["target"]) for l in _audit_lines(
+            rem.audit.folder) if l.get("action") == "upload-refused"]
+        for r in _SU_UPLOAD_ROUTES:
+            n = r[len("/api/remote/"):]
+            for m in ("GET", "POST"):
+                check(("Andy", f"{m} {n}") in ref and
+                      ("unsigned", f"{m} {n}") in ref,
+                      f"the engine's own gate refused and wrote down "
+                      f"{m} {n} for Andy and for nobody")
+        # The checks inside the two routes, on their own (the gate in
+        # Remote.post bypassed): refused for an admin on the rack screen.
+        andy = RM.Ctx(True, "127.0.0.1",
+                      session=rem.users.session(toks["Andy"]))
+        for n in ("audit-settings", "audit-upload-now"):
+            code, out, _h = rem.users_post(n, {"enabled": False}, andy)
+            check(code == 404 and out == {"error": U.UPLOAD_REFUSED},
+                  f"{n}'s own check refuses an admin: {code} {out}")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    print("  ok")
+
+
+def test_superuser_upload_is_hidden_and_refused():
+    section("the nightly upload: refused with the words of a missing route "
+            "for nobody, an admin, an operator, a SuperUser on an iPad or "
+            "over Tailscale; only a SuperUser signed in on the rack screen "
+            "gets it, its card's script included; the Users answer, "
+            "whoami and status have no word of it for anyone else; each "
+            "refusal and each change is in the audit log with who")
+    U = _su_fast()
+    from ltcplay import remote as RM
+    ups = list(U.UPLOAD_ROUTES) + [RM.UPLOAD_CARD_ROUTE]
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Andy", "admin"), ("Dallen", "operator")),
+        transport=lambda *a: (503, "not here"))
+    rem = httpd.remote
+    try:
+        toks = {}
+        for n in ("Jeff", "Andy", "Dallen"):
+            st, out, h = http("/api/remote/signin", {
+                "name": n, "password": "", "new_password":
+                f"{n.lower()}-own-pw-1"})
+            toks[n] = cookie_of(h)
+            check(st == 200 and toks[n], f"{n} signs in: {out}")
+        said = []
+        check(U.main(["superuser", "Jeff"], folder=work, who="account t",
+                     read_password=lambda _p: "jeff-own-pw-1",
+                     out=said.append) == 0, f"Jeff made one: {said}")
+        rem.users.flush_pending_audit()
+        body = {"enabled": True, "url": "https://audit.example/ltc",
+                "token": "tok-SECRET-123", "time": "04:10",
+                "keep_days": 120, "password": "jeff-own-pw-1"}
+        from ltcplay import auditsend
+        ok, _w, jeff_ipad, _n = rem.users.sign_in(
+            "Jeff", "jeff-own-pw-1", False, "iPad")
+        rack_s = rem.users.session(toks["Jeff"])
+        ipad_s = rem.users.session(jeff_ipad)
+        ctxs = [("iPad", RM.Ctx(False, "10.0.0.9", session=ipad_s,
+                                token=jeff_ipad)),
+                ("rack cookie on an iPad", RM.Ctx(False, "10.0.0.9",
+                                                  session=rack_s)),
+                ("an iPad sign-in on this machine",
+                 RM.Ctx(True, "127.0.0.1", session=ipad_s)),
+                ("nobody", RM.Ctx(True, "127.0.0.1")),
+                ("Andy", RM.Ctx(True, "127.0.0.1",
+                                session=rem.users.session(toks["Andy"])))]
+        ts = RM.Ctx(True, "127.0.0.1", session=rack_s)
+        ts.tailscale = True
+        ctxs.append(("Tailscale", ts))
+        ts2 = RM.Ctx(False, "100.101.102.103", session=rack_s)
+        ts2.tailscale = True
+        ctxs.append(("Tailscale door", ts2))
+        for what, c in ctxs:
+            check(not rem.superuser_here(c), f"{what}: not a SuperUser here")
+            for n in ups:
+                code, out, _h = rem.post("/api/remote/" + n, dict(body), c)
+                check(code == 404 and out == {"error": U.UPLOAD_REFUSED},
+                      f"{what}: POST {n} refused: {code} {out}")
+                got = rem.get("/api/remote/" + n, c)
+                check(got[0] == 404 and got[1] == {"error":
+                                                   U.UPLOAD_REFUSED},
+                      f"{what}: GET {n} refused: {got[:2]}")
+            for route in ("users", "whoami", "status"):
+                code, got = rem.get("/api/remote/" + route, c)[:2]
+                bad = [(p, t) for p, t in _su_walk(got)
+                       if "upload" in t.lower() or "journal_up" in t.lower()]
+                check(not bad, f"{what}: {route} has no word of the "
+                               f"upload: {bad[:3]}")
+        cfg, _e = auditsend.load_config(work)
+        check(cfg["enabled"] is False and not cfg["url"],
+              "nothing was saved by a refused press")
+        for who in ("Andy", "Dallen"):
+            st, got, _h = http("/api/remote/users", None, cookie=toks[who])
+            jeff = [u for u in got.get("users", []) if u["name"] == "Jeff"]
+            check(st == 200 and jeff and jeff[0]["role"] == U.SUPERUSER and
+                  jeff[0]["edit"] is False and
+                  U.SUPERUSER not in got.get("roles", []) and
+                  not got.get("may_superuser") and
+                  "folder" not in json.dumps(got.get("audit")),
+                  f"{who}: Jeff read only, no superuser role offered, no "
+                  f"folder on the audit card: {jeff} {got.get('roles')}")
+        # The SuperUser on the rack screen: the card's state, its script,
+        # the fixed row, and the change, audited without the token.
+        st, got, _h = http("/api/remote/users", None, cookie=toks["Jeff"])
+        check(st == 200 and got.get("may_superuser") is True and
+              isinstance((got.get("upload") or {}).get("upload"), dict) and
+              [U.SUPERUSER, U.UPLOAD] in got.get("fixed", []) and
+              got["matrix"]["admin"][U.UPLOAD] is False,
+              f"Jeff gets the card's state and its fixed row")
+        import urllib.request
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        req = urllib.request.Request(
+            base + "/api/remote/upload-card.js",
+            headers={"Cookie": f"{U.COOKIE}={toks['Jeff']}"})
+        with urllib.request.build_opener(urllib.request.ProxyHandler(
+                {})).open(req, timeout=10) as r:
+            js, ctype = r.read().decode(), r.headers.get("Content-Type")
+        check("javascript" in ctype and "window.ltcUploadCard" in js and
+              '"/api/remote/audit-settings"' in js,
+              f"Jeff's screen gets the card's script: {ctype}")
+        st, out, _h = http("/api/remote/audit-settings", body,
+                           cookie=toks["Jeff"])
+        cfg, _e = auditsend.load_config(work)
+        check(st == 200 and cfg["enabled"] and cfg["time"] == "04:10",
+              f"Jeff saves the upload settings: {st} {out}")
+        st, out, _h = http("/api/remote/audit-upload-now",
+                           {"password": "jeff-own-pw-1"},
+                           cookie=toks["Jeff"])
+        check(st == 200, f"Jeff's Send now: {st} {out}")
+        st, out, _h = http("/api/remote/audit-settings", {"enabled": False},
+                           cookie=toks["Andy"])
+        cfg, _e = auditsend.load_config(work)
+        check(st == 404 and cfg["enabled"] is True,
+              f"Andy cannot turn it off: {st} {out}")
+        for b in ({"op": "role", "name": "Jeff", "role": "admin"},
+                  {"op": "role", "name": "Andy", "role": U.SUPERUSER},
+                  {"op": "add", "name": "Kim", "role": U.SUPERUSER,
+                   "password": "kim-temp-1"},
+                  {"op": "password", "name": "Jeff",
+                   "password": "andy-knows-1"},
+                  {"op": "clear-password", "name": "Jeff"},
+                  {"op": "remove", "name": "Jeff"}):
+            st, out, _h = http("/api/remote/users", b, cookie=toks["Andy"])
+            check(st == 403 and out.get("error") == U.SUPERUSER_ONLY,
+                  f"Andy: {b['op']} refused: {st} {out}")
+        st1, o1, _h = http("/api/remote/role-matrix",
+                           {"matrix": {"admin": {"upload": True}}},
+                           cookie=toks["Andy"])
+        st2, o2, _h = http("/api/remote/role-matrix",
+                           {"matrix": {"admin": {"uplaad": True}}},
+                           cookie=toks["Andy"])
+        check(st1 == st2 == 400 and o1["error"].replace("upload", "X") ==
+              o2["error"].replace("uplaad", "X"),
+              f"the upload row is refused like any unknown row: {o1} {o2}")
+        rem.audit.flush(2.0)
+        lines = _audit_lines(rem.audit.folder)
+        txt = json.dumps(lines)
+        check("tok-SECRET-123" not in txt and "andy-knows-1" not in txt and
+              "kim-temp-1" not in txt and "jeff-own-pw-1" not in txt,
+              "no token or password in the audit log")
+        ref = [l for l in lines if l.get("action") == "upload-refused"]
+        check(any(l["user"] == "Andy" and l["result"] == "refused" and
+                  "audit-settings" in l["target"] for l in ref) and
+              any(l["user"] == "unsigned" for l in ref),
+              "each refused upload press is audited with who")
+        sr = [l for l in lines if l.get("action") == "superuser-refused"]
+        check(any(l["user"] == "Andy" and "Jeff" in l["target"]
+                  for l in sr) and
+              any(l["user"] == "Andy" and "Andy" in l["target"]
+                  for l in sr) and
+              any("upload row" in l["target"] for l in sr),
+              f"each refused SuperUser change is audited with who and "
+              f"what: {[(l['user'], l['target']) for l in sr]}")
+        ch = [l for l in lines if l.get("action") == "upload-settings"]
+        check(len(ch) == 1 and ch[0]["user"] == "Jeff" and
+              "enabled" in ch[0]["target"] and "token" in ch[0]["target"],
+              f"the upload change is audited with who: {ch}")
+        check(any(l.get("action") == "superuser-set" and
+                  l.get("source") == U.LOCAL_COMMAND and
+                  l.get("user") == "account t" for l in lines),
+              "the grant is audited from the local command line")
+        check(any(l.get("action") == "upload-now" and l["user"] == "Jeff"
+                  for l in lines), "Send now is audited with who")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    print("  ok")
+
+
+def test_superuser_upload_file_never_named():
+    section("the upload's settings file is never named, nor where it is, "
+            "to anyone but a SuperUser (Jeff, 2026-11-13): every page and "
+            "every GET answer and every refusal, as an admin and signed "
+            "out, with the file broken so its errors are as long as they "
+            "get; USERS.md and OPERATOR.md do not name it; SUPERUSER.md, "
+            "which no screen links to, does")
+    U = _su_fast()
+    from ltcplay import auditsend
+    from ltcplay import remote as RM
+    name = auditsend.CONFIG_FILE
+    pats = (name.lower(), "audit.json", "ltcplay_audit")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Andy", "admin")),
+        transport=lambda *a: (503, "not here"))
+    rem = httpd.remote
+    try:
+        toks = {}
+        for n in ("Jeff", "Andy"):
+            st, out, h = http("/api/remote/signin", {
+                "name": n, "password": "", "new_password":
+                f"{n.lower()}-own-pw-1"})
+            toks[n] = cookie_of(h)
+        U.main(["superuser", "Jeff"], folder=work, who="t",
+               read_password=lambda _p: "jeff-own-pw-1",
+               out=lambda *_: None)
+        # A broken settings file: every error sentence names its path.
+        with open(os.path.join(work, name), "w") as fh:
+            fh.write('{"upload": {"enabled": "yes"}}')
+        rem.uploader.run(force=True)
+        check(name in rem.uploader.status()["config_error"],
+              "the SuperUser's own view names it (so the scan below means "
+              "something)")
+        import urllib.error
+        import urllib.request
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+        def raw(path, cookie=None):
+            h = {"Cookie": f"{U.COOKIE}={cookie}"} if cookie else {}
+            try:
+                with opener.open(urllib.request.Request(base + path,
+                                                        headers=h),
+                                 timeout=10) as r:
+                    return r.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                return e.read().decode("utf-8", "replace")
+        gets = ["/", "/remote", "/remote2", "/remote-logic.js",
+                "/api/state"] + sorted(
+            r for r in _SU_PLAIN_ROUTES + _SU_UPLOAD_ROUTES
+            if r.startswith("/api/remote/") and "?" not in r)
+        for who in ("Andy", None):
+            for path in gets:
+                t = raw(path, toks.get(who)).lower()
+                hit = [p for p in pats if p in t]
+                check(not hit, f"GET {path} as {who or 'signed out'} names "
+                               f"the upload's file: {hit}")
+            for path in _SU_UPLOAD_ROUTES:
+                st, out, _h = http(path, {"enabled": True},
+                                   cookie=toks.get(who))
+                check(not any(p in json.dumps(out).lower() for p in pats),
+                      f"POST {path} as {who or 'signed out'}: {out}")
+        t = raw("/api/remote/users", toks["Jeff"]).lower()
+        check(name in t, "a SuperUser on the rack screen is told")
+        # The night journal and the schedule's state, as the screens show
+        # them to an admin: no word of the upload (the journal upload of
+        # #246 stays behind the same gate).
+        for path in ("/api/schedule/state", "/api/schedule/journal",
+                     "/api/state"):
+            t = raw(path, toks["Andy"]).lower()
+            check("upload" not in t,
+                  f"{path} as an admin: no word of the upload")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for doc in ("USERS.md", "OPERATOR.md"):
+        t = open(os.path.join(here, doc), encoding="utf-8").read().lower()
+        check(not any(p in t for p in pats),
+              f"{doc} does not name the upload's file")
+    su = open(os.path.join(here, "SUPERUSER.md"), encoding="utf-8").read()
+    check(name in su and "Make me SuperUser" in su and
+          "Reset SuperUser sign-in" in su and "Recover SuperUser" not in su
+          and "recovery code" not in su and
+          "## In an emergency" in su and U.SU_MARK in su and
+          U.USERS_KEY in su and U.SU_SECOND.replace(os.sep, "\\") in su,
+          "SUPERUSER.md, Jeff's own guide, names it, the launchers and the "
+          "emergency procedure's files; no recovery code")
+    _no_dashes(su, "SUPERUSER.md")
+    page = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+                encoding="utf-8").read()
+    check("upload" not in (_js_function(page, "renderAudit") or "x upload"),
+          "the audit card (everyone's) has no word of the upload: the "
+          "upload's state is drawn only by the SuperUser's card script")
+    check("SUPERUSER.md" not in page and "audit-settings" not in page and
+          "audit-upload-now" not in page and "ltcUploadCard" in page,
+          "the page links no SuperUser guide and carries no upload route "
+          "or card; it loads the card's script only for a SuperUser")
+    print("  ok")
+
+
+def _su_walk(x, path=""):
+    """Every key and text in a JSON answer, with where it is."""
+    if isinstance(x, dict):
+        for k, v in x.items():
+            yield f"{path}.{k}", str(k)
+            yield from _su_walk(v, f"{path}.{k}")
+    elif isinstance(x, list):
+        for i, v in enumerate(x):
+            yield from _su_walk(v, f"{path}[{i}]")
+    elif isinstance(x, str):
+        yield path, x
 
 
 def test_safety_presses_pass_signed_out_and_are_logged_unsigned():
@@ -86603,12 +89446,12 @@ def test_artnet_faults_only_for_the_show_in_use():
               f"nothing Run yet: no fault, no alert, the card amber and "
               f"naming the file: {ck} {al}")
         check(NOTE[0].startswith("Art-Net receivers, a note: No show is "
-                                 "loaded, Run or picked yet") and
+                                 "loaded, turned on or picked yet") and
               "soak_show.json: " in NOTE[0] and "10.99.0.1" in NOTE[0],
               f"the rack screen is given one note: {NOTE[0]!r}")
-        check(rm.AMBIGUOUS.startswith("No show is loaded, Run or picked "
-                                      "yet, so no show file is judged as "
-                                      "a fault"),
+        check(rm.AMBIGUOUS.startswith("No show is loaded, turned on or "
+                                      "picked yet, so no show file is "
+                                      "judged as a fault"),
               f"the note says why: {rm.AMBIGUOUS!r}")
         # The only show file in the folder is the show that will run: its
         # fault stands, with nothing picked.
@@ -87098,7 +89941,7 @@ for(const k of ["prog", '{"on_lost": "hold"}', '{"no_output": true, "on_lost": "
   t(runningMode(L[k].snap) === "rehearsal", k + ": the old page reads " + runningMode(L[k].snap));
 }
 const idle = L.restart_idle.st;
-t(modeLook(idle).word === "Not running", "after a restart: Not running");
+t(modeLook(idle).word === "Show control off", "after a restart: Show control off");
 t(reload(idle) === "show", "after a restart the switch starts on Show");
 // An engine older than this change (no mode): on_lost, as before.
 t(runningMode({on_lost:"hold"}) === "rehearsal" && runningMode({on_lost:"freerun"}) === "show", "no mode field: on_lost as before");
@@ -87933,7 +90776,7 @@ def test_live_flame_engine_routes_roles_and_presses():
         # Run (/api/start) ends it before the session starts.
         lf.on = True
         http("/api/start", {"timeline": "nothing.json"}, cookie=jeff)
-        check(not lf.on and "Run was pressed" in lf.calls[-1][1],
+        check(not lf.on and "Show control was turned on" in lf.calls[-1][1],
               f"Run ends it: {lf.calls[-1]}")
     finally:
         httpd.server_close()
@@ -87988,11 +90831,11 @@ def test_live_flame_engine_routes_roles_and_presses():
     r.control = types.SimpleNamespace(
         session=types.SimpleNamespace(running=True, clock=None),
         state=lambda: {})
-    check("Run is pressed" in r.live_flame_blockers(),
+    check("show control is on" in r.live_flame_blockers(),
           "Run pressed (the session running): named")
     r.control = types.SimpleNamespace(
         session=None, state=lambda: {"starting": True})
-    check("Run is pressed" in r.live_flame_blockers(),
+    check("show control is on" in r.live_flame_blockers(),
           "Run pressed (the engine's state says starting): named")
     r.control = types.SimpleNamespace(session=None, state=lambda: {})
     r.schedule = types.SimpleNamespace(
@@ -91379,6 +94222,1079 @@ def test_fuel_doc_in_plain_words():
     print("  ok")
 
 
+# ------------------------------------------------------------ haze fluid --
+# Jeff, 2026-11-12: haze fluid tracked the way flame fuel is (fuelhaze.py),
+# on the Fuel page. Four hazers on 80/81, 82/83, 84/85, 86/87 (haze, fan).
+
+_HZF = [("Hazer 1", 80, 81), ("Hazer 2", 82, 83), ("Hazer 3", 84, 85),
+        ("Hazer 4", 86, 87)]
+
+
+class _HazeRig:
+    """A HazeTracker on the test's clocks, watching a stand-in flame link
+    whose frames the test sends through its haze_observer exactly as
+    FlameLink.send_frame calls it: (tc, the bytes on the wire, the hazer
+    test, sent)."""
+
+    def __init__(self, work=None, stale_ms=500):
+        import types
+        self.work = work or tempfile.mkdtemp()
+        self.t = [500.0]
+        self.wall = [1_800_000_000.0]
+        self.pos = [10.0]
+        self.fresh = [True]
+        self.rehearsal = [False]
+        self.lines = []
+        self.hz = list(_HZF)
+        self.link = types.SimpleNamespace(rehearse_on=False,
+                                          haze_observer=None)
+        if stale_ms is not None:
+            # flamesafe's frame_stale_ms, as the flame link's config has it.
+            self.link.cfg = types.SimpleNamespace(frame_stale_ms=stale_ms)
+        self.tr = self.open()
+
+    def open(self):
+        from ltcplay import fuelhaze as FH
+        tr = FH.HazeTracker(
+            self.work, lambda: self.hz,
+            status_get=lambda: self.fresh[0],
+            min_show_s_get=lambda: 30,
+            rehearsal_get=lambda: self.rehearsal[0],
+            journal=lambda text, fault=False: self.lines.append(
+                (text, fault)),
+            clock=lambda: self.t[0], wall=lambda: self.wall[0],
+            threaded=False)
+        tr.attach(self.link)
+        return tr
+
+    def reopen(self):
+        self.tr = self.open()
+        return self.tr
+
+    def write_fluid(self, fluid, levels=None):
+        import json as _j
+        doc = {"hazers_format": 1,
+               "levels": levels or {"Hazer 1": {"haze": 140, "fan": 255}}}
+        if fluid is not None:
+            doc["fluid"] = fluid
+        with open(os.path.join(self.work, "ltcplay_hazers.json"), "w",
+                  encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        self.tr._fluid_stamp = None
+        self.tr._reload_fluid()
+
+    def tc(self):
+        f = int(round(self.pos[0] * 30))
+        return (f"{f // 108000:02d}:{f // 1800 % 60:02d}:"
+                f"{f // 30 % 60:02d}:{f % 30:02d}")
+
+    def frames(self, n, tc=False, haze=(), test=False, ok=True, dt=0.025,
+               pump=True):
+        wire = bytearray(512)
+        for s, v in haze:
+            wire[s - 1] = v
+        wire = bytes(wire)
+        for _ in range(n):
+            self.t[0] += dt
+            self.wall[0] += dt
+            if tc:
+                self.pos[0] += dt
+            self.link.haze_observer(self.tc() if tc else None, wire, test,
+                                    ok)
+        if pump:
+            self.tr.pump()
+
+    def end(self):
+        from ltcplay import fuelhaze as FH
+        self.frames(4)
+        self.t[0] += FH.EPISODE_JOIN_S + 0.5
+        self.wall[0] += FH.EPISODE_JOIN_S + 0.5
+        self.tr.pump()
+        self.frames(1)
+
+    def h(self, name):
+        for x in self.tr.view()["hazers"]:
+            if x["name"] == name:
+                return x
+        return None
+
+    def u(self, name):
+        return self.tr.units.get(name)
+
+    def close(self):
+        import shutil
+        shutil.rmtree(self.work, ignore_errors=True)
+
+
+def test_haze_fluid_reads_the_bytes_on_the_wire():
+    section("haze fluid (Jeff, 2026-11-12): the flame link hands the haze "
+            "tracker the very bytes each frame sent, the hazer test said, "
+            "after the frame went; frames are byte for byte the same with "
+            "it, and whatever it raises the frame still goes")
+    import json as _j
+    from ltcplay import fuelhaze as FH
+
+    def mk():
+        link = _hz_link()
+        link.hazer_levels_set({"Hazer 1": (140, 255), "Hazer 2": (64, 0),
+                               "Hazer 3": (0, 255)})
+        link.hazers_set({"Hazer 1", "Hazer 2", "Hazer 3"})
+        return link
+    plain, watched = mk(), mk()
+    check(plain.haze_observer is None, "a new link has no haze observer")
+    seen = []
+    watched.haze_observer = lambda tc, w, test, ok: seen.append(
+        (tc, bytes(w), test, ok, len(watched._sock.sent)))
+    for _ in range(4):
+        for lk in (plain, watched):
+            check(lk.send_frame() is True, "the frame went out")
+
+    def sent(link):
+        return [_j.loads(d)["values"] for d, _a in link._sock.sent
+                if _j.loads(d)["t"] == "flame"]
+    check(sent(plain) == sent(watched),
+          "with a haze observer the frames carry exactly the same values")
+    check(len(seen) == 4 and [list(s[1]) for s in seen] == sent(watched),
+          "the observer is given the bytes each frame carried on the wire")
+    check(seen[-1][1][79:85] == bytes([140, 255, 64, 0, 0, 255]) and
+          not seen[-1][2] and seen[-1][3] is True and
+          seen[-1][0] is not None,
+          f"ARMED hazers at their levels during a show, the test off: "
+          f"{list(seen[-1][1][79:85])} {seen[-1][2]}")
+    check(all(s[4] == i + 1 for i, s in enumerate(seen)),
+          f"and only after it was sent: {[s[4] for s in seen]}")
+    for exc in (RuntimeError("broke"), ValueError("bad"), KeyError("k"),
+                MemoryError(), ZeroDivisionError()):
+        def boom(*a, _e=exc):
+            raise _e
+        watched.haze_observer = boom
+        before = len(watched._sock.sent)
+        try:
+            ok = watched.send_frame()
+            plain.send_frame()
+        except BaseException as e:            # noqa: BLE001
+            ok = f"raised {type(e).__name__}"
+        check(ok is True and len(watched._sock.sent) == before + 1 and
+              sent(plain)[-1] == sent(watched)[-1],
+              f"a haze observer raising {type(exc).__name__}: the same "
+              f"frame still went and send_frame says so: {ok}")
+    # The hazer test: no show playing, every hazer at its levels, test
+    # said.
+    t = mk()
+    t.state["live"] = False
+    got = []
+    t.haze_observer = lambda tc, w, test, ok: got.append((bytes(w), test))
+    t.hazer_test_start(30, t.abort_id)
+    t.send_frame()
+    check(got and bool(got[-1][1]) and
+          got[-1][0][79:85] == bytes([140, 255, 64, 0, 0, 255]),
+          f"the hazer test's frame is told as the test: {got[-1:]}")
+    t._sock.failing = True
+    t.send_frame()
+    check(bool(got[-1][1]) and len(got) == 2,
+          "a frame that could not be sent is still told")
+    # A real tracker on a real link: what it sent is counted.
+    R = _HazeRig()
+    try:
+        link = mk()
+        R.tr._clock = link._clock
+        R.tr.attach(link)
+        check(link.haze_observer == R.tr.observe,
+              "attach() sets the haze observer")
+        t0 = link._clock()
+        for _ in range(41):
+            link.send_frame()
+        t1 = link._clock()
+        R.tr.pump()
+        b = R.tr.episode["burn"]
+        check("Hazer 3" not in b and _near(b["Hazer 1"][1],
+                                           b["Hazer 1"][0] * 140 / 255,
+                                           0.001) and
+              _near(b["Hazer 2"][1], b["Hazer 2"][0] * 64 / 255, 0.001) and
+              0 < b["Hazer 1"][0] <= t1 - t0 + 1e-9,
+              f"a real link's show frames: Hazer 1 at 140/255, Hazer 2 at "
+              f"64/255, Hazer 3 fan only not counted: {b}")
+    finally:
+        R.close()
+    check(FH.FULL == 255.0, "full output is a haze value of 255")
+    print("  ok")
+
+
+def test_haze_fluid_counts_haze_not_fan_by_level_and_source():
+    section("haze fluid: per hazer, the seconds its HAZE channel is above 0 "
+            "(fan only never counts), weighted by the value sent (140/255, "
+            "64/255), split show, manual (the hazer test) and other, and "
+            "per show; a performance under 30 s of timecode is other")
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.frames(400, haze=((80, 140), (81, 255), (82, 64), (85, 255)),
+                 test=True)
+        h1, h2 = R.u("Hazer 1"), R.u("Hazer 2")
+        check(_near(h1["on"]["manual"], 10.0, 0.001) and
+              _near(h1["full"]["manual"], 10.0 * 140 / 255, 0.001),
+              f"10 s at haze 140: 10 s on, {10 * 140 / 255:.3f} s full "
+              f"output: {h1['on']} {h1['full']}")
+        check(_near(h2["on"]["manual"], 10.0, 0.001) and
+              _near(h2["full"]["manual"], 10.0 * 64 / 255, 0.001),
+              f"10 s at haze 64: 10 s on, {10 * 64 / 255:.3f} s full: "
+              f"{h2['full']}")
+        check(R.u("Hazer 3") is None and R.u("Hazer 4") is None,
+              "Hazer 3 with only its fan at 255 used no fluid: not even a "
+              "record")
+        R.frames(400, haze=((84, 0), (85, 255)))
+        check(R.u("Hazer 3") is None, "fan only, outside the test: nothing")
+        R.frames(40, haze=((84, 255),))
+        h3 = R.u("Hazer 3")
+        check(_near(h3["on"]["other"], 1.0, 0.001) and
+              _near(h3["full"]["other"], 1.0, 0.001) and
+              h3["on"]["manual"] == 0.0,
+              f"haze with no show and no test is other: {h3['on']}")
+        # A show: 40 s of timecode, the first 20 s with Hazer 1 at 140.
+        R.pos[0] = 10.0
+        R.frames(800, tc=True, haze=((80, 140), (81, 255)))
+        R.frames(800, tc=True)
+        R.end()
+        h1 = R.u("Hazer 1")
+        check(_near(h1["on"]["show"], 20.0, 0.001) and
+              _near(h1["full"]["show"], 20.0 * 140 / 255, 0.001) and
+              h1["shows"] == 1 and len(h1["show_burns"]) == 1 and
+              _near(h1["show_burns"][0][0], 20.0, 0.001) and
+              _near(h1["show_burns"][0][1], 20 * 140 / 255, 0.001),
+              f"a show: its haze on show, and one show_burns entry [on, "
+              f"full]: {h1['on']} {h1['show_burns']}")
+        check(R.u("Hazer 2")["shows"] == 1 and
+              R.u("Hazer 2")["show_burns"] == [[0.0, 0.0]] and
+              R.tr.shows_total == 1,
+              "every hazer counts the show, a disarmed one with no haze")
+        # Too short to be a show: other.
+        R.pos[0] = 10.0
+        R.frames(400, tc=True, haze=((86, 255),))
+        R.end()
+        h4 = R.u("Hazer 4")
+        check(_near(h4["on"]["other"], 10.0, 0.001) and
+              h4["on"]["show"] == 0.0 and h4["shows"] == 1 and
+              R.tr.shows_total == 1,
+              f"a 10 s performance is not a show: its haze is other: "
+              f"{h4['on']}")
+        v = R.h("Hazer 1")
+        check(v["since"] == {"show": 20.0, "manual": 10.0, "other": 0.0} and
+              v["on_s"] == 30.0 and
+              v["full_s"] == round(30 * 140 / 255, 1) and
+              v["shows_since"] == 1 and v["refills"] == 0,
+              f"the page's numbers: {v['since']} {v['on_s']} {v['full_s']}")
+        check(v["big"] == "30 s haze" and
+              v["words"] == ("No refill logged yet: 30 s of haze (16 s at "
+                             "full output) since tracking began. Press "
+                             "Refilled the next time its tank is full."),
+              f"the exact words: {v['big']!r} {v['words']!r}")
+        check(v["litres_used"] is None and v["percent"] is None and
+              v["litres_per_hour"] is None,
+              "no fluid settings: seconds only, never litres")
+        # The frame clock: one frame counts at most MAX_FRAME_DT_S.
+        before = R.u("Hazer 1")["on"]["other"]
+        R.t[0] += 20.0
+        R.frames(1, haze=((80, 255),))
+        check(R.u("Hazer 1")["on"]["other"] - before <=
+              FH.MAX_FRAME_DT_S + 1e-9,
+              "a 20 s gap between frames counts one frame at most")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_not_sure_on_restart_and_a_stale_link():
+    section("haze fluid: never silently dropped or invented: flamesafe's "
+            "status stale counts and marks not sure; a frame not sent or a "
+            "gap after haze is not sure up to flamesafe's own "
+            "frame_stale_ms hold (100 to 2500 ms) plus a margin, never "
+            "counted; a restart without closing is not sure for the hazers "
+            "that were hazing, one that began after the last timed save "
+            "too; a clean stop while on, the hold")
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        check(R.tr.hold_s == 0.6, f"frame_stale_ms 500: hold 0.6 s: "
+                                  f"{R.tr.hold_s}")
+        R.frames(1)
+        R.fresh[0] = False
+        R.frames(40, haze=((80, 255),))
+        h = R.u("Hazer 1")
+        check(_near(h["on"]["other"], 1.0, 0.001) and
+              _near(h["unsure_s"], 1.0, 0.001),
+              f"flamesafe's status stale: 1 s counted AND 1 s not sure: "
+              f"{h['on']} {h['unsure_s']}")
+        check(any("not fresh right now" in x
+                  for x in R.tr.view()["notes"]),
+              f"the page says so: {R.tr.view()['notes']}")
+        R.fresh[0] = None
+        R.frames(40, haze=((80, 255),))
+        check(_near(R.u("Hazer 1")["unsure_s"], 2.0, 0.001),
+              "flamesafe's status not known at all: not sure too")
+        R.fresh[0] = True
+        R.frames(4, haze=((80, 255),))
+        check(not any("not fresh" in x for x in R.tr.view()["notes"]),
+              "fresh again: the note goes")
+        u0 = R.u("Hazer 1")["unsure_s"]
+        on0 = R.u("Hazer 1")["on"]["other"]
+        R.frames(80, haze=((80, 255),), ok=False)
+        h = R.u("Hazer 1")
+        check(_near(h["unsure_s"] - u0, R.tr.hold_s, 0.001) and
+              h["on"]["other"] == on0 and R.u("Hazer 2") is None,
+              f"2 s of frames not sent after haze: flamesafe (500 ms here) "
+              f"holds the last value 0.6 s with the margin, so 0.6 s not "
+              f"sure and nothing counted: "
+              f"{h['unsure_s'] - u0}")
+        R.frames(4, haze=((80, 255),))
+        u0 = R.u("Hazer 1")["unsure_s"]
+        R.t[0] += 20.0
+        R.frames(1)
+        check(_near(R.u("Hazer 1")["unsure_s"] - u0,
+                    R.tr.hold_s, 0.001),
+              f"a 20 s gap after haze: flamesafe's 0.5 s hold is not sure, "
+              f"the rest is not counted at all: {R.u('Hazer 1')['unsure_s'] - u0}")
+        # flamesafe set to its longest hold (frame_stale_ms 2500): a stall
+        # of 2 s is all not sure, one of 5 s is 2.6 s not sure; nothing is
+        # left uncounted and unflagged inside the hold.
+        R2 = _HazeRig(stale_ms=2500)
+        try:
+            check(R2.tr.hold_s == 2.6, f"frame_stale_ms 2500: hold 2.6 s: "
+                                       f"{R2.tr.hold_s}")
+            R2.frames(1)
+            R2.frames(4, haze=((80, 255),))
+            u0 = R2.u("Hazer 1")["unsure_s"]
+            R2.frames(80, haze=((80, 255),), ok=False)
+            check(_near(R2.u("Hazer 1")["unsure_s"] - u0, 2.0, 0.001),
+                  f"a 2 s stall inside a 2.5 s hold: all 2 s not sure: "
+                  f"{R2.u('Hazer 1')['unsure_s'] - u0}")
+            R2.frames(4, haze=((80, 255),))
+            u0 = R2.u("Hazer 1")["unsure_s"]
+            R2.frames(200, haze=((80, 255),), ok=False)
+            check(_near(R2.u("Hazer 1")["unsure_s"] - u0, 2.6, 0.001),
+                  f"a 5 s stall: the 2.6 s hold not sure: "
+                  f"{R2.u('Hazer 1')['unsure_s'] - u0}")
+            R2.frames(4, haze=((80, 255),))
+            R2.tr.close()
+            R2.reopen()
+            check(_near(R2.u("Hazer 1")["unsure_s"] - u0, 5.2, 0.001),
+                  "a clean stop with it on: the 2.6 s hold too")
+        finally:
+            R2.close()
+        R3 = _HazeRig(stale_ms=None)
+        try:
+            check(R3.tr.hold_s == FH.HOLD_DEFAULT_S == 2.6,
+                  "frame_stale_ms not known: the longest flamesafe allows")
+        finally:
+            R3.close()
+        from ltcplay import flamelink as fl
+        R3 = _HazeRig(stale_ms=None)
+        try:
+            R3.link.cfg = fl.FlameLinkConfig("127.0.0.1", 9, 1, _fl_key(),
+                                             frame_stale_ms=2500)
+            R3.tr.attach(R3.link)
+            check(R3.tr.hold_s == 2.6,
+                  "the real flame link config's frame_stale_ms is read")
+        finally:
+            R3.close()
+        # A hazer that begins hazing after the last timed save is saved
+        # at once, so a crash right after still names it.
+        R4 = _HazeRig()
+        try:
+            R4.frames(1)
+            R4.frames(40, haze=((80, 255),))
+            R4.tr.tick()
+            R4.frames(40, haze=((80, 255), (84, 255)))
+            R4.tr.tick()
+            import json as _j
+            with open(R4.tr.path, encoding="utf-8") as fh:
+                hz = _j.load(fh)["hazing"]
+            check(hz == ["Hazer 1", "Hazer 3"],
+                  f"Hazer 3 starting is saved at once: {hz}")
+            R4.reopen()
+            check(_near(R4.u("Hazer 3")["unsure_s"], FH.SAVE_EVERY_S,
+                        0.001),
+                  f"and a crash after it is not sure for Hazer 3 too: "
+                  f"{R4.u('Hazer 3')['unsure_s']}")
+        finally:
+            R4.close()
+        # A restart without closing (a crash): the hazers hazing since the
+        # last save are not sure for up to SAVE_EVERY_S each.
+        R.frames(40, haze=((82, 64),))
+        R.tr.save()
+        u1 = R.u("Hazer 1")["unsure_s"]
+        u2 = R.u("Hazer 2")["unsure_s"]
+        R.reopen()
+        check(_near(R.u("Hazer 2")["unsure_s"] - u2, FH.SAVE_EVERY_S,
+                    0.001) and
+              _near(R.u("Hazer 1")["unsure_s"] - u1, FH.SAVE_EVERY_S,
+                    0.001) and R.u("Hazer 3") is None,
+              f"a crash: each hazer hazing since the save before is not "
+              f"sure for 30 s; one that never hazed gets nothing: "
+              f"{R.u('Hazer 2')['unsure_s'] - u2}")
+        v = R.h("Hazer 4")
+        check(R.tr.gaps == 1 and v["not_sure"] is False and
+              any("stopped without closing" in x
+                  for x in R.tr.view()["notes"]),
+              "the page says it stopped without closing")
+        R.tr.refill("Hazer 2", "Andy", "operator")
+        R.tr.save()
+        R.reopen()
+        v = R.h("Hazer 2")
+        check(v["not_sure"] is True and
+              v["words"].startswith("Not sure: some haze since the refill "
+                                    "could not be counted"),
+              f"a crash after a refill: that hazer reads Not sure: "
+              f"{v['words']}")
+        # A clean stop while a hazer is on: flamesafe holds it 0.5 s.
+        R.tr.close()
+        R.reopen()
+        R.frames(1)
+        R.frames(40, haze=((84, 255),))
+        R.tr.close()
+        R.reopen()
+        h3 = R.u("Hazer 3")
+        check(_near(h3["unsure_s"], R.tr.hold_s, 0.001) and
+              _near(h3["on"]["other"], 1.0, 0.001) and R.tr.gaps == 2,
+              f"a clean stop with Hazer 3 on: 0.5 s not sure, the rest "
+              f"counted, no new gap: {h3['unsure_s']} {R.tr.gaps}")
+        # A show under way at a restart is counted.
+        R.pos[0] = 10.0
+        R.frames(1600, tc=True, haze=((86, 255),))
+        R.tr.save()
+        R.reopen()
+        check(R.tr.episode is None and R.u("Hazer 4")["shows"] == 1 and
+              _near(R.u("Hazer 4")["on"]["show"], 40.0, 0.03),
+              "a show running when the engine stopped is counted at the "
+              "restart")
+        v = R.h("Hazer 4")
+        check("Includes" in v["words"] and "not sure" in v["words"],
+              f"the tile says how much is not sure: {v['words']}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_refill_settings_and_the_record():
+    section("haze fluid: Refilled per hazer starts the count again and "
+            "counts refills; litres and percent only when a flow and a "
+            "tank are set (else seconds only); a wrong setting is said and "
+            "shows seconds only; haze.json has its own format number and "
+            "is written atomically; an old fuel.json loads untouched; the "
+            "hazer levels file keeps the fluid settings")
+    import json as _j
+    from ltcplay import fuel as F
+    from ltcplay import fuelhaze as FH
+    from ltcplay import hazers as HZ
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.frames(400, haze=((80, 255),))
+        ok, text = R.tr.refill("Hazer 1", "Andy", "operator")
+        v = R.h("Hazer 1")
+        check(ok and text == "Refill of Hazer 1 logged." and
+              v["on_s"] == 0.0 and v["full_s"] == 0.0 and
+              v["refills"] == 1 and v["last_refill"]["who"] == "Andy",
+              f"a refill starts the count again and is counted: {text} "
+              f"{v['on_s']} {v['refills']}")
+        check(("Haze: Andy logged a refill of Hazer 1.", False) in R.lines,
+              "and is journaled")
+        with open(R.tr.path, encoding="utf-8") as fh:
+            doc = _j.load(fh)
+        check(doc["haze_format"] == FH.HAZE_FORMAT == 1 and
+              doc["hazers"]["Hazer 1"]["refills"][0]["who"] == "Andy" and
+              doc["hazers"]["Hazer 1"]["refills"][0]["on_total"] > 9.9,
+              "saved at once, with its format number")
+        check(R.tr.refill("Hazer 9", "Andy")[0] is False,
+              "no such hazer: refused")
+        R.frames(2400, haze=((80, 255),))
+        v = R.h("Hazer 1")
+        check(v["big"] == "60 s haze" and v["percent"] is None and
+              v["litres_used"] is None and "L " not in v["words"],
+              f"no settings: seconds only: {v['big']} {v['words']}")
+        R.write_fluid({"Hazer 1": {"litres_per_hour": 0.6,
+                                   "tank_litres": 2.5}})
+        v = R.h("Hazer 1")
+        check(R.tr.config_error == "" and v["litres_used"] == 0.01 and
+              v["litres_left"] == 2.49 and v["percent"] == 99 and
+              v["big"] == "99% left" and v["color"] == "green" and
+              v["words"] == ("60 s of haze (60 s at full output) and 0 "
+                             "shows since the refill. About 2.49 L left of "
+                             "2.5 L (99 percent)."),
+              f"flow and tank set: litres and percent: {v['big']} "
+              f"{v['words']!r}")
+        R.write_fluid({"Hazer 1": {"litres_per_hour": 0.6}})
+        v = R.h("Hazer 1")
+        check(v["big"] == "0.01 L used" and v["percent"] is None,
+              f"a flow but no tank: litres used only: {v['big']}")
+        check(R.h("Hazer 2")["litres_used"] is None,
+              "a hazer with no settings stays seconds only")
+        R.write_fluid({"Hazer 1": {"litres_per_hour": -1}})
+        v = R.h("Hazer 1")
+        check(R.tr.config_error == (
+            "ltcplay_hazers.json: fluid.Hazer 1.litres_per_hour is the "
+            "litres an hour at full output, a number over 0 and up to 50, "
+            "not -1.") and v["litres_used"] is None and
+              v["big"] == "60 s haze",
+              f"a wrong setting: said, and seconds only: "
+              f"{R.tr.config_error}")
+        R.write_fluid({"Hazer 7": {"litres_per_hour": 1}})
+        check("no hazer called 'Hazer 7'" in R.tr.config_error,
+              f"a hazer that is not here: said: {R.tr.config_error}")
+        R.write_fluid({"Hazer 1": {"flow": 1}})
+        check("has no setting flow" in R.tr.config_error,
+              "an unknown key: said")
+        R.write_fluid(None)
+        check(R.tr.config_error == "" and R.tr.fluid == {},
+              "no fluid block: no settings, no problem")
+        # Before any refill a tank level is never shown.
+        R.write_fluid({"Hazer 2": {"litres_per_hour": 0.6,
+                                   "tank_litres": 2.5}})
+        R.frames(40, haze=((82, 255),))
+        v = R.h("Hazer 2")
+        check(v["percent"] is None and v["litres_used"] is not None and
+              v["big"] == "1 s haze",
+              f"no refill logged: litres used, never a level: {v['big']}")
+        # Atomic: a temporary file, then replaced; a failure leaves the
+        # file as it was.
+        before = open(R.tr.path, encoding="utf-8").read()
+        real = os.replace
+        calls = []
+
+        def spy(a, b):
+            calls.append((a, b))
+            return real(a, b)
+        os.replace = spy
+        try:
+            R.tr.save()
+        finally:
+            os.replace = real
+        check(calls and calls[0][1] == R.tr.path and
+              calls[0][0] != R.tr.path and calls[0][0].endswith(".tmp"),
+              f"written to a temporary file, then swapped in: {calls}")
+        before = open(R.tr.path, encoding="utf-8").read()
+        os.replace = lambda a, b: (_ for _ in ()).throw(OSError(28, "full"))
+        try:
+            R.frames(40, haze=((80, 255),))
+            check(R.tr.save() is False and "full" in R.tr.save_error,
+                  "a disk that refuses: not saved, said")
+        finally:
+            os.replace = real
+        check(open(R.tr.path, encoding="utf-8").read() == before,
+              "and the file is exactly as it was")
+        for n in os.listdir(R.work):
+            if n.endswith(".tmp"):
+                os.remove(os.path.join(R.work, n))
+        # An unreadable haze.json is set aside, never written over.
+        with open(R.tr.path, "w", encoding="utf-8") as fh:
+            fh.write('{"haze_format": 1, "hazers": {"Hazer 1": {"on": '
+                     '{"show": -5}}}}')
+        R.reopen()
+        kept = [n for n in os.listdir(R.work) if "unreadable" in n]
+        check(kept and "could not be read" in R.tr.view()["fault"] and
+              R.tr.gaps == 1,
+              f"a bad haze.json is kept aside and said: {kept}")
+    finally:
+        R.close()
+    # An old fuel.json (no hazers in it) loads untouched, and the hazer
+    # record never writes into it.
+    F_ = _FuelRig()
+    try:
+        F_.frames(1)
+        F_.frames(40, tc=False, on=((411, 255),))
+        F_.tr.refill("g1", "Andy", "operator")
+        old = open(F_.tr.path, encoding="utf-8").read()
+        check('"fuel_format": 1' in old and "haze" not in old and
+              F.FUEL_FORMAT == 1, "fuel_format stays 1")
+        R = _HazeRig(work=F_.work)
+        R.frames(1)
+        R.frames(40, haze=((80, 255),))
+        R.tr.refill("Hazer 1", "Andy")
+        R.tr.close()
+        check(open(F_.tr.path, encoding="utf-8").read() == old and
+              os.path.exists(os.path.join(F_.work, FH.HAZE_FILE)),
+              "the hazer record is its own file: fuel.json is not touched")
+        tr2 = F_.reopen()
+        check(tr2.load_error == "" and
+              tr2.units["g1"]["refills"][0]["who"] == "Andy",
+              "an old fuel.json loads as it was")
+    finally:
+        F_.close()
+    # The levels file keeps the fluid settings when a level is set.
+    work = tempfile.mkdtemp()
+    try:
+        p = os.path.join(work, HZ.LEVELS_FILE)
+        with open(p, "w", encoding="utf-8") as fh:
+            _j.dump({"hazers_format": 1,
+                     "levels": {"Hazer 1": {"haze": 140, "fan": 255}},
+                     "fluid": {"Hazer 1": {"litres_per_hour": 0.6}}}, fh)
+        lv = HZ.Levels(work, ["Hazer 1", "Hazer 2"])
+        check(lv.levels["Hazer 1"] == (140, 255), "the levels are read")
+        lv.set("Hazer 2", haze=64)
+        doc = _j.load(open(p, encoding="utf-8"))
+        check(doc["fluid"] == {"Hazer 1": {"litres_per_hour": 0.6}} and
+              doc["levels"]["Hazer 2"] == {"haze": 64, "fan": 0},
+              f"setting a level keeps the fluid settings: {doc}")
+        doc["fluid"]["Hazer 2"] = {"tank_litres": 2.5}
+        with open(p, "w", encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        lv.set("Hazer 1", fan=0)
+        doc = _j.load(open(p, encoding="utf-8"))
+        check(doc["fluid"]["Hazer 2"] == {"tank_litres": 2.5},
+              "an edit to the fluid settings while running is kept too")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_haze_fluid_undo_bounds_and_the_safe_side():
+    section("haze fluid: an admin's Undo puts a hazer back on its refill "
+            "before (kept, marked undone, on disk); a flow of 0, NaN or "
+            "infinity is refused; not sure seconds count in the litres "
+            "(emptier, never fuller); a NaN in haze.json is refused; a "
+            "programming session is never a show; per show records and "
+            "refills are bounded")
+    import json as _j
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.frames(400, haze=((80, 255),))
+        R.tr.refill("Hazer 1", "Andy", "operator")
+        R.frames(400, haze=((80, 255),))
+        ok, text = R.tr.refill("Hazer 1", "Ola", "operator")
+        bid = R.h("Hazer 1")["last_refill"]["id"]
+        check(R.h("Hazer 1")["on_s"] == 0.0 and R.h("Hazer 1")["refills"] == 2,
+              "two refills")
+        ok, text = R.tr.undo(bid, "Jeff")
+        v = R.h("Hazer 1")
+        check(ok and text == ("The refill of Hazer 1 that Ola logged is "
+                              "undone.") and
+              v["on_s"] == 10.0 and v["refills"] == 1 and
+              v["last_refill"]["who"] == "Andy",
+              f"undone: the hazer counts from the refill before: {text} "
+              f"{v['on_s']} {v['last_refill']}")
+        rec = R.tr.view()["recent_refills"]
+        check(rec[0]["id"] == bid and rec[0]["undone"]["who"] == "Jeff" and
+              rec[1]["who"] == "Andy" and rec[1]["undone"] is None,
+              f"the recent refills say who undid it: {rec}")
+        check(R.tr.undo(bid, "Jeff")[0] is False and
+              R.tr.undo(999, "Jeff")[0] is False,
+              "an undone or unknown refill: nothing changed")
+        check(("Haze: Jeff undid the refill of Hazer 1 that Ola logged.",
+               False) in R.lines, "journaled")
+        R.reopen()
+        check(R.h("Hazer 1")["refills"] == 1 and
+              R.h("Hazer 1")["last_refill"]["who"] == "Andy",
+              "saved at once: still undone after a restart")
+        # The litres estimate: not sure seconds count as full output.
+        R.tr.refill("Hazer 2", "Andy")
+        R.write_fluid({"Hazer 2": {"litres_per_hour": 3.6,
+                                   "tank_litres": 10}})
+        R.frames(1)
+        R.fresh[0] = False
+        R.frames(400, haze=((82, 255),))
+        R.fresh[0] = True
+        v = R.h("Hazer 2")
+        check(v["full_s"] == 10.0 and v["unsure_s"] == 10.0 and
+              v["litres_used"] == 0.02 and v["litres_left"] == 9.98,
+              f"10 s at full output while flamesafe's status was stale: "
+              f"0.02 L (counted and not sure), never 0.01: "
+              f"{v['litres_used']}")
+        for bad in ("0", "NaN", "Infinity", "-Infinity", "1e400"):
+            with open(os.path.join(R.work, "ltcplay_hazers.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write('{"hazers_format": 1, "levels": {}, "fluid": '
+                         '{"Hazer 2": {"litres_per_hour": ' + bad + '}}}')
+            R.tr._fluid_stamp = None
+            R.tr._reload_fluid()
+            check("litres_per_hour" in R.tr.config_error and
+                  R.h("Hazer 2")["litres_used"] is None,
+                  f"a flow of {bad}: refused, seconds only: "
+                  f"{R.tr.config_error}")
+    finally:
+        R.close()
+    # A NaN in haze.json is never counted with.
+    R = _HazeRig()
+    try:
+        R.frames(1)
+        R.frames(40, haze=((80, 255),))
+        R.tr.save()
+        t = open(R.tr.path, encoding="utf-8").read()
+        t = t.replace('"unsure_s": 0.0', '"unsure_s": NaN', 1)
+        check("NaN" in t, "a NaN written in")
+        open(R.tr.path, "w", encoding="utf-8").write(t)
+        R.reopen()
+        check("could not be read" in R.tr.view()["fault"] and
+              any("unreadable" in n for n in os.listdir(R.work)),
+              f"haze.json with a NaN: set aside: {R.tr.view()['fault']}")
+    finally:
+        R.close()
+    # A programming session is never a show, however long.
+    R = _HazeRig()
+    try:
+        R.rehearsal[0] = True
+        R.frames(1)
+        R.pos[0] = 10.0
+        R.frames(1600, tc=True, haze=((80, 255),))
+        R.end()
+        h = R.u("Hazer 1")
+        check(h["shows"] == 0 and R.tr.shows_total == 0 and
+              h["on"]["show"] == 0.0 and _near(h["on"]["other"], 40.0, 0.03),
+              f"40 s of timecode in a programming session: other, never a "
+              f"show: {h['on']} {h['shows']}")
+    finally:
+        R.close()
+    # Bounded: the last SHOW_BURNS_KEPT shows and REFILLS_KEPT refills.
+    R = _HazeRig()
+    keep = (FH.SHOW_BURNS_KEPT, FH.REFILLS_KEPT)
+    FH.SHOW_BURNS_KEPT, FH.REFILLS_KEPT = 3, 3
+    try:
+        R.frames(1)
+        for i in range(5):
+            R.pos[0] = 10.0
+            R.frames(1240, tc=True, haze=((80, 255),))
+            R.end()
+            R.tr.refill("Hazer 1", f"Op{i}")
+        h = R.u("Hazer 1")
+        check(h["shows"] == 5 and len(h["show_burns"]) == 3 and
+              [r["who"] for r in h["refills"]] == ["Op2", "Op3", "Op4"],
+              f"5 shows and 5 refills: the last 3 of each kept: "
+              f"{len(h['show_burns'])} {[r['who'] for r in h['refills']]}")
+    finally:
+        FH.SHOW_BURNS_KEPT, FH.REFILLS_KEPT = keep
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_never_touches_the_haze_output():
+    section("haze fluid: observe() on the flame link's sender thread takes "
+            "no lock, touches no disk, never sleeps; its queue is bounded "
+            "and what falls off is a gap; an error in the tracker is a "
+            "sentence on the page and changes no frame")
+    import builtins
+    import json as _j
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        tr = R.tr
+        used = []
+
+        class SpyLock:
+            def __init__(self, name):
+                self.name = name
+
+            def acquire(self, *a, **k):
+                used.append(f"{self.name}.acquire")
+                return True
+
+            def release(self):
+                used.append(f"{self.name}.release")
+
+            __enter__ = acquire
+
+            def __exit__(self, *a):
+                self.release()
+        real = (tr._lock, tr._save_lock, time.sleep, builtins.open,
+                os.fsync, os.replace)
+        tr._lock, tr._save_lock = SpyLock("record lock"), SpyLock("file lock")
+        time.sleep = lambda *a: used.append("time.sleep")
+        builtins.open = lambda *a, **k: used.append("open") or real[3](
+            *a, **k)
+        os.fsync = lambda *a: used.append("os.fsync")
+        os.replace = lambda *a: used.append("os.replace")
+        try:
+            for _ in range(50):
+                tr.observe("00:00:10:00", bytes(512), False, True)
+        finally:
+            (tr._lock, tr._save_lock, time.sleep, builtins.open, os.fsync,
+             os.replace) = real
+        check(not used and len(tr._q) == 50,
+              f"50 frames observed: nothing but the queue was touched: "
+              f"{sorted(set(used))}")
+        check(tr._q.maxlen == FH.QUEUE_MAX, "the queue has a bound")
+        for _ in range(FH.QUEUE_MAX + 25):
+            tr.observe(None, bytes(512), False, True)
+        check(len(tr._q) == FH.QUEUE_MAX and tr.dropped == 75,
+              f"past the bound the oldest falls off and is counted: "
+              f"{tr.dropped}")
+        tr.pump()
+        check(tr.gaps == 1 and any("could not be counted" in x
+                                   for x in tr.view()["notes"]),
+              "dropped frames are a gap, said at the top")
+        # An error inside the tracker: tick() keeps it to a sentence.
+        real_frame = tr._frame
+        tr._frame = lambda *a: 1 / 0
+        R.frames(4, haze=((80, 255),), pump=False)
+        try:
+            tr.tick()
+            raised = ""
+        except BaseException as e:              # noqa: BLE001
+            raised = type(e).__name__
+        tr._frame = real_frame
+        check(not raised and "ZeroDivisionError" in tr.run_error and
+              "The haze tracker hit an error" in tr.view()["fault"] and
+              any("hazers are not affected" in t for t, _f in R.lines),
+              f"a counting error is a sentence, never raised: {raised} "
+              f"{tr.view()['fault']}")
+    finally:
+        R.close()
+    # A broken tracker on a real link: the frames are byte for byte the
+    # same as a link with no tracker at all.
+    R = _HazeRig()
+    try:
+        def mk():
+            link = _hz_link()
+            link.hazer_levels_set({"Hazer 1": (140, 255)})
+            link.hazers_set({"Hazer 1"})
+            return link
+        plain, watched = mk(), mk()
+        R.tr.attach(watched)
+        R.tr._q = None                     # observe() now raises
+        for _ in range(5):
+            check(watched.send_frame() is True and plain.send_frame(),
+                  "a broken tracker: the frame still went")
+        R.tr.tick()
+
+        def sent(link):
+            return [_j.loads(d)["values"] for d, _a in link._sock.sent
+                    if _j.loads(d)["t"] == "flame"]
+        check(sent(plain) == sent(watched) and
+              sent(watched)[-1][79:81] == [140, 255],
+              "and every frame is byte for byte the frame of a link with "
+              "no tracker")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_routes_wiring_and_audit():
+    section("haze fluid: shown in the fuel GET (anyone); Refilled per "
+            "hazer needs what a fuel refill needs; the POST is audit "
+            "logged like a fuel refill, with nothing more in it; web.serve "
+            "wires it to the flame link's hazers and closes it last")
+    import types
+    from ltcplay import fuelhaze as FH
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import web as W
+    check("haze-refill" in RM.POST_ROUTES and
+          "haze-undo" in RM.POST_ROUTES and
+          FH.POST_ROUTES == ("haze-refill", "haze-undo"), "the routes exist")
+    check(U.classify("/api/remote/haze-refill", {"unit": "Hazer 1"}) is None,
+          "not a show control: no role matrix row (the route checks)")
+    R = _HazeRig()
+    try:
+        net = RM.Ctx(False, "10.20.0.44")
+        here = RM.Ctx(True, "127.0.0.1")
+        st, out = FH.route_post(R.tr, "haze-refill", {"unit": "Hazer 1"},
+                                net, None)
+        check(st == 403 and R.h("Hazer 1")["refills"] == 0,
+              f"no sign-in in this engine, from the network: refused: "
+              f"{out}")
+        st, out = FH.route_post(R.tr, "haze-refill", {}, here, None)
+        check(st == 400 and out["error"] == ("Say which hazer was "
+                                             "refilled. Nothing was "
+                                             "logged."), f"{out}")
+        st, out = FH.route_post(R.tr, "haze-refill", {"unit": "Hazer 1"},
+                                here, None)
+        check(st == 200 and out == {"text": "Refill of Hazer 1 logged."} and
+              R.h("Hazer 1")["last_refill"]["who"] == "Rack screen",
+              f"the show machine may: {out}")
+        check(FH.route_post(None, "haze-refill", {}, here, None)[0] == 404
+              and FH.route_view(None) == {"available": False},
+              "no tracker: 404 and nothing to show")
+        bid = R.h("Hazer 1")["last_refill"]["id"]
+        st, out = FH.route_post(R.tr, "haze-undo", {"id": bid}, net, None)
+        check(st == 403 and R.h("Hazer 1")["refills"] == 1,
+              f"an undo from the network with no sign-in here: refused "
+              f"(only the show machine itself, never a remote device or a "
+              f"VPN like Tailscale): {out}")
+        st, out = FH.route_post(R.tr, "haze-undo", {"id": "x"}, here, None)
+        check(st == 400, f"an undo needs a refill's number: {out}")
+        st, out = FH.route_post(R.tr, "haze-undo", {"id": bid}, here, None)
+        check(st == 200 and R.h("Hazer 1")["refills"] == 0, f"{out}")
+        st, out = FH.route_post(R.tr, "haze-undo", {"id": bid}, here, None)
+        check(st == 409 and "already undone" in out["error"], f"{out}")
+        check(U.REMOTE_ROUTES["haze-undo"] is None and
+              U.REMOTE_ROUTES["fuel-undo"] is None and
+              U.classify("/api/remote/haze-undo", {"id": 1}) is None and
+              "haze-undo" in RM.POST_ROUTES,
+              "haze-undo has a row as fuel-undo does (the route checks)")
+    finally:
+        R.close()
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer"), ("Ola", "operator")))
+    rem = httpd.remote
+    FR, R = _FuelRig(), _HazeRig()
+    try:
+        rem.fuel, rem.haze = FR.tr, R.tr
+        st, out, _h = http("/api/remote/fuel")
+        check(st == 200 and out["haze"]["available"] and
+              [h["name"] for h in out["haze"]["hazers"]] ==
+              ["Hazer 1", "Hazer 2", "Hazer 3", "Hazer 4"],
+              f"the fuel GET carries the Hazers section: "
+              f"{out.get('haze', {}).get('names')}")
+        st, out, _h = http("/api/remote/haze-refill", {"unit": "Hazer 1"})
+        check(st == 403 and "Sign in as an operator or admin" in
+              out["error"], f"signed out: refused: {out}")
+        ck = {}
+        for name in ("Vic", "Ola", "Jeff"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        st, out, _h = http("/api/remote/haze-refill", {"unit": "Hazer 1"},
+                           cookie=ck["Vic"])
+        check(st == 403 and "viewer" in out["error"], f"a viewer: {out}")
+        st, out, _h = http("/api/remote/haze-refill", {"unit": "Hazer 2"},
+                           cookie=ck["Ola"])
+        check(st == 200 and R.h("Hazer 2")["last_refill"]["who"] == "Ola",
+              f"an operator may, and is named: {out}")
+        st, out, _h = http("/api/remote/fuel-refill", {"unit": "g1"},
+                           cookie=ck["Ola"])
+        st, out, _h = http("/api/remote/fuel", cookie=ck["Ola"])
+        bid = out["haze"]["recent_refills"][0]["id"]
+        check(out["haze"]["may_undo"] is False,
+              "an operator may not undo a haze refill")
+        st, out, _h = http("/api/remote/haze-undo", {"id": bid},
+                           cookie=ck["Ola"])
+        check(st == 403 and "admin" in out["error"],
+              f"an operator's undo: refused: {out}")
+        st, out, _h = http("/api/remote/fuel", cookie=ck["Jeff"])
+        check(out["haze"]["may_undo"] is True, "an admin may")
+        st, out, _h = http("/api/remote/haze-undo", {"id": bid},
+                           cookie=ck["Jeff"])
+        check(st == 200 and R.h("Hazer 2")["refills"] == 0 and
+              "undone" in out["text"], f"an admin's undo: {out}")
+        st, out, _h = http("/api/remote/fuel-undo",
+                           {"id": FR.tr.view()["recent_refills"][0]["id"]},
+                           cookie=ck["Jeff"])
+        rem.audit.flush(5.0)
+        lines = _audit_lines(rem.audit.folder)
+        hz = [l for l in lines if l["action"] == "haze-refill"]
+        fu = [l for l in lines if l["action"] == "fuel-refill"]
+        check(len(hz) == 3 and fu and
+              sorted(hz[-1]) == sorted(fu[-1]) and
+              hz[-1]["target"] == fu[-1]["target"] == "",
+              f"every press is audit logged, the same fields as a fuel "
+              f"refill and no more: {hz[-1:]} {fu[-1:]}")
+        hu = [l for l in lines if l["action"] == "haze-undo"]
+        fuu = [l for l in lines if l["action"] == "fuel-undo"]
+        check(len(hu) == 2 and fuu and sorted(hu[-1]) == sorted(fuu[-1]) and
+              hu[-1]["target"] == fuu[-1]["target"],
+              f"every undo press is audit logged as fuel-undo is: "
+              f"{hu[-1:]} {fuu[-1:]}")
+    finally:
+        rem.fuel = rem.haze = None
+        httpd.server_close()
+        FR.close()
+        R.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    # web.serve's wiring.
+    work = tempfile.mkdtemp()
+    try:
+        order = []
+        link = types.SimpleNamespace(
+            haze_observer=None, rehearse_on=False,
+            hazer_names=lambda: ["Hazer 1", "Hazer 2"],
+            cfg=types.SimpleNamespace(hazers=(("Hazer 1", (80, 81)),
+                                              ("Hazer 2", (82, 83)))))
+        fs_view = [{"connected": True, "stale": False, "age_ms": 200}]
+        remote = types.SimpleNamespace(
+            folder=work, programming=lambda: (False, ""),
+            fuel=types.SimpleNamespace(cfg={"min_show_s": 45}),
+            flame_status=types.SimpleNamespace(view=lambda: fs_view[0]),
+            _journal=lambda *a, **k: order.append(("journal", a[2])))
+        httpd = types.SimpleNamespace(
+            remote=remote, fire_ice=types.SimpleNamespace(flame_link=link),
+            server_close=lambda: order.append("flame link and conductor"))
+        W._attach_haze(httpd)
+        tr = remote.haze
+        tr._stop.set()
+        check(link.haze_observer == tr.observe and
+              tr.hazers() == [("Hazer 1", 80, 81), ("Hazer 2", 82, 83)] and
+              tr._min_show_s() == 45.0 and
+              tr.path == os.path.join(work, "haze.json"),
+              "built on the settings folder, the link's hazers and fuel's "
+              "min_show_s, watching the flame link")
+        check(tr._status_now() is True, "flamesafe fresh: fresh")
+        fs_view[0] = {"connected": True, "stale": True, "age_ms": 200}
+        check(tr._status_now() is False, "stale: not fresh")
+        fs_view[0] = {"connected": True, "stale": False, "age_ms": 1500}
+        check(tr._status_now() is False, "older than 1 s: not fresh")
+        fs_view[0] = None
+        check(tr._status_now() is None, "no status: not known")
+        tr.refill("Hazer 1", "Andy")
+        check(("journal", "haze") in order,
+              "its journal lines go to the engine's journal")
+        httpd.server_close()
+        check(order[-1] == "flame link and conductor" and
+              link.haze_observer is None and
+              os.path.exists(os.path.join(work, "haze.json")),
+              f"closing stops the flame link first, then the haze record: "
+              f"{order}")
+        nohz = types.SimpleNamespace(
+            remote=types.SimpleNamespace(folder=work),
+            fire_ice=types.SimpleNamespace(flame_link=types.SimpleNamespace(
+                hazer_names=lambda: [])))
+        W._attach_haze(nohz)
+        check(not hasattr(nohz.remote, "haze"),
+              "no hazers in flamesafe's config: not built")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_haze_fluid_in_the_docs_and_the_page():
+    section("haze fluid: OPERATOR.md and FUEL.md say it in plain words; the "
+            "Fuel step's Hazers section: a headline of 6 words or fewer, "
+            "3 bullets of 8 words or fewer, no dashes, 'show control' not "
+            "'Run'; its Refilled asks first and posts haze-refill {unit}")
+    import re as _re
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "remote2.html"),
+                encoding="utf-8").read()
+    i = page.find("const HZF_HTML")
+    blk = page[i:page.find("async function fuPress", i)]
+    check(i > 0 and "—" not in blk and "–" not in blk and
+          not _re.search(r"\bRun\b", blk), "no dashes, no Run")
+    head = _re.findall(r"<b>([^<]*)</b>", blk)[:1]
+    bullets = _re.findall(r"<li>([^<]*)</li>", blk)
+    check(head == ["Haze fluid"] and len(bullets) == 3 and
+          all(len(b.split()) <= 8 for b in bullets) and
+          bullets == ["Counts haze time, never fan time.",
+                      "Litres show once flow and tank are set.",
+                      "Not sure time counts as full output."],
+          f"the text rule: {head} {bullets}")
+    check(_re.findall(r"<b>([^<]*)</b>", blk)[1:] ==
+          ["Recent haze refills"], "the undo list's headline")
+    for need in ('confirmBox(`${h.name} refilled?`',
+                 'fuPress("haze-refill", {unit:h.name});',
+                 'fuPress("haze-undo", {id:Number(b.dataset.hundo)});',
+                 'confirmBox("Undo this refill?", "It stays in the record, '
+                 'marked undone, and the hazer counts from the refill before '
+                 'it.", "Yes, undo it")',
+                 '+ HZF_HTML;', 'renderHazeFluid(f, DAY_FU_REC);'):
+        check(page.count(need) == 1, f"the page has {need!r} once")
+    for said in _re.findall(r'"([^"]*)"', blk[blk.find("const said"):
+                                             blk.find("w.hidden")]):
+        if said:
+            check(len(said.split()) <= 8 and "—" not in said,
+                  f"a note line is 8 words or fewer: {said!r}")
+    for name in ("OPERATOR.md", "FUEL.md"):
+        doc = open(os.path.join(here, name), encoding="utf-8").read()
+        i = doc.find("Haze fluid")
+        part = doc[i:i + 2500]
+        check(i > 0 and "haze.json" in part and "fan" in part and
+              "Refilled" in part and "—" not in part and "–" not in part,
+              f"{name} says how haze fluid is counted and refilled")
+    print("  ok")
+
+
 # --------------------------------------------------- the Fireball page --
 # Jeff, 2026-10-28 (design by Andy): manual control of each Fireball
 # channel on its own rack screen page (fireball.py, OPERATOR.md).
@@ -92096,7 +96012,7 @@ def test_fireball_at_the_engine():
         check(st == 200 and link.cur[54] == 255 and v["blocked"] == "",
               f"Run pressed: the Fireball page still works (Jeff: at any "
               f"time, during a show too): {out} {v['blocked']!r}")
-        check("Run is pressed" in cl_why,
+        check("Show control is on" in cl_why,
               f"but the cleaning's rules still refuse Run pressed: {cl_why}")
         st, out = beat(set(), "a9", 2)
         check(st == 200 and link.cur is None, "all off")
@@ -92706,7 +96622,7 @@ def test_fireball_doc_in_plain_words():
                  "Stop", "Hold", "signing out", "All off",
                  "fuel valve closed", "One screen at a time",
                  "turn\nFuel, Air, Purge off before arming",
-                 "During a show too", "while Run is pressed",
+                 "During a show too", "while show control is on",
                  "the higher of the\nshow's value",
                  "never turn\noff one the show has on",
                  "is a top-off, not a double\ncharge",
@@ -95982,7 +99898,7 @@ def test_preroll_start_now_checks_first_and_never_starts_on_a_failure():
           f"Programming Run: the scheduled show is not started: "
           f"{svc.machine.state} {n.ran}")
     rows = [x for x in svc.journal if x.get("outcome") == "programming"]
-    check(rows and "Programming Run" in rows[-1]["text"],
+    check(rows and "a rehearsal is on" in rows[-1]["text"],
           f"and the journal says why: {rows[-1:]}")
     c.close()
     n.link.close()
@@ -96104,6 +100020,29 @@ def test_preroll_late_allowance_is_for_its_show_only():
                                  S.MISSED),
               f"grace {grace}, allowance {allow}, {off} s late: starts "
               f"{got}, want {starts}")
+    # Windows stress round 3 (2026-11-10): a show its rig check pushed past
+    # the limit says the rig check took the time, not only how late; a
+    # show missed with no rig check in the way says only how late.
+    rule = _one_night_rule(S, grace=120)
+    m = S.new_night(rule, _date(2026, 11, 14))
+    m = S.step(m, S.Event(S.BOOT_DONE, "system"), _den(S, 17, 0)).machine
+    at = _den(S, 18, 0, 0) + __import__("datetime").timedelta(seconds=121)
+    o = S.step(m, S.Event(S.TICK, "scheduler", late_show=1, late_ok_s=20),
+               at)
+    want = ("MISSED (late by 2m 1s: the rig check before it took the "
+            "time, and a show more than 2m 0s late is not started)")
+    check(o.machine.slot(1).reason == want and
+          any(want in n.text for n in o.log),
+          f"missed by its rig check: said so: {o.machine.slot(1).reason!r}")
+    p = S.step(m, S.Event(S.TICK, "scheduler"), at)
+    check(p.machine.slot(1).reason == "MISSED (late by 2m 1s)",
+          f"missed with no rig check in the way: only how late: "
+          f"{p.machine.slot(1).reason!r}")
+    q = S.step(m, S.Event(S.TICK, "scheduler", late_show=2, late_ok_s=20),
+               at)
+    check(q.machine.slot(1).reason == "MISSED (late by 2m 1s)",
+          f"another show's rig check: only how late: "
+          f"{q.machine.slot(1).reason!r}")
     print("  ok")
 
 
@@ -98780,6 +102719,45 @@ def test_supervisor_watches_madmapper_output_after_it_starts():
     print("  ok")
 
 
+def test_show_control_refusals_say_turn_it_off():
+    section("show control (Jeff, 2026-11-11; cold review of #240): a "
+            "refusal while show control is on says turn it off (End "
+            "rehearsal in a rehearsal), never press Stop: Stop leaves it "
+            "on. The timed purge, a new show file and the terminal's "
+            "rig-not-answering line")
+    import inspect
+    import types
+    from ltcplay import remote as RM
+    from ltcplay import display as DP
+    want = "turn show control off first (End rehearsal in a rehearsal)"
+    run = types.SimpleNamespace(running=True)
+    for how, ctl in (
+            ("the session running",
+             types.SimpleNamespace(session=run, state=lambda: {})),
+            ("the engine's state starting",
+             types.SimpleNamespace(session=None,
+                                   state=lambda: {"starting": True}))):
+        fake = types.SimpleNamespace(schedule=None, control=ctl)
+        why = RM.Remote.timed_purge_blockers(fake, None)
+        check(why.startswith("Show control is on") and want in why and
+              "press Stop" not in why,
+              f"a timed purge with {how}: {why!r}")
+    fake = types.SimpleNamespace(
+        _show_live=lambda: False,
+        control=types.SimpleNamespace(_starting=False, session=run))
+    code, why = RM.Remote._new_show_refusal(fake)
+    check(code == 409 and "Turn show control off first (End rehearsal in "
+          "a rehearsal)" in why and "Press Stop" not in why and
+          "Nothing was written" in why,
+          f"a new show file with a show file running: {why!r}")
+    src = inspect.getsource(DP.warnings_for)
+    check("Turn show control off and on (on the Mac page: " in src and
+          "Stop and Run after it is back" not in src,
+          "the terminal's rig-not-answering line says turn show control "
+          "off and on (Stop, then Run on the Mac page)")
+    print("  ok")
+
+
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
 def _op_shaped(full):
@@ -99777,8 +103755,6 @@ _UI2_ROUTES = {
     # The machine rows (morning.Arrangement, 2026-11-13): a save is the
     # map's Arrange row; its beat saves nothing (None by its body).
     "/api/remote/arrangement": "show_files",
-    "/api/remote/audit-settings": "settings",
-    "/api/remote/audit-upload-now": "settings",
     "/api/remote/audit-verify": None,
     "/api/remote/checklist-export": None,
     "/api/remote/cleaning": None,
@@ -99867,15 +103843,19 @@ def test_ui2_page_makes_only_1_0_presses():
                 '<link rel="apple-touch-icon" href="/apple-touch-icon.png"',
                 '<link rel="manifest" href="/manifest.webmanifest"'):
         check(tag in head2, f"2.0 names its icon in <head>: {tag}")
-    # 1.0's Users screen (P7) names the audit server's address in words:
-    # its label and its field's example, nothing loaded.
-    um = _ui2_users_parts(one)[0]
-    check(re.findall(r"https?://[^\s\"<)]*", um) == [
+    # The nightly upload's card (a SuperUser's only, made by renderUpload,
+    # 2026-11-13; it was 1.0's Users markup, P7) names the audit server's
+    # address in words: its label and its field's example, nothing loaded.
+    um = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "ltcplay", "web", "upload_card.js"),
+              encoding="utf-8").read()
+    check(re.findall(r"https?://[^\s\"<)`]*", um) == [
               "https://", "https://audit.example.com/ltc"] and
           "Server address (https://)</label>" in um and
-          'placeholder="https://audit.example.com/ltc">' in um,
-          "1.0's Users screen names the audit server only in words")
-    two_ = two.replace(um, "")
+          'placeholder="https://audit.example.com/ltc">' in um and
+          not re.findall(r"https?://", _ui2_users_parts(one)[0]),
+          "the upload card names the audit server only in words")
+    two_ = two
     check(not re.search(r"(?:src|href)=\"(?:https?:)?//", two) and
           "http://" not in two_ and "https://" not in two_,
           "2.0 loads nothing from off the show network")
@@ -100086,6 +104066,8 @@ s = base(); s.schedule.state = "SHOW";
 t(goLook(s, false, true).mode === "live" && goLook(s, false, true).off, "a show live: nothing to start");
 s = base(); s.show.running = false; s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !goLook(s, false, true).off, "Run off, on the show PC: Run show");
+// Its words (Jeff, 2026-11-11): Show control on/off.
+t(goLook(s, false, true).label === "Show control on" && goLook(s, false, true).why === "Shows may start" && goLook(s, false, false).label === "Show control on" && goLook(s, false, false).why === "Only on the show PC", "Run show reads Show control on: " + JSON.stringify(goLook(s, false, true)));
 t(goLook(s, false, false).mode === "run" && goLook(s, false, false).off, "Run off, on an iPad: Run is not offered");
 // Whether Run is on is the engine's boolean, never its sentence: the
 // sentence alone changes nothing, the boolean alone decides, and a
@@ -100096,7 +104078,7 @@ s = base(); s.show.show_control_on = false;
 t(goLook(s, false, true).mode === "run" && !runIsOn(s), "the boolean off with a show file running: Run show");
 for(const v of [undefined, null, "true", 1, "yes", {}]){
   s = base(); if(v === undefined) delete s.show.show_control_on; else s.show.show_control_on = v;
-  t(!runIsOn(s) && goLook(s, false, true).mode === "run" && pillLook(s).text === "NOT RUNNING", "the boolean " + JSON.stringify(v) + ": off, never on");
+  t(!runIsOn(s) && goLook(s, false, true).mode === "run" && pillLook(s).text === "SHOW CONTROL OFF", "the boolean " + JSON.stringify(v) + ": off, never on");
 }
 s = base(); delete s.show;
 t(!runIsOn(s) && !runIsOn(null) && !runIsOn({}), "no show answer at all: off");
@@ -100105,12 +104087,12 @@ t(goLook(s, false, true).mode === "start" && !goLook(s, false, true).off, "betwe
 // Where Run is, by name (the Windows stress test, 2026-11-09), and Run
 // show in the alert slot on the show PC only, with the Show row.
 s = base(); s.show.running = false; s.show.show_control_on = false;
-s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 let ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.do === "Press the Run show button on the show PC's main screen." && !ri.act, "an iPad: the button named, on the show PC; no Run here: " + JSON.stringify(ri));
+t(ri && ri.do === "Turn show control on at the show PC." && ri.what === "Show control is off." && !ri.act, "an iPad: turned on at the show PC, 8 words; no button here: " + JSON.stringify(ri));
 globalThis.ME = {local:true};
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.do === "Press the Run show button on the main screen." && ri.act === "run" && ri.full === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "the show PC: the button named, and Run show in the slot: " + JSON.stringify(ri));
+t(ri && ri.do === "Turn show control on." && ri.what === "Show control is off." && ri.act === "run" && ri.full === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", "the show PC: the engine's words, and Turn show control on in the slot: " + JSON.stringify(ri));
 STALE_NOW = true;
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && runHereShown(s, true, true, false) === "", "no contact: no Run show in the slot (the big button's own gate)");
@@ -100123,25 +104105,25 @@ t(ri && !ri.act && runHereShown(s, false, true, false) === "", "without the Show
 // On a Hold the big button is Resume and the engine says Run, then
 // Resume: Run show is by the warning, and named so (cold review of #227).
 s = base(); s.show.running = false; s.show.show_control_on = false; s.schedule.state = "HOLD"; s.schedule.held = true;
-s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run, then Resume.";
+s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on, then Resume.";
 t(goLook(s, false, true).mode === "resume" && runHereShown(s, false, true, false) === "held", "held, Run off: Resume on the big button, Run show by the warning");
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && ri.act === "run" && ri.do === "Press the Run show button by this warning, then Resume.", "held, the show PC: the button by the warning: " + JSON.stringify(ri));
+t(ri && ri.act === "run" && ri.do === "Turn show control on, then Resume.", "held, the show PC: the button by the warning: " + JSON.stringify(ri));
 globalThis.ME = undefined;
 ri = alertItems(s).find(i => i.key === "run");
-t(ri && !ri.act && ri.do === "Press Run show on the show PC, then Resume.", "held, an iPad: Run show on the show PC: " + JSON.stringify(ri));
+t(ri && !ri.act && ri.do === "Show PC: turn show control on, then Resume.", "held, an iPad: on the show PC, 8 words: " + JSON.stringify(ri));
 globalThis.ME = {local:true};
 t(runHereShown(s, true, true, false) === "", "held, no contact: no Run show");
 s.me = {may:{show:false}};
 t(runHereShown(s, false, true, false) === "", "held, signed out: no Run show");
-s = base(); s.show.running = true; s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s = base(); s.show.running = true; s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
 // Run show's press here: the big button's wait after a Stop, its gates
 // at the press, and the Schedule tab's button drawn with contact.
 { let RAN = 0, SAID2 = [];
   const runShow = () => { RAN++; }, say = (a) => SAID2.push(a);
   const FLIPPED = {}; let HALT_BUSY = false, ST = base();
-  ST.show.running = false; ST.show.show_control_on = false; ST.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+  ST.show.running = false; ST.show.show_control_on = false; ST.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
   const TN = {hidden:true}; const $ = id => id === "tn-run" ? TN : null;
   eval(RUN_HERE_FNS);
   globalThis.ME = {local:true};
@@ -100153,25 +104135,25 @@ t(runHereShown(s, false, true, false) === "", "Run on: no Run show");
   STALE_NOW = false; drawRunHere(false); t(TN.hidden === false, "the Schedule tab's Run show: shown on the show PC, with contact, Run off");
   ST.me = {may:{show:false}}; drawRunHere(false); runShowHere(); t(TN.hidden === true && RAN === 1, "the Schedule tab's Run show: none signed out");
   globalThis.ME = undefined; ST.me = base().me; drawRunHere(false); t(TN.hidden === true, "the Schedule tab's Run show: none on an iPad"); }
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
 ri = alertItems(s).find(i => i.key === "run");
 t(ri && !ri.act && ri.full === s.schedule.run_warning, "a Programming Run: the engine's words, no Run button");
 // Run show by the warning is decided by the boolean, never the warning's
 // first words (show control, PR 1): the same sentence either way.
 globalThis.ME = {local:true};
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
 t(runHereShown(s, false, true, false) === "", "a warning with Run on: no Run show");
 s.show.show_control_on = false;
 t(runHereShown(s, false, true, false) === "run", "the same warning with the boolean off: Run show");
 delete s.show.show_control_on;
 t(runHereShown(s, false, true, false) === "run", "the same warning with no boolean: off, so Run show (never treated as on)");
-s = base(); s.schedule.run_warning = "Run is off: the 18:00 show (show 1) will NOT start. Press Run.";
+s = base(); s.schedule.run_warning = "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.";
 t(runHereShown(s, false, true, false) === "", "the Run is off sentence with the boolean on: no Run show (the sentence is not read)");
 s.schedule.run_warning = null; s.show.show_control_on = false;
 t(runHereShown(s, false, true, false) === "", "no warning: no Run show by it");
 globalThis.ME = undefined;
-s = base(); s.schedule.run_warning = "A Programming Run is in force: the 18:00 show (show 1) will NOT start. Press Stop, choose Show, then Run.";
-t(runWarnWords("Run is off: the 18:00 show (show 1) will NOT start. Press Run.", true) === "Run is off: the 18:00 show (show 1) will NOT start. Press the Run show button on the main screen.", "Press Run.");
+s = base(); s.schedule.run_warning = "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.";
+t(runWarnWords("Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", true) === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on." && runWarnWords("Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on.", false) === "Show control is off: the 18:00 show (show 1) will NOT start. Turn show control on at the show PC." && runWarnWords("A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.", false) === "A rehearsal is on: the 18:00 show (show 1) will NOT start. End rehearsal, choose Show, then turn show control on.", "the run warning: the engine's words on the show PC, at the show PC elsewhere; a rehearsal's as it is");
 globalThis.ME = undefined;
 t(goLook(s, true, true).off, "no contact: nothing that starts");
 s = base(); s.schedule.held = true;
@@ -100206,7 +104188,7 @@ for(const x of states) for(const st of [false, true]) for(const local of [true, 
   t(!/flamesafe|beats|seq|engine/i.test(n.text + " " + p.text), "no engine words on the SHOW tab: " + n.text);
 }
 t(/Stop, Hold, Disarm/.test(nextStep(base(), true, true, []).text) && !/Abort/.test(nextStep(base(), true, true, []).text), "no contact says Stop, Hold and Disarm still work");
-t(/Run show/.test(nextStep(states[6], false, true, []).text), "Run off says press Run show");
+t(nextStep(states[6], false, true, []).text === "Show control is off." && nextStep(states[6], false, false, []).text === "Show control off: turn on at show PC.", "Run off says show control is off (the big button says how): " + nextStep(states[6], false, true, []).text);
 // The systems badge names what to check (Jeff, 2026-10-29).
 const okSubs = [{name:"Deck", state:"ok", word:"ok"}, {name:"Flamesafe", state:"ok", word:"linked"}];
 let L = sysLook(okSubs.concat([{name:"Deck", state:"warn", word:"USB slow 0.9 s"}]).slice(1), false);
@@ -100573,6 +104555,21 @@ async function presses(){
   sb.click(); await wait(400);
   res.stop_after_two = n("/api/remote/stop");
   res.sheet_after = !document.getElementById("sheet").hidden;
+  // A lone tap, as drawn (Windows stress round 3, 2026-11-10): both lines
+  // inside the button, the window counted down, then "Not sent" for a
+  // moment, then back; nothing sent.
+  await wait(1500);
+  const inb = el => { const r = el.getBoundingClientRect(), br = sb.getBoundingClientRect();
+    return r.height > 0 && r.top >= br.top - 0.5 && r.bottom <= br.bottom + 0.5 && r.left >= br.left - 0.5 && r.right <= br.right + 0.5; };
+  const two = () => [document.getElementById("stop-l").textContent, document.getElementById("stop-s").textContent,
+    inb(document.getElementById("stop-l")), inb(document.getElementById("stop-s"))];
+  const sent0 = n("/api/remote/stop");
+  res.lone = [two()];
+  sb.click(); await wait(300); res.lone.push(two());
+  await wait(1000); res.lone.push(two());
+  await wait(2200); res.lone.push(two());
+  await wait(2400); res.lone.push(two());
+  res.lone_sent = n("/api/remote/stop") - sent0;
   window.__live = false; await wait(2600);
   // Run off (cold review of #191, B1): with Run on and nothing playing it
   // is in Stop's place, full colour; it asks, then sends run-off.
@@ -102853,6 +106850,119 @@ out.undo = since(n).filter(p => p.route !== "morning-open").map(p => [p.route, b
     print("  ok")
 
 
+def test_ui2_haze_fluid_driven():
+    section("2.0's Fuel step's Hazers section in a real browser (Jeff, "
+            "2026-11-12): beside the fuel tanks, the same look; each "
+            "hazer's haze time, or litres and percent when set; the text "
+            "rule; a tap asks first, then posts haze-refill {unit}; it fits "
+            "with no scroll")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    mo = _morning_view_pico(selected=())
+    hz = [{"name": f"Hazer {n}", "big": big, "words": f"Hazer {n} words.",
+           "color": col, "refill_soon": col == "red", "not_sure": False}
+          for n, big, col in ((1, "41% left", "green"),
+                              (2, "12.4 min haze", None),
+                              (3, "0.42 L used", None),
+                              (4, "9% left", "red"))]
+    fu = {"units": [{"id": "G1", "name": "Ground 1", "shows_left": 3,
+                     "percent": 40, "refill_soon": False, "color": "",
+                     "locked": False, "status": "ok"}],
+          "unit_ids": ["G1"], "may_refill": True, "may_undo": False,
+          "refill_why": "", "undo_why": "", "fault": "",
+          "config_error": "", "notes": [], "recent_refills": [],
+          "haze": {"available": True, "hazers": hz, "notes": [],
+                   "config_error": "", "fault": "", "may_undo": True,
+                   "recent_refills": [{"id": 7, "who": "Andy",
+                                       "name": "Hazer 2",
+                                       "at_ms": 1793600000000,
+                                       "undone": None}]}}
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const step = k => { const b = document.querySelector('#d-steps [data-step="' + k + '"]'); if(b) b.click(); return !!b; };
+await h.sleep(900);
+out.fuel_step = step("fuel");
+await h.sleep(2500);
+const sec = document.getElementById("d-hzf");
+out.shown = !!sec && !sec.hidden && sec.getClientRects().length > 0;
+out.why = document.getElementById("d-s").textContent;
+out.words = sec ? [sec.querySelector("b").textContent].concat([...sec.querySelectorAll("li")].map(l => l.textContent)) : [];
+out.tiles = [...document.querySelectorAll("#d-hzf-g [data-hrefill]")].map(b => [b.dataset.hrefill, b.querySelector("small").textContent, b.className, b.disabled]);
+out.tanks = [...document.querySelectorAll("#d-fuel [data-refill]")].length;
+{ const m = document.querySelector("main");
+  out.layout = {excess:m.scrollHeight - m.clientHeight, xs:document.scrollingElement.scrollWidth - innerWidth,
+    small:[...document.querySelectorAll("#d-hzf-g .b")].filter(e => e.getBoundingClientRect().height < 55.5).length}; }
+let n = mark();
+const b = document.querySelector('#d-hzf-g [data-hrefill="Hazer 4"]');
+if(b) b.click();
+await h.sleep(300);
+out.sheet = {open:!document.getElementById("sheet").hidden, h:document.getElementById("sh-h").textContent, posts:since(n).filter(p => p.route !== "morning-open").length};
+const yes = document.querySelector('#sh-row [data-i="1"]');
+if(yes) yes.click();
+await h.sleep(400);
+out.posts = since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel").map(p => [p.route, p.body]);
+// Refills and notes: the recent haze refills with Undo (an admin).
+document.getElementById("d-fu-rec").click();
+await h.sleep(400);
+out.rec = {main:document.getElementById("d-hzf-main").hidden, rec:!document.getElementById("d-hzf-rec").hidden && !document.getElementById("d-hzf").hidden,
+  text:document.getElementById("d-hzf-recent").textContent};
+n = mark();
+const ub = document.querySelector('#d-hzf-recent [data-hundo="7"]');
+if(ub) ub.click();
+await h.sleep(300);
+out.usheet = {h:document.getElementById("sh-h").textContent, posts:since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel").length};
+const y2 = document.querySelector('#sh-row [data-i="1"]');
+if(y2) y2.click();
+await h.sleep(400);
+out.undo = since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel").map(p => [p.route, p.body]);
+"""
+    m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=(1366, 768),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": mo,
+                           "/api/remote/fuel": fu},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's Hazers section, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    check(m["fuel_step"] and m["shown"] and m["tanks"] == 1,
+          f"the Fuel step shows the tanks and the Hazers section: {m}"[:600])
+    head, bullets = m["words"][0], m["words"][1:]
+    check(head == "Haze fluid" and len(head.split()) <= 6 and
+          len(bullets) == 3 and all(len(x.split()) <= 8 for x in bullets),
+          f"the text rule: {m['words']}")
+    check(m["tiles"] == [["Hazer 1", "41% left", "b ", False],
+                         ["Hazer 2", "12.4 min haze", "b ", False],
+                         ["Hazer 3", "0.42 L used", "b ", False],
+                         ["Hazer 4", "9% left", "b part", False]],
+          f"a tile per hazer, the engine's words, a refill due amber: "
+          f"{m['tiles']}")
+    check(m["why"] == "1 tank needs a refill.",
+          f"a hazer due counts on the step: {m['why']!r}")
+    lay = m["layout"]
+    check(lay["excess"] <= 1 and lay["xs"] <= 0 and lay["small"] == 0,
+          f"it fits: no scroll, 56 px targets: {lay}")
+    check(m["sheet"]["open"] and m["sheet"]["h"] == "Hazer 4 refilled?" and
+          m["sheet"]["posts"] == 0 and
+          m["posts"] == [["haze-refill", {"unit": "Hazer 4"}]],
+          f"a tap asks first, then posts haze-refill: {m['sheet']} "
+          f"{m['posts']}")
+    check(m["rec"]["main"] and m["rec"]["rec"] and
+          "Andy refilled Hazer 2" in m["rec"]["text"],
+          f"Refills and notes shows the recent haze refills: {m['rec']}")
+    check(m["usheet"] == {"h": "Undo this refill?", "posts": 0} and
+          m["undo"] == [["haze-undo", {"id": 7}]],
+          f"Undo asks first, then posts haze-undo {{id}}: {m['usheet']} "
+          f"{m['undo']}")
+    print("  ok")
+
+
 def test_ui2_calm_screens_and_brand():
     section("interface 2.0 when the show cannot act (Jeff, 2026-10-29): "
             "signed out, Run off, no contact or off the show PC, every "
@@ -103078,7 +107188,7 @@ def test_ui2_calm_screens_and_brand():
                       f"are disabled and say why: {a}"[:900])
 
             if kind == "run off":
-                check(a["next"] == "Show not running. Press Run show.",
+                check(a["next"] == "Show control is off.",
                       f"{where}: the top line says to press Run: "
                       f"{a['next']!r}")
                 # The engine plays an announcement with Run off (it holds
@@ -103110,8 +107220,7 @@ def test_ui2_calm_screens_and_brand():
                       f"No contact, Abort and the rest stay live: {sl} "
                       f"{r['stale_taps']}"[:1200])
                 check(not r["back"]["inactive"] or
-                      r["back"]["next"] == "Show not running. Press Run "
-                                           "show.",
+                      r["back"]["next"] == "Show control is off.",
                       f"{where}: contact back, the screen is as before: "
                       f"{r['back']['next']!r}")
     print("  ok")
@@ -103166,7 +107275,7 @@ def test_ui2_show_tab_in_a_browser():
         # with Run on (cold review of #191), each a few polls long.
         got = _rack_screen_in_chromium(chrome, page, status, sz,
                                        measure_js=_UI2_MEASURE_JS,
-                                       frag=frag, budget_ms=30000
+                                       frag=frag, budget_ms=40000
                                        if frag.startswith("?presses")
                                        else 15000)
         for (w, h), res in got.items():
@@ -103275,6 +107384,16 @@ def test_ui2_show_tab_in_a_browser():
                       f"{where}: with a show live Stop is solid red, its "
                       f"first tap sends nothing and asks nothing, its "
                       f"second sends Stop: {p}")
+                check(p and p.get("lone") == [
+                          ["Stop show", "tap twice", True, True],
+                          ["Tap again", "to stop (3)", True, True],
+                          ["Tap again", "to stop (2)", True, True],
+                          ["Not sent", "tap twice", True, True],
+                          ["Stop show", "tap twice", True, True]] and
+                      p.get("lone_sent") == 0,
+                      f"{where}: a lone tap is drawn, both lines inside the "
+                      f"button: the countdown, then Not sent, then Stop "
+                      f"show again, and nothing is sent: {p and p.get('lone')}")
                 check(p and p["arm_beats"] >= 2 and
                       p["arm_released_while_held"] == 0 and
                       p["arm_released"] >= 1 and
@@ -103383,6 +107502,17 @@ def test_ui2_day_makes_only_1_0_presses():
         check(f1 and f2 and _js_same(f1) == _js_same(f2),
               f"2.0's {n} is 1.0's own code: {(f2 or 'missing')[:160]!r}")
     k1, k2 = _ui2_press_keys(one), _ui2_press_keys(two)
+    # The two DAY presses 1.0 never had (it is frozen): haze fluid's
+    # Refilled and its admin Undo on the Fuel step (fuelhaze.py, Jeff
+    # 2026-11-12), fuel-refill's and fuel-undo's own shapes, {unit} and
+    # {id}. Nothing else may be new.
+    check(k2.get("haze-refill") == {("unit",)} and
+          k2.get("haze-undo") == {("id",)} and
+          "haze-refill" not in k1 and "haze-undo" not in k1,
+          f"haze fluid's Refilled and Undo are the only new DAY presses: "
+          f"{k2.get('haze-refill')} {k2.get('haze-undo')}")
+    k2 = {r: k for r, k in k2.items() if r not in ("haze-refill",
+                                                    "haze-undo")}
     check(k2 and all(r in k1 and keys <= k1[r] for r, keys in k2.items()),
           f"every DAY press is a 1.0 press, body keys and all: "
           f"{ {r: sorted(k) for r, k in k2.items() if r not in k1 or not k <= k1[r]} }")
@@ -104238,7 +108368,7 @@ def test_fireball_timeline_routes():
     here = os.path.dirname(os.path.abspath(__file__))
     users_md = open(os.path.join(here, "USERS.md"), encoding="utf-8").read()
     check("sign out after the last show, the play-from cues, the fireball "
-          "timeline) | yes | no | no | never |" in users_md,
+          "timeline) | always | yes | no | no | never |" in users_md,
           "USERS.md's matrix row")
     work = tempfile.mkdtemp()
     journal = []
@@ -108060,7 +112190,7 @@ def test_fireball_practice_engine():
         trig("the schedule gone", lambda g: setattr(g.svc, "machine", None),
              "not loaded")
         trig("Run off", lambda g: setattr(g.sess, "running", False),
-             "Run was turned off")
+             "Show control was turned off")
         trig("a Hold pressed", lambda g: g.p.request_end(
             "Hold was pressed"), "Hold was pressed")
         trig("a pause during the step", lambda g: setattr(
@@ -114063,7 +118193,8 @@ def test_start_at_cue_route():
         # No show running.
         ctl.session = None
         code, out, _h = press()
-        check(code == 409 and "Press Run" in out["error"] and not presses,
+        check(code == 409 and "Turn show control on" in out["error"] and
+              not presses,
               f"Run not pressed: refused: {out}")
         ctl.session = sess
         # A broken cue file: refused in its words, never guessed.
@@ -114216,6 +118347,17 @@ def test_ui2_programming_tab_makes_1_0_presses():
                  'id="p-follow" data-tr', 'id="p-pf-line" hidden',
                  'id="p-pf-warn" role="alert" hidden'):
         check(need in pane, f"the Programming cards have {need}")
+    # Windows stress round 3 (2026-11-10): Play from's grey words are
+    # plainly an example, never taken for a typed time; a visible label
+    # says what to type.
+    check('placeholder="Example: 00:01:30:00"' in pane and
+          'placeholder="00:01:30:00"' not in pane and
+          '<label class="pline" for="p-at" id="p-at-l">Play from: type a '
+          'timecode or a cue name.</label>' in pane and
+          "#p-at::placeholder{font-style:italic;color:var(--muted);"
+          "opacity:1}" in two,
+          "Play from's box shows 'Example: 00:01:30:00' in muted italics, "
+          "under a label that says what to type")
     check(pane.count(" data-tr disabled") == 11,
           "each session control starts disabled, until the first status "
           "says it may be pressed")
@@ -114256,19 +118398,40 @@ def test_ui2_programming_tab_makes_1_0_presses():
              '{timeline:f})',
              'post("/api/start", prog ? {timeline:f, on_lost:"hold"} : '
              '{timeline:f})'),
-            ('confirmBox(prog ? "Run in Programming?" : "Press Run?", prog '
-             '? "Run " + f + " as a rehearsal. Play from, jump and loop '
-             'work, and the scheduler starts no show." : "Run " + f + ". '
-             'The scheduler then starts each show by itself.", "Yes, Run"',
-             'confirmBox(prog ? "Run in Programming?" : "Press Run?", prog '
-             '? "Run " + f + " as a rehearsal. Play from, jump and loop '
-             'work, and the scheduler starts no show." : "Run " + f + ". '
-             'The scheduler then starts each show by itself.", "Yes, Run"'),
-            ('confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"',
-             'confirmBox("Turn Run off?", RUN_OFF_CONFIRM, "Yes, Run off"'),
+            ('confirmBox(prog ? "Start rehearsal?" : "Turn show control '
+             'on?", prog ? "Rehearses " + f + ". Play from, jump and loop '
+             'work, and the scheduler starts no show." : "Uses " + f + ". '
+             'The scheduler then starts each show by itself.", prog ? '
+             '"Yes, start" : "Yes, turn on"',
+             'confirmBox(prog ? "Start rehearsal?" : "Turn show control '
+             'on?", prog ? "Rehearses " + f + ". Play from, jump and loop '
+             'work, and the scheduler starts no show." : "Uses " + f + ". '
+             'The scheduler then starts each show by itself.", prog ? '
+             '"Yes, start" : "Yes, turn on"'),
+            ('confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, '
+             'turn off"',
+             'confirmBox("Turn show control off?", RUN_OFF_CONFIRM, "Yes, '
+             'turn off"'),
             ('if(runLook(ST, nowStale()).mode !== "runoff")',
              'if(runLook(ST, stale()).mode !== "runoff")')):
         check(p1 in one and p2 in two, f"1.0 presses {p1} and 2.0 {p2}")
+    # A rehearsal's Run off is End rehearsal everywhere it is said (cold
+    # reviews of #239): the Show file card's tooltip and question, the
+    # SHOW tab's button and its question; the card's heading claims no
+    # state it may not be in.
+    check('const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, '
+          'and ends the rehearsal.";' in two and
+          'reh ? confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
+          '"Yes, end it", "red")' in two and
+          '? await confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
+          '"Yes, end it", "red")' in two and
+          'rk.mode === "runoff" ? (tr.programming ? REHEARSAL_END_CONFIRM '
+          ': RUN_OFF_CONFIRM) : ""' in two and
+          'setText($("ro-l"), roReh ? "End" : "Show ctrl"); '
+          'setText($("ro-s"), roReh ? "rehearsal" : "off");' in two and
+          "<b>Show file, on this machine</b></div>" in two,
+          "a rehearsal's Run off says End rehearsal: tooltip, questions "
+          "and the SHOW tab's button")
     check('const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
           in one and
           'const v = runModeView(ST, RUN_MODE || "show");\n  if(v.locked)'
@@ -114285,15 +118448,16 @@ def test_ui2_programming_tab_makes_1_0_presses():
     dp = _js_function(two, "drawProg") or ""
     check("const can = controlStates(ST, isSt).transport && "
           'mayRow(ST, "show");' in dp and
-          "runLook(ST, isSt)" in dp,
+          'runLook(ST, isSt, RUN_MODE || "show")' in dp,
           "the session controls follow 1.0's controlStates and sign-in "
           "lock; Run follows 1.0's runLook")
     here = os.path.dirname(os.path.abspath(__file__))
     op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
     i = op.find("- Programming (Schedule tab):")
     para = op[i:op.find("\n- ", i + 3)] if i >= 0 else ""
-    for words in ("Run asks first", "refused while a scheduled show is live",
-                  "Stop (tap twice)", "Run off", "Play from", "Set A",
+    for words in ("It asks first", "refused while a scheduled show is live",
+                  "Stop (tap twice)", "End rehearsal", "Start rehearsal",
+                  "Play from", "Set A",
                   "Follow timecode again", "flame cue fault", "Show row",
                   "show PC tools"):
         check(words in para, f"OPERATOR.md, 2.0 Programming, says "
@@ -114567,7 +118731,7 @@ def test_ui2_programming_tab_in_a_browser():
                   a["files"] == ["Fire and Ice.json", "Other.json"] and
                   a["file"] == "Fire and Ice.json" and
                   a["mode"] == "programming" and "Running now." in a["what"]
-                  and a["run"] == "runoff" and a["run_l"] == "Run off" and
+                  and a["run"] == "runoff" and a["run_l"] == "End rehearsal" and
                   not a["run_dis"] and not any(a["tr_dis"]) and
                   len(a["tr_dis"]) == 11,
                   f"{where}: the show PC in a rehearsal: both cards, the "
@@ -114642,13 +118806,13 @@ def test_ui2_programming_tab_in_a_browser():
                       f"{r['ipad']}")
             if "run=1" in frag:
                 check(r["off"]["run"] == "run" and
-                      r["off"]["run_l"] == "Run" and
+                      r["off"]["run_l"] == "Start rehearsal" and
                       not r["off"]["run_dis"] and all(r["off"]["tr_dis"]) and
                       r["off"]["why"] == "No show file is running.",
                       f"{where}: Run off: Run, the session not pressable, "
                       f"the engine's reason: {r['off']}")
                 check(r["prog_sheet"]["sheet"] and
-                      r["prog_sheet"]["sheet_h"] == "Run in Programming?" and
+                      r["prog_sheet"]["sheet_h"] == "Start rehearsal?" and
                       r["prog_before"] == [] and
                       r["prog_after"] == [["/api/start", {
                           "timeline": "Fire and Ice.json",
@@ -114656,7 +118820,7 @@ def test_ui2_programming_tab_in_a_browser():
                       f"{where}: Run in Programming asks first, then posts "
                       f"1.0's rehearsal body: {r['prog_sheet']} "
                       f"{r['prog_after']}")
-                check(r["show_sheet"]["sheet_h"] == "Press Run?" and
+                check(r["show_sheet"]["sheet_h"] == "Turn show control on?" and
                       r["show_cancel"] == [] and
                       r["show_after"] == [["/api/start", {
                           "timeline": "Fire and Ice.json"}]],
@@ -114675,7 +118839,7 @@ def test_ui2_programming_tab_in_a_browser():
                       f"refused before any question, nothing sent: "
                       f"{r['locked_press']}")
                 check(r["runon"]["run"] == "runoff" and
-                      r["runoff_sheet"]["sheet_h"] == "Turn Run off?" and
+                      r["runoff_sheet"]["sheet_h"] == "End rehearsal?" and
                       r["runoff_before"] == [] and
                       [p[0] for p in r["runoff_after"]] == ["run-off"],
                       f"{where}: Run off asks first, then posts run-off: "
@@ -114770,7 +118934,7 @@ def test_ui2_schedule_tab_makes_1_0_presses():
     for need in ("and the Fire &amp; Ice settings say it performs",
                  "Any times work:", "is overwritten, so Reload first"):
         check(need in sched, f"the editor says, as 1.0 does: {need!r}")
-    for words in ("tap a show", "Run warning", "show PC only",
+    for words in ("tap a show", "show control warning", "show PC only",
                   "Save the schedule", "Reload from the file",
                   "Late start allowed", "exceptions",
                   "Unsaved schedule", "is overwritten"):
@@ -114803,8 +118967,8 @@ def _ui2_status_tonight():
     st["schedule"].update({
         "state": "STANDBY", "running": None,
         "next": {"show": 5, "start": "19:50", "in_s": 1500},
-        "run_warning": "Run is off: show 5 at 19:50 will not start until "
-                       "Run is pressed.",
+        "run_warning": "Show control is off: the 19:50 show (show 5) will "
+                       "NOT start. Turn show control on.",
         "slots": [
             {"show": 3, "start": "19:10", "status": "DONE"},
             {"show": 4, "start": "19:32", "planned": "19:30",
@@ -114968,7 +119132,7 @@ def test_ui2_schedule_tab_in_a_browser():
                     "Show 5 19:50 PENDING | ",
                     "Show 6 20:10 PENDING | Added for tonight only."] and
                   a["next"] == "Next: Show 5 at 19:50" and
-                  a["warn"].startswith("Run is off: show 5"),
+                  a["warn"].startswith("Show control is off: the 19:50 show"),
                   f"{where}: tonight's shows with 1.0's notes, Next and "
                   f"the Run warning: {a}")
             check(a["editor"] and r["gets"] >= 1 and
@@ -115092,10 +119256,19 @@ def test_ui2_users_audit_are_1_0s():
           'id="nav-user"' not in two,
           "2.0 has no 1.0 chip and no lockForSignIn")
     for r in ("users", "signin", "signout", "my-password", "role-matrix",
-              "audit-verify", "audit-settings", "idle-signout",
-              "last-show-signout", "audit-upload-now"):
+              "audit-verify", "idle-signout", "last-show-signout"):
         check(f'"/api/remote/{r}"' in want,
               f"the Users pane posts 1.0's route {r}")
+    # The nightly upload's two routes are in the card's own script, served
+    # only to a SuperUser here (2026-11-13, review of #251), never on the
+    # page.
+    here_ = os.path.dirname(os.path.abspath(__file__))
+    card = open(os.path.join(here_, "ltcplay", "web", "upload_card.js"),
+                encoding="utf-8").read()
+    for r in ("audit-settings", "audit-upload-now"):
+        check(f'"/api/remote/{r}"' in card and f"/{r}" not in two,
+              f"only the SuperUser's card script names {r}")
+    _no_dashes(card, "the upload card's script")
     check('"/api/remote/" + (route || "users")' in want and
           'uAdmin({}, "clear-lockouts")' in want,
           "the users list and Clear sign-in lockouts post 1.0's routes")
@@ -115113,21 +119286,24 @@ def test_ui2_users_audit_are_1_0s():
           "when it is already open (review of #214, 3)")
     uso = _js_function(two, "usersSignedOut") or ""
     check(osi.find("renderUser();") < osi.find("usersSignedOut();") and
-          '["u-pw", "u-new", "u-old", "u-new1", "ua-pw", "au-tok"]'
+          '["u-pw", "u-new", "u-old", "u-new1", "ua-pw"]'
           '.forEach(id => { $(id).value = ""; });' in uso and
+          "dropUpload();" in uso and
           'if(TAB === "users") loadUsers();' in uso,
-          "the header's Sign out clears what was typed in the Users pane "
-          "and reads an open pane again (review of #214, 2)")
+          "the header's Sign out clears what was typed in the Users pane, "
+          "takes the SuperUser's upload card (and its typed token) off "
+          "the page, and reads an open pane again (review of #214, 2; "
+          "2026-11-13)")
     check('<a class="b blue" id="set-users" href="#users">' in two and
           "/remote1#users" not in two and "Users in 1.0" not in two,
           "Settings' Users card opens the pane; no 1.0 Users link left")
     # No secret is shown: the token and the server address are never
     # written into their fields, only cleared.
-    put = re.findall(r'\$\("au-(tok|url)"\)\.value = ([^;]+);', two)
+    put = re.findall(r'\$\("au-(tok|url)"\)\.value = ([^;]+);', card)
     check(put == [("tok", '""')],
           f"the token is only ever cleared, the address never filled: "
           f"{put}")
-    check('<input id="au-tok" type="password" autocomplete="off"' in two,
+    check('<input id="au-tok" type="password" autocomplete="off"' in card,
           "the token field is a password field")
     pane = two[p:two.find('<section class="pane" id="t-settings"')]
     _no_dashes(pane, "2.0's Users pane")
@@ -115147,14 +119323,17 @@ def test_ui2_users_audit_are_1_0s():
     print("  ok")
 
 
+# A SuperUser on the rack screen (2026-11-13): the only view with the
+# upload's card ("upload", remote.Remote.users_get).
 _UI2_USERS_VIEW = {
     "active": True, "local": True, "may_admin": True, "may_settings": True,
-    "me": {"name": "Jeff", "role": "admin"}, "names": ["Jeff", "Sam"],
-    "users": [{"name": "Jeff", "role": "admin", "password_set": True,
-               "temporary": False, "locked_s": 0},
+    "may_superuser": True,
+    "me": {"name": "Jeff", "role": "superuser"}, "names": ["Jeff", "Sam"],
+    "users": [{"name": "Jeff", "role": "superuser", "password_set": True,
+               "temporary": False, "locked_s": 0, "edit": True},
               {"name": "Sam", "role": "operator", "password_set": True,
-               "temporary": True, "locked_s": 30}],
-    "roles": ["admin", "operator", "viewer"],
+               "temporary": True, "locked_s": 30, "edit": True}],
+    "roles": ["superuser", "admin", "operator", "viewer"],
     "columns": ["admin", "operator", "viewer", "signed_out"],
     "perms": [{"key": "show", "label": "Start now"},
               {"key": "arm", "label": "Arm flames"},
@@ -115167,11 +119346,19 @@ _UI2_USERS_VIEW = {
                               "users": False}},
     "fixed": [["admin", "users"], ["signed_out", "users"]],
     "audit": {"writer": {"written": 12, "lost": 0, "fault": ""},
-              "chain": None,
-              "upload": {"enabled": True, "host": "audit.example",
-                         "time": "03:30", "keep_days": 120,
-                         "token_set": True, "pending_days": []}},
+              "chain": None},
+    "upload": {"upload": {"enabled": True, "host": "audit.example",
+                          "time": "03:30", "keep_days": 120,
+                          "token_set": True, "pending_days": []}},
     "idle_signout_min": 15, "signout_after_last_show_min": 10}
+# The same screen for an admin (Andy): no upload, Jeff read only.
+_UI2_USERS_ADMIN_VIEW = dict(
+    {k: v for k, v in _UI2_USERS_VIEW.items()
+     if k not in ("upload", "may_superuser")},
+    me={"name": "Andy", "role": "admin"},
+    roles=["admin", "operator", "viewer"],
+    users=[dict(_UI2_USERS_VIEW["users"][0], edit=False),
+           _UI2_USERS_VIEW["users"][1]])
 
 
 def test_ui2_users_audit_driven():
@@ -115197,8 +119384,9 @@ def test_ui2_users_audit_driven():
                 "may": {k: True for k in ("show", "arm", "unlock",
                                           "checklist", "show_files",
                                           "settings", "users")}}
-    viewer = dict(_UI2_USERS_VIEW, local=False, may_admin=False,
-                  may_settings=False, me={})
+    viewer = {k: v for k, v in dict(
+        _UI2_USERS_VIEW, local=False, may_admin=False, may_settings=False,
+        me={}).items() if k not in ("upload", "may_superuser")}
     steps = r"""
 const g = id => document.getElementById(id);
 const mark = () => window.__posts.length;
@@ -115222,7 +119410,7 @@ out.sheet = !!ub;
 if(ub) ub.click();
 await h.sleep(700);
 out.open = {tab:document.body.dataset.tab, hash:location.hash, shown:!g("t-users").hidden, gets:gets,
-  admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, signedIn:!g("u-in").hidden, me:g("u-me").textContent,
+  admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, upload:!!g("u-upload") && !g("u-upload").hidden, signedIn:!g("u-in").hidden, me:g("u-me").textContent,
   rows:[...g("u-list").querySelectorAll("tr")].map(r => r.cells[0].textContent + "|" + r.cells[2].textContent),
   fixed:[...g("u-matrix").querySelectorAll("input[disabled]")].map(c => c.dataset.c + "/" + c.dataset.p),
   tok:[g("au-tok").type, g("au-tok").value, g("au-tok").placeholder, g("au-url").value],
@@ -115238,12 +119426,14 @@ if(innerWidth < 600) return;
   const b = [...document.querySelectorAll("#sh-row button")].find(x => x.textContent.trim() === "Users");
   if(b) b.click(); await h.sleep(500); out.again = gets - n0; }
 // The header's Sign out with the pane open: typed secrets cleared, the
-// pane read again and showing nobody signed in.
+// upload card (and its typed token) gone, the pane read again and
+// showing nobody signed in.
 ["u-old", "u-new1", "ua-pw", "au-tok"].forEach(id => { g(id).value = "typed1"; });
 { const n0 = gets; window.__usersOut = true; g("user").click(); await h.sleep(300);
   const b = [...document.querySelectorAll("#sh-row button")].find(x => x.textContent.trim() === "Sign out");
   if(b) b.click(); await h.sleep(600);
-  out.hdrOut = {gets:gets - n0, left:["u-old", "u-new1", "ua-pw", "au-tok"].map(id => g(id).value).join(""),
+  out.hdrOut = {gets:gets - n0, left:["u-old", "u-new1", "ua-pw"].map(id => g(id).value).join(""),
+    upload:!!g("u-upload"),
     signedIn:!g("u-in").hidden, form:!g("u-form").hidden};
   window.__usersOut = false; await loadUsers(); await h.sleep(200); }
 const sel = g("u-list").querySelector('[data-role="Sam"]');
@@ -115275,27 +119465,45 @@ out.vmsg = g("au-msg").textContent;
 g("au-lastshow").value = "abc";
 out.bad = await press(g("au-save"));
 out.badMsg = g("au-msg").textContent;
-g("au-lastshow").value = "20"; g("au-idle").value = "5"; g("au-tok").value = "tok";
+g("au-lastshow").value = "20"; g("au-idle").value = "5";
 out.saved = await press(g("au-save"), 500);
-out.tokLeft = g("au-tok").value;
+g("au-tok").value = "tok"; g("au-pw").value = "jeff-pw-1";
+out.upSaved = await press(g("au-upsave"), 500);
+out.tokLeft = g("au-tok").value + g("au-pw").value;
 out.now = await press(g("au-now"));
+// Andy, an admin, on the same screen: the upload is not on the page at
+// all, Jeff (the SuperUser) is read only, and superuser is not offered.
+window.fetch = (u, o) => (String(u).indexOf("/api/remote/users") >= 0 && !(o && o.method === "POST")) ?
+  Promise.resolve(new Response(JSON.stringify(ADMINV), {status:200, headers:{"Content-Type":"application/json"}})) : f0(u, o);
+await loadUsers();
+const jr = [...g("u-list").querySelectorAll("tr")].find(r => r.cells[0].textContent === "Jeff");
+out.adminView = {upload:!!g("u-upload"), words:/nightly upload|au-tok|audit-settings/i.test(document.getElementById("t-users").innerHTML),
+  jeffSelect:!!(jr && jr.querySelector("select")), jeffButtons:jr ? jr.querySelectorAll("button").length : -1,
+  jeffRole:jr ? jr.cells[1].textContent : "", superOpt:[...g("ua-role").options].some(o => o.value === "superuser"),
+  admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, idle:!g("au-idle").disabled};
 window.__patch = s => Object.assign(s, {me:Object.assign({}, s.me, {user:null, role:null, view_only:true})});
 out.out = await press(g("u-out"), 400);
 out.chip = g("user").querySelector("span").textContent;
 window.fetch = (u, o) => (String(u).indexOf("/api/remote/users") >= 0 && !(o && o.method === "POST")) ?
   Promise.resolve(new Response(JSON.stringify(VIEWER), {status:200, headers:{"Content-Type":"application/json"}})) : f0(u, o);
 await loadUsers();
-out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, save:!g("um-save").hidden,
+out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, upload:!!g("u-upload"), save:!g("um-save").hidden,
   live:[...g("u-matrix").querySelectorAll("input")].filter(c => !c.disabled).length,
   form:!g("u-form").hidden, names:[...g("u-name").options].map(o => o.textContent)};
-""".replace("OUTVIEW", json.dumps(dict(_UI2_USERS_VIEW, me={}))).replace(
-        "VIEWER", json.dumps(viewer))
+""".replace("OUTVIEW", json.dumps(dict(viewer, local=True))).replace(
+        "VIEWER", json.dumps(viewer)).replace(
+        "ADMINV", json.dumps(_UI2_USERS_ADMIN_VIEW))
     js = "<script>window.__drive = async (out, h) => {\n" + steps + \
         "\n};</script>" + _UI2_DRIVE_JS.replace(
             ' && typeof MO !== "undefined" && MO', '', 1)
     got = _rack_screen_in_chromium(
         chrome, page, st, ((1366, 1100), (390, 844)), measure_js=js,
         frag="?tour=0", routes={"/api/remote/users": _UI2_USERS_VIEW,
+                                "/api/remote/upload-card.js": _RawRoute(
+                                    open(os.path.join(os.path.dirname(
+                                        os.path.abspath(__file__)), "ltcplay",
+                                        "web", "upload_card.js"),
+                                        encoding="utf-8").read()),
                                 "/api/brand": {"show": "x"}},
         budget_ms=60000)
     for (w, hh), res in got.items():
@@ -115310,12 +119518,12 @@ out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, save:!g("u
               and o["shown"] and o["gets"] >= 1,
               f"{where}: the signed-in sheet's Users opens the pane and "
               f"reads the users: {o}")
-        check(o["admin"] and o["audit"] and o["signedIn"] and
-              o["me"] == "Jeff (admin)" and
+        check(o["admin"] and o["audit"] and o["upload"] and o["signedIn"]
+              and o["me"] == "Jeff (superuser)" and
               o["rows"] == ["Jeff|set", "Sam|temporary, locked 30 s"] and
               o["fixed"] == ["admin/users", "signed_out/users"] and
               o["save"],
-              f"{where}: an admin on the show PC: 1.0's users, their "
+              f"{where}: a SuperUser on the show PC: 1.0's users, their "
               f"passwords' state and the fixed rows locked: {o}")
         check(o["tok"] == ["password", "", "saved (type to replace)", ""]
               and o["idle"] == "15" and o["last"] == "10",
@@ -115334,7 +119542,7 @@ out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, save:!g("u
               f"it again: {r['again']}")
         ho = r["hdrOut"]
         check(ho["gets"] >= 1 and ho["left"] == "" and not ho["signedIn"]
-              and ho["form"],
+              and ho["form"] and not ho["upload"],
               f"{where}: the header's Sign out clears the pane's typed "
               f"passwords and token and reads it again, signed out: {ho}")
         check(r["role"] == [["users", {"op": "role", "name": "Sam",
@@ -115380,20 +119588,33 @@ out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, save:!g("u
                   "Sign out after the last show has to be a whole number"),
               f"{where}: a bad last show time posts nothing: {r['bad']}")
         check(r["saved"] == [
-                  ["audit-settings", {"enabled": True, "time": "03:30",
-                                      "keep_days": 120, "token": "tok"}],
                   ["idle-signout", {"minutes": 5}],
-                  ["last-show-signout", {"minutes": 20}]] and
-              r["tokLeft"] == "",
-              f"{where}: Save posts 1.0's three bodies and clears the "
-              f"token: {r['saved']}")
-        check(r["now"] == [["audit-upload-now", {}]],
+                  ["last-show-signout", {"minutes": 20}]],
+              f"{where}: the audit card's Save posts the two sign out "
+              f"settings, never the upload: {r['saved']}")
+        check(r["upSaved"] == [
+                  ["audit-settings", {"enabled": True, "time": "03:30",
+                                      "keep_days": 120, "token": "tok",
+                                      "password": "jeff-pw-1"}]]
+              and r["tokLeft"] == "",
+              f"{where}: the upload card's Save posts 1.0's body and "
+              f"clears the token: {r['upSaved']}")
+        av = r["adminView"]
+        check(not av["upload"] and not av["words"] and
+              not av["jeffSelect"] and av["jeffButtons"] == 0 and
+              av["jeffRole"] == "superuser" and not av["superOpt"] and
+              av["admin"] and av["audit"] and av["idle"],
+              f"{where}: an admin: no upload card or word of it on the "
+              f"page, the SuperUser read only, superuser not offered, "
+              f"everything else as before: {av}")
+        check(r["now"] == [["audit-upload-now", {"password": ""}]],
               f"{where}: Send now: {r['now']}")
         check(r["out"] == [["signout", {}]] and r["chip"] == "Sign in",
               f"{where}: Sign out on the pane signs out and the header "
               f"says so: {r['out']} {r['chip']!r}")
         v = r["viewer"]
-        check(not v["admin"] and not v["audit"] and not v["save"] and
+        check(not v["admin"] and not v["audit"] and not v["upload"] and
+              not v["save"] and
               v["live"] == 0 and v["form"] and v["names"] == ["Jeff", "Sam"],
               f"{where}: signed out off the show PC: the sign in form, no "
               f"users list, no audit card, who may do what read only: "
@@ -116078,6 +120299,10 @@ if __name__ == "__main__":
         test_journal_a_show_past_midnight_keeps_its_night,
         test_schedule_delayed_show_keeps_a_held_night_from_being_swept_at_midnight,
         test_journal_waiting_lines_are_capped_and_counted,
+        test_journal_held_file_and_clock_set_back,
+        test_journal_watchdog_flags_a_silent_gap,
+        test_journal_summary_checks_the_files,
+        test_journal_check_and_watchdog_edges,
         test_journal_a_clean_stop_reads_as_one,
         test_journal_screens_come_from_a_list,
         test_journal_summary_lists_every_fault,
@@ -116327,6 +120552,7 @@ if __name__ == "__main__":
         test_streamdeck_local_schedule_operator_reverts_when_server_drops,
         test_streamdeck_deck_journal_prints_and_posts,
         test_streamdeck_reconnect_never_remembers_old_state,
+        test_show_control_refusals_say_turn_it_off,
         test_streamdeck_never_imports_flamesafe,
         test_conductor_devices_hold_blanks_beyond_before_anything_fades,
         test_conductor_devices_stop_blanks_at_once_never_ramps,
@@ -116533,6 +120759,8 @@ if __name__ == "__main__":
         test_mutate_fast_path_never_turns_red_green,
         test_mutate_never_runs_stale_bytecode,
         test_mutate_shards_fit_their_time_limit,
+        test_ci_verdict_rules,
+        test_release_tags_are_ltc_only,
         test_alerts_pure_logic,
         test_alerts_route_status_and_acknowledge,
         test_boothaudio_never_holds_and_never_uses_the_pa,
@@ -116671,6 +120899,14 @@ if __name__ == "__main__":
         test_fuel_settings_are_checked_strictly,
         test_fuel_routes_and_who_may_refill,
         test_fuel_doc_in_plain_words,
+        test_haze_fluid_reads_the_bytes_on_the_wire,
+        test_haze_fluid_counts_haze_not_fan_by_level_and_source,
+        test_haze_fluid_not_sure_on_restart_and_a_stale_link,
+        test_haze_fluid_refill_settings_and_the_record,
+        test_haze_fluid_undo_bounds_and_the_safe_side,
+        test_haze_fluid_never_touches_the_haze_output,
+        test_haze_fluid_routes_wiring_and_audit,
+        test_haze_fluid_in_the_docs_and_the_page,
         test_fireball_panel_rules,
         test_fireball_at_the_engine,
         test_fireball_signed_out_is_view_only,
@@ -116714,6 +120950,7 @@ if __name__ == "__main__":
         test_ui2_fireball_page_driven,
         test_ui2_fireball_pads_only_whole,
         test_ui2_timed_purge_and_fuel_undo_driven,
+        test_ui2_haze_fluid_driven,
         test_ui2_startup_steps_never_overlap,
         test_ui2_machine_rows_fit_and_never_overlap,
         test_ui2_fuel_arrange_driven,
@@ -116773,6 +121010,16 @@ if __name__ == "__main__":
         test_ui2_schedule_tab_in_a_browser,
         test_ui2_users_audit_are_1_0s,
         test_ui2_users_audit_driven,
+        test_superuser_role_and_matrix,
+        test_superuser_every_users_edit_path,
+        test_superuser_changed_outside_the_engine,
+        test_superuser_session_limit_and_password_again,
+        test_superuser_local_command_line,
+        test_superuser_emergency_procedure_by_hand,
+        test_superuser_cross_process_lock,
+        test_superuser_route_table,
+        test_superuser_upload_is_hidden_and_refused,
+        test_superuser_upload_file_never_named,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
         test_ui2_op_text_shapes_text_with_dom_nodes_only,
