@@ -21995,7 +21995,9 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
             "re-sounded, the showtime hold, a failed rig check, a failed "
             "start, missed and delayed shows, Hold, Resume, Start now, "
             "Stop, Abort and the night's end: the announcement player is "
-            "never asked to play. A person's press still plays")
+            "never asked to play. A person's press still plays. The one "
+            "exception, pre-show audio (Jeff, 2026-11-12), is off unless "
+            "turned on and has exactly one way in")
     import ast
     import inspect
     root = os.path.dirname(os.path.abspath(__file__))
@@ -22010,7 +22012,14 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
     allowed = {("ltcplay/remote.py", "announce_post", "play"),
                ("ltcplay/remote.py", "announce_test_tone", "test_tone"),
                ("ltcplay/announce.py", "test_tone", "play"),
-               ("ltcplay/announce.py", "post", "play")}
+               ("ltcplay/announce.py", "post", "play"),
+               # play() and play_preshow() share one player (_play).
+               ("ltcplay/announce.py", "play", "_play"),
+               ("ltcplay/announce.py", "play_preshow", "_play"),
+               # Pre-show audio (Jeff, 2026-11-12: "play an audio file
+               # automatically two minutes prior to the show"): its one
+               # call, on its own thread after the scheduler's decision.
+               ("ltcplay/preshow_audio.py", "_settle", "play_preshow")}
     found = set()
     files = []
     for top in ("ltcplay", "flamesafe", os.path.join("packaging",
@@ -22027,11 +22036,12 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
             for node in ast.walk(fn):
                 if not (isinstance(node, ast.Call) and
                         isinstance(node.func, ast.Attribute) and
-                        node.func.attr in ("play", "test_tone")):
+                        node.func.attr in ("play", "test_tone", "_play",
+                                           "play_preshow")):
                     continue
                 recv = ast.unparse(node.func.value).lower()
-                if "ann" in recv or (rel == "ltcplay/announce.py" and
-                                     recv == "self"):
+                if "ann" in recv or node.func.attr == "play_preshow" or (
+                        rel == "ltcplay/announce.py" and recv == "self"):
                     found.add((rel, fn.name, node.func.attr))
     check(found == allowed,
           f"the only calls that start an announcement are the operator's "
@@ -22222,6 +22232,18 @@ def test_nothing_plays_on_the_pa_without_an_operator_press():
         check(len(rows) == 4 and rows[-1]["action"] == "test tone" and
               rows[-1]["reason"] == "not an operator press",
               f"a refused Test tone journals as a Test tone: {rows[-1:]}")
+        # Pre-show audio is never one of the routes' ids: a Play press
+        # cannot ask for it, whoever presses it.
+        try:
+            ann.play(A.PRESHOW, "Andy", "Rack screen", surface=True)
+            check(False, "a Play press asked for pre-show audio and played")
+        except ValueError as e:
+            check(ann.playing is None and "is not one of" in str(e),
+                  f"a press cannot play pre-show audio: {e}")
+        check(A.PRESHOW not in A.IDS and
+              A.PRESHOW_WHO.lower() in U.RESERVED and
+              A.PRESHOW_WHO.lower() not in A.ENGINE_NAMES,
+              "pre-show audio is no route's id, and its name is reserved")
         ann.play("delayed", "Andy", "Rack screen", surface=True)
         check(ann.playing == "delayed",
               "the operator's own press still plays the Delayed")
@@ -80947,7 +80969,8 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/open-folder", "/api/remote/pause",
     "/api/remote/play-from", "/api/remote/play-from-cues",
     "/api/remote/play-from-cues-save", "/api/remote/preroll-check",
-    "/api/remote/preroll-continue", "/api/remote/purge-clear",
+    "/api/remote/preroll-continue", "/api/remote/preshow-audio",
+    "/api/remote/purge-clear",
     "/api/remote/purge-fire", "/api/remote/purge-select",
     "/api/remote/purge-stop", "/api/remote/purge-timed",
     "/api/remote/reload-engine", "/api/remote/restart-check",
@@ -100400,6 +100423,843 @@ def test_preroll_wiring_in_the_engine():
     rig.baseline = None
     check("10.0.1.2" in [ip for _l, ip in W._preroll_hosts(h, cfg)],
           "before the first sweep: every pixel controller")
+# ------------------------------------------------- pre-show audio (Jeff, 11-12)
+class _PsaPlayer:
+    """Stands in for the announcement player behind pre-show audio: records
+    every play_preshow, and can block (an Event) or raise. Has what
+    PreShowAudio reads of a real AnnounceService: config_path, files,
+    _probe_file and playing."""
+
+    def __init__(self, folder, block=None, fail=None):
+        A = _ann()
+        self.config_path = os.path.join(folder, "ltcplay_announce.json")
+        self.files = {}
+        self._probe_file = A.AnnounceService._probe_file
+        self.playing = None
+        self.calls = []
+        self.block = block
+        self.fail = fail
+
+    def play_preshow(self, path):
+        if self.playing is not None:
+            # As the real player decides it, under its own lock.
+            raise ValueError(_ann().PRESHOW_BUSY)
+        self.calls.append((path, time.monotonic()))
+        if self.block is not None:
+            self.block.wait(5)
+        if self.fail is not None:
+            raise self.fail
+        return {}
+
+
+def _psa_rig(n=None, player=None, on=True, folder=None, block=None,
+             fail=None, **night):
+    """A Fire & Ice night (_fi_night: show 1 at 18:00, the clock at 17:55,
+    Run pressed) with pre-show audio attached as web.serve attaches it:
+    welcome.wav in its folder, turned on unless `on` is False."""
+    from ltcplay import preshow_audio as PA
+    n = n or _fi_night(**night)
+    folder = folder or tempfile.mkdtemp()
+    if not os.path.exists(os.path.join(folder, "welcome.wav")):
+        _ann_write_wav(os.path.join(folder, "welcome.wav"), seconds=0.5)
+    player = player or _PsaPlayer(folder, block=block, fail=fail)
+    pa = PA.PreShowAudio(folder, player, journal=n.svc.preshow_journal)
+    if on:
+        pa.save(True, os.path.join(folder, "welcome.wav"), who="Jeff",
+                screen="Rack screen")
+    n.svc.preshow_audio = pa
+    n.pa, n.player, n.folder = pa, player, folder
+    return n
+
+
+def _psa_lines(svc):
+    return [r["text"] for r in list(svc.journal)
+            if r.get("action") == "pre-show audio"]
+
+
+def _psa_at(n, *hms):
+    n.now[0] = _den(n.S, *hms)
+    n.svc.tick()
+
+
+def test_preshow_audio_plays_at_exactly_two_minutes_once():
+    section("pre-show audio (Jeff, 2026-11-12): with it on, the chosen file "
+            "plays once, exactly 120 s before a scheduled show's time and "
+            "not a moment before, through the announcement player; once "
+            "only, said in the journal in one plain line; the show starts "
+            "at its time; off by default, and off plays nothing")
+    from ltcplay import preshow_audio as PA
+    S = _sched()
+    if S is None:
+        return
+    # Off by default: no settings file, nothing plays, nothing is said.
+    n = _psa_rig(on=False)
+    check(not n.pa.is_on() and n.pa.view()["on"] is False and
+          not os.path.exists(n.pa.settings_path()),
+          f"off until turned on: {n.pa.view()}")
+    for hms in ((17, 57, 59), (17, 58), (17, 58, 1), (17, 59)):
+        _psa_at(n, *hms)
+    time.sleep(0.2)
+    check(n.player.calls == [] and _psa_lines(n.svc) == [],
+          f"off: nothing played, nothing said: {n.player.calls} "
+          f"{_psa_lines(n.svc)}")
+    n.c.close()
+    n.link.close()
+    # On: not a moment before T-120.
+    n = _psa_rig()
+    check(n.pa.LEAD_S == 120 and PA.LEAD_S == 120 and PA.GRACE_S == 5,
+          "two minutes, five seconds of grace")
+    _psa_at(n, 17, 57, 59, 999000)
+    time.sleep(0.2)
+    check(n.player.calls == [] and n.pa.record(("2026-11-14", 1)) is None,
+          f"1 ms before 120 s: nothing yet: {n.player.calls}")
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: len(n.player.calls) == 1, 3),
+          f"at exactly 120 s before the show: played: {n.player.calls}")
+    check(wait_for(lambda: "Pre-show audio played before show 1: "
+                   "welcome.wav." in _psa_lines(n.svc), 3),
+          f"the journal says so in one line: {_psa_lines(n.svc)}")
+    check(n.player.calls[0][0] == os.path.join(n.folder, "welcome.wav"),
+          f"the chosen file: {n.player.calls}")
+    for hms in ((17, 58, 0, 250000), (17, 58, 1), (17, 58, 4), (17, 59),
+                (17, 59, 59)):
+        _psa_at(n, *hms)
+    time.sleep(0.2)
+    check(len(n.player.calls) == 1 and len(_psa_lines(n.svc)) == 1,
+          f"once only: {n.player.calls} {_psa_lines(n.svc)}")
+    _psa_at(n, 18, 0)
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW and
+          n.svc.machine.slot(1).fired_at == _den(S, 18, 0),
+          f"the show starts at its time: {n.svc.machine.state}")
+    for t in _psa_lines(n.svc):
+        _no_dashes(t, "the pre-show audio journal")
+    # On disk before it plays, so a restart never plays it twice.
+    with open(n.pa.played_path(), encoding="utf-8") as fh:
+        doc = json.load(fh)
+    recs = list(doc["shows"].values())
+    check(len(recs) == 1 and recs[0]["n"] == 1 and
+          recs[0]["outcome"] == "played",
+          f"written down: {doc}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preshow_audio_restart_inside_the_window_never_replays():
+    section("pre-show audio: LTC Player restarted inside the two minutes "
+            "after it played: the record read back, not played again, said "
+            "once; the settings themselves survive the restart")
+    from ltcplay import preshow_audio as PA
+    S = _sched()
+    if S is None:
+        return
+    n = _psa_rig()
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: len(n.player.calls) == 1 and any(
+              "played before show 1" in t for t in _psa_lines(n.svc)), 3),
+          f"setup: played once: {n.player.calls}")
+    # The restart: a new PreShowAudio on the same settings folder.
+    p2 = _PsaPlayer(n.folder)
+    pa2 = PA.PreShowAudio(n.folder, p2, journal=n.svc.preshow_journal)
+    check(pa2.is_on() and pa2.view()["name"] == "welcome.wav",
+          f"the setting survives a restart: {pa2.view()}")
+    n.svc.preshow_audio = pa2
+    for hms in ((17, 58, 2), (17, 58, 3), (17, 59)):
+        _psa_at(n, *hms)
+    time.sleep(0.3)
+    said = [t for t in _psa_lines(n.svc) if "restarted" in t]
+    check(p2.calls == [] and len(said) == 1 and
+          said[0] == "Pre-show audio for show 1 was already handled before "
+                     "LTC Player restarted, so it is not played again.",
+          f"not played again, said once: {p2.calls} {said}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preshow_audio_never_plays_when_it_should_not():
+    section("pre-show audio is skipped, with the reason in the journal: on "
+            "Hold, show control off, a show already running, a show started "
+            "with Start now, a delayed show, an announcement already "
+            "playing, and LTC Player starting (or the schedule changing) "
+            "inside the last 115 s; 5 s late still plays")
+    from dataclasses import replace as _dc_replace
+    S = _sched()
+    if S is None:
+        return
+
+    def skipped(n, why):
+        want = f"Pre-show audio not played before show 1: {why}."
+        ok = wait_for(lambda: want in _psa_lines(n.svc), 3)
+        time.sleep(0.1)
+        return ok and n.player.calls == []
+
+    def done(n):
+        n.c.close()
+        n.link.close()
+    # On Hold.
+    n = _psa_rig()
+    _psa_at(n, 17, 56)
+    with n.svc._locked():
+        n.svc._apply(_op(S, S.HOLD_ON))
+    _psa_at(n, 17, 58)
+    check(skipped(n, "the schedule is on Hold"),
+          f"on Hold: {_psa_lines(n.svc)} {n.player.calls}")
+    done(n)
+    # Show control off (Run not pressed).
+    n = _psa_rig()
+    n.svc.run_gate = lambda: False
+    _psa_at(n, 17, 58)
+    check(skipped(n, "show control is off"),
+          f"show control off: {_psa_lines(n.svc)} {n.player.calls}")
+    done(n)
+    # A show already running at T-120 (the machine as it is mid-show).
+    n = _psa_rig()
+    _psa_at(n, 17, 56)
+    m = n.svc.machine
+    n.svc.machine = _dc_replace(m, state=S.SHOW)
+    n.now[0] = _den(S, 17, 58)
+    with n.svc._locked():
+        n.svc._preshow_lookahead(n.now[0])
+    n.svc.machine = m
+    check(skipped(n, "a show is running"),
+          f"a show running: {_psa_lines(n.svc)} {n.player.calls}")
+    done(n)
+    # Start now before the time: that show is started by hand and gets
+    # none; nothing plays at its old T-120.
+    n = _psa_rig()
+    _psa_at(n, 17, 57)
+    with n.svc._locked():
+        n.svc._apply(_op(S, S.START_NOW))
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW, f"setup: Start now started it: "
+                                         f"{n.svc.machine.state}")
+    for hms in ((17, 58), (17, 58, 1), (17, 59)):
+        _psa_at(n, *hms)
+    time.sleep(0.3)
+    check(n.player.calls == [] and _psa_lines(n.svc) == [
+              "Pre-show audio not played before show 1: a show is "
+              "running."],
+          f"Start now: no pre-show audio for it, and none over it: "
+          f"{n.player.calls} {_psa_lines(n.svc)}")
+    done(n)
+    # Delayed (Delay next, before the window).
+    n = _psa_rig()
+    _psa_at(n, 17, 56)
+    with n.svc._locked():
+        n.svc._apply(_op(S, S.DELAY_NEXT, minutes=5))
+    s1 = n.svc.machine.slot(1)
+    check(s1.start == _den(S, 18, 5), f"setup: delayed to 18:05: {s1}")
+    for hms in ((17, 58), (18, 3)):
+        _psa_at(n, *hms)
+    check(skipped(n, "show 1 was delayed"),
+          f"delayed: {_psa_lines(n.svc)} {n.player.calls}")
+    done(n)
+    # An announcement already playing: skipped, never queued.
+    n = _psa_rig()
+    n.player.playing = "delayed"
+    _psa_at(n, 17, 58)
+    check(skipped(n, "an announcement was already playing"),
+          f"an announcement playing: {_psa_lines(n.svc)} {n.player.calls}")
+    n.player.playing = None
+    _psa_at(n, 17, 58, 2)
+    time.sleep(0.2)
+    check(n.player.calls == [], "and not played once it ends")
+    done(n)
+    # Started inside the window: never late.
+    n = _psa_rig()
+    _psa_at(n, 17, 58, 6)
+    check(skipped(n, "only 114 s were left when it could first play (LTC "
+                     "Player started, or the schedule changed, inside the "
+                     "last 120 s), and it never plays late"),
+          f"late: {_psa_lines(n.svc)} {n.player.calls}")
+    _psa_at(n, 17, 59)
+    _psa_at(n, 18, 0)
+    _settle(n.svc, n.c)
+    check(n.player.calls == [] and n.svc.machine.state == S.SHOW,
+          f"and the show starts at its time: {n.svc.machine.state}")
+    done(n)
+    # Five seconds late is still in time.
+    n = _psa_rig()
+    _psa_at(n, 17, 58, 5)
+    check(wait_for(lambda: len(n.player.calls) == 1, 3),
+          f"5 s late plays: {_psa_lines(n.svc)}")
+    done(n)
+    print("  ok")
+
+
+def test_preshow_audio_never_blocks_the_show():
+    section("pre-show audio never delays, blocks or faults the show: a "
+            "player that hangs leaves the scheduler's tick quick and the "
+            "show starting at its time; a player that raises, a missing "
+            "file: one plain journal line and the show carries on")
+    S = _sched()
+    if S is None:
+        return
+    ev = threading.Event()
+    n = _psa_rig(block=ev)
+    try:
+        t0 = time.monotonic()
+        _psa_at(n, 17, 58)
+        took = time.monotonic() - t0
+        check(wait_for(lambda: len(n.player.calls) == 1, 3),
+              "setup: the player was asked and is hanging")
+        with open(n.pa.played_path(), encoding="utf-8") as fh:
+            recs = list(json.load(fh)["shows"].values())
+        check([r["outcome"] for r in recs] == ["started"],
+              f"written down BEFORE the sound starts, so a restart while "
+              f"it plays never plays it again: {recs}")
+        check(took < 1.0, f"the tick did not wait for the player: {took:.3f}"
+                          f" s")
+        t0 = time.monotonic()
+        for hms in ((17, 59), (17, 59, 59), (18, 0)):
+            _psa_at(n, *hms)
+        took = time.monotonic() - t0
+        _settle(n.svc, n.c)
+        check(took < 1.0 and n.svc.machine.state == S.SHOW and
+              n.svc.machine.slot(1).fired_at == _den(S, 18, 0),
+              f"the show started at its time while the player hung: "
+              f"{n.svc.machine.state} {took:.3f} s")
+    finally:
+        ev.set()
+    n.c.close()
+    n.link.close()
+    # The player raises.
+    n = _psa_rig(fail=RuntimeError("the output went away"))
+    _psa_at(n, 17, 58)
+    want = ("Pre-show audio did not play before show 1 (welcome.wav): "
+            "RuntimeError: the output went away. The show carries on.")
+    check(wait_for(lambda: want in _psa_lines(n.svc), 3),
+          f"a player failure: one line: {_psa_lines(n.svc)}")
+    _psa_at(n, 18, 0)
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW, f"the show started: "
+                                         f"{n.svc.machine.state}")
+    n.c.close()
+    n.link.close()
+    # The real announcement player, the file gone since it was chosen.
+    A = _ann()
+    work, cfg, _l = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=0.5)
+    n = _fi_night()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: n.svc.machine.state)
+    n = _psa_rig(n=n, player=ann, folder=work)
+    os.remove(os.path.join(work, "welcome.wav"))
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: "Pre-show audio did not play before show 1 "
+                   "(welcome.wav): the file is not on this PC. The show "
+                   "carries on." in _psa_lines(n.svc), 3) and
+          ann.playing is None,
+          f"a missing file: said, nothing playing: {_psa_lines(n.svc)}")
+    _psa_at(n, 18, 0)
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW, "the show started anyway")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preshow_audio_through_the_announcement_player():
+    section("pre-show audio plays through the announcement player itself "
+            "(one audio path): its output, its journal, never a Hold, "
+            "refused unless between shows, faded when the show starts; and "
+            "nothing in its path touches flames, lasers or hazers")
+    import ast
+    A = _ann()
+    S = _sched()
+    if S is None:
+        return
+    work, cfg, _l = _ann_workdir()
+    _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=0.5)
+    n = _fi_night()
+    sd = FakeSD()
+    ann = A.AnnounceService(cfg, sd=sd, operators_folder=work,
+                            state_provider=lambda: n.svc.machine.state)
+    held = []
+    ann.hold_requester = lambda *a, **k: held.append(a) or ("no", None)
+    n.svc.on_show_started = ann.on_show_started
+    n = _psa_rig(n=n, player=ann, folder=work)
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: ann.playing == A.PRESHOW, 3),
+          f"playing on the announcement player: {ann.playing} "
+          f"{_psa_lines(n.svc)}")
+    st = ann.status()
+    check(st["playing"]["name"] == "Pre-show audio" and
+          st["playing"]["held_schedule"] is False and held == [] and
+          len(sd.output_opened) == 1 and
+          n.svc.machine.state == S.STANDBY,
+          f"its own output, nothing held: {st['playing']} {held}")
+    rows = [r for r in ann.journal if r.get("action") == "play" and
+            r.get("outcome") == "started"]
+    check(len(rows) == 1 and rows[0]["announcement"] == A.PRESHOW and
+          rows[0]["who"] == A.PRESHOW_WHO and
+          "Pre-show audio holds nothing." in rows[0]["text"],
+          f"the announcement journal has it: {rows}")
+    # A show starting fades it (on_show_started), as an announcement.
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(wait_for(lambda: ann._player is None or
+                   ann._player.stop_reason == "a show started", 3),
+          f"the show start fades it: "
+          f"{getattr(ann._player, 'stop_reason', None)}")
+    # Refused unless between shows, before anything is claimed.
+    try:
+        ann.close()
+        ann.play_preshow(os.path.join(work, "welcome.wav"))
+        check(False, "pre-show audio played during a show")
+    except ValueError as e:
+        check(str(e) == "a show is running" and ann.playing is None,
+              f"during a show: refused: {e}")
+    sd2 = FakeSD()
+    ann2 = A.AnnounceService(cfg, sd=sd2, operators_folder=work,
+                             state_provider=lambda: "HOLD")
+    try:
+        ann2.play_preshow(os.path.join(work, "welcome.wav"))
+        check(False, "pre-show audio played on Hold")
+    except ValueError as e:
+        check(str(e) == "the schedule is on Hold" and
+              ann2._claim_gen == 0 and not sd2.output_opened,
+              f"on Hold: refused before anything is claimed: {e}")
+    # A show starting while it loads: never started over the show.
+    seen = iter(["STANDBY"])
+    sd3 = FakeSD()
+    ann3 = A.AnnounceService(cfg, sd=sd3, operators_folder=work,
+                             state_provider=lambda: next(seen, "SHOW"))
+    try:
+        ann3.play_preshow(os.path.join(work, "welcome.wav"))
+        check(False, "pre-show audio started over a show that began while "
+                     "it loaded")
+    except ValueError as e:
+        check(str(e) == "a show is running" and ann3.playing is None and
+              not sd3.output_opened,
+              f"a show started while it loaded: not played: {e}")
+    n.c.close()
+    n.link.close()
+    # Its only output is the announcement player: the module imports and
+    # calls nothing of the rig.
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, "ltcplay", "preshow_audio.py"),
+              encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    mods = {a.name for nd in ast.walk(tree)
+            if isinstance(nd, (ast.Import, ast.ImportFrom))
+            for a in nd.names} | {nd.module for nd in ast.walk(tree)
+                                   if isinstance(nd, ast.ImportFrom)
+                                   and nd.module}
+    check(mods <= {"json", "os", "re", "threading", "audit"},
+          f"pre-show audio imports nothing of the rig: {sorted(mods)}")
+    calls = {nd.func.attr for nd in ast.walk(tree)
+             if isinstance(nd, ast.Call) and
+             isinstance(nd.func, ast.Attribute)}
+    bad = {c for c in calls if any(w in c.lower() for w in (
+        "flame", "laser", "hazer", "pump", "arm", "fire", "disarm"))}
+    check(not bad, f"no flame, laser or hazer call: {sorted(bad)}")
+    print("  ok")
+
+
+def test_preshow_audio_every_skip_guard_on_its_own():
+    section("pre-show audio (review of #247, M3): each skip guard on its "
+            "own, each with its own reason: a Stop under way, a Programming "
+            "Run, a dry run or no performer, auto start off, an alert open "
+            "(Jeff: skip), and a show the scheduler would not start at its "
+            "time")
+    import types
+    from dataclasses import replace as _dc_replace
+    S = _sched()
+    if S is None:
+        return
+
+    def one(why, setup, **night):
+        n = _psa_rig(**night)
+        _psa_at(n, 17, 56)
+        undo = setup(n)
+        n.now[0] = _den(S, 17, 58)
+        with n.svc._locked():
+            n.svc._preshow_lookahead(n.now[0])
+        if undo:
+            undo()
+        want = f"Pre-show audio not played before show 1: {why}."
+        ok = wait_for(lambda: want in _psa_lines(n.svc), 3)
+        time.sleep(0.1)
+        check(ok and n.player.calls == [],
+              f"{why}: skipped and said: {_psa_lines(n.svc)} "
+              f"{n.player.calls}")
+        n.c.close()
+        n.link.close()
+
+    def stop_under_way(n):
+        n.svc.halt_begin()
+        return n.svc.halt_end
+    one("a Stop is under way", stop_under_way)
+
+    def programming(n):
+        n.svc.preroll = types.SimpleNamespace(skip=lambda: True)
+    one("a Programming Run is in force", programming)
+
+    def dry(n):
+        n.svc.dry_run = True
+    one("this scheduler does not start shows", dry)
+
+    def no_performer(n):
+        n.svc.performer = None
+    one("this scheduler does not start shows", no_performer)
+    one("the scheduler does not start shows by itself", lambda n: None,
+        auto_start="off")
+
+    def alert(n):
+        n.svc.showtime_gate = lambda: ("Video: MadMapper did not answer",
+                                       frozenset({7}))
+    one("an alert is open, so show 1 would be held at its time", alert)
+
+    def guard(n):
+        m = n.svc.machine
+        n.svc.machine = _dc_replace(m, last_end=_den(S, 17, 55),
+                                    guard_s=900)
+
+        def undo():
+            n.svc.machine = m
+        return undo
+    one("the scheduler would not start show 1 at its time", guard)
+    print("  ok")
+
+
+def test_preshow_audio_an_operator_always_wins():
+    section("pre-show audio (review of #247, M1): an operator's "
+            "announcement press stops it at once and plays; Stop sound stops "
+            "it; a Hold fades it at once; the rack screen's announcement "
+            "buttons stay on while it plays")
+    A = _ann()
+    S = _sched()
+    if S is None:
+        return
+
+    def rig():
+        work, cfg, _l = _ann_workdir()
+        _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=5.0)
+        n = _fi_night()
+        ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                                state_provider=lambda: n.svc.machine.state)
+        n.svc.on_schedule_held = ann.on_schedule_held
+        n = _psa_rig(n=n, player=ann, folder=work)
+        _psa_at(n, 17, 58)
+        check(wait_for(lambda: ann.playing == A.PRESHOW and
+                       ann._player is not None, 3),
+              f"setup: pre-show audio playing: {ann.playing}")
+        return n, ann
+    n, ann = rig()
+    st = ann.play(A.DELAYED, "Andy", "rack screen")
+    rows = [r["text"] for r in ann.journal if r.get("outcome") == "stopped"]
+    check(ann.playing == A.DELAYED and st["playing"]["id"] == A.DELAYED and
+          rows and rows[-1].startswith("Pre-show audio was stopped after") and
+          "because Andy pressed Delayed on the rack screen" in rows[-1],
+          f"a press wins: pre-show audio stopped, Delayed plays: {rows}")
+    ann.stop("Andy", "rack screen")
+    n.c.close()
+    n.link.close()
+    n, ann = rig()
+    ann.stop("Andy", "rack screen")
+    check(ann.playing is None, "Stop sound stops it")
+    n.c.close()
+    n.link.close()
+    n, ann = rig()
+    with n.svc._locked():
+        n.svc._apply(_op(S, S.HOLD_ON))
+    check(wait_for(lambda: ann._player is None or
+                   ann._player.stop_reason == "the schedule was held", 3),
+          f"a Hold fades it at once: "
+          f"{getattr(ann._player, 'stop_reason', None)}")
+    n.c.close()
+    n.link.close()
+    # An operator's announcement playing: a Hold never touches it.
+    work, cfg, _l = _ann_workdir()
+    ann2 = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                             state_provider=lambda: "IDLE")
+    ann2.play(A.DELAYED, "Andy", "rack screen")
+    ann2.on_schedule_held()
+    check(ann2.playing == A.DELAYED and ann2._player.stop_reason is None,
+          "an operator's own announcement is not stopped by a Hold")
+    # And pre-show audio never starts over it: decided under the player's
+    # own lock.
+    try:
+        ann2.play_preshow(os.path.join(work, "delayed.wav"))
+        check(False, "pre-show audio started over an announcement")
+    except ValueError as e:
+        check(str(e) == A.PRESHOW_BUSY and ann2.playing == A.DELAYED,
+              f"over an announcement: refused, it plays on: {e}")
+    page = _ui2_page_inline()
+    check("function annLookFor(s)" in page and
+          "const L = annLookFor(s);" in page,
+          "the footer's buttons are drawn with pre-show audio not counted "
+          "as playing")
+    print("  ok")
+
+
+def test_preshow_audio_110_s_cap_and_one_clear_line():
+    section("pre-show audio (Jeff, 2026-11-12): a file over 110 s is refused "
+            "when chosen and again when due, with its length; through the "
+            "show audio its limit is 110 s, not 60; the journal reads one "
+            "clear line, never the player's press sentence; a show whose "
+            "time is edited after it played never plays it again")
+    from dataclasses import replace as _dc_replace
+    from ltcplay import preshow_audio as PA
+    A = _ann()
+    S = _sched()
+    if S is None:
+        return
+    check(PA.MAX_S == 110 and A.PRESHOW_MAX_S == 110.0, "110 s")
+    n = _psa_rig()
+    long_ = os.path.join(n.folder, "long.wav")
+    _ann_write_wav(long_, seconds=120.0, rate=800)
+    ch = {c["name"]: c for c in n.pa.choices()}
+    check(ch["long.wav"]["too_long"] and not ch["welcome.wav"]["too_long"],
+          f"the list says which are too long: {ch}")
+    try:
+        n.pa.save(True, long_)
+        check(False, "a 120 s file was saved")
+    except ValueError as e:
+        check(str(e) == "That file is 120 s long; pre-show audio is at "
+                        "most 110 s. Choose a shorter file. Nothing was "
+                        "changed." and n.pa.view()["name"] == "welcome.wav",
+              f"refused when chosen, its length said: {e}")
+    # Replaced by a long file after it was chosen: refused when due.
+    os.replace(long_, os.path.join(n.folder, "welcome.wav"))
+    _psa_at(n, 17, 58)
+    want = ("Pre-show audio did not play before show 1 (welcome.wav): that "
+            "file is 120 s long; pre-show audio is at most 110 s. Choose a "
+            "shorter file. The show carries on.")
+    check(wait_for(lambda: want in _psa_lines(n.svc), 3) and
+          n.player.calls == [],
+          f"refused again when due: {_psa_lines(n.svc)}")
+    n.c.close()
+    n.link.close()
+    # The player's own show audio limit for it.
+    work, cfg, _l = _ann_workdir()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    ann._route_limit_s = A.PRESHOW_MAX_S
+    check(ann._too_long(100.0) is None and "at most 110 s" in
+          (ann._too_long(111.0) or ""),
+          "through the show audio pre-show audio may be 110 s")
+    ann._route_limit_s = A.SHOW_ROUTE_MAX_S
+    check("at most 60 s" in (ann._too_long(61.0) or ""),
+          "an announcement still at most 60 s")
+    # One clear line from a refusal of the real player (no output picked).
+    work, cfg, _l = _ann_workdir(device="")
+    _ann_write_wav(os.path.join(work, "welcome.wav"), seconds=0.5)
+    n = _fi_night()
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work,
+                            state_provider=lambda: n.svc.machine.state)
+    n = _psa_rig(n=n, player=ann, folder=work)
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: any(t.startswith(
+              "Pre-show audio did not play before show 1 (welcome.wav): "
+              "no announcement output is picked") for t in
+              _psa_lines(n.svc)), 3),
+          f"one clear line: {_psa_lines(n.svc)}")
+    check(not any("pressed" in t or "Nothing was changed" in t
+                  for t in _psa_lines(n.svc)),
+          f"never the press sentence: {_psa_lines(n.svc)}")
+    n.c.close()
+    n.link.close()
+    # Played, then the show's time edited (a new time, as a save gives):
+    # never again.
+    n = _psa_rig()
+    _psa_at(n, 17, 58)
+    check(wait_for(lambda: len(n.player.calls) == 1, 3), "setup: played")
+    m = n.svc.machine
+    n.svc.machine = _dc_replace(m, slots=tuple(
+        _dc_replace(s, start=_den(S, 18, 1), planned=None) if s.n == 1
+        else s for s in m.slots))
+    n.now[0] = _den(S, 17, 59)
+    with n.svc._locked():
+        n.svc._preshow_lookahead(n.now[0])
+    n.svc.machine = m
+    time.sleep(0.3)
+    check(len(n.player.calls) == 1, f"a new time for show 1: not played "
+                                    f"again: {n.player.calls}")
+    n.c.close()
+    n.link.close()
+    print("  ok")
+
+
+def test_preshow_audio_setting_and_routes():
+    section("pre-show audio's two settings: On or Off and one file the "
+            "announcements know, saved in the settings folder; the show "
+            "machine only, Settings permission; web.serve wires it off; the "
+            "status carries the chosen name; refusals in a sentence")
+    from ltcplay import preshow_audio as PA
+    from ltcplay import remote as RM, users as U
+    S = _sched()
+    if S is None:
+        return
+    A = _ann()
+    work, cfg, _l = _ann_workdir()
+    sub = os.path.join(work, "Announcements")
+    os.makedirs(sub)
+    _ann_write_wav(os.path.join(sub, "welcome.wav"), seconds=0.5)
+    with open(os.path.join(work, "notes.txt"), "w") as fh:
+        fh.write("not audio")
+    with open(os.path.join(work, "broken.wav"), "wb") as fh:
+        fh.write(b"RIFF....nope")
+    ann = A.AnnounceService(cfg, sd=FakeSD(), operators_folder=work)
+    ann.files[A.DELAYED] = os.path.join(sub, "welcome.wav")
+    pa = PA.PreShowAudio(work, ann)
+    ch = {c["name"]: c for c in pa.choices()}
+    check(set(ch) == {"delayed.wav", "cancellation.wav",
+                      "cannot_continue.wav", "broken.wav", "welcome.wav"} and
+          ch["welcome.wav"]["available"] and
+          not ch["broken.wav"]["available"],
+          f"the WAV files the announcements know, each said: {ch}")
+    for bad, why in ((("yes", ""), "On has to be true or false"),
+                     ((True, ""), "Choose the audio file first"),
+                     ((True, "/etc/passwd"), "not one the announcements "
+                                             "know"),
+                     ((True, os.path.join(work, "broken.wav")),
+                      "That file cannot play")):
+        try:
+            pa.save(*bad)
+            check(False, f"saved: {bad}")
+        except ValueError as e:
+            check(why in str(e) and "Nothing was changed" in str(e) and
+                  not pa.is_on(), f"{bad}: {e}")
+            _no_dashes(str(e), "a pre-show audio refusal")
+    text = pa.save(True, os.path.join(sub, "welcome.wav"))
+    check(text == "Pre-show audio is on: welcome.wav, played 2 minutes "
+                  "before each scheduled show." and pa.is_on(),
+          f"on: {text}")
+    with open(os.path.join(work, PA.SETTINGS_FILE), encoding="utf-8") as fh:
+        doc = json.load(fh)
+    check(doc["on"] is True and doc["file"] == os.path.join(sub,
+                                                            "welcome.wav"),
+          f"saved in the settings folder: {doc}")
+    check(PA.PreShowAudio(work, ann).view()["on"] is True,
+          "read back as on")
+    check(pa.save(False, os.path.join(sub, "welcome.wav")) ==
+          "Pre-show audio is off: welcome.wav." and not pa.is_on(),
+          "off keeps the file")
+    v = PA.PreShowAudio(work, ann).view()
+    check(v["on"] is False and v["name"] == "welcome.wav",
+          f"read back as off, the file kept: {v}")
+    with open(os.path.join(work, PA.SETTINGS_FILE), "w") as fh:
+        fh.write("{not json")
+    v = PA.PreShowAudio(work, ann).view()
+    check(v["on"] is False and "could not be used" in (v["error"] or ""),
+          f"a broken settings file: off, said: {v}")
+    os.remove(os.path.join(work, PA.SETTINGS_FILE))
+    # The routes.
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop)
+        check(st == 409 and "needs the announcements" in out.get("error", ""),
+              f"not wired: said: {st} {out}")
+        R.remote.preshow_audio = pa
+        st, _h, out = R.ask("GET", "/api/remote/preshow-audio")
+        check(st == 403, f"the show machine only: {st}")
+        st, _h, out = R.ask("POST", "/api/remote/preshow-audio",
+                            {"on": True, "file": os.path.join(
+                                sub, "welcome.wav")})
+        check(st == 403 and not pa.is_on(), f"never from the network: {st}")
+        check(U.classify("/api/remote/preshow-audio", {"on": False}) ==
+              "settings" and "preshow-audio" in RM.LOCAL_ONLY,
+              "Settings permission, the show machine only")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop)
+        check(st == 200 and out["on"] is False and
+              any(c["name"] == "welcome.wav" for c in out["choices"]),
+              f"the card and the files: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/preshow-audio",
+                           {"on": True, "file": os.path.join(
+                               sub, "welcome.wav")}, client=loop)
+        check(st == 200 and pa.is_on() and
+              out["preshow_audio"]["name"] == "welcome.wav",
+              f"turned on from the show machine: {st} {out}")
+        rows = [r for r in R.svc.journal if r.get("action") ==
+                "pre-show audio"]
+        check(rows and "Pre-show audio is on: welcome.wav" in rows[-1]["text"],
+              f"journaled: {rows[-1:]}")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                           client=loop)
+        v = out.get("preshow_audio") or {}
+        check(v.get("on") is True and v.get("name") == "welcome.wav" and
+              v.get("lead_s") == 120,
+              f"the status carries the chosen name: {v}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check("preshow_audio" not in out, "not on an iPad's status")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/status",
+                           client=loop)
+        check("file" not in out.get("preshow_audio", {}) and
+              sub not in json.dumps(out),
+              "the status names the file, never its path")
+        # With users: the GET needs Settings, as its POST does.
+        us = U.Users(tempfile.mkdtemp(), hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        R.remote.users = us
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop)
+        check(st == 403 and "choices" not in out and sub not in
+              json.dumps(out), f"signed out: no list, no path: {st} {out}")
+        ok, why, tok, _n = us.sign_in("Ollie", "", True, "rack",
+                                      new_password="Ollie-pw-1234")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={tok}"})
+        check(ok and st == 403, f"an operator: refused: {st} {out}")
+        us.sign_out(tok, "rack", local=True)
+        ok, why, tok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={tok}"})
+        check(ok and st == 200 and out.get("file") ==
+              os.path.join(sub, "welcome.wav"),
+              f"an admin: the list and the path: {st}")
+        # The card reads the chosen file again when shown.
+        os.remove(os.path.join(sub, "welcome.wav"))
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/preshow-audio",
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={tok}"})
+        check(st == 200 and out["file_ok"] is False and
+              pa.view()["file_ok"] is False,
+              f"a file deleted since: said when shown: {out}")
+    finally:
+        R.close()
+    # web.serve: wired with both the announcements and the scheduler, off.
+    from ltcplay import web as web_mod
+    from ltcplay import schedule_service as SV
+    swork = tempfile.mkdtemp()
+    spath = os.path.join(swork, SV.RULE_FILE)
+    SV.save_rule(spath, _sched_doc())
+    now = [_den(S, 17, 0)]
+    svc = SV.Service(spath, clock=lambda: now[0], ntp_query=lambda: 0.0,
+                     state_dir=swork)
+    work2, cfg2, _l = _ann_workdir()
+    ann2 = A.AnnounceService(cfg2, sd=FakeSD(), operators_folder=work2)
+    httpd = web_mod.serve(work2, port=_free_port(), schedule=svc,
+                          announce=ann2)
+    try:
+        pa2 = httpd.preshow_audio
+        check(isinstance(pa2, PA.PreShowAudio) and svc.preshow_audio is pa2
+              and httpd.remote.preshow_audio is pa2 and
+              pa2.announce is ann2 and pa2.folder == work2 and
+              not pa2.is_on(),
+              f"web.serve wires it beside ltcplay_announce.json, off: "
+              f"{pa2 and pa2.view()}")
+    finally:
+        httpd.server_close()
+        svc.stop()
+    httpd = web_mod.serve(work2, port=_free_port(), announce=ann2)
+    try:
+        check(httpd.preshow_audio is None,
+              "no scheduler: no pre-show audio")
+    finally:
+        httpd.server_close()
+    print("  ok")
+
+
 def _pr_notes(n):
     """The pre-roll's own journal lines, collected (the engine's go to the
     schedule journal; _pr_night's PreRoll has none)."""
@@ -103565,6 +104425,9 @@ _UI2_ROUTES = {
     "/api/remote/play-from-cues-save": "settings",
     "/api/remote/preroll-check": "settings",
     "/api/remote/preroll-continue": "show",
+    # Pre-show audio (preshow_audio.py, Jeff 2026-11-12): its card's GET and
+    # its one setting's POST, the Settings row.
+    "/api/remote/preshow-audio": "settings",
     "/api/remote/purge-clear": "safety",
     "/api/remote/purge-fire": "arm",
     "/api/remote/purge-stop": "safety",
@@ -113157,6 +114020,115 @@ ME.local = true;
     print("  ok")
 
 
+def test_ui2_preshow_audio_card_driven():
+    section("2.0's Pre-show audio card pressed in a real browser: on the "
+            "Schedule tab of the show PC, the chosen file's name shown, its "
+            "list from the engine; Turn on and Save file post the one "
+            "setting; signed in without Settings both are off; an iPad gets "
+            "no card; its words: a headline of 6 words or fewer, up to 3 "
+            "lines of 8 words, no dashes, show control not Run")
+    chrome = _find_chromium()
+    page = _ui2_page_inline()
+    card = page[page.find('id="psa-card"'):]
+    card = card[:card.find("</div>\n        <!--")]
+    head = re.findall(r"<b>([^<]*)</b>", card)
+    lines = re.findall(r"<li>([^<]*)</li>", card)
+    check(head == ["Pre-show audio"] and len(head[0].split()) <= 6 and
+          1 <= len(lines) <= 3 and all(len(t.split()) <= 8 for t in lines)
+          and not re.search(r"\bRun\b", card) and "show control" in card,
+          f"the card's words keep the rules: {head} {lines}")
+    _no_dashes(card, "the Pre-show audio card")
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    st = _ui2_status_day()
+    st["preshow_audio"] = {"available": True, "on": False,
+                           "name": "welcome.wav", "file_ok": True,
+                           "length_s": 30.0, "lead_s": 120}
+    got = {"on": False, "file": "C:/LTC/Announcements/welcome.wav",
+           "choices": [
+               {"path": "C:/LTC/Announcements/welcome.wav",
+                "name": "welcome.wav", "available": True, "length_s": 30.0},
+               {"path": "C:/LTC/Announcements/doors.wav",
+                "name": "doors.wav", "available": True, "length_s": 12.0},
+               {"path": "C:/LTC/Announcements/bad.wav", "name": "bad.wav",
+                "available": False, "length_s": None},
+               {"path": "C:/LTC/Announcements/long.wav", "name": "long.wav",
+                "available": True, "length_s": 130.0, "too_long": True}]}
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n);
+const q = id => document.getElementById(id);
+const bare = b => { const o = Object.assign({}, b); delete o.seen; return o; };
+document.querySelector('.tab[data-tab="schedule"]').click();
+await h.sleep(1200);
+out.card = {shown:!q("psa-card").hidden, now:q("psa-now").textContent,
+  opts:[...q("psa-pick").options].map(o => o.textContent + (o.disabled ? " (off)" : "")),
+  picked:q("psa-pick").value, on_dis:q("psa-on").disabled, off_dis:q("psa-off").disabled};
+// A file chosen but not saved: Turn on still uses the SAVED file.
+q("psa-pick").selectedIndex = 2; q("psa-pick").dispatchEvent(new Event("change"));
+let n = mark();
+q("psa-on").click(); await h.sleep(400);
+out.on = since(n).filter(p => p.route === "preshow-audio").map(p => bare(p.body));
+window.__patch = s => Object.assign(s, {preshow_audio:Object.assign({}, s.preshow_audio, {on:true})});
+await h.sleep(900);
+out.while_on = {now:q("psa-now").textContent, on_dis:q("psa-on").disabled, off_dis:q("psa-off").disabled};
+q("psa-pick").selectedIndex = 4; q("psa-pick").dispatchEvent(new Event("change"));
+out.warn = q("psa-msg").textContent;
+n = mark();
+q("psa-pick").selectedIndex = 2; q("psa-save").click(); await h.sleep(400);
+q("psa-off").click(); await h.sleep(400);
+out.saved = since(n).filter(p => p.route === "preshow-audio").map(p => bare(p.body));
+window.__patch = s => Object.assign(s, {preshow_audio:Object.assign({}, s.preshow_audio, {on:false}), me:{users_active:true, user:"Ola", may:{show:true, arm:true, settings:false}}});
+await h.sleep(900);
+out.nosettings = {on:q("psa-on").disabled, save:q("psa-save").disabled};
+window.__patch = null; await h.sleep(600);
+ME.local = false; await h.sleep(900);
+out.ipad = !q("psa-card").hidden;
+ME.local = true;
+"""
+    m = _ui2_drive(chrome, page, st, steps, size=(1366, 768),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico(),
+                           "/api/remote/preshow-audio": got,
+                           "/api/timelines": {"timelines": []}},
+                   budget_ms=30000)
+    if not check(isinstance(m, dict) and not m.get("problems"),
+                 f"2.0's Pre-show audio card, pressed: {m!r}"[:1500]):
+        print("  ok")
+        return
+    c = m["card"]
+    check(c["shown"] and c["now"] == "OFF: welcome.wav" and
+          c["opts"] == ["Choose a file", "welcome.wav, 30 s",
+                        "doors.wav, 12 s", "bad.wav, cannot play (off)",
+                        "long.wav, 130 s, over 110 s"] and
+          c["picked"] == "C:/LTC/Announcements/welcome.wav" and
+          not c["on_dis"] and c["off_dis"],
+          f"the show PC: the card, off, the chosen name, the engine's "
+          f"list: {c}")
+    check(m["on"] == [{"on": True,
+                       "file": "C:/LTC/Announcements/welcome.wav"}],
+          f"Turn on posts on true with the SAVED file, not an unsaved "
+          f"choice: {m['on']}")
+    check(m["warn"] == "long.wav is 130 s: over 110 s, it will not play.",
+          f"a file over 110 s is said when chosen: {m['warn']!r}")
+    check(m["while_on"] == {"now": "ON: welcome.wav", "on_dis": True,
+                            "off_dis": False},
+          f"while on: ON with the name, Turn off works: {m['while_on']}")
+    check(m["saved"] == [{"on": True,
+                          "file": "C:/LTC/Announcements/doors.wav"},
+                         {"on": False,
+                          "file": "C:/LTC/Announcements/doors.wav"}],
+          f"Save file keeps it on with the new file; Turn off keeps the "
+          f"file: {m['saved']}")
+    check(m["nosettings"] == {"on": True, "save": True},
+          f"a sign-in without Settings: both off: {m['nosettings']}")
+    check(m["ipad"] is False, "an iPad gets no Pre-show audio card")
+    print("  ok")
+
+
 def test_ui2_show_machine_switches_driven():
     section("2.0's show machine switches pressed in a real browser (1.0's "
             "code): Arming from a screen asks first and posts on true, "
@@ -119811,6 +120783,15 @@ if __name__ == "__main__":
         test_preroll_continue_anyway_starts_now_with_failed_outputs_off,
         test_preroll_continue_anyway_needs_a_signed_in_hold,
         test_preroll_wiring_in_the_engine,
+        test_preshow_audio_plays_at_exactly_two_minutes_once,
+        test_preshow_audio_restart_inside_the_window_never_replays,
+        test_preshow_audio_never_plays_when_it_should_not,
+        test_preshow_audio_never_blocks_the_show,
+        test_preshow_audio_through_the_announcement_player,
+        test_preshow_audio_setting_and_routes,
+        test_preshow_audio_every_skip_guard_on_its_own,
+        test_preshow_audio_an_operator_always_wins,
+        test_preshow_audio_110_s_cap_and_one_clear_line,
         test_preroll_a_pass_clears_the_failure_and_keeps_the_hold,
         test_preroll_a_pass_never_clears_a_newer_or_other_failure,
         test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock,
@@ -120403,6 +121384,7 @@ if __name__ == "__main__":
         test_ui2_arrange_and_switches_are_1_0s,
         test_ui2_map_and_arrange_driven,
         test_ui2_show_machine_switches_driven,
+        test_ui2_preshow_audio_card_driven,
         test_ui2_fireball_timeline_editor,
         test_play_from_cue_model,
         test_play_from_cue_store,
