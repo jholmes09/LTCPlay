@@ -916,15 +916,14 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         <div class="pline bad" id="tn-run-warn" role="alert" hidden></div>
         <button class="b green" id="tn-run" hidden><svg class="i"><use href="#i-power"/></svg>Run show</button>
         <div id="tonight"></div>
-        <div class="pline">Tap a show to see its notes.</div>
-      </div>
+              </div>
       <!-- SCHEDULE EDITOR (P4): 1.0's "Schedule: the show times" card, on
            the show PC only, with 1.0's element ids so its code is copied
            word for word (selftest.py checks): the same route
            (schedule-file, GET and POST), the same body, the same refusals,
            all the engine's (schedule.py, Remote.schedule_file_save). -->
       <div class="card col" id="sched-edit" hidden>
-        <div class="t"><b>Schedule: the show times</b><span>On this machine. Saved to the schedule file and loaded at once; nothing is started by it.</span></div>
+        <div class="t"><b>Schedule: the show times</b><span>On this machine. Saving loads it and starts nothing.</span></div>
         <div class="pline">The scheduler starts a show at each time below (once Run has been pressed and the Fire &amp; Ice settings say it performs). Tonight's list is rebuilt from a save straight away, even after the night has closed, and nothing is started by it. Any times work: a last show end after midnight is the next morning, on the same night. Anything to know is said when it is saved, and the save stands. A save writes the whole schedule: a save from another window or iPad since this one read the file is overwritten, so Reload first if someone else may have changed it.</div>
         <div class="segrid">
           <label class="fl"><span>Time zone</span><select class="f" id="se-tz"></select><span class="pline" id="se-tz-now"></span></label>
@@ -996,18 +995,18 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
              as the pinned line's) and the announcement output. -->
         <div class="card col" id="arming-card" hidden>
           <div class="t"><b>Arming from a screen, on this machine</b><span id="sa-what"></span></div>
-          <div class="pline">The Stream Deck has to be running for a hold to arm. Off: arm flames from the Stream Deck only; this rack screen can still purge, unlock and test lasers.</div>
+          <div class="pline">A hold needs the Stream Deck running. Off: arm from the Stream Deck; this screen still purges, unlocks and tests lasers.</div>
           <div class="drow"><b class="dbig" id="sa-now"></b><button class="b green" id="sa-on"><svg class="i"><use href="#i-power"/></svg>Turn on</button><button data-safe class="b safe" id="sa-off"><svg class="i"><use href="#i-shield"/></svg>Turn off</button></div>
           <div class="pline" id="sa-msg" role="status"></div>
         </div>
         <div class="card col" id="lf-card">
           <div class="t"><b>Live flame programming</b><span id="lf-what"></span></div>
-          <div class="pline">Turned on here on the show machine only (Settings permission). Anyone can turn it off, from any screen, signed in or not. The steps for xLights are in LIVE_FLAME_PROGRAMMING.md.</div>
+          <div class="pline">On: here only (Settings). Off: anyone, any screen. xLights steps: LIVE_FLAME_PROGRAMMING.md.</div>
           <div class="drow"><b class="dbig" id="lf-now"></b><button class="b green" id="lf-on"><svg class="i"><use href="#i-flame"/></svg>Turn on</button><button data-safe class="b safe" id="lf-off"><svg class="i"><use href="#i-shield"/></svg>Turn off</button></div>
           <div class="pline" id="lf-msg" role="status"></div>
         </div>
         <div class="card col" id="annout-card" hidden>
-          <div class="t"><b>Announcement output, on this machine</b><span>While the show audio is running, announcements play through it, on the front left and right (Main L/R). The output picked here is used only when the show audio is not running. The system default is never used.</span></div>
+          <div class="t"><b>Announcement output, on this machine</b><span>Used only while the show audio is off. Otherwise announcements play on Main L/R. Never the system default.</span></div>
           <div class="pbar"><select class="f" id="annout-pick" aria-label="Announcement output"></select>
             <button class="b green" id="annout-save"><svg class="i"><use href="#i-check"/></svg>Save</button>
             <button class="b" id="annout-tone" title="1 s of a soft 440 Hz tone at -20 dBFS through the same route and output as the announcements. Never during a show; holds nothing."><svg class="i"><use href="#i-mega"/></svg>Test tone</button></div>
@@ -1018,7 +1017,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
              (selftest.py checks). The engine refuses each from anywhere
              else, and Restart and Reload engine while a show runs. -->
         <div class="card col" id="cfg-card" hidden>
-          <div class="t"><b>Settings changed</b><span>A settings file changed on disk since a program read it.</span></div>
+          <div class="t"><b>Settings changed</b><span>A settings file changed since a program read it.</span></div>
           <div class="pline warn" id="cfg-note" hidden></div>
           <div class="pbar"><button class="b blue" id="cfg-reload" hidden><svg class="i"><use href="#i-reset"/></svg>Reload engine</button></div>
           <div class="pline" id="cfg-msg" role="status"></div>
@@ -1031,7 +1030,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pline" id="rc-msg" role="status"></div>
         </div>
         <div class="card col" id="folders" hidden>
-          <div class="t"><b>Show folder, on this machine</b><span>The show folder holds the show file (a .json), the renders it names and the show's music, as stems under the folder the show file names. There is no separate music folder.</span></div>
+          <div class="t"><b>Show folder, on this machine</b><span>Holds the show file (.json), its renders and its music stems. No separate music folder.</span></div>
           <div class="pline">The show file is the playlist: which render (.fseq) plays at which timecode. The renders stay exactly as xLights made them.</div>
           <div class="pline" id="fo-now"></div>
           <div class="pbar">
@@ -1121,8 +1120,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button class="b green" id="fbp-step"><svg class="i"><use href="#i-play"/></svg>Step</button>
           <button data-safe class="b safe" id="fbp-done"><svg class="i"><use href="#i-shield"/></svg>Done</button>
         </div>
-        <div class="pline">Done, Stop, any disarm or leaving this card disarms every group. The Fireball page pads stay live between steps. Timing edits go into the show's real timeline file. Between steps the rig shows the between-shows look.</div>
-        <div class="pline" id="fbp-fuel">Every charge and shot of a step is recorded in the fuel and air charge record like a show's (never a double charge), and its flame time is in the fuel totals as Programming (Other). A step is not a show.</div>
+        <div class="pline">Done, Stop, any disarm or leaving this card disarms every group. The Fireball page pads stay live between steps. Timing edits go into the show's real timeline file.</div>
+        <div class="pline" id="fbp-fuel">Each charge and shot is in the fuel and air charge record, never a double charge. Flame time counts as Programming (Other), not a show.</div>
         <div class="pline bad" id="fbp-deck" hidden></div>
         <div id="fbp-table"></div>
         <div class="pline" id="fbp-note"></div>
@@ -3383,7 +3382,7 @@ $("annout-save").addEventListener("click", async () => {
 });
 // What the switch lets screens do: every one of it (review of PR #90,
 // P2-1). remote.py SCREEN_ARMING_ENABLES says the same words.
-const SCREEN_ARMING_ENABLES = "On, this rack screen and every device on the show network can hold to arm a flame group (through the Stream Deck, with all of its rules and flamesafe's) and disarm one flame group. Devices on the show network can also select and fire a purge, unlock a machine, turn a laser test on and arm a laser (this rack screen does those without this switch).";
+const SCREEN_ARMING_ENABLES = "On: this screen and every show network device can hold to arm a flame group and disarm one flame group, under the Stream Deck's and flamesafe's rules. Show network devices can also select and fire a purge, unlock a machine, turn a laser test on and arm a laser; this screen can without the switch.";
 $("sa-what").textContent = SCREEN_ARMING_ENABLES;
 // Arming from a screen (2026-10-22): its switch, on the show machine only.
 // The engine refuses it from anywhere else and keeps it off unless it is
@@ -3627,7 +3626,7 @@ $("net-uses").addEventListener("click", ev => {
   if(b) saveNetwork(b.dataset.addr);
 });
 $("net-restart").addEventListener("click", async () => {
-  if(!(await confirmBox("Restart the engine?", "LTC Player restarts the show engine so it listens on the saved show network address. It is refused while a show runs or a flame group is armed. flamesafe and the Stream Deck program keep running.", "Yes, restart", "green"))) return;
+  if(!(await confirmBox("Restart the engine?", "Restarts the show engine on the saved address. Refused while a show runs or a group is armed. flamesafe and the Stream Deck keep running.", "Yes, restart", "green"))) return;
   try{ const j = await post("/api/remote/reload-engine", {}); $("net-msg").textContent = j.text; }
   catch(e){ $("net-msg").textContent = e.message; }
 });
@@ -3644,7 +3643,7 @@ function cfgNote(cc){
   return {text:t, offer:!!r.offered};
 }
 $("cfg-reload").addEventListener("click", async () => {
-  if(!(await confirmBox("Reload the engine?", "LTC Player restarts the show engine so it reads the changed settings files. It is refused while a show runs or a flame group is armed. flamesafe and the Stream Deck program keep running.", "Yes, reload", "green"))) return;
+  if(!(await confirmBox("Reload the engine?", "Restarts the show engine to read the changed files. Refused while a show runs or a group is armed. flamesafe and the Stream Deck keep running.", "Yes, reload", "green"))) return;
   try{ const j = await post("/api/remote/reload-engine", {}); $("cfg-msg").textContent = j.text; }
   catch(e){ $("cfg-msg").textContent = e.message; }
 });
@@ -3690,7 +3689,7 @@ function renderTools(stale){
   setText($("info-version"), s.version ? ("LTC Player " + s.version) : "LTC Player, version not known yet");
   const unconf = !!(s.flames && s.flames.confirmed === false);
   $("info-flames").hidden = !unconf;
-  $("info-flames").textContent = unconf ? "flamesafe's config is not yet confirmed by Andy (confirmed is false in it): the flame universe, group map and arm value it sends are the config's own numbers. The lamps and the Stream Deck keys show each group's real state as usual." : "";
+  $("info-flames").textContent = unconf ? "flamesafe's config is not yet confirmed by Andy (confirmed is false). It sends the config's own universe, group map and arm value. Lamps and Stream Deck keys show real state." : "";
   renderSetup(s.setup, s.programs);
 }
 // The info panel (version, screen, mode, leaving the window), from Help.
