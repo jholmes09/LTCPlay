@@ -101,6 +101,10 @@ PBKDF2_ITERATIONS = 600_000
 # name and the device for LOCK_BASE_S * 2**(extra - 1), at most LOCK_MAX_S.
 # A right password clears the name's count. Never permanent.
 FREE_TRIES = 5
+# A session made over Tailscale (remote.py) signs out after this long
+# without a press or a beat (cold review of #244, M2); the admin's idle
+# sign-out (idle_signout_min) may only shorten it.
+TAILSCALE_IDLE_S = 30 * 60
 LOCK_BASE_S = 30.0
 LOCK_MAX_S = 300.0
 
@@ -725,7 +729,25 @@ class Users:
         return allowed(self.matrix(), role, perm)
 
     # -- sessions -----------------------------------------------------------
+    def _drop_tailscale_idle(self, now):
+        """A session made over Tailscale signs out after TAILSCALE_IDLE_S
+        without a press or a beat, or the admin's idle sign-out when that
+        is shorter, never longer (cold review of #244, M2): a phone left
+        signed in does not keep its rights all night. The rack screen and
+        iPads keep their own rule."""
+        mins = self.idle_minutes()
+        limit = TAILSCALE_IDLE_S if not mins else \
+            min(TAILSCALE_IDLE_S, mins * 60)
+        gone = [(t, s) for t, s in self._sessions.items()
+                if s.get("tailscale") and now - s["seen"] > limit]
+        for t, s in gone:
+            del self._sessions[t]
+            self._note("sign-out", s["name"],
+                       reason=f"idle for {limit / 60:g} min on Tailscale",
+                       source=s["source"])
+
     def _drop_idle(self, now):
+        self._drop_tailscale_idle(now)
         mins = self.idle_minutes()
         if not mins:
             return
@@ -842,6 +864,17 @@ class Users:
             return "broken", None
         finally:
             self._lock.release()
+
+    def bind_tailscale(self, token, login, ip):
+        """Mark a session as made over Tailscale by `login` from `ip`: it
+        signs out after TAILSCALE_IDLE_S without a press (or the admin's
+        idle sign-out, when that is shorter), and web.py ends it when any
+        other login, address or surface presents it."""
+        with self._lock:
+            s = self._sessions.get(token)
+            if s is not None:
+                s["tailscale"] = {"login": str(login or ""),
+                                  "ip": str(ip or "")}
 
     def touch(self, token):
         """A command from this session: it is not idle."""

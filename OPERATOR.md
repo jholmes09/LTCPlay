@@ -2692,6 +2692,7 @@ nothing fires.
 
 - Same card: Tailscale logins allowed in, one per line.
 - Empty means nobody. Only an admin can change it.
+- People's logins only: tagged devices never get in.
 - Tailscale on this PC says who each device is.
 
 **Then it works like an iPad.**
@@ -2724,6 +2725,24 @@ Remove the default rule that lets every device reach every device.
   ]
 }
 ```
+
+**Never share routes from the show PC.**
+
+- No subnet routes, no exit node, ever.
+- Not from any device that reaches the show LAN.
+- The card warns if this PC shares routes.
+
+Shared routes would let tailnet devices reach the flame controllers
+directly, past the engine, and make them arrive with a show network
+address, so the allow list would not even be asked. In the tailnet
+policy, approve no routes and no exit node for anything:
+`"autoApprovers": {"routes": {}, "exitNode": []}`, and never approve one
+by hand in the admin console's Machines page.
+
+A Tailscale sign-in signs out by itself after 30 minutes with no press,
+so a lost phone does not stay signed in all night. The Users screen's
+idle sign out can make that shorter, never longer. It does not change
+what a signed-in person may do.
 
 **Never use Tailscale Serve or Funnel here.**
 

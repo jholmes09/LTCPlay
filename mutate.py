@@ -627,10 +627,11 @@ MUTATIONS = [
  # -- the iPad remote (2026-10-03; no sign-in since Jeff, 2026-10-07): the
  #    show network, the controls, stale state, no arm route, scrubbing and
  #    the seek guard --
- # -- remote access over Tailscale (Jeff, 2026-11-12): 100.64.0.0/10 only,
- #    never every interface, its own Host and peer checks, and less
- #    authority than an iPad: arming and effects never, starting signed in
- #    only --
+ # -- remote access over Tailscale (Jeff, 2026-11-12; option A 2026-11-13):
+ #    100.64.0.0/10 only, never every interface, its own Host and peer
+ #    checks, an allow list of people's Tailscale logins asked of this PC's
+ #    own Tailscale, then the iPad's rules with a sign-in for anything that
+ #    needs a role; tagged devices never; the door closes when turned off --
  ("tailscale: any IPv4 address counts as a Tailscale address",
   "ltcplay/remote.py",
   "    return ip.version == 4 and ip in TAILSCALE_NET and \\\n"
@@ -782,6 +783,64 @@ MUTATIONS = [
   "ltcplay/remote.py",
   "        if not users_mod.may_edit_tailscale_allowlist(",
   "        if False and users_mod.may_edit_tailscale_allowlist("),
+
+ ("tailscale: a tagged device gets in", "ltcplay/remote.py",
+  "            if ans.get(\"tagged\") or (login and not is_user_login(login)):",
+  "            if False:"),
+
+ ("tailscale: the allow list takes a login that is no person's",
+  "ltcplay/remote.py",
+  "    return bool(t) and \"@\" in t and not t.startswith(\"@\") and \\",
+  "    return bool(t) and \\"),
+
+ ("tailscale: a tagged device refused is not audited", "ltcplay/remote.py",
+  "                self._tailscale_tagged_audit(ip, ans)\n",
+  ""),
+
+ ("tailscale: the card never says this PC shares routes",
+  "ltcplay/remote.py",
+  "        if (on or ts_listen) and self.tailscale_routes_view():",
+  "        if False:"),
+
+ ("tailscale: an exit node is not seen", "ltcplay/remote.py",
+  "    return bool(me.get(\"ExitNodeOption\") or me.get(\"PrimaryRoutes\") or",
+  "    return bool(me.get(\"PrimaryRoutes\") or"),
+
+ ("tailscale: a Tailscale sign-in never signs out when idle",
+  "ltcplay/users.py",
+  "        self._drop_tailscale_idle(now)\n",
+  ""),
+
+ ("tailscale: the admin's idle sign-out may lengthen Tailscale's",
+  "ltcplay/users.py",
+  "            min(TAILSCALE_IDLE_S, mins * 60)",
+  "            max(TAILSCALE_IDLE_S, mins * 60)"),
+
+ ("tailscale: a status poll keeps a Tailscale sign-in alive",
+  "ltcplay/web.py",
+  "                    self._tailscale_session_check(ctx, users)\n",
+  "                    self._tailscale_session_check(ctx, users)\n"
+  "                    users.touch(tok)\n"),
+
+ ("tailscale: a session is not bound at sign-in", "ltcplay/remote.py",
+  "                u.bind_tailscale(token, ctx.login, ctx.ip)",
+  "                pass"),
+
+ ("tailscale: a session presented by another device is kept",
+  "ltcplay/web.py",
+  "                if ctx.tailscale and bound.get(\"login\") == ctx.login and \\\n"
+  "                        bound.get(\"ip\") == ctx.ip:",
+  "                if True:"),
+
+ ("tailscale: a rack sign-in is taken over Tailscale", "ltcplay/web.py",
+  "            elif ctx.tailscale:\n"
+  "                why = \"a sign-in from another screen presented over Tailscale\"",
+  "            elif False:\n"
+  "                why = \"a sign-in from another screen presented over Tailscale\""),
+
+ ("tailscale: checklist records drop the login", "ltcplay/checklist.py",
+  "    return m.group(1) if m else \"\"",
+  "    return \"\""),
 
  # -- the show network from another machine (Jeff, 2026-10-28: the page
  #    never opened from his Mac): the RFC 1918 picker, the card's view, the

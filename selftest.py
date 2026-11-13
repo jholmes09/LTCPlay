@@ -53789,7 +53789,8 @@ def test_tailscale_allow_list():
                                      "bo@x.org"]) ==
           ["andy@example.com", "bo@x.org"], "logins are kept lower case, once")
     for bad in ("andy@example.com", [""], ["two words"], [1], None,
-                ["x"] * (RM.TAILSCALE_LOGINS_MAX + 1)):
+                ["x@y"] * (RM.TAILSCALE_LOGINS_MAX + 1), ["tagged-devices"],
+                ["andy"], ["tag:server"], ["@example.com"], ["andy@"]):
         try:
             RM.check_tailscale_logins(bad)
             check(False, f"{bad!r} was taken as an allow list")
@@ -53800,9 +53801,17 @@ def test_tailscale_allow_list():
                                                  "Andy@Example.com"},
                                  "Node": {"Name": "andys-phone"}}))
     check(RM.tailscale_whois("100.88.1.2", run=run, cli="/x/tailscale") ==
-          "andy@example.com" and run.calls == [["/x/tailscale", "whois",
-                                                "--json", "100.88.1.2"]],
+          {"login": "andy@example.com", "node": "andys-phone",
+           "tagged": False} and
+          run.calls == [["/x/tailscale", "whois", "--json", "100.88.1.2"]],
           f"tailscale whois --json, by its full path: {run.calls}")
+    tag = _TsRun(out=json.dumps({"UserProfile": {"LoginName":
+                                                 "tagged-devices"},
+                                 "Node": {"ComputedName": "build-box",
+                                          "Tags": ["tag:server"]}}))
+    check(RM.tailscale_whois("100.88.1.9", run=tag, cli="/x/t") ==
+          {"login": "tagged-devices", "node": "build-box", "tagged": True},
+          "a tagged device is told apart")
     for r, why in ((_TsRun(rc=1), "an error"), (_TsRun(out="not json"),
                    "an answer that is not JSON"), (_TsRun(boom=True),
                    "no program"), (_TsRun(out="{}"), "no login")):
@@ -53813,6 +53822,23 @@ def test_tailscale_allow_list():
           not r.calls, "an address outside 100.64.0.0/10 is never asked")
     check(RM.tailscale_whois("100.88.1.2", cli="") is None,
           "Tailscale not installed: nobody")
+    check(RM.TAILSCALE_WHOIS_S <= 3.0,
+          "a hand edit of the list takes effect within 3 seconds")
+    # The route check (M1): this PC sharing routes or being an exit node.
+    for st_, want in (({"Self": {"TailscaleIPs": ["100.101.102.103"],
+                                 "AllowedIPs": ["100.101.102.103/32"]}},
+                       False),
+                      ({"Self": {"TailscaleIPs": ["100.101.102.103"],
+                                 "AllowedIPs": ["100.101.102.103/32",
+                                                "10.20.0.0/24"]}}, True),
+                      ({"Self": {"PrimaryRoutes": ["10.20.0.0/24"]}}, True),
+                      ({"Self": {"ExitNodeOption": True}}, True)):
+        r = _TsRun(out=json.dumps(st_))
+        check(RM.tailscale_routes(run=r, cli="/x/t") is want and
+              r.calls == [["/x/t", "status", "--json"]],
+              f"tailscale status says routes {want}: {st_}")
+    check(RM.tailscale_routes(run=_TsRun(rc=1), cli="/x/t") is None and
+          RM.tailscale_routes(cli="") is None, "cannot tell: None")
     R = _RemoteRig(S)
     D = _ts_door(R, login="")
     rm = R.remote
@@ -53865,6 +53891,24 @@ def test_tailscale_allow_list():
         R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
         st, _h, out = look()
         check(st == 403, f"Tailscale cannot tell who it is: refused: {st}")
+        # A tagged device: refused whatever the list says, and audited
+        # "refused: tagged device" with its node name (M3).
+        RM.save_settings(R.work, tailscale_logins=["andy@example.com"])
+        who[0] = {"login": "andy@example.com", "node": "build-box",
+                  "tagged": True}
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        n0 = len(audit)
+        st, _h, out = look()
+        check(st == 403 and any(
+            a.get("reason") == "tagged device" and a.get("result") ==
+            "refused" and "node=build-box" in a.get("target", "")
+            for a in audit[n0:]),
+              f"a tagged device is refused and audited: {st} "
+              f"{audit[n0:]}")
+        who[0] = {"login": "tagged-devices", "node": "x", "tagged": False}
+        R.mono[0] += RM.TAILSCALE_WHOIS_S + 0.1
+        st, _h, out = look()
+        check(st == 403, f"no person's login: refused: {st}")
 
         def boom(ip):
             raise OSError("no tailscale")
@@ -54006,6 +54050,7 @@ def test_tailscale_acts_as_an_ipad_signed_in():
             us.sign_in(n, "", True, "rack", new_password=n + "-pw-1234")
         _o, _w, tok, _n = us.sign_in("Ollie", "Ollie-pw-1234", False,
                                      "Tailscale at 100.88.1.2")
+        us.bind_tailscale(tok, _TS_LOGIN, "100.88.1.2")   # as signin does
         hdr = {"Cookie": f"{U.COOKIE}={tok}"}
         st, _h, me = _ask(D, "GET", "/api/remote/whoami", client=_TS_PEER,
                           headers=hdr)
@@ -54038,6 +54083,7 @@ def test_tailscale_acts_as_an_ipad_signed_in():
               f"the iPad is: {st} {out} / {st2} {out2}")
         _o, _w, vtok, _n = us.sign_in("Vic", "Vic-pw-1234", False,
                                       "Tailscale at 100.88.1.2")
+        us.bind_tailscale(vtok, _TS_LOGIN, "100.88.1.2")
         st, _h, out = press("start-now", {"confirmed": True},
                             {"Cookie": f"{U.COOKIE}={vtok}"})
         check(st == 403 and out.get("role_refused") and
@@ -54046,6 +54092,129 @@ def test_tailscale_acts_as_an_ipad_signed_in():
         check(not hasattr(RM, "tailscale_refusal") and
               not hasattr(RM, "TAILSCALE_ARM_ROUTES"),
               "the Tailscale-only refusals of arming and effects are gone")
+    finally:
+        D.server_close()
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_tailscale_session_idle_and_binding():
+    section("remote access over Tailscale (cold review of #244, M2 and "
+            "minors): a Tailscale sign-in signs out after 30 minutes with no "
+            "press or beat (the admin's idle sign out only shortens it; "
+            "status polls never count; the rack screen's rule unchanged); a "
+            "Tailscale session presented by another login, address or "
+            "surface is ended and audited; a rack sign-in is never taken "
+            "over Tailscale; checklist records carry the login")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    from ltcplay import checklist as CL
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    rm = R.remote
+    udir = tempfile.mkdtemp()
+    now = [5000.0]
+    audit = []
+
+    class Audit:
+        def event(self, **kw):
+            audit.append(kw)
+    rm.audit = Audit()
+    loop = ("127.0.0.1", 5000)
+    try:
+        us = U.Users(udir, clock=lambda: now[0], hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator")])
+        rm.users = us
+        us.sign_in("Ollie", "", True, "rack", new_password="Ollie-pw-1234")
+
+        def ts_sign_in(peer=_TS_PEER):
+            st, h, out = _ask(D, "POST", "/api/remote/signin",
+                              {"name": "Ollie", "password": "Ollie-pw-1234"},
+                              client=peer)
+            check(st == 200, f"Ollie signs in over Tailscale: {st} {out}")
+            return h["set-cookie"][0].split(";")[0]
+
+        def me(cookie, peer=_TS_PEER, door=None):
+            st, _h, out = _ask(door or D, "GET", "/api/remote/whoami",
+                               client=peer, headers={"Cookie": cookie})
+            return out.get("user")
+        ck = ts_sign_in()
+        tok = ck.split("=", 1)[1]
+        check(us.session(tok).get("tailscale") ==
+              {"login": _TS_LOGIN, "ip": "100.88.1.2"},
+              "the session is bound to its login and address")
+        now[0] += 29 * 60
+        check(me(ck) == "Ollie", "29 minutes: still signed in")
+        _ask(D, "POST", "/api/remote/hold", {"seen": R.seen()},
+             client=_TS_PEER, headers={"Cookie": ck})
+        now[0] += 29 * 60
+        for _i in range(5):
+            me(ck)                       # polls never count as a press
+        check(me(ck) == "Ollie", "a press keeps it signed in")
+        now[0] += 2 * 60
+        check(me(ck) is None and us.session(tok) is None,
+              "31 minutes with no press: signed out by itself")
+        check(U.TAILSCALE_IDLE_S == 30 * 60, "30 minutes, a named constant")
+        # The admin's idle sign out only shortens it.
+        us.set_idle(10)
+        ck = ts_sign_in()
+        now[0] += 11 * 60
+        check(me(ck) is None, "idle sign out 10 min: 10 min on Tailscale")
+        us.set_idle(120)
+        ck = ts_sign_in()
+        now[0] += 31 * 60
+        check(me(ck) is None, "idle sign out 120 min: still 30 on Tailscale")
+        us.set_idle(0)
+        _o, _w, jtok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        # The rack screen keeps its own rule (off): hours later, signed in.
+        now[0] += 4 * 3600
+        st, _h, out = _ask(R.httpd, "GET", "/api/remote/whoami",
+                           client=loop,
+                           headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        check(out.get("user") == "Jeff", f"the rack screen's sign-in is "
+                                         f"untouched: {out}")
+        # Bound: another address, another login, another surface.
+        for why, act in (
+                ("another address", lambda c: me(c, ("100.88.1.3", 5))),
+                ("an iPad", lambda c: me(c, ("10.20.0.44", 5), R.httpd)),
+                ("another login", None)):
+            ck = ts_sign_in()
+            tok = ck.split("=", 1)[1]
+            n0 = len(audit)
+            if act is None:
+                rm._tailscale_whois = lambda ip: "bo@x.org"
+                RM.save_settings(R.work, tailscale_logins=[_TS_LOGIN,
+                                                           "bo@x.org"])
+                rm._ts_whois_cache, rm._ts_logins_cache = {}, None
+                got = me(ck)
+                rm._tailscale_whois = lambda ip: _TS_LOGIN
+                rm._ts_whois_cache = {}
+            else:
+                got = act(ck)
+            check(got is None and us.session(tok) is None and any(
+                a.get("action") == "session" and a.get("result") ==
+                "refused" for a in audit[n0:]),
+                  f"presented by {why}: rejected, ended, audited: "
+                  f"{audit[n0:]}")
+        # A rack sign-in over Tailscale: signed out there, kept here.
+        got = me(f"{U.COOKIE}={jtok}")
+        check(got is None and us.session(jtok) is not None,
+              "a rack sign-in is never taken over Tailscale, and not ended")
+        check(CL.tailscale_login_of("Tailscale at 100.88.1.2 "
+                                    "(andy@example.com)") ==
+              "andy@example.com" and CL.tailscale_login_of("iPad at 1.2.3.4")
+              == "", "checklist records name the login, or none")
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "ltcplay", "checklist.py"),
+                   encoding="utf-8").read()
+        check('"login": tailscale_login_of(device)}' in src,
+              "every checklist record carries the login field")
     finally:
         D.server_close()
         R.close()
@@ -54162,6 +54331,19 @@ def test_tailscale_card_on_the_show_pc():
                                       "100.64.0.0/10\n")
         c = card()
         check(c["firewall"]["state"] == "present", f"the rule there: {c}")
+        rm._tailscale_routes = lambda: True
+        rm._ts_routes_cache = None
+        c = card()
+        check(c["bullets"][0] == "This PC shares routes: turn that off.",
+              f"this PC sharing routes: said first: {c}")
+        rm._tailscale_routes = lambda: None
+        rm._ts_routes_cache = None
+        c = card()
+        check(not any("routes" in b for b in c["bullets"]),
+              f"cannot tell: nothing said: {c}")
+        page = _ui2_pages()[1]
+        check('id="ts-pw">Long passwords matter: Tailscale reaches past '
+              'the venue.</div>' in page, "the card says passwords matter")
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
                            {"on": False}, client=loop)
         c = card()
@@ -116270,6 +116452,7 @@ if __name__ == "__main__":
         test_tailscale_acts_as_an_ipad_signed_in,
         test_tailscale_off_closes_the_door_now,
         test_tailscale_sign_in_lockout_is_its_own,
+        test_tailscale_session_idle_and_binding,
         test_remote_controls_reach_the_same_paths_and_journal_who_and_where,
         test_deck_fix_round_2_abort_reset_and_disarm,
         test_deck_presses_reach_the_engine_conductor,

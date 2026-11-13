@@ -932,8 +932,39 @@ class Handler(BaseHTTPRequestHandler):
                     ctx.session = users.session(tok) if tok else None
                 except Exception:                # noqa: BLE001
                     ctx.session = None
+                if ctx.session is not None:
+                    self._tailscale_session_check(ctx, users)
             self._ctx_cache = ctx
         return ctx
+
+    def _tailscale_session_check(self, ctx, users):
+        """A session made over Tailscale is that login's, from that
+        address, only; one presented by any other login, address or
+        surface is ended and audited. A session made anywhere else is
+        never taken over Tailscale (the page there is signed out). Never
+        raises."""
+        try:
+            bound = (ctx.session or {}).get("tailscale")
+            if bound:
+                if ctx.tailscale and bound.get("login") == ctx.login and \
+                        bound.get("ip") == ctx.ip:
+                    return
+                users.sign_out(ctx.token, ctx.source)
+                why = "a Tailscale sign-in presented by another device"
+            elif ctx.tailscale:
+                why = "a sign-in from another screen presented over Tailscale"
+            else:
+                return
+            name = (ctx.session or {}).get("name") or "unsigned"
+            ctx.session = None
+            log = getattr(getattr(self.server, "remote", None), "audit",
+                          None)
+            if log is not None:
+                log.event(user=name, surface="web", action="session",
+                          target="", result="refused", reason=why,
+                          source=ctx.source)
+        except Exception:                        # noqa: BLE001
+            ctx.session = None
 
     def _halt_asked(self):
         """The Stream Deck's Stop (Jeff, 2026-10-26): a complete halt of
@@ -1711,7 +1742,15 @@ class Handler(BaseHTTPRequestHandler):
         if why:
             return self._send(403, {"error": why})
         # Remote access over Tailscale: a press that needs a role needs a
-        # sign-in there, users set up or not (Jeff, 2026-11-13).
+        # sign-in there, users set up or not (Jeff, 2026-11-13). Every
+        # press or beat keeps a Tailscale sign-in from its idle sign-out;
+        # the page's status polls never do.
+        try:
+            _c = self._ctx()
+            if _c.tailscale and _c.session and _c.token:
+                self.server.remote.users.touch(_c.token)
+        except Exception:                        # noqa: BLE001
+            pass
         if self._tailscale_refused(route):
             return None
         # The role matrix (users.py): never in front of a safety press.

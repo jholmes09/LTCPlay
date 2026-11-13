@@ -1052,8 +1052,14 @@ TAILSCALE_FIREWALL_RULE = "LTC Player Tailscale page"
 TAILSCALE_SIGN_IN_WORDS = "Sign in first. Tailscale needs a sign-in."
 # A Tailscale login that is not on the allow list, or cannot be told.
 TAILSCALE_LOGIN_WORDS = "This Tailscale login is not allowed here."
-# How long one answer of `tailscale whois` is kept for a peer address.
-TAILSCALE_WHOIS_S = 10.0
+# How long one answer of `tailscale whois`, and one read of the allow
+# list, is kept: a hand edit of the list takes effect within this.
+TAILSCALE_WHOIS_S = 3.0
+# A tagged device (a server, not a person) is never let in, whatever the
+# list says (cold review of #244, M3).
+TAILSCALE_TAGGED = "tagged-devices"
+# A tagged device refused is audited at most this often per address.
+TAILSCALE_TAGGED_AUDIT_S = 60.0
 TAILSCALE_WHOIS_TIMEOUT_S = 3.0
 TAILSCALE_LOGINS_MAX = 20
 # What the installer last read for the second firewall rule
@@ -1109,19 +1115,33 @@ def check_tailscale_logins(value, path="ltcplay_remote.json"):
     out = []
     for v in value:
         if not isinstance(v, str) or not v.strip() or \
-                len(v.strip()) > 254 or re.search(r"\s", v.strip()):
-            raise ValueError(f"{path}: {v!r} is not a Tailscale login.")
+                len(v.strip()) > 254 or re.search(r"\s", v.strip()) or \
+                not is_user_login(v):
+            raise ValueError(f"{path}: {v!r} is not a person's Tailscale "
+                             f"login (like andy@example.com).")
         if v.strip().lower() not in out:
             out.append(v.strip().lower())
     return out
 
 
+def is_user_login(text):
+    """True for a person's Tailscale login (name@domain, or a GitHub-style
+    name@github): never "tagged-devices", a tag:, or anything without an
+    @."""
+    t = str(text or "").strip().lower()
+    return bool(t) and "@" in t and not t.startswith("@") and \
+        not t.endswith("@") and t != TAILSCALE_TAGGED and \
+        not t.startswith("tag:")
+
+
 def tailscale_whois(ip, run=None, cli=None):
-    """The Tailscale login of the peer at `ip`, asked of this PC's own
-    Tailscale (`tailscale whois --json <ip>`, by its full path, a short
-    timeout), lower case; None when it cannot be told (Tailscale missing,
-    not running, no answer, an answer that names nobody). Only an address
-    in 100.64.0.0/10 is ever asked. Never raises."""
+    """{"login", "node", "tagged"} for the peer at `ip`, asked of this
+    PC's own Tailscale (`tailscale whois --json <ip>`, by its full path, a
+    short timeout): its login lower case, its device name, and whether it
+    is a tagged device (a server, never a person). None when it cannot be
+    told (Tailscale missing, not running, no answer, an answer that names
+    nobody). Only an address in 100.64.0.0/10 is ever asked. Never
+    raises."""
     if not is_tailscale_address(ip):
         return None
     path = tailscale_cli() if cli is None else cli
@@ -1139,12 +1159,48 @@ def tailscale_whois(ip, run=None, cli=None):
                 timeout=TAILSCALE_WHOIS_TIMEOUT_S, **kw)
         if p.returncode != 0:
             return None
-        doc = json.loads(p.stdout or "null")
-        login = ((doc or {}).get("UserProfile") or {}).get("LoginName")
+        doc = json.loads(p.stdout or "null") or {}
+        login = (doc.get("UserProfile") or {}).get("LoginName")
+        node = doc.get("Node") or {}
+        tags = node.get("Tags") or []
+        name = str(node.get("ComputedName") or node.get("Name") or "")
     except Exception:                            # noqa: BLE001
         return None
     login = str(login or "").strip().lower()
-    return login or None
+    if not login and not tags:
+        return None
+    return {"login": login, "node": name[:80],
+            "tagged": bool(tags) or login == TAILSCALE_TAGGED}
+
+
+def tailscale_routes(run=None, cli=None):
+    """True when `tailscale status --json` says this PC offers subnet
+    routes or is an exit node (the card warns: tailnet devices could reach
+    the show LAN, and the flame controllers, past the engine), False when
+    it says neither, None when it cannot be told. Read only, by its full
+    path, a short timeout. Never raises."""
+    path = tailscale_cli() if cli is None else cli
+    if not path:
+        return None
+    try:
+        import subprocess
+        if run is None:
+            run = subprocess.run
+        kw = {}
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = run([path, "status", "--json"], capture_output=True, text=True,
+                timeout=TAILSCALE_WHOIS_TIMEOUT_S, **kw)
+        if p.returncode != 0:
+            return None
+        me = (json.loads(p.stdout or "null") or {}).get("Self") or {}
+    except Exception:                            # noqa: BLE001
+        return None
+    own = set(me.get("TailscaleIPs") or [])
+    extra = [a for a in (me.get("AllowedIPs") or [])
+             if str(a).split("/")[0] not in own]
+    return bool(me.get("ExitNodeOption") or me.get("PrimaryRoutes") or
+                extra)
 
 
 # Where Tailscale's command line program is, by where its installer puts
@@ -2777,6 +2833,10 @@ class Remote:
                 ctx.source, new_password=body.get("new_password"),
                 from_only=(f"Tailscale at {ctx.ip}"
                            if getattr(ctx, "tailscale", False) else False))
+            if ok and token and getattr(ctx, "tailscale", False):
+                # The session is this login's, from this address, only
+                # (web.py ends it if another presents it).
+                u.bind_tailscale(token, ctx.login, ctx.ip)
             if not ok:
                 return 401, {"error": text, "needs_new_password": needs_new}, {}
             return 200, {"ok": True, "text": text}, {
@@ -3045,13 +3105,43 @@ class Remote:
                 cache[ip] = got
                 if len(cache) > 256:
                     cache.pop(next(iter(cache)))
-            login = str(got[1] or "").strip().lower()
+            ans = got[1]
+            if isinstance(ans, str):
+                ans = {"login": ans, "node": "", "tagged": False}
+            ans = ans if isinstance(ans, dict) else {}
+            login = str(ans.get("login") or "").strip().lower()
+            if ans.get("tagged") or (login and not is_user_login(login)):
+                # A tagged device, or no person's login: never in.
+                self._tailscale_tagged_audit(ip, ans)
+                return None, TAILSCALE_LOGIN_WORDS, \
+                    login or TAILSCALE_TAGGED
             allowed = self.tailscale_logins()
             if login and login in allowed:
                 return login, "", login
         except Exception:                        # noqa: BLE001
             pass
         return None, TAILSCALE_LOGIN_WORDS, login
+
+    def _tailscale_tagged_audit(self, ip, ans):
+        """One audit line "refused: tagged device" with its node name, at
+        most every TAILSCALE_TAGGED_AUDIT_S per address. Never raises."""
+        try:
+            now = self.clock()
+            seen = getattr(self, "_ts_tagged_said", None)
+            if seen is None:
+                seen = self._ts_tagged_said = {}
+            if now - seen.get(ip, -1e18) < TAILSCALE_TAGGED_AUDIT_S:
+                return
+            seen[ip] = now
+            if self.audit is not None:
+                self.audit.event(
+                    user="unsigned", surface="web", action="tailscale",
+                    target=f"node={ans.get('node') or 'unknown'}",
+                    result="refused", reason="tagged device",
+                    source=f"Tailscale at {ip} "
+                           f"({ans.get('login') or TAILSCALE_TAGGED})")
+        except Exception:                        # noqa: BLE001
+            pass
 
     def tailscale_view(self):
         """The Schedule tab's Remote access over Tailscale card on the show
@@ -3108,6 +3198,11 @@ class Remote:
             reason = self.reload_engine_refusal()
             restart = {"needed": True, "offered": reason is None,
                        "why": reason or ""}
+        if (on or ts_listen) and self.tailscale_routes_view():
+            # Never subnet routes or an exit node from here (cold review
+            # of #244, M1): first, whatever else is said.
+            bullets = ["This PC shares routes: turn that off."] + \
+                bullets[:2]
         if on and fw_state == "missing" and self.tailscale_setup_other():
             # Setup read another Windows account's settings (an elevated
             # account that is not this one), so it did not add the rule.
@@ -3149,6 +3244,21 @@ class Remote:
             return bool(lines and mine and
                         os.path.normcase(lines[0].rstrip("\\/")) !=
                         os.path.normcase(mine.rstrip("\\/")))
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def tailscale_routes_view(self):
+        """tailscale_routes(), asked at most every TAILSCALE_READ_S; True
+        only when it says so. Never raises."""
+        try:
+            now = self.clock()
+            got = getattr(self, "_ts_routes_cache", None)
+            if got is None or now - got[0] >= TAILSCALE_READ_S:
+                fn = getattr(self, "_tailscale_routes", None) or \
+                    tailscale_routes
+                got = (now, fn())
+                self._ts_routes_cache = got
+            return got[1] is True
         except Exception:                        # noqa: BLE001
             return False
 

@@ -155,6 +155,7 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LTC Player Tailscale page"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveTailscaleRule"
 
 [UninstallDelete]
+Type: files; Name: "{commonappdata}\LTC Player\tailscale-setup.txt"
 Type: filesandordirs; Name: "{app}\Installers"
 Type: filesandordirs; Name: "{app}\_internal"
 

@@ -196,7 +196,8 @@ Only the Tailscale logins on the card's allow list get in (empty means
 nobody; an admin edits it on the show PC). For every connection the
 engine asks this PC's own Tailscale who the device is
 (`C:\Program Files\Tailscale\tailscale.exe whois --json <address>`,
-answers kept 10 seconds); no answer, or a login not on the list, is
+answers kept 3 seconds, so a hand edit of the list takes effect within
+3 seconds); no answer, a tagged device, or a login not on the list, is
 refused. Past that a Tailscale device is an iPad on the show network, and
 signs in for anything that needs a role.
 
@@ -218,6 +219,15 @@ controls), and remove the default allow-everything rule:
   ]
 }
 ```
+
+Never advertise subnet routes or an exit node from the show PC, or from
+any device that can reach the show LAN: tailnet devices could then reach
+the flame controllers directly, past the engine, and would arrive with a
+show network address, so the allow list would not be asked. In the
+tailnet policy approve no routes and no exit node
+(`"autoApprovers": {"routes": {}, "exitNode": []}`), and never approve
+one by hand. The rack screen's card warns when `tailscale status` says
+this PC shares routes.
 
 Never run Tailscale Serve in TCP mode on the show PC, for example
 `tailscale serve --tcp 7878 tcp://127.0.0.1:7878`: it carries no proxy

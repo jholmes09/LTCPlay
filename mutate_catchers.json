@@ -3806,5 +3806,17 @@
 "tailscale: the audit line names no login": "test_tailscale_allow_list",
 "tailscale: the allow list is a Settings press": "test_tailscale_allow_list",
 "tailscale: anyone on the show PC may change who gets in": "test_tailscale_allow_list",
-"tailscale: the engine never asks who may change the allow list": "test_tailscale_allow_list"
+"tailscale: the engine never asks who may change the allow list": "test_tailscale_allow_list",
+"tailscale: a tagged device gets in": "test_tailscale_allow_list",
+"tailscale: the allow list takes a login that is no person's": "test_tailscale_allow_list",
+"tailscale: a tagged device refused is not audited": "test_tailscale_allow_list",
+"tailscale: the card never says this PC shares routes": "test_tailscale_card_on_the_show_pc",
+"tailscale: an exit node is not seen": "test_tailscale_allow_list",
+"tailscale: a Tailscale sign-in never signs out when idle": "test_tailscale_session_idle_and_binding",
+"tailscale: the admin's idle sign-out may lengthen Tailscale's": "test_tailscale_session_idle_and_binding",
+"tailscale: a status poll keeps a Tailscale sign-in alive": "test_tailscale_session_idle_and_binding",
+"tailscale: a session is not bound at sign-in": "test_tailscale_session_idle_and_binding",
+"tailscale: a session presented by another device is kept": "test_tailscale_session_idle_and_binding",
+"tailscale: a rack sign-in is taken over Tailscale": "test_tailscale_session_idle_and_binding",
+"tailscale: checklist records drop the login": "test_tailscale_session_idle_and_binding"
 }
