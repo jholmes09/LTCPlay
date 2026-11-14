@@ -1586,6 +1586,11 @@ class Service:
             else:
                 plan.append(("Show stopped", "show_stopped",
                              self._ABORT_EFFECTS))
+        if sch.BLACKOUT in kinds:
+            plan.append(("Out of the show", "intermission",
+                         self._CLOSING_CLAIMS))
+        elif sch.INTERMISSION in kinds or sch.PRESHOW_LOOK in kinds:
+            plan.append(("Out of the show", "intermission", frozenset()))
         if sch.IDLE_LOOK_HELD in kinds:
             # A conductor without closing_held (an older or a test one)
             # is asked for intermission(), and the video is left as it is.
@@ -1594,11 +1599,6 @@ class Service:
             plan.append(("Closing, the idle look held", held or
                          "intermission", self._HELD_CLOSING_CLAIMS if held
                          else self._CLOSING_CLAIMS))
-        elif sch.BLACKOUT in kinds:
-            plan.append(("Out of the show", "intermission",
-                         self._CLOSING_CLAIMS))
-        elif sch.INTERMISSION in kinds or sch.PRESHOW_LOOK in kinds:
-            plan.append(("Out of the show", "intermission", frozenset()))
         if ev.kind == sch.SHOW_CONFIRMED and \
                 out.machine.state == sch.SHOW:
             plan.append(("Show start", "show_starting", frozenset()))

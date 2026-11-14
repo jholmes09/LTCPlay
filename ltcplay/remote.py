@@ -135,13 +135,13 @@ FLAME_STALE_S = 1.0
 
 # The routes this module answers, and nothing else. No "arm" among them.
 CONTROL_ROUTES = ("start-now", "hold", "resume",
-                  "disarm-all", "stop", "run-off", "start-at-cue",
-                  "end-of-night")
+                  "disarm-all", "stop", "run-off", "start-at-cue")
 # End of night (Jeff, 2026-11-14): the idle look the schedule holds after
 # the last show (after_last_show "idle") ends, to black. Anyone may press
 # it, signed in or not, like Stop (users.REMOTE_ROUTES: "safety"); the
 # page sends it only after a deliberate second tap, and the engine takes
 # it only with {"confirmed": true}.
+END_OF_NIGHT_ROUTES = ("end-of-night",)
 END_OF_NIGHT_CONFIRM = ("Tap End of night twice to end the idle look. "
                         "Nothing was changed.")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
@@ -321,6 +321,8 @@ LIVE_FLAME_ENABLES = (
 # refill an admin (fuel.py checks). Kept apart from FUEL_POST_ROUTES.
 SHOWS_POST_ROUTES = ("fuel-shows",)
 POST_ROUTES = POST_ROUTES + SHOWS_POST_ROUTES
+# End of night (Jeff, 2026-11-14), above with CONTROL_ROUTES.
+POST_ROUTES = POST_ROUTES + END_OF_NIGHT_ROUTES
 # The switch "Fire flames while scrubbing" is gone (Jeff, 2026-10-29: "as
 # long as I am armed, then jumping around timecode will work"). On a show
 # that plays from the show audio, Programming playback is the show's own
@@ -2659,6 +2661,15 @@ class Remote:
             return (*self.fireball_charge_empty(body, ctx),) + ({},)
         if name in FIREBALL_PRACTICE_POST_ROUTES:
             return (*self.fireball_practice_post(body, ctx),) + ({},)
+        if name in END_OF_NIGHT_ROUTES:
+            # Only takes something away (the held idle look, to black):
+            # never refused for a stale page or a sign in, from any
+            # surface; only the deliberate second tap is asked for.
+            stamp = getattr(self.schedule, "stamp_press", None)
+            if stamp is not None:
+                stamp()
+            who, screen, _surface = self._actor(ctx, body)
+            return (*self.end_of_night_press(who, screen, body),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             out = self.press(name, body, ctx)
             if name in PRACTICE_ENDS_ROUTES:
@@ -4441,11 +4452,6 @@ class Remote:
             # Only takes risk away: never refused for a stale page or a
             # missing confirm, from any surface (review of #144, F7).
             return self.stop_press(who, screen)
-        if name == "end-of-night":
-            # Only takes something away (the held idle look, to black):
-            # never refused for a stale page or a sign in, from any
-            # surface; only the deliberate second tap is asked for.
-            return self.end_of_night_press(who, screen, body)
         if name == "run-off":
             # Run off (2026-10-30): the Stop, then playback stops. Its
             # role is the show row's (users.REMOTE_ROUTES), never a stale

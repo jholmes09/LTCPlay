@@ -1187,8 +1187,8 @@ def new_night(rule, d):
     return Machine(date=d, tz=tz, show_len_s=rule.show_len_s,
                    guard_s=rule.guard_s, late_grace_s=rule.late_grace_s,
                    slots=slots, night_end=end, rule_id=rule_fingerprint(rule),
-                   next_first=_next_night_first(rule, d),
-                   after_last_show=rule.after_last_show)
+                   after_last_show=rule.after_last_show,
+                   next_first=_next_night_first(rule, d))
 
 
 def rule_fingerprint(rule):
@@ -2374,7 +2374,7 @@ def _end_held_look(m, ev, now):
     or a saved schedule never holds or opens it again. Only in OFF while
     the look is held (step refuses it otherwise)."""
     tx = _Tx(m, ev, now)
-    tx.m = replace(tx.m, held_from="", closed_by_operator=True)
+    tx.m = replace(tx.m, closed_by_operator=True, held_from="")
     _enter(tx, CLOSING, held=False)
     who = ev.who.strip()
     # Anyone may press it (Jeff, 2026-11-14), signed in or not: the
@@ -3049,7 +3049,8 @@ TONIGHT_KEYS = frozenset((
 # refuses the file and sets it aside rather than reading a closed night as
 # open, or a Stop's Hold as a plain one.
 TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched", "closed_by_operator",
-                              "stop_hold", "stop_held", "held_look"))
+                              "held_look",
+                              "stop_hold", "stop_held"))
 # `stop_held` (simulation review B of #199, M3) is the service's own
 # record that a Stop's Hold stands, whatever the state (HOLD, CLOSING,
 # OFF): a second copy of ltcplay_stop_hold.json, so a restart tonight or
@@ -3363,12 +3364,12 @@ def _carried(fresh, saved, slots, running):
                    faults=saved.faults, shows_started=saved.shows_started,
                    resumed_from=saved.resumed_from, dark=saved.dark,
                    closed_by_operator=saved.closed_by_operator,
-                   never_opened=saved.never_opened,
-                   stop_hold=saved.stop_hold,
                    # A save keeps the held look only while the new rule
                    # still says "idle"; otherwise the look ends (black).
                    held_look=saved.held_look and
-                   fresh.after_last_show == AFTER_IDLE)
+                   fresh.after_last_show == AFTER_IDLE,
+                   never_opened=saved.never_opened,
+                   stop_hold=saved.stop_hold)
 
 
 def rebuild_night(rule, saved, dropped=None, now=None, skipped=None):

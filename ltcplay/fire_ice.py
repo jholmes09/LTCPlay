@@ -3362,6 +3362,8 @@ class ShowRunner:
         # Whether or not show control is on now: it may be turned on while
         # the look is held, and the look's end still goes black then.
         self._idle_held = str(getattr(m, "date", "")) if held else None
+        done = "flame cues zero, lasers blanked, pixels black"
+        mm_note = True
         if held:
             # The idle look held (after_last_show "idle"): the hazers OFF
             # whatever show control is doing (flamesafe's own link, not
@@ -3383,10 +3385,9 @@ class ShowRunner:
                        "the lasers dark, the hazers off and MadMapper's "
                        "video faded to black with its show bank stopped.",
                        action="closing", outcome="idle_look_held")
-            self.svc.report("CLOSING_DONE",
-                            "flame cues zero, lasers blanked, hazers off, "
-                            "MadMapper dark, pixels on the idle look (held)")
-            return
+            done = ("flame cues zero, lasers blanked, hazers off, MadMapper "
+                    "dark, pixels on the idle look (held)")
+            mm_note = False
         else:
             r = self.conductor.intermission("the scheduler", "")
             if not r.ok:
@@ -3405,11 +3406,12 @@ class ShowRunner:
                            f"show, not on black. Flame cues are zero and "
                            f"the lasers are dark.", action="closing",
                            outcome="idle_look", show=extra)
-        self._note("Closing: the MadMapper stop is not performed in this "
-                   "build.", action="closing", outcome="not performed")
+        if mm_note:
+            self._note("Closing: the MadMapper stop is not performed in "
+                       "this build.", action="closing",
+                       outcome="not performed")
         self.svc.report("CLOSING_DONE",
-                        "show control off, the idle look held" if held else
-                        "flame cues zero, lasers blanked, pixels black")
+                        done)
 
     def _hazers_off_for_held(self):
         """Every hazer OFF for the held idle look. Never raises."""

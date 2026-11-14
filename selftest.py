@@ -49382,9 +49382,10 @@ def test_end_of_night_route_anyone_two_steps():
     from dataclasses import replace
     from ltcplay import remote as RM
     from ltcplay import users as U
-    check("end-of-night" in RM.CONTROL_ROUTES and
+    check(RM.END_OF_NIGHT_ROUTES == ("end-of-night",) and
           "end-of-night" in RM.POST_ROUTES and
-          "end-of-night" not in RM.FRESH_ROUTES,
+          "end-of-night" not in RM.FRESH_ROUTES and
+          "end-of-night" not in RM.CONFIRM_ROUTES,
           "the route is a control press, never refused for a stale page")
     check(U.REMOTE_ROUTES.get("end-of-night") == "safety" and
           U.classify("/api/remote/end-of-night", {}) == "safety" and

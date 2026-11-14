@@ -999,7 +999,8 @@ class Conductor:
         is armed or disarmed here. The next show's start brings the video
         back up as it does after a Stop."""
         with self._lock:
-            if self._look == STOPPED_DARK:
+            stopped = self._look == STOPPED_DARK
+            if stopped:
                 return done("The show was stopped, so the rig is "
                             "already dark.")
             self._accept("Closing, idle look held", BETWEEN, who, screen,
