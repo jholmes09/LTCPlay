@@ -2897,7 +2897,10 @@ tab, and the hardware e-stop always works.
   iPad also needs Arming from a screen on. With no users set up, the show
   PC reads the list but nobody can save it until an admin exists.
 - The SHOW tab, top to bottom: one line that says what to do next;
-  the show state, the timecode and the time left; the big button for the
+  the show state, the timecode and the time (during a show, Elapsed |
+  Left: both stand still while held, add up to the show's length, start
+  at the cue you played from, and read "-" when not known); the big
+  button for the
   next step (Show control on, Start now or Resume; Resume and Start now offer
   the saved play-from cues, see Start at a cue), Hold and Stop show; one
   alert at a time with Acknowledge (tap the words for the details); a tile
