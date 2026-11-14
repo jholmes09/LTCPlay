@@ -597,8 +597,11 @@ connection or a disarm on the deck. Pressing Hold or Stop clears the
 purge selection and ends a purge firing. On a Hold (between shows, after
 a Stop, or pressed during a show) a fresh tap may select and arm a unit
 again, as for any test on Hold (Jeff, 2026-11-14); Resume, Start now,
-Start at a cue and Continue anyway clear the purge selection first, and
-after the start only a fresh tap arms. One slow read by the Stream Deck no
+Start at a cue and Continue anyway clear the purge selection first and
+wait (at most 1.5 s) for flamesafe to report every group the purge armed
+off; if it cannot, they are refused with "A purge group is still armed:
+press Clear, then try again." and the show stays held. After the start
+only a fresh tap arms. One slow read by the Stream Deck no
 longer disarms a purge (it keeps the groups for 1 s); if the engine is
 quiet for longer the groups are disarmed and stay selected, and the next
 tap arms them. If Space or FIRE answers but nothing is armed, the page

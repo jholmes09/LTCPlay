@@ -220,6 +220,13 @@ PLAIN_CONFIRM_S = 1.0
 # every GROUP_DISARM_STEP_S for up to PLAIN_CONFIRM_S.
 GROUP_DISARM_SETTLE_S = 0.15
 GROUP_DISARM_STEP_S = 0.02
+# Before a show starts or resumes, how long the engine waits for flamesafe
+# to confirm every group the purge armed is off (Remote.
+# purge_off_before_start; #266 with #269, 2026-11-14): longer than the
+# Stream Deck's PURGE_STALE_GRACE_S (1 s) plus a status and the settle.
+PURGE_START_CONFIRM_S = 1.5
+PURGE_STILL_ARMED = ("A purge group is still armed: press Clear, then try "
+                     "again.")
 BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
 SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py, MORNING.md).
@@ -2834,6 +2841,10 @@ class Remote:
         self._start_begin()
         try:
             said = self.tests_off_for_show("Continue anyway", who, screen)
+            why = self.purge_off_before_start("Continue anyway", who, screen)
+            if why:
+                return 409, {"ok": False, "error": why, "text": why,
+                             "tests_off": said}
             got = svc.continue_anyway(who, screen)
         finally:
             self._start_end()
@@ -4510,9 +4521,16 @@ class Remote:
             # may run on Hold, even mid show, and must not outlive it into
             # a show. At the press, before the scheduler; only takes risk
             # away, so a press refused below still ends them.
+            _what = {"resume": "Resume", "start-now": "Start now",
+                     "start-at-cue": "Start at a cue"}[name]
             tests_said = self.tests_off_for_show(
-                {"resume": "Resume", "start-now": "Start now",
-                 "start-at-cue": "Start at a cue"}[name], who, screen)
+                _what, who, screen)
+            # The groups the purge armed, confirmed off by flamesafe before
+            # the scheduler is asked; else refused, the show left held.
+            why = self.purge_off_before_start(_what, who, screen)
+            if why:
+                return 409, {"ok": False, "error": why, "text": why,
+                             "tests_off": tests_said}
         if name in ("start-now", "start-at-cue"):
             why = self.programming_playback_refusal()
             if why:
@@ -7166,10 +7184,76 @@ class Remote:
     def tests_off_before_rig_up(self, label):
         """schedule_service.Service.before_rig_up: on the conductor's line,
         right before a show start or a Resume is sent, every operator test
-        still on goes off (tests_off_for_show), whatever started it."""
-        return self.tests_off_for_show(
+        still on goes off (tests_off_for_show), whatever started it, and
+        the groups the purge armed are waited for (purge_off_before_start,
+        at most PURGE_START_CONFIRM_S, and only when there are any). The
+        conductor's line cannot refuse a start (a scheduled start, or a
+        tap that raced a press): one flamesafe does not confirm off is
+        said at once, as a flames alert and a journal fault."""
+        said = self.tests_off_for_show(
             label, "", "engine",
             why=f"the show is starting ({label}): every test off first")
+        why = self.purge_off_before_start(label, "", "engine")
+        if why:
+            try:
+                self.alerts.raise_("flames", f"Before {label}: {why}")
+            except Exception:                    # noqa: BLE001
+                pass
+        return said
+
+    def purge_off_before_start(self, what, who="", screen=""):
+        """"" once flamesafe has confirmed every group the purge asked to
+        arm (morning.Purge.purge_groups) disarmed and not wanted, in a
+        fresh status received GROUP_DISARM_SETTLE_S or more after this
+        call, within PURGE_START_CONFIRM_S; or the sentence that refuses
+        the start (PURGE_STILL_ARMED and the groups). Called after
+        tests_off_for_show has cleared the purge, so the Stream Deck is
+        disarming them (#266 with #269, Jeff 2026-11-14: no test outlives
+        the Hold into the show). Nothing to wait for: "" at once."""
+        m = getattr(self, "morning", None)
+        purge = getattr(m, "purge", None) if m is not None else None
+        try:
+            groups = purge.purge_groups() if purge is not None else set()
+        except Exception:                        # noqa: BLE001
+            groups = set()
+        if not groups:
+            return ""
+        fs = self.flame_status
+        try:
+            at0 = fs.clock()
+        except Exception:                        # noqa: BLE001
+            at0 = None
+        end = time.monotonic() + PURGE_START_CONFIRM_S
+        for _step in range(int(PURGE_START_CONFIRM_S /
+                               GROUP_DISARM_STEP_S) + 1):
+            try:
+                got = fs.last_at
+                if at0 is not None and got is not None and \
+                        got - at0 >= GROUP_DISARM_SETTLE_S:
+                    v = fs.view()
+                    by = {g.get("name"): g for g in v.get("groups") or []}
+                    if not v.get("stale") and all(
+                            (by.get(n) or {}).get("armed") == "disarmed" and
+                            not (by.get(n) or {}).get("wanted")
+                            for n in groups):
+                        purge.purge_groups_forget(groups)
+                        return ""
+            except Exception:                    # noqa: BLE001
+                pass
+            if time.monotonic() >= end:
+                break
+            try:
+                self._pause(GROUP_DISARM_STEP_S)
+            except Exception:                    # noqa: BLE001
+                break
+        why = (f"{PURGE_STILL_ARMED} flamesafe has not confirmed "
+               f"{', '.join(sorted(groups))} off. The show stays held.")
+        try:
+            self._journal(who or "system", screen or "engine", "purge",
+                          "refused", f"{what}: {why}", fault=True)
+        except Exception:                        # noqa: BLE001
+            pass
+        return why
 
     def tests_off_for_show(self, what, who="", screen="", why=None):
         """Every operator test off before a show may drive the rig again

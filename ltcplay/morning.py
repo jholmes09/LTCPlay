@@ -80,6 +80,10 @@ TAP_IGNORE_S = 2.0
 # #269: deselecting is always possible, a brief glitch never costs the
 # selection).
 TRANSIENT_S = 3.0
+# A group the purge asked to arm is forgotten (Purge._purge_groups) only
+# once flamesafe reports it off and its last tap is this old: longer than
+# the Stream Deck acts on a tap (streamdeck.PURGE_PRESS_FRESH_S, 2 s).
+PURGE_GROUP_FORGET_S = 3.0
 # The timed purge (Jeff, 2026-10-29: "In addition to momentary purges, we
 # would like a designated time length purge option. This is to allow for
 # longer spurts of testing in case there is a DMX issue."). The page offers
@@ -1310,6 +1314,14 @@ class Purge:
         # for the page's "NOT FIRING" words.
         self.last_firing = []
         self.last_waiting = []
+        # Groups this purge asked the deck to arm while flamesafe did not
+        # report them armed (#266 with #269, Jeff 2026-11-14): group name
+        # -> clock of that tap. Before a show starts or resumes, each must
+        # be confirmed off by flamesafe (Remote.purge_off_before_start).
+        # Forgotten once confirmed, or once flamesafe reports the group
+        # off and not wanted PURGE_GROUP_FORGET_S after its last tap (the
+        # deck acts on a tap only while it is fresh).
+        self._purge_groups = {}
 
     def _note(self, text, **f):
         if self._journal is None:
@@ -1477,11 +1489,26 @@ class Purge:
             out = dict(out, off=True, text=f"{m.name} off the purge: it "
                                            f"cannot be armed now. {why}")
             return code, out
+        try:
+            fl = self._flames() or {}
+            pre = {g.get("name") for g in fl.get("groups") or []
+                   if g.get("armed") == "armed"}
+        except Exception:                                # noqa: BLE001
+            pre = set()
         with self._lock:
             if self.owner is not None and self.owner != device and \
                     self.selected:
                 return 409, {"error": f"{self.owner} has the purge "
                                       f"selection. One device at a time."}
+            # Again, under the lock (#266 with #269): a show starting
+            # (Resume, Start now) may have cleared the purge since the
+            # check above; a tap must never add a unit after that clear.
+            try:
+                late = self._live() or ""
+            except Exception as e:                       # noqa: BLE001
+                late = f"the show's state could not be read ({type(e).__name__})."
+            if late:
+                return 409, {"error": late}
             again = machine_id in self.selected
             if not again:
                 self.selected.append(machine_id)
@@ -1493,6 +1520,8 @@ class Purge:
             # engine restart never takes a new tap for one it has seen.
             self._press_n = max(self._press_n + 1, int(time.time() * 1000))
             self._presses[m.group] = (self._press_n, now)
+            if m.group not in pre:
+                self._purge_groups[m.group] = now
         if again:
             self._note(f"{device} tapped {m.name} again: the Stream Deck is "
                        f"asked to arm group {m.group} again (it was selected "
@@ -1516,6 +1545,34 @@ class Purge:
                                          f"armed, hold Space (or the deck's "
                                          f"FIRE key) to fire.",
                      "selected": list(self.selected)}
+
+    def purge_groups(self):
+        """The groups this purge asked to arm that flamesafe has not been
+        seen to take off since (see _purge_groups)."""
+        with self._lock:
+            return set(self._purge_groups)
+
+    def purge_groups_forget(self, names):
+        with self._lock:
+            for n in names:
+                self._purge_groups.pop(n, None)
+
+    def _purge_groups_prune(self, now):
+        """Forget a group flamesafe reports off and not wanted, fresh, when
+        its last tap is PURGE_GROUP_FORGET_S old (a tap the deck could
+        still act on keeps it). Never raises."""
+        try:
+            fl = self._flames() or {}
+            if not fl or fl.get("stale"):
+                return
+            off = {g.get("name") for g in fl.get("groups") or []
+                   if g.get("armed") == "disarmed" and not g.get("wanted")}
+            with self._lock:
+                for n, at in list(self._purge_groups.items()):
+                    if n in off and now - at >= PURGE_GROUP_FORGET_S:
+                        del self._purge_groups[n]
+        except Exception:                                # noqa: BLE001
+            pass
 
     def presses_view(self, names, wanted):
         """[[group index, tap number, age in ms]] for each wanted group an
@@ -1940,6 +1997,7 @@ class Purge:
         """Every 100 ms from the watcher (or the test): a fire press with no
         heartbeat for BEAT_STALE_S is over; a selection with no open page,
         a live show or an Abort standing is cleared."""
+        self._purge_groups_prune(now)
         with self._lock:
             f = self.fire
             stale = f is not None and now - f["beat"] > BEAT_STALE_S

@@ -784,7 +784,7 @@ them as burn ("other", like scrubbing), once, and never as a Showven purge.
 
 | # | Threat | Where it is stopped |
 |---|---|---|
-| T1 | A purge frame goes out while a show cue is playing (two sources of fire values) | `FlameLink.values_now`: purge is read only when `live is not True`; the engine refuses `purge-select` and `purge-fire` while the scheduler is in SHOW or PAUSED, or while the show clock plays a cue; the watcher clears the selection when a show goes live |
+| T1 | A purge frame goes out while a show cue is playing (two sources of fire values) | `FlameLink.values_now`: purge is read only when `live is not True`; the engine refuses `purge-select` and `purge-fire` while the scheduler is in SHOW, while the show clock plays a cue, or while a start or Stop is under way; on a Hold (HOLD, or PAUSED mid show with no cue playing) a purge is allowed (#266, Jeff 2026-11-14), and the Hold press clears it; Resume, Start now, Start at a cue and Continue anyway clear it and have flamesafe confirm the purge's groups off before the scheduler is asked (`Remote.purge_off_before_start`, `PURGE_START_CONFIRM_S` 1.5 s; else refused, the show left held; on the conductor's line, forced off with the flame link's disarm_all); the watcher clears the selection when a show goes live |
 | T2 | The page dies with Space down (crash, sleep, cable) | the heartbeat stops; `FlameLink` drops the purge frame 0.25 s after the last `purge_set` on its own clock; flamesafe zeroes `fire_hold_ms` after ltcplay's last frame if the engine dies too |
 | T3 | Key repeat, a lost keyup, a second tab or device | the page sends heartbeats on its own 100 ms timer from one keydown and stops on keyup, blur, visibilitychange and pagehide; the heartbeats are not the key: the browser's key repeat events are the evidence the key is still down, and a press older than 2.5 s with no repeat event for 1 s ends (`fireKeyLapsed`; so the OS key repeat has to be on; the page says so). A physically stuck key still repeats, so the PAGE is not a dead-man switch; the Stream Deck's FIRE key is (its heartbeats stop the instant the key reads up). The engine binds a fire press to a `fire_id` and the device that owns the selection; a heartbeat from another device, or for an old `fire_id`, is refused and does not end the owner's press; the deck process is known by its `screen` over loopback, never by an operator name; a machine never joins a press that is already firing |
 | T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the OWNER device's `morning-open` beat (every 500 ms) is under 2 s old (another device's open page does not keep it); leaving the page posts `purge-clear` at once; the deck disarms every purge group it armed the moment the engine stops listing it, and 1.3 s after the engine stops answering (0.3 s of staleness plus the 1 s grace for one slow read, Jeff 2026-11-14) |
@@ -817,9 +817,17 @@ still hold.
   values only while a show cue is live and its timecode is moving
   (`flamelink.values_now`). A Hold is not live, so flames are zero through
   a Hold; the conductor also zeroes the cues at Hold. The purge keeps that:
-  it is refused and cleared whenever the scheduler is in SHOW or PAUSED,
-  or the show clock plays a cue. A purge between shows
-  (PRESHOW, INTERMISSION, STANDBY) is allowed, which is when Andy needs it.
+  it is refused and cleared whenever the scheduler is in SHOW or the show
+  clock plays a cue. On a Hold (HOLD between shows or after a Stop, or
+  PAUSED when Hold was pressed mid show) the operator may test anything,
+  a purge included (#266, Jeff 2026-11-14): the Hold press clears the
+  purge, a fresh tap arms again, and Resume, Start now, Start at a cue and
+  Continue anyway clear it and wait (at most `PURGE_START_CONFIRM_S`,
+  1.5 s) for flamesafe to confirm every group the purge armed is off
+  before the scheduler is asked, or refuse ("A purge group is still
+  armed: press Clear, then try again."), the show left held. A purge
+  between shows (PRESHOW, INTERMISSION, STANDBY) is allowed, which is when
+  Andy needs it.
 - **Arming from a screen.** Off by default (`screen_arming`, review of PR
   #43). The purge's arming from the Rack screen itself is on by default
   (`purge_arming`, this page's purpose); from a network device it also

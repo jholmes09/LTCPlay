@@ -25174,6 +25174,26 @@ def build():
   '            if purge is not None and getattr(purge, "selected", None):\n                purge.clear(why)\n',
   '            if False:\n                purge.clear(why)\n'),
 
+ ('purge: Resume and Start now go on with the purge groups still armed',
+  'ltcplay/remote.py',
+  '            why = self.purge_off_before_start(_what, who, screen)\n',
+  '            why = ""\n'),
+
+ ('purge: a start never waits for flamesafe to confirm the purge groups off',
+  'ltcplay/remote.py',
+  '        if not groups:\n            return ""\n        fs = self.flame_status\n',
+  '        if True:\n            return ""\n        fs = self.flame_status\n'),
+
+ ('purge: a tap racing a start adds a unit after the start cleared the purge',
+  'ltcplay/morning.py',
+  '            if late:\n                return 409, {"error": late}\n',
+  '            if False:\n                return 409, {"error": late}\n'),
+
+ ('ui2 page: the Hazers step is missing when only the hazer test is set up',
+  'ltcplay/web/remote2.html',
+  '  if(part !== "shut" && (hzOk || (st.hazer_test && st.hazer_test.available))){\n',
+  '  if(part !== "shut" && hzOk){\n'),
+
  ('purge: a Hold press leaves the purge selection armed',
   'ltcplay/remote.py',
   '                    _purge.clear(f"{who or \'someone\'} pressed Hold on the "\n',

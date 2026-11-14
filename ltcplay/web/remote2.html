@@ -5918,7 +5918,7 @@ function daySteps(part, s){
   if(part !== "shut" && (hzOk || (st.hazer_test && st.hazer_test.available))){
     const n = hzOk ? hz.hazers.filter(h => h.armed).length : 0;
     out.push({key:"hazers", title:"Hazers", icon:"wind", state: seen("hazers") ? "done" : "todo",
-      why: n ? n + " of " + hz.hazers.length + " armed." : "Set levels, then arm for the show."});
+      why: n ? n + " of " + hz.hazers.length + " armed." : hzOk ? "Set levels, then arm for the show." : "Turn hazers on or off to test."});
   }
   if(part === "shut" && wc && typeof wc.available === "boolean"){
     const run = wc.state && wc.state !== "idle";
@@ -6279,7 +6279,7 @@ function dayBuild(k){
   else if(k === "purge") box.innerHTML = `<div class="dgrid" id="mo-groups"></div><div class="drow"><button class="b" id="mo-clear">${icon("x")}Clear</button><button class="b" id="d-mach">${icon("list")}Machines</button><button class="b" id="d-map">${icon("list")}<span id="d-map-l">Map</span></button><span class="key" id="mo-key"></span></div>`;
   else if(k === "lasers") box.innerHTML = `<div class="dgrid" id="mo-lasers"></div><div class="drow"><button class="b green" id="mo-cal-on">${icon("laser")}Test grid on</button><button class="b" id="mo-cal-off">${icon("x")}Test grid off</button><button class="b" id="mo-beyond" hidden>${icon("open")}Open BEYOND</button></div>`;
   else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
-  else if(k === "hazers") box.innerHTML = `<div class="drow"><button class="b green" id="d-hz-open">${icon("wind")}Levels</button><button data-safe class="b safe" id="d-hz-off">${icon("shield")}Hazers off</button></div>`;
+  else if(k === "hazers") box.innerHTML = `<div class="drow"><button class="b green" id="d-hz-open"${ST && ST.hazers && ST.hazers.available ? "" : " hidden"}>${icon("wind")}Levels</button><button data-safe class="b safe" id="d-hz-off">${icon("shield")}Hazers off</button></div>`;
   else if(k === "clean") box.innerHTML = `<div class="drow"><span class="dbig" id="wc-armed"></span></div>` +
     `<div class="drow"><button class="b green hold" id="wc-hold">${icon("ring")}<span id="wc-hold-l">Hold to start</span></button><button data-safe class="b red" id="wc-stop">${icon("stop")}Stop</button></div>` +
     `<div id="wc-prog" class="dbig"></div><div id="wc-block" class="dim"></div>`;

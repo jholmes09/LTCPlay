@@ -59060,6 +59060,17 @@ class _PurgePressRig:
             journal=lambda t_, **kw: self.events.append(t_))
         for i in range(len(names)):
             self.deck._disarmed_at[i] = -1e9
+        # The engine's own waits (a start confirming the purge's groups
+        # off, purge_off_before_start) run the deck and flamesafe on.
+        self.pause_runs_deck = True
+
+        def pause(seconds):
+            if rig.pause_runs_deck:
+                rig.step(seconds)
+            else:
+                R.mono[0] += seconds
+                R.wall[0] += seconds
+        R.remote._pause = pause
 
     def step(self, dt=0.05, n=1):
         R = self.R
@@ -59754,67 +59765,79 @@ def test_purge_stop_cancels_and_nothing_rearms_after_it():
 def test_purge_on_a_mid_show_hold_ends_at_resume_and_never_rearms():
     section("Purge on a Hold mid show (#266 with #269, Jeff 2026-11-14): "
             "with the show PAUSED two taps select and arm two units, Space "
-            "fires them; Resume turns the purge and its selection off "
-            "before the scheduler is asked (tests off before every start), "
-            "the deck disarms, and nothing re-arms after Resume without a "
-            "fresh tap")
+            "fires them; Resume turns the purge and its selection off and "
+            "has flamesafe CONFIRM the purge's groups disarmed before the "
+            "scheduler is asked (tests off before every start), also with "
+            "the Stream Deck's reads failing (its 1 s grace); when they "
+            "cannot be confirmed in time the Resume is refused, the show "
+            "stays held and the tests stay off; nothing re-arms after "
+            "Resume without a fresh tap")
     S = _sched()
     if S is None:
         return
     import dataclasses as _dc
+    from ltcplay import remote as RM
     P = _PurgePressRig(S)
     old = P.R.svc.machine
-    seen_at_start = []
+    at_start = []
     real_press = P.R.svc.operator_press
 
     def press(name, *a, **kw):
         if name == "resume":
             pv = P.R.m.purge.view()
-            seen_at_start.append((pv["selected"], pv["firing"],
-                                  pv["groups_wanted"]))
+            at_start.append((pv["selected"], pv["firing"],
+                             pv["groups_wanted"],
+                             [g["armed"] for g in P.R.groups[:2]],
+                             list(P.arm.wanted[:2])))
             # The rig's machine is a stand-in: the scheduler's own Resume
             # is not what this test is about, only what came before it.
             return {"ok": True, "text": "Resumed."}
         return real_press(name, *a, **kw)
-    try:
+
+    def armed_and_firing(label):
+        _tap_gap(P.R)
         P.step()
-        P.R.svc.machine = _dc.replace(old, state="PAUSED")
-        P.step(n=3)
         for mid in ("g1", "s1"):
             st, out = P.tap(mid)
             check(st == 200 and not out.get("off") and
                   not out.get("ignored"),
-                  f"on Hold mid show a tap on {mid} is taken: {st} {out}")
+                  f"{label}: on Hold mid show a tap on {mid} is taken: "
+                  f"{st} {out}")
         P.step(n=3)
-        check(P.arm.wanted[:2] == [True, True],
-              f"both units armed on the Hold: {P.arm.wanted}")
+        check(P.arm.wanted[:2] == [True, True] and
+              [g["armed"] for g in P.R.groups[:2]] == ["armed", "armed"],
+              f"{label}: both units armed on the Hold: {P.arm.wanted}")
         n0 = len(P.R.link.frames)
         st, out = P.post("purge-fire", {"on": True})
         P.step(0.1)
-        st2, out2 = P.post("purge-fire", {"on": True,
-                                          "fire_id": out.get("fire_id")})
+        P.post("purge-fire", {"on": True, "fire_id": out.get("fire_id")})
         P.step(0.1)
         lit = sorted({i + 1 for f in P.R.link.frames[n0:]
                       for i, v in enumerate(f) if v})
         check(st == 200 and P.R.m.purge.view()["firing"] and lit,
-              f"Space fires them on the Hold: {st} {out} {lit}")
-        # Resume with Space still held.
-        P.R.svc.operator_press = press
+              f"{label}: Space fires them on the Hold: {st} {out} {lit}")
+        return out.get("fire_id")
+
+    def resume():
         st, _h, out = P.R.ask("POST", "/api/remote/resume",
                               {"seen": P.R.seen()}, client=P.LOOP)
-        check(seen_at_start == [([], False, [])],
-              f"the purge, its fire and its selection were off before the "
-              f"scheduler was asked to resume: {seen_at_start}")
-        check("the purge" in (out.get("tests_off") or ""),
+        return st, out
+    try:
+        P.step()
+        P.R.svc.machine = _dc.replace(old, state="PAUSED")
+        P.R.svc.operator_press = press
+        # 1. The deck reading: confirmed off before the scheduler.
+        fid = armed_and_firing("deck reading")
+        st, out = resume()
+        check(at_start == [([], False, [], ["disarmed", "disarmed"],
+                            [False, False])],
+              f"the purge, its fire, its selection AND flamesafe's arm of "
+              f"both groups were off when the scheduler was asked to "
+              f"resume: {at_start}")
+        check(st == 200 and "the purge" in (out.get("tests_off") or ""),
               f"Resume says the purge was turned off: {st} {out}")
         n1 = len(P.R.link.frames)
-        P.step(n=10)
-        check(P.arm.wanted[:2] == [False, False],
-              f"the deck disarms both: {P.arm.wanted}")
-        check(not any(any(f) for f in P.R.link.frames[n1:]),
-              "nothing reaches the link after Resume")
-        st, out = P.post("purge-fire", {"on": True,
-                                        "fire_id": out2.get("fire_id")})
+        st, out = P.post("purge-fire", {"on": True, "fire_id": fid})
         P.step(0.1)
         check(not P.R.m.purge.view()["firing"] and
               not any(any(f) for f in P.R.link.frames[n1:]),
@@ -59825,6 +59848,79 @@ def test_purge_on_a_mid_show_hold_ends_at_resume_and_never_rearms():
               P.R.m.purge.view()["selected"] == [],
               f"nothing re-arms after Resume without a fresh tap: "
               f"{P.arm.wanted}")
+        # 2. The deck's reads failing at the Resume: its 1 s grace keeps
+        # the groups armed, and the Resume waits for flamesafe's word.
+        at_start.clear()
+        armed_and_firing("deck read failing")
+        P.blip = True
+        try:
+            st, out = resume()
+        finally:
+            P.blip = False
+        check(at_start == [([], False, [], ["disarmed", "disarmed"],
+                            [False, False])] and st == 200,
+              f"with the deck's reads failing, flamesafe's arm of both "
+              f"groups was off when the scheduler was asked: {st} {out} "
+              f"{at_start}")
+        P.post("purge-stop", {})
+        P.step(n=80)
+        check(P.arm.wanted[:2] == [False, False],
+              f"and nothing re-arms after it: {P.arm.wanted}")
+        # 3. Nothing disarms them (the deck not running): refused within
+        # PURGE_START_CONFIRM_S, the scheduler never asked, the show held,
+        # every test off.
+        at_start.clear()
+        armed_and_firing("deck not running")
+        P.pause_runs_deck = False
+        try:
+            t0 = P.R.mono[0]
+            st, out = resume()
+            waited = P.R.mono[0] - t0
+        finally:
+            P.pause_runs_deck = True
+        check(st == 409 and at_start == [] and
+              RM.PURGE_STILL_ARMED in (out.get("error") or "") and
+              "the purge" in (out.get("tests_off") or ""),
+              f"unconfirmed: Resume refused, the scheduler not asked, the "
+              f"tests said off: {st} {out} {at_start}")
+        check(RM.PURGE_START_CONFIRM_S - 0.1 <= waited <=
+              RM.PURGE_START_CONFIRM_S + 0.2,
+              f"the wait is bounded at {RM.PURGE_START_CONFIRM_S} s: "
+              f"{waited:.2f}")
+        check(P.R.svc.machine.state == "PAUSED" and
+              P.R.m.purge.view()["selected"] == [] and
+              not P.R.m.purge.view()["firing"],
+              f"the show stays held and the purge stays off: "
+              f"{P.R.svc.machine.state} {P.R.m.purge.view()['selected']}")
+        P.post("purge-stop", {})
+        P.step(n=10)
+        st, out = resume()
+        check(st == 200 and len(at_start) == 1 and
+              at_start[0][3] == ["disarmed", "disarmed"],
+              f"once the deck disarms them, the next Resume goes: {st} "
+              f"{out} {at_start}")
+        # A tap that passed the show check just before a start began (the
+        # start's clear landing in between) is refused under the purge's
+        # lock: it never adds a unit after the clear.
+        P.post("purge-clear", {})
+        _tap_gap(P.R)
+        P.step()
+        real_live, calls = P.R.m.purge._live, [0]
+
+        def live_late():
+            calls[0] += 1
+            return "" if calls[0] == 1 else P.R.remote.start_underway() \
+                or "a show is starting"
+        P.R.m.purge._live = live_late
+        try:
+            st, out = P.tap("g1")
+        finally:
+            P.R.m.purge._live = real_live
+        P.step(n=5)
+        check(st == 409 and P.R.m.purge.view()["selected"] == [] and
+              P.arm.wanted[0] is False,
+              f"a tap racing a start adds nothing after the clear: {st} "
+              f"{out}")
     finally:
         P.R.svc.operator_press = real_press
         P.R.svc.machine = old
@@ -71153,6 +71249,24 @@ def _morning_rig(S, config=None, link=None):
                                                  None))
     R.remote.morning = R.m
     R.remote._deck_seen = R.mono[0]          # the deck is reading the engine
+    # This rig has no Stream Deck: while the engine waits (a start
+    # confirming the purge's groups off, purge_off_before_start), a group
+    # the purge armed and no longer wants is let go, as the deck's
+    # purge_pass does, and flamesafe reports it off.
+    arm_pause = R.remote._pause
+
+    def pause(seconds):
+        try:
+            wanted = set(R.m.purge.view()["groups_wanted"])
+            for n in R.m.purge.purge_groups():
+                for i, g in enumerate(R.groups):
+                    if g["name"] == n and n not in wanted and \
+                            i not in wanted:
+                        g["armed"], g["wanted"] = "disarmed", False
+        except Exception:                        # noqa: BLE001
+            pass
+        arm_pause(seconds)
+    R.remote._pause = pause
     return R
 
 
@@ -105431,7 +105545,8 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
         preroll=pr, schedule=svc, users_active=lambda: True,
         tests_off_for_show=lambda what, who, screen: (
             tests_off.append((what, who, screen, len(said))), "")[-1])
-    for _n in ("_start_begin", "_start_end", "start_underway"):
+    for _n in ("_start_begin", "_start_end", "start_underway",
+               "purge_off_before_start"):
         setattr(me, _n, getattr(RM.Remote, _n).__get__(me))
     starting_seen = []
     svc.continue_anyway = lambda who, screen: (
@@ -111630,7 +111745,10 @@ async function go(){
   for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.hazer_test !== undefined); i++) await wait(100);
   await wait(400);
   // Moved to the Hazers step (Jeff, 2026-11-14): on the Purge step the
-  // block is hidden, whatever renders it.
+  // block is hidden, whatever renders it. The DAY tab shown first, so a
+  // block drawn there would have boxes to measure.
+  if(typeof showTab === "function" && TAB !== "day") showTab("day");
+  q("t-day").hidden = false;
   daySections("purge"); renderHazerTest(ST);
   const out0 = {purge_shown: !q("d-hz").hidden && q("d-hz").getClientRects().length > 0};
   const out = Object.assign({first: look()}, out0);
@@ -114330,6 +114448,15 @@ const sh = st("Andy"); sh.hazers = {available:true, hazers:[{name:"Hazer 1", arm
 s = daySteps("start", {st:sh, mo:mo(), seen:() => false});
 t(keys(s) === "checks,startlist,purge,lasers,hazers,locks" && s.find(x => x.key === "hazers").why === "1 of 2 armed.", "hazers (#168): a step with its own sheet: " + keys(s));
 t(!keys(daySteps("shut", {st:sh, mo:mo(), seen:() => false})).includes("hazers"), "hazers are a startup step");
+// The hazer test alone, with no hazers set up for the show (#271, Jeff
+// 2026-11-14): the Hazers step is there for Turn on or off and All off,
+// and says so; never at Shutdown; neither: no step.
+const ht = st("Andy"); ht.hazers = {available:false, hazers:[]}; ht.hazer_test = {available:true};
+s = daySteps("start", {st:ht, mo:mo(), seen:() => false});
+t(keys(s) === "checks,startlist,purge,lasers,hazers,locks" && s.find(x => x.key === "hazers").why === "Turn hazers on or off to test.", "the hazer test alone: a Hazers step, its own words: " + keys(s) + " " + JSON.stringify(s.find(x => x.key === "hazers")));
+t(!keys(daySteps("shut", {st:ht, mo:mo(), seen:() => false})).includes("hazers"), "the hazer test alone: a startup step only");
+const hn = st("Andy"); hn.hazers = {available:false, hazers:[]}; hn.hazer_test = {available:false};
+t(!keys(daySteps("start", {st:hn, mo:mo(), seen:() => false})).includes("hazers"), "no hazers and no hazer test: no Hazers step");
 // Every why, for many states: 8 words or fewer.
 for(const part of ["start", "shut"]) for(const m of [mo(), m2, m3]) for(const wc of [null, {available:true, state:"idle"}, {available:true, state:"phase2"}, {available:false, problem:"There is no wave flamer group in this engine at all."}])
   for(const u of [null, "Andy"]) for(const x of daySteps(part, {st:st(u), mo:m, wc:wc, fu:{units:[{refill_soon:true}]}, seen:() => false}))
