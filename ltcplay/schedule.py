@@ -1530,7 +1530,9 @@ def _after_show(tx, abort=False, stopped=False, hold=False):
         # closes the night if so.
         _enter(tx, STANDBY, after_stop=stopped)
     else:
-        _enter(tx, CLOSING)
+        # A show stopped short (a failed last start) never leaves the idle
+        # look held: the night closes dark, as before.
+        _enter(tx, CLOSING, held=False if stopped else None)
 
 
 # Start now's two reasons. Jeff, 2026-10-02: Start now runs an EXTRA show;

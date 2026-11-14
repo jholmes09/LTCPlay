@@ -9942,7 +9942,7 @@ _WHOLE_FADE = ["ZERO_FLAME_CUES", "BLANK_LASERS", "FADE_MUSIC_OUT",
 _ARRIVE = {"IDLE": "PRESHOW_LOOK", "STANDBY": "INTERMISSION",
            "HOLD": "INTERMISSION", "SHOW": "START_SHOW",
            "PAUSED": "FREEZE_SHOW",
-           "CLOSING": "BLACKOUT"}
+           "CLOSING": "ZERO_FLAME_CUES"}
 
 
 def _entry_effects_hold(S, before, o, label):
@@ -9965,7 +9965,14 @@ def _entry_effects_hold(S, before, o, label):
     check(_ARRIVE[st] in kinds,
           f"{label}: entered {st} from {before.state} without "
           f"{_ARRIVE[st]}; effects were {kinds}")
-    if st == "CLOSING":
+    if st == "CLOSING" and getattr(o.machine, "held_look", False):
+        # after_last_show "idle" (Jeff, 2026-11-14): the idle look held.
+        check(kinds[-4:] == ["ZERO_FLAME_CUES", "STOP_CONDUCTOR",
+                             "FADE_VIDEO_OUT", "IDLE_LOOK_HELD"],
+              f"{label}: a closing that holds the idle look must zero "
+              f"flames, stop and fade MadMapper, and keep the pixels, got "
+              f"{kinds}")
+    elif st == "CLOSING":
         check(kinds[-4:] == ["ZERO_FLAME_CUES", "STOP_CONDUCTOR",
                              "FADE_PIXELS", "BLACKOUT"],
               f"{label}: closing must zero flames, stop, fade and black out, "
@@ -48969,6 +48976,517 @@ def test_the_show_takes_over_the_pixels_on_its_first_frame():
     print("  ok")
 
 
+def _idle_rule(S, after="idle", last="18:10"):
+    """Saturday 2026-11-14, one show at 18:00 (two with last "18:30"), the
+    schedule's after_last_show set to `after` (None: left out)."""
+    doc = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                     "interval_min": 20, "last_end": last}},
+                     exceptions={}, late_grace_s=0)
+    if after is not None:
+        doc["after_last_show"] = after
+    return S.parse_rule(doc)
+
+
+def _idle_night_to_off(S, rule):
+    """A _Night with its one show run to its end and the closing done."""
+    n = _Night(S, rule)
+    n.boot(_den(S, 17, 0))
+    n.tick(_den(S, 18, 0))
+    n.do(S.SHOW_CONFIRMED, "madmapper", _den(S, 18, 0, 2), show=1)
+    n.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 8), show=1)
+    return n
+
+
+def test_after_last_show_default_still_closes_dark():
+    section("after the last show (Jeff, 2026-11-14): the schedule setting "
+            "after_last_show is \"close\" when the file leaves it out, and "
+            "the night closes dark exactly as before: the same effects, "
+            "the same saved file, the same rule fingerprint; anything but "
+            "\"close\" or \"idle\" is refused with a sentence")
+    S = _sched()
+    if S is None:
+        return
+    r = _idle_rule(S, after=None)
+    check(r.after_last_show == S.AFTER_CLOSE == "close" and
+          "after_last_show" not in S.rule_to_doc(r),
+          "left out: close, and never written back into the file")
+    rc = _idle_rule(S, after="close")
+    check(S.rule_fingerprint(rc) == S.rule_fingerprint(r) and
+          "after_last_show" not in S.rule_to_doc(rc),
+          "an explicit \"close\" is the same rule: the same fingerprint, so "
+          "an update never rebuilds tonight's list for it")
+    ri = _idle_rule(S)
+    check(ri.after_last_show == "idle" and
+          S.rule_to_doc(ri)["after_last_show"] == "idle" and
+          S.parse_rule(S.rule_to_doc(ri)) == ri and
+          S.rule_fingerprint(ri) != S.rule_fingerprint(r),
+          "\"idle\" is read, written back, and is a change of the rule")
+    for bad in ("dark", "", True, 1, None, "Idle"):
+        doc = _sched_doc(after_last_show=bad)
+        try:
+            S.parse_rule(doc)
+            got = None
+        except S.RuleError as e:
+            got = str(e)
+        check(got is not None and "after_last_show" in got and
+              "\"close\"" in got and "\"idle\"" in got,
+              f"after_last_show {bad!r} is refused, saying what it takes: "
+              f"{got!r}")
+    n = _idle_night_to_off(S, r)
+    kinds = [e.kind for e in n.last.effects]
+    check(n.m.state == S.CLOSING and not n.m.held_look and
+          kinds == ["ZERO_FLAME_CUES", "STOP_CONDUCTOR", "FADE_PIXELS",
+                    "BLACKOUT"],
+          f"the last show ends: the closing as before, dark: {kinds}")
+    n.do(S.CLOSING_DONE, "system", _den(S, 18, 8, 2))
+    doc = S.machine_to_doc(n.m)
+    check(n.m.state == S.OFF and not n.m.held_look and
+          "held_look" not in doc and doc["format"] == S.TONIGHT_PLAIN_FORMAT
+          and not S.machine_view(n.m, _den(S, 18, 9))["held_look"],
+          f"OFF, nothing held, tonight's file as before: {doc['format']}")
+    o = n.op(S.END_NIGHT, _den(S, 18, 9), confirmed=True,
+             detail=S.END_OF_NIGHT_DETAIL)
+    check(not o.accepted and "already been closed" in o.refused and
+          not [a for a in S.actions_for(n.m)
+               if a["id"] == "end_night" and a["allowed"]],
+          f"End of night is refused on a night that closed dark: "
+          f"{o.refused!r}")
+    n.audit("after_last_show close")
+    print("  ok")
+
+
+def test_after_last_show_idle_holds_the_look_until_end_of_night():
+    section("after the last show \"idle\" (Jeff, 2026-11-14): the closing "
+            "zeroes the flame cues and stops MadMapper but keeps the pixels "
+            "on the idle look, held through OFF; End of night (anyone, "
+            "confirmed) ends it to black and closes the night for good; a "
+            "Stop, Close for the night or a failed start never hold it; "
+            "Start now runs an extra show and the look comes back after "
+            "it; a restart holds it again only if it was held; a save with "
+            "\"close\" ends it")
+    S = _sched()
+    if S is None:
+        return
+    from dataclasses import replace
+    from datetime import date
+    rule = _idle_rule(S)
+    n = _idle_night_to_off(S, rule)
+    kinds = [e.kind for e in n.last.effects]
+    check(n.m.state == S.CLOSING and n.m.held_look and
+          kinds == ["ZERO_FLAME_CUES", "STOP_CONDUCTOR", "FADE_VIDEO_OUT",
+                    "IDLE_LOOK_HELD"] and "FADE_PIXELS" not in kinds and
+          "BLACKOUT" not in kinds,
+          f"the last show ends: flame cues zero, MadMapper faded and "
+          f"stopped, the pixels kept on the idle look: {kinds}")
+    n.do(S.CLOSING_DONE, "system", _den(S, 18, 8, 2))
+    view = S.machine_view(n.m, _den(S, 18, 9))
+    eon = [a for a in S.actions_for(n.m) if a["id"] == "end_night"]
+    check(n.m.state == S.OFF and n.m.held_look and view["held_look"] and
+          view["after_last_show"] == "idle" and eon and eon[0]["allowed"],
+          "OFF with the idle look held: the view says so and the engine "
+          "takes End of night")
+    check(any("End of night" in le.text and "idle look" in le.text
+              for le in n.log),
+          "the journal says the look is held until End of night")
+    for st in (S.HOLD_ON, S.SKIP_NEXT, S.DELAY_NEXT):
+        o = n.op(st, _den(S, 18, 9), minutes=5)
+        check(not o.accepted and n.m.held_look,
+              f"{st} is refused as on any closed night, the look stays")
+    o = n.tick(_den(S, 23, 0))
+    check(n.m.state == S.OFF and n.m.held_look and not o.effects,
+          "the ticks of the closed night change nothing")
+    # Saved and read back: held, and a restart holds it again.
+    doc = S.machine_to_doc(n.m)
+    check(doc.get("held_look") is True and
+          doc["format"] == S.TONIGHT_FORMAT,
+          f"tonight's file keeps the held look (format 4): {doc}")
+    back = S.machine_from_doc(doc, rule, date(2026, 11, 14),
+                              _den(S, 19, 0))
+    o = S.step(back, S.Event(S.BOOT_DONE, "system"), _den(S, 19, 0))
+    check(o.machine.state == S.CLOSING and o.machine.held_look and
+          "IDLE_LOOK_HELD" in [e.kind for e in o.effects] and
+          "BLACKOUT" not in [e.kind for e in o.effects],
+          "a restart while it was held holds it again")
+    blk = dict(doc)
+    blk.pop("held_look")
+    back = S.machine_from_doc(blk, rule, date(2026, 11, 14), _den(S, 19, 0))
+    o = S.step(back, S.Event(S.BOOT_DONE, "system"), _den(S, 19, 0))
+    check(o.machine.state == S.CLOSING and not o.machine.held_look and
+          [e.kind for e in o.effects][-1] == "BLACKOUT",
+          "a restart of a night that closed dark stays dark: nothing is "
+          "lit that was not lit before")
+    # End of night: unconfirmed, then confirmed by someone signed out.
+    o = n.op(S.END_NIGHT, _den(S, 19, 0), who="signed out",
+             screen="iPad at 10.20.0.44", surface=True,
+             detail=S.END_OF_NIGHT_DETAIL)
+    check(not o.accepted and "confirmed" in o.refused and n.m.held_look,
+          f"End of night without its second tap changes nothing: "
+          f"{o.refused!r}")
+    o = n.op(S.END_NIGHT, _den(S, 19, 0), who="signed out",
+             screen="iPad at 10.20.0.44", surface=True, confirmed=True,
+             detail=S.END_OF_NIGHT_DETAIL)
+    kinds = [e.kind for e in o.effects]
+    check(o.accepted and n.m.state == S.CLOSING and not n.m.held_look and
+          n.m.closed_by_operator and
+          kinds == ["ZERO_FLAME_CUES", "STOP_CONDUCTOR", "FADE_PIXELS",
+                    "BLACKOUT"],
+          f"End of night: the closing's black, the night closed by the "
+          f"operator: {kinds} {o.refused!r}")
+    said = " ".join(le.text for le in o.log)
+    check("End of night" in said and "signed out" in said and
+          "iPad at 10.20.0.44" in said and
+          all(le.who == "signed out" for le in o.log),
+          f"the journal says End of night, where, and that nobody was "
+          f"signed in: {said!r}")
+    n.do(S.CLOSING_DONE, "system", _den(S, 19, 0, 2))
+    o = n.op(S.END_NIGHT, _den(S, 19, 1), confirmed=True,
+             detail=S.END_OF_NIGHT_DETAIL)
+    check(n.m.state == S.OFF and not o.accepted and
+          "already been closed" in o.refused,
+          "a second End of night finds the night closed")
+    back = S.machine_from_doc(S.machine_to_doc(n.m), rule,
+                              date(2026, 11, 14), _den(S, 19, 5))
+    o = S.step(back, S.Event(S.BOOT_DONE, "system"), _den(S, 19, 5))
+    check(not o.machine.held_look and
+          [e.kind for e in o.effects][-1] == "BLACKOUT",
+          "after End of night a restart stays dark")
+    n.audit("End of night")
+    # End of night never closes a night still running.
+    n2 = _Night(S, _idle_rule(S, last="18:30"))
+    n2.boot(_den(S, 17, 0))
+    o = n2.op(S.END_NIGHT, _den(S, 17, 1), confirmed=True,
+              detail=S.END_OF_NIGHT_DETAIL)
+    check(not o.accepted and n2.m.state == S.IDLE and
+          all(s.status == S.PENDING for s in n2.m.slots),
+          f"End of night before the last show changes nothing: "
+          f"{o.refused!r}")
+    # Close for the night (shows still to come): dark, never held.
+    o = n2.op(S.END_NIGHT, _den(S, 17, 1), confirmed=True)
+    check(o.accepted and not n2.m.held_look and
+          [e.kind for e in o.effects][-1] == "BLACKOUT",
+          "Close for the night closes dark, idle setting or not")
+    # A Stop during the last show: dark, never held.
+    n3 = _Night(S, rule)
+    n3.boot(_den(S, 17, 0))
+    n3.tick(_den(S, 18, 0))
+    n3.do(S.SHOW_CONFIRMED, "madmapper", _den(S, 18, 0, 2), show=1)
+    n3.op(S.STOP_SHOW, _den(S, 18, 3), confirmed=True)
+    n3.tick(_den(S, 18, 3, 1))
+    check(n3.m.state == S.CLOSING and not n3.m.held_look and
+          [e.kind for e in n3.last.effects][-1] == "BLACKOUT",
+          f"a Stop in the last show: the night closes dark: "
+          f"{n3.m.state} {[e.kind for e in n3.last.effects]}")
+    # A failed last start: dark, never held.
+    n4 = _Night(S, rule)
+    n4.boot(_den(S, 17, 0))
+    n4.tick(_den(S, 18, 0))
+    n4.do(S.SHOW_FAILED, "madmapper", _den(S, 18, 0, 3), show=1)
+    n4.tick(_den(S, 18, 0, 4))
+    check(n4.m.state == S.CLOSING and not n4.m.held_look,
+          f"a failed last start: the night closes dark: {n4.m.state}")
+    # Start now from the held look: the show, then the look again.
+    n5 = _idle_night_to_off(S, rule)
+    n5.do(S.CLOSING_DONE, "system", _den(S, 18, 8, 2))
+    n5.op(S.START_NOW, _den(S, 18, 30))
+    check(n5.m.state == S.SHOW and not n5.m.held_look,
+          "Start now on the held look: the extra show, nothing held")
+    n5.do(S.SHOW_CONFIRMED, "madmapper", _den(S, 18, 30, 2), show=2)
+    n5.do(S.SHOW_ENDED, "madmapper", _den(S, 18, 38), show=2)
+    check(n5.m.state == S.CLOSING and n5.m.held_look,
+          "and when it ends by itself the idle look is held again")
+    # A schedule saved with "close" while held ends it; "idle" keeps it.
+    n5.do(S.CLOSING_DONE, "system", _den(S, 18, 38, 2))
+    kept, _ = S.follow_rule(_idle_rule(S, last="18:10"), n5.m,
+                            _den(S, 18, 40))
+    check(kept.machine.held_look and kept.machine.state == S.OFF,
+          "a save that keeps \"idle\" keeps the held look")
+    gone, _ = S.follow_rule(_idle_rule(S, after="close"), n5.m,
+                            _den(S, 18, 40))
+    check(not gone.machine.held_look and gone.machine.state == S.OFF,
+          "a save with \"close\" ends the held look (the pixels go black)")
+    # held_look only ever stands in CLOSING or OFF.
+    try:
+        m = replace(n5.m, state=S.STANDBY)
+        tx = S._Tx(m, S.Event(S.TICK, "scheduler"), _den(S, 18, 41))
+        S._enter(tx, S.STANDBY)
+        check(not tx.m.held_look, "leaving OFF clears the held look")
+    except Exception as e:                       # noqa: BLE001
+        check(False, f"_enter raised: {e}")
+    print("  ok")
+
+
+def _idle_work(S, after="idle"):
+    """A work folder whose rule has one show on Saturday at 18:00 and the
+    schedule's after_last_show set to `after`."""
+    import tempfile
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    doc = _sched_doc(weekly={"sat": {"first_start": "18:00",
+                                     "interval_min": 20,
+                                     "last_end": "18:10"}}, exceptions={})
+    doc["after_last_show"] = after
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), doc)
+    return work
+
+
+def _idle_fi_night(S, after="idle"):
+    """_fi_night on _idle_work, the hazers' off recorded, its one show run
+    to its own end: the night closed."""
+    n = _fi_night(work=_idle_work(S, after))
+    n.hazers = []
+    n.w.runner.hazers_off = lambda why: n.hazers.append(why)
+    n.svc.tick()
+    n.now[0] = _den(S, 18, 0)
+    n.svc.tick()
+    _settle(n.svc, n.c)
+    check(n.svc.machine.state == S.SHOW, f"setup: show 1 started: "
+                                         f"{n.svc.machine.state}")
+    n.now[0] = _den(S, 18, 8)
+    del n.calls[:]
+    _px_ends_on_its_own(n)
+    return n
+
+
+def test_end_of_night_end_to_end_on_the_rig():
+    section("after the last show \"idle\" on the Fire & Ice rig: the "
+            "pixels stay on the idle look, the flame cues go to zero, the "
+            "lasers dark, every hazer off, MadMapper's video faded to black "
+            "and its show bank stopped; End of night (signed out) takes the "
+            "pixels black; a Stop does too; the hand over to the next "
+            "night does too; a restart holds the look again only if it "
+            "was held; \"close\" is unchanged")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    from ltcplay import schedule_service as SV
+    # The default: unchanged.
+    n = _idle_fi_night(S, "close")
+    log = _fi_log(n.calls)
+    check(n.svc.machine.state == S.OFF and not n.svc.machine.held_look and
+          n.sess.player.override == "blackout" and not n.hazers and
+          ("video", "stop_bank") not in log,
+          f"\"close\": the last show ends on the closing's black, as "
+          f"before: {n.svc.machine.state} {n.sess.player.override!r} "
+          f"{n.hazers} {log}")
+    shutil.rmtree(n.work, ignore_errors=True)
+    # "idle": held.
+    n = _idle_fi_night(S)
+    m = n.svc.machine
+    log = _fi_log(n.calls)
+    check(m.state == S.OFF and m.held_look and
+          n.sess.player.override is None and not n.w.show._pix_ours,
+          f"the pixels stay on the idle look, the night OFF and held: "
+          f"{m.state} {m.held_look} {n.sess.player.override!r}")
+    check(("flames", "zero") in log and ("lasers", "dark") in log,
+          f"flame cues zero, lasers dark: {log}")
+    fades = [e for e in log if e[0] == "video" and e[1].startswith("fade")
+             and e[1].endswith("to 0")]
+    check(fades and ("video", "stop_bank") in log and
+          log.index(fades[0]) < log.index(("video", "stop_bank")) and
+          log.count(("video", "stop_bank")) == 1,
+          f"MadMapper's video faded to black, then its show bank stopped: "
+          f"{log}")
+    check(n.hazers and "idle look" in n.hazers[0],
+          f"every hazer turned off, saying why: {n.hazers}")
+    # The laser arm's watcher (morning.tick) sees the night over.
+    n.arm.tick(n.svc.machine.state)
+    check(not n.arm.armed_ids(),
+          f"every laser disarmed by the closing: {n.arm.armed_ids()}")
+    check(any("idle look held" in t for t, _f in n.lines),
+          "the journal says the look is held")
+    st = n.svc.state_view()
+    check(st.get("held_look") is True,
+          "the engine's view says the look is held (the screens' End of "
+          "night)")
+    # A restart while held: held again.
+    now2 = [_den(S, 19, 0)]
+    svc2 = _svc(S, n.work, now2)
+    svc2.tick()
+    check(svc2.machine.held_look and svc2.machine.state in (S.CLOSING,
+                                                           S.OFF),
+          f"a restart while held holds it again: {svc2.machine.state} "
+          f"{svc2.machine.held_look}")
+    svc2.stop()
+    # End of night, signed out.
+    del n.lines[:]
+    r = n.svc.end_of_night("unsigned", "iPad at 10.20.0.44")
+    _settle(n.svc, n.c)
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    n.w.runner.poll()
+    m = n.svc.machine
+    check(r.get("ok") and m.state == S.OFF and not m.held_look and
+          m.closed_by_operator and n.sess.player.override == "blackout",
+          f"End of night: the pixels black, the night closed for good: "
+          f"{r} {m.state} {n.sess.player.override!r}")
+    rows = [x for x in n.svc.journal if x.get("action") == "END_NIGHT"]
+    check(rows and rows[-1].get("who") == "signed out" and
+          "signed out" in rows[-1].get("text", "") and
+          "End of night" in rows[-1].get("text", ""),
+          f"journaled as End of night, signed out: {rows[-1:]}")
+    r = n.svc.end_of_night("Andy", "Rack screen")
+    check(not r.get("ok") and "not being held" in r.get("text", ""),
+          f"a second End of night is refused, saying why: {r}")
+    now3 = [_den(S, 19, 30)]
+    svc3 = _svc(S, n.work, now3)
+    svc3.tick()
+    check(not svc3.machine.held_look,
+          "a restart after End of night stays dark")
+    svc3.stop()
+    n.svc.stop()
+    shutil.rmtree(n.work, ignore_errors=True)
+    # A Stop while held: black, the night closed.
+    n = _idle_fi_night(S)
+    r = n.svc.halt_schedule("Andy", "Rack screen")
+    _settle(n.svc, n.c)
+    n.w.runner.poll()
+    _settle(n.svc, n.c)
+    n.w.runner.poll()
+    m = n.svc.machine
+    check(r.get("ok") and not m.held_look and m.closed_by_operator and
+          n.sess.player.override == "blackout",
+          f"a Stop ends the held look to black: {r} {m.state} "
+          f"{n.sess.player.override!r}")
+    n.svc.stop()
+    shutil.rmtree(n.work, ignore_errors=True)
+    # The hand over to the next night: black, and the next night as ever.
+    n = _idle_fi_night(S)
+    del n.lines[:]
+    n.now[0] = _den(S, 2, 1, d=(2026, 11, 15))
+    n.svc.tick()
+    n.w.runner.poll()
+    m = n.svc.machine
+    check(str(m.date) == "2026-11-15" and not m.held_look and
+          n.sess.player.override == "blackout",
+          f"the hand over ends the held look to black: {m.date} "
+          f"{m.state} {n.sess.player.override!r}")
+    check(any("hands over" in str(x.get("text")) for x in n.svc.journal) and
+          any("handed over" in t for t, _f in n.lines),
+          "the journal says the held look ended at the hand over")
+    n.svc.stop()
+    shutil.rmtree(n.work, ignore_errors=True)
+    print("  ok")
+
+
+def test_end_of_night_route_anyone_two_steps():
+    section("End of night's route (Jeff, 2026-11-14): anyone, signed out "
+            "included, like Stop (the role matrix's safety row); only with "
+            "{\"confirmed\": true}, the page's second tap; journaled with "
+            "who, or \"signed out\"; refused when the look is not held")
+    S = _sched()
+    if S is None:
+        return
+    import shutil
+    import tempfile
+    from dataclasses import replace
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    check("end-of-night" in RM.CONTROL_ROUTES and
+          "end-of-night" in RM.POST_ROUTES and
+          "end-of-night" not in RM.FRESH_ROUTES,
+          "the route is a control press, never refused for a stale page")
+    check(U.REMOTE_ROUTES.get("end-of-night") == "safety" and
+          U.classify("/api/remote/end-of-night", {}) == "safety" and
+          U.classify("/api/remote/end-of-night",
+                     {"confirmed": True}) == "safety" and
+          "End of night" in U.SAFETY_ROWS,
+          "the role matrix: safety, everyone, always")
+    mx = U.normalise_matrix({})
+    check(all(U.allowed(mx, role, "safety")
+              for role in (None, "viewer", "operator", "admin")),
+          "signed out and every role may")
+    R = _RemoteRig(S)
+    udir = tempfile.mkdtemp()
+    try:
+        st, _h, out = R.ask("POST", "/api/remote/end-of-night",
+                            {"confirmed": True})
+        check(st == 409 and "not being held" in str(out.get("error")),
+              f"not held: refused, saying why: {st} {out}")
+        R.svc.machine = replace(R.svc.machine, state=S.OFF,
+                                held_look=True)
+        st, _h, out = R.ask("POST", "/api/remote/end-of-night", {})
+        check(st == 400 and R.svc.machine.held_look and
+              "twice" in str(out.get("error")),
+              f"one tap (no confirmed): refused, nothing changed: "
+              f"{st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/end-of-night",
+                            {"confirmed": "yes"})
+        check(st == 400 and R.svc.machine.held_look,
+              f"only the JSON word true confirms: {st} {out}")
+        # Users on, nobody signed in: it goes, journaled "signed out".
+        us = U.Users(udir, hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Vic", "viewer")])
+        R.remote.users = us
+        st, _h, out = R.ask("POST", "/api/remote/end-of-night",
+                            {"confirmed": True})
+        R.settle()
+        m = R.svc.machine
+        check(st == 200 and out.get("ok") and not m.held_look and
+              m.closed_by_operator,
+              f"signed out, confirmed: the held look ends: {st} {out} "
+              f"{m.state}")
+        rows = [x for x in R.svc.journal if x.get("action") == "END_NIGHT"]
+        check(rows and rows[-1].get("who") == "signed out",
+              f"journaled as signed out: {rows[-1:]}")
+    finally:
+        R.remote.users = None
+        R.close()
+        shutil.rmtree(udir, ignore_errors=True)
+    print("  ok")
+
+
+def test_end_of_night_button_and_docs():
+    section("End of night on the screen (Jeff, 2026-11-14): in the "
+            "next-step bar on every tab, there only while the engine says "
+            "the idle look is held, a safe press (data-safe), two taps "
+            "within Stop show's window, the press confirmed; its words in "
+            "remote2.html, never remote_rules.js; the Schedule tab's After "
+            "the last show; OPERATOR.md, MORNING.md and USERS.md say it")
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def read(*p):
+        with open(os.path.join(here, *p), encoding="utf-8") as fh:
+            return fh.read()
+    two = read("ltcplay", "web", "remote2.html")
+    rules = read("ltcplay", "web", "remote_rules.js")
+    nxt = two[two.find('<div id="next"'):]
+    nxt = nxt[:nxt.find("</div>")]
+    check('<button data-safe class="b red" id="b-eon" hidden>' in nxt and
+          'id="eon-l">End of night<' in nxt and 'id="eon-s">tap twice<' in nxt,
+          "the button is in the next-step bar, hidden until held, a safe "
+          "press")
+    fn = _js_function(two, "eonShown") or ""
+    check("held_look === true" in fn,
+          f"shown only while the engine says the look is held: {fn!r}")
+    tap = _js_function(two, "eonTap") or ""
+    check("stopTapStep(EON_TAP, monoNow(), kind, false)" in tap and
+          'press("end-of-night", {confirmed:true})' in tap and
+          tap.find("if(!step.fire)") < tap.find('press("end-of-night"'),
+          f"two taps (Stop show's rule), then the confirmed press: "
+          f"{tap[:200]!r}")
+    check("end-of-night" not in rules and "End of night" not in rules,
+          "remote_rules.js is not touched: the words live in remote2.html")
+    check('<select class="f" id="se-after"' in two and
+          '<option value="close">Go dark</option>' in two and
+          '<option value="idle">Keep the idle look until End of night'
+          '</option>' in two and
+          'SCHED_DOC.after_last_show = "idle"' in two,
+          "the Schedule tab's After the last show, written into the file "
+          "the form saves")
+    for name in ("OPERATOR.md", "MORNING.md", "USERS.md"):
+        text = read(name)
+        check("End of night" in text, f"{name} says End of night")
+        _no_dashes(text[text.find("End of night") - 400:
+                        text.find("End of night") + 400], name)
+    op = read("OPERATOR.md")
+    for words in ("Keep the idle look until End of night",
+                  "Anyone may\n  press it, signed in or not",
+                  "| ltcplay restarts |", "The hand over to the next night"):
+        check(words.lower() in op.lower(), f"OPERATOR.md says {words!r}")
+    print("  ok")
+
+
 def test_no_dark_frame_between_the_show_and_the_idle_look():
     section("pixels: at a show's end the show audio clock runs its "
             "timecode to the end of the lights file rounded up to the next "
@@ -81499,7 +82017,8 @@ def test_users_role_matrix_never_restricts_a_safety_press():
     missing = [r for r in every if r not in U.REMOTE_ROUTES]
     check(not missing, f"every remote POST route has a row: {missing}")
     safety = ("stop", "hold", "disarm-all", "group-disarm", "arm-release",
-              "alert", "purge-stop", "purge-clear", "signin", "signout")
+              "alert", "end-of-night", "purge-stop", "purge-clear",
+              "signin", "signout")
     for r in safety:
         check(U.classify("/api/remote/" + r, {}) == "safety",
               f"{r} is a safety press")
@@ -82639,7 +83158,8 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/cleaning", "/api/remote/cleaning-beat",
     "/api/remote/cleaning-stop", "/api/remote/clear-lockouts",
     "/api/remote/continue", "/api/remote/deck-input",
-    "/api/remote/disarm-all", "/api/remote/fireball",
+    "/api/remote/disarm-all", "/api/remote/end-of-night",
+    "/api/remote/fireball",
     "/api/remote/fireball-beat", "/api/remote/fireball-charge-empty",
     "/api/remote/fireball-off", "/api/remote/fireball-practice",
     "/api/remote/fireball-timeline", "/api/remote/fireball-timeline-save",
@@ -107564,6 +108084,8 @@ _UI2_ROUTES = {
     "/api/remote/cleaning-stop": "safety",
     "/api/remote/continue": "show",
     "/api/remote/disarm-all": "safety",
+    # End of night (Jeff, 2026-11-14): anyone, like Stop.
+    "/api/remote/end-of-night": "safety",
     "/api/remote/fireball": None,
     "/api/remote/fireball-beat": "arm",
     "/api/remote/fireball-charge-empty": "settings",
@@ -124475,6 +124997,8 @@ if __name__ == "__main__":
         test_schedule_start_now_in_every_state,
         test_schedule_extra_show_and_the_next_slot,
         test_schedule_end_night_and_operator_actions,
+        test_after_last_show_default_still_closes_dark,
+        test_after_last_show_idle_holds_the_look_until_end_of_night,
         test_schedule_file_is_versioned_and_atomic,
         test_schedule_clock_check,
         test_schedule_routes,
@@ -124875,6 +125399,9 @@ if __name__ == "__main__":
         test_fire_ice_review_hand_mutations,
         test_flamesafe_bad_json_starts_with_flames_off,
         test_every_show_start_clears_the_pixels,
+        test_end_of_night_end_to_end_on_the_rig,
+        test_end_of_night_route_anyone_two_steps,
+        test_end_of_night_button_and_docs,
         test_the_show_takes_over_the_pixels_on_its_first_frame,
         test_no_dark_frame_between_the_show_and_the_idle_look,
         test_hold_and_stop_black_the_pixels_after_a_start,

@@ -1968,7 +1968,7 @@ What each end leaves on the pixels:
 | How the show ended | The pixels after it |
 | --- | --- |
 | A scheduled show ends by itself, more shows to come | the idle look (intermission) |
-| The night's last scheduled show ends by itself | black (the closing) |
+| The night's last scheduled show ends by itself | black (the closing); with "After the last show: Keep the idle look", the idle look until End of night |
 | A Start now show ends by itself | the idle look, even with nothing else tonight |
 | Programming's Play reaches the end of the cue | the idle look |
 | Stop | black, and the schedule on Hold (show control stays on) |
@@ -2002,6 +2002,43 @@ group, blanks and disarms the lasers, turns the hazers off, lets go of
 any hold to arm and clears the purge selection and laser tests (a
 complete halt), takes whatever look is up down to dark, and puts on a
 Stop's Hold; it never turns show control off.
+
+### Keeping the idle look after the last show (End of night)
+
+Jeff, 2026-11-14. The schedule has a setting, **After the last show**, on
+the Schedule tab's editor (the schedule file's `after_last_show`):
+
+- **Go dark** (`"close"`, the default, what every night did before): when
+  the last scheduled show is over the night closes at once and the pixels
+  go black.
+- **Keep the idle look until End of night** (`"idle"`): when the last
+  scheduled show is over the night still closes (the flame cues go to
+  zero, the lasers are disarmed, every hazer is turned off, MadMapper's
+  video fades to black and its show bank stops, and the scheduler is off
+  until the hand over), but the pixels stay on the idle look. A red
+  **End of night** button then shows in the next-step bar at the top of
+  every tab. Tap it twice (like Stop show) and the pixels go black: the
+  night is closed exactly as Close for the night closes it. Anyone may
+  press it, signed in or not; the journal and the audit log say who, or
+  "signed out".
+
+| While the idle look is held | What happens |
+| --- | --- |
+| End of night, tapped twice | the pixels go black; the night is closed for good (a restart or a schedule save never holds it again) |
+| One tap only | nothing is sent; after 3 s the message line says "End of night not sent: tap twice" |
+| Stop | a complete halt as always, and the held look ends: the pixels go black, the night is closed for good |
+| Show control off | it is a Stop first, so the same: black, closed for good |
+| Hold | refused as on any closed night ("nothing to hold"); the look stays |
+| Start now | an extra show starts; when it ends by itself the idle look is held again, with End of night |
+| The hand over to the next night (2 AM, or earlier for an early next night) | the held look ends, the pixels go black, the journal says so, and the next night starts as it always does |
+| ltcplay restarts | the look is held again (and End of night shows) only if it was held before the restart; a night that was black stays black |
+| Everyone is signed out 10 minutes after the last show | the look stays; End of night still works signed out |
+| The schedule is saved with "Go dark" | the held look ends: the pixels go black |
+
+The setting only changes what the pixels do. Nothing is armed or lit
+because of it: flames, lasers, hazers and MadMapper are off as at any
+closing. The pixels are lit with nobody at the show PC until someone
+presses End of night, a Stop, or the hand over.
 
 **Every start clears it.** Start now, a scheduled start and Programming's
 Play from all clear the pixels for the show in the same one place,

@@ -3373,12 +3373,10 @@ class ShowRunner:
                        "sent to the rig.", action="closing",
                        outcome="held back")
         elif held:
-            fn = getattr(self.conductor, "closing_held", None) or \
-                self.conductor.intermission
-            r = fn("the scheduler", "")
-            if not r.ok:
-                self._note(f"Closing: {r.sentence}", fault=True,
-                           action="closing", outcome="failed")
+            # The conductor's closing_held (flame cues zero, lasers
+            # blanked, MadMapper faded and stopped) was asked by the
+            # scheduler itself with this closing (Service._drive_conductor);
+            # asking again here would only fade MadMapper a second time.
             self._note("Closing with the idle look held (after_last_show "
                        "is idle): the pixels stay on the idle look until "
                        "someone presses End of night. Flame cues are zero, "
