@@ -506,11 +506,12 @@ on a laser group, then Arm in the confirm box; Disarm all lasers is one
 click and always works, signed in or not; BEYOND's laser output comes on
 only once EVERY laser is armed and none is locked out, because BEYOND's
 only known command is for all lasers at once; Stop, Hold and the night
-closing disarm every laser, and after Resume they stay dark until
-you arm them again; on Hold (also during a show) and with no schedule
-loaded you may arm them and run their tests: they stay dark while held,
-stay armed through Resume and light with the show without a fresh arm
-(Jeff, 2026-11-14); Resume turns every test off first; the Lasers pill at the top of the rack screen says how
+closing disarm every laser at the press. While on Hold (also during a
+show) and with no schedule loaded you may arm them again and run their
+tests: they stay dark while held, stay armed through Resume and light
+with the show without a fresh arm (Jeff, 2026-11-14); lasers you did not
+arm again stay dark. Resume, Start now, Start at a cue and Continue
+anyway turn every test off first; the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
 how BEYOND is told is not set yet, so each laser says "Calibration cue not
@@ -1891,8 +1892,9 @@ stop:
   while held. Resume does not disarm it (Jeff's ruling): it lights with
   no fresh arm when the show plays again (at once after a Hold during a
   show, else at the next show start). Armed is not safe: disarm it
-  before Resume if it should stay dark. Resume (and Start now) turns
-  every test still on off first and says so in one line; no new test
+  before Resume if it should stay dark. Resume, Start now, Start at a
+  cue and Continue anyway turn every test still on off first and say so
+  in one line; no new test
   starts until the press is answered, and every test is turned off again
   right before the show starts or resumes, also when the schedule starts
   a show by itself. No test starts while a Stop is under way. The line under the

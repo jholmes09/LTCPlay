@@ -126,6 +126,11 @@ from .playhead import ShowAudioPlayhead
 # The count of starts under way (Remote._start_begin and _start_end): its
 # own lock, held only to change the number.
 _STARTS_LOCK = threading.Lock()
+# Why a new laser arm is refused during a Programming Pause (Jeff,
+# 2026-11-14: it stays refused; Continue would light it at once). Resume
+# does not end that Pause: Continue on the Programming screen does.
+PROGRAMMING_PAUSE_ARM = ("Programming playback is paused; press Continue on "
+                         "the Programming screen first, then arm")
 
 FIXED_PORT = 7878
 DISK_FILE = "disk-low.txt"          # packaging/windows/housekeeping.DISK_FILE
@@ -7710,7 +7715,7 @@ class Remote:
         if m is None and look in ("HELD", "DARK") and \
                 self._programming_paused():
             # A Programming Pause refuses a new arm with no schedule too.
-            return "the show is on Hold; press Resume first, then arm"
+            return PROGRAMMING_PAUSE_ARM
         if m is None:
             if light:
                 return ("the show state is not known (no schedule is "
@@ -7719,7 +7724,9 @@ class Remote:
         state = getattr(m, "state", None)
         if look in ("HELD", "DARK") and (state not in ("HOLD", "PAUSED") or
                                          self._programming_paused()):
-            return "the show is on Hold; press Resume first, then arm"
+            return (PROGRAMMING_PAUSE_ARM if self._programming_paused()
+                    else "the show is held dark by the show conductor; arm "
+                         "once the show plays again")
         if light and state in ("HOLD", "PAUSED"):
             return ("the show is on Hold, so the lasers stay dark until a "
                     "show plays after Resume")

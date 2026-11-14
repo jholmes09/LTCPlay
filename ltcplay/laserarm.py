@@ -161,8 +161,8 @@ class LaserArm:
                 output_fault, output_enable() and output_disable() are the
                 only way this module reaches BEYOND.
     blockers    callable() -> "" or a sentence: why nothing may be armed
-                now (a show paused mid show, the night closing, a settings
-                or lockout problem). Raises: blocked.
+                now (a Programming Pause, the night closing, a settings or
+                lockout problem). Raises: blocked.
     blank_now   callable(what) or None: the lasers' blank on the caller's
                 thread (the conductor's lasers_dark_now, which keeps its
                 record). None: output().blank().

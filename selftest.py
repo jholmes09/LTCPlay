@@ -60789,6 +60789,7 @@ def test_programming_lasers_engine_refusal_and_blockers():
             "against the arm's watcher, never against a Hold, CLOSING or an "
             "announcement, and a new arm is still refused")
     from ltcplay.remote import Remote, PROGRAMMING_LASER_STATES
+    from ltcplay import remote as RM_
     check(PROGRAMMING_LASER_STATES == ("IDLE", "OFF", "BOOT"),
           f"the Programming laser states: {PROGRAMMING_LASER_STATES}")
     st = {"prog": (True, ""), "active": True, "look": "HELD", "kept": True,
@@ -60851,7 +60852,12 @@ def test_programming_lasers_engine_refusal_and_blockers():
     st["tests"].clear()
     # The arm's refusal is unchanged: a Programming Pause is a Hold for a
     # NEW arm. Only the lighting blockers let it through.
-    hold = "the show is on Hold; press Resume first, then arm"
+    hold = RM_.PROGRAMMING_PAUSE_ARM
+    check(hold == "Programming playback is paused; press Continue on the "
+                  "Programming screen first, then arm",
+          f"a Programming Pause's arm refusal says Continue: {hold!r}")
+    dark = ("the show is held dark by the show conductor; arm once the "
+            "show plays again")
     check(r.laser_arm_blockers() == hold,
           f"a new arm during a Programming Pause: {r.laser_arm_blockers()!r}")
     check(r.laser_enable_blockers() == "",
@@ -60864,7 +60870,8 @@ def test_programming_lasers_engine_refusal_and_blockers():
                             ("prog", (False, "no"), "not Programming")):
         old = st[key]
         st[key] = val
-        check(r.laser_enable_blockers() == hold,
+        want_ = dark if key in ("active", "prog") else hold
+        check(r.laser_enable_blockers() == want_,
               f"{label}: the Pause's exemption still applied: "
               f"{r.laser_enable_blockers()!r}")
         st[key] = old
@@ -61167,7 +61174,8 @@ def test_programming_lasers_follow_the_playhead():
     g.arm.disarm(["l2"], who="Andy")
     g.arm.run_pending()
     ok, text = g.arm.arm(["l2"], who="Andy", confirmed=True)
-    check(not ok and text == "Not armed: the show is on Hold; press Resume "
+    check(not ok and text == "Not armed: Programming playback is paused; "
+                             "press Continue on the Programming screen "
                              "first, then arm. Nothing was armed.",
           f"a new arm during a Programming Pause: {ok} {text}")
     g.T.t += 1.0
@@ -89011,6 +89019,21 @@ def test_laser_arm_morning_page_routes_and_surfaces():
               "enable" not in R.laser_out.calls,
               f"and off again, BEYOND's output never on: {st} {out} "
               f"{R.laser_out.calls}")
+        # Start now and Start at a cue turn a test off first too, at the
+        # press, even a press refused for its missing confirm (it only
+        # takes risk away), and journal it.
+        for route, lbl in (("start-now", "Start now"),
+                           ("start-at-cue", "Start at a cue")):
+            R.m.lasers.set("laser-3", True, who="Andy")
+            check("laser-3" in R.m.lasers.on, f"setup: a test on ({lbl})")
+            st, _h, out = R.ask("POST", "/api/remote/" + route,
+                                {"seen": R.seen()}, client=loop)
+            check(not R.m.lasers.on and any(
+                f"Tests turned off for {lbl}: the laser tests." in
+                (r.get("text") or "") for r in R.svc.journal) and
+                R.svc.machine.state == S.HOLD,
+                  f"{lbl} turns the laser test off first and journals it: "
+                  f"{st} {out}")
         # Resume with them armed: Resume lights nothing by itself; between
         # shows the laser gate keeps them dark (they light at the next
         # show start, as lasers armed before it would).
@@ -107143,6 +107166,20 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
     f.schedule = NS(machine=NS())
     check(f._on_hold_for_tests() is False, "a state that cannot be read is "
                                        "not a Hold")
+
+    class _Raises:
+        @property
+        def state(self):
+            raise RuntimeError("selftest")
+    f = fake("HOLD", session_running=True)
+    f.schedule = NS(machine=_Raises(), conductor=NS(_look=None),
+                    halting=lambda: False)
+    check(f._on_hold_for_tests() is False and
+          "show control is on" in
+          RM.Remote.timed_purge_blockers(f, None).lower(),
+          f"a state read that raises is not a Hold (fail closed): the show "
+          f"control rule refuses the timed purge: "
+          f"{RM.Remote.timed_purge_blockers(f, None)!r}")
     # Stop under way refuses every test, mid show too (cold review of
     # #266, 2): before the PR PAUSED was live and refused everything.
     for st_ in ("PAUSED", "HOLD", None):

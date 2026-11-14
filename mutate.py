@@ -24958,6 +24958,21 @@ def build():
   '                                         self._programming_paused()):\n',
   '                                         False):\n'),
 
+ ('tests off: Start now leaves the operator tests on',
+  'ltcplay/remote.py',
+  '        starting = name in ("resume", "start-now", "start-at-cue")\n',
+  '        starting = name in ("resume", "start-at-cue")\n'),
+
+ ('tests off: Start at a cue leaves the operator tests on',
+  'ltcplay/remote.py',
+  '        starting = name in ("resume", "start-now", "start-at-cue")\n',
+  '        starting = name in ("resume", "start-now")\n'),
+
+ ('Hold: a state read that raises counts as a Hold for the tests',
+  'ltcplay/remote.py',
+  '        except Exception:                        # noqa: BLE001\n            return False\n\n    def _ht_state',
+  '        except Exception:                        # noqa: BLE001\n            return True\n\n    def _ht_state'),
+
  ('tests: the starts-under-way count changes without its lock',
   'ltcplay/remote.py',
   '        with _STARTS_LOCK:\n            self._starts = getattr(self, "_starts", 0) + 1\n\n    def _start_end(self):\n        with _STARTS_LOCK:\n',
