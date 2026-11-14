@@ -74,7 +74,11 @@ screen itself has no sign-in form on it.
   on the Users screen); 0 means off.
 - Sign out after the last show is ON: 10 minutes after the last show of
   the night has ended, everyone who was signed in before it ended is
-  signed out, once. It waits while a show is live or on Hold, and while
+  signed out, once. When the schedule keeps the idle look after the last
+  show (OPERATOR.md, "Keeping the idle look after the last show"), the
+  look stays through this sign out: End of night needs no sign in, so
+  anyone can still end it, and the journal and audit log then say
+  "signed out". It waits while a show is live or on Hold, and while
   anything is armed or going on at the rig
   (a hold to arm, a purge, a laser test, an armed laser or flame group),
   then goes as soon as that is clear. A show started by hand with Start
@@ -144,7 +148,7 @@ the ticks there. These are the proposed defaults:
 
 | What | SuperUser | admin | operator | viewer | signed out |
 |---|---|---|---|---|---|
-| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Fireball practice's Done, Acknowledge** | always | always | always | always | always |
+| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Fireball practice's Done, Acknowledge, End of night** | always | always | always | always | always |
 | Start now, Start at a cue, Resume, Show control on/off, rehearsal scrubbing, playing an announcement, choosing the operator | always | yes | yes | no | never |
 | Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels, turning the fuel pump on, Fireball practice's open and Step, which need the row above too) | always | yes | yes | no | never |
 | Unlock a machine, turn a laser test on | always | yes | yes | no | never |

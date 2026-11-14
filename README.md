@@ -433,7 +433,9 @@ tools/audit_receiver.py).
 The remote page is one screen with no scrolling, at 1920x1080 on the rack PC
 and 1024x768 on an iPad: the show state, the timecode, the current show with
 "Left in this show" (its length minus where the engine's show clock is; it
-stands still while held, and is not shown when the length is not known),
+stands still while held, and is not shown when the length is not known)
+and the time elapsed beside it (the length less the time left, so the two
+always add up),
 the next show with its countdown, Start now (it asks first) and in its
 place Stop while there is something to stop (a double tap), Hold, Resume,
 each flame group as flamesafe last reported it with its Hold to arm and

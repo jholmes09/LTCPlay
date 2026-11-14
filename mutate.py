@@ -11552,6 +11552,10 @@ def build():
   "ltcplay/web/remote2.html",
   '        if(FU_ARR) return `<button class="b mv ',
   '        if(false) return `<button class="b mv '),
+ ("ui 2.0: an arranging tank says the older fuel estimate, not its Shows left",
+  "ltcplay/web/remote2.html",
+  '<small>${esc(u.countdown ? (u.countdown.words || "") : big)}</small>',
+  '<small>${esc(big)}</small>'),
 
  ("ui 2.0: Select to fill (Refill all's place) stays on while arranging",
   "ltcplay/web/remote2.html",
@@ -11584,10 +11588,8 @@ def build():
  # fire unintentionally, or fail to stop (MORNING.md's threat table).
  ("morning: a locked machine can be armed for a purge (T5)",
   "ltcplay/morning.py",
-  '''        if self._lockout.is_locked("machine", machine_id):
-            return 409, {"error": f"{m.name} is locked out, so it cannot "''',
-  '''        if False:
-            return 409, {"error": f"{m.name} is locked out, so it cannot "'''),
+  '''        if not why and self._lockout.is_locked("machine", machine_id):''',
+  '''        if False:'''),
 
  # A group button (Jeff, 2026-10-28, show PC: front-row-4 locked out
  # stopped the group at 1 to 3, the button stayed grey and the second
@@ -11631,11 +11633,11 @@ def build():
   "ltcplay/morning.py",
   '''        why = self._live()
         if why:
-            return why
+            return why, False
         if not seen_ok:''',
   '''        why = ""
         if why:
-            return why
+            return why, False
         if not seen_ok:'''),
 
  ("morning: a stale page can still arm and fire a purge (T3)",
@@ -12201,8 +12203,8 @@ def build():
 
  ("morning: a click on a fireball arms its group for a purge",
   "ltcplay/morning.py",
-  "        never = cfg.purge_refusal(m)\n        if never in NEVER_SELECTED:",
-  "        never = cfg.purge_refusal(m)\n        if False:"),
+  "        if never in NEVER_SELECTED:\n            why = f\"{m.name} is never purged: {never}\"",
+  "        if False:\n            why = f\"{m.name} is never purged: {never}\""),
 
  ("morning: a fireball in the purge selection asks the deck to arm its group",
   "ltcplay/morning.py",
@@ -12356,8 +12358,8 @@ def build():
 
  ("morning: the deck is never told which groups are never purged",
   "ltcplay/morning.py",
-  "                          \"firing\": pv[\"firing\"], \"never_groups\": never},",
-  "                          \"firing\": pv[\"firing\"], \"never_groups\": []},"),
+  "                          \"firing\": pv[\"firing\"], \"never_groups\": never,",
+  "                          \"firing\": pv[\"firing\"], \"never_groups\": [],"),
 
  ("morning: every default-built group counts as G-Flames (review of #126, P2-3)",
   "ltcplay/morning.py",
@@ -12879,13 +12881,81 @@ def build():
   '''        lockout = "ltcplay_lockout.json" if source != "config" else None''',
   '''        lockout = None'''),
 
+ # End of night (Jeff, 2026-11-14): the schedule's after_last_show "idle"
+ # holds the idle look after the last show until End of night.
+ ("end of night: one tap ends the held idle look", "ltcplay/remote.py",
+  """        if body.get("confirmed") is not True:
+            self._journal(who, screen, "end of night", "refused",""",
+  """        if False:
+            self._journal(who, screen, "end of night", "refused","""),
+
+ ("end of night: signed out may not press it", "ltcplay/users.py",
+  """    "end-of-night": "safety",""",
+  """    "end-of-night": "show","""),
+
+ ("end of night: a Stop leaves the held idle look lit",
+  "ltcplay/schedule_service.py",
+  """        elif m.held_look and st == sch.OFF:""",
+  """        elif False:"""),
+
+ ("end of night: the held idle look outlives the hand over",
+  "ltcplay/fire_ice.py",
+  """            self._held_look_over(sch)""",
+  """            pass"""),
+
+ ("end of night: the held closing leaves the hazers on",
+  "ltcplay/fire_ice.py",
+  """            self._hazers_off_for_held()""",
+  """            pass"""),
+
+ ("end of night: the held closing leaves MadMapper lit",
+  "ltcplay/conductor.py",
+  """        if want.get("video_dark") is True:""",
+  """        if False:"""),
+
+ ("end of night: a restart holds a look that was dark",
+  "ltcplay/schedule.py",
+  """    if m.resumed_from in (CLOSING, OFF):
+        return m.held_look""",
+  """    if m.resumed_from in (CLOSING, OFF):
+        return True"""),
+
+ ("end of night: a Stop or failed start at the last show holds the look",
+  "ltcplay/schedule.py",
+  """    if m.after_last_show != AFTER_IDLE or dark or closed_by_operator(m):""",
+  """    if m.after_last_show != AFTER_IDLE or closed_by_operator(m):"""),
+
+ ("end of night: the button closes a night still running",
+  "ltcplay/schedule.py",
+  """    if ev.kind == END_NIGHT and ev.detail == END_OF_NIGHT_DETAIL and \\
+            not m.held_look:""",
+  """    if False and \\
+            not m.held_look:"""),
+
+ ("end of night: a Stop is journaled as End of night",
+  "ltcplay/schedule_service.py",
+  """                           detail=sch.HELD_LOOK_STOP_DETAIL)""",
+  """                           detail=sch.END_OF_NIGHT_DETAIL)"""),
+
+ ("end of night: signed out over Tailscale is not said",
+  "ltcplay/schedule.py",
+  """    if rest and head.lower() in SIGNED_OUT_WHO:
+        return True, rest.strip()""",
+  """    if False:
+        return True, rest.strip()"""),
+
+ ("end of night: the default holds the idle look", "ltcplay/schedule.py",
+  """    after = doc.get("after_last_show", AFTER_CLOSE)""",
+  """    after = doc.get("after_last_show", AFTER_IDLE)"""),
+
  ("deck: a purge arm skips the hold's own guards (T8)",
   "ltcplay/streamdeck.py",
-  '''            self._do_arm_fire(i, now, who=who, screen="Morning page")
-            if not self.arm.wanted[i]:
-                continue             # refused; _do_arm_fire said why''',
-  '''            self.arm.set_group(i, True)
-            self.arm.send(self.names)'''),
+  '''            code = self._do_arm_fire(i, now, who=who, screen="Morning page")
+            if not self.arm.wanted[i]:''',
+  '''            code = None
+            self.arm.set_group(i, True)
+            self.arm.send(self.names)
+            if not self.arm.wanted[i]:'''),
 
  ("morning: a purge from the show network needs no screen_arming (T9)",
   "ltcplay/remote.py",
@@ -13732,9 +13802,253 @@ def build():
  ("deck: a purge group stays armed after the page stops asking for it (T4)",
   "ltcplay/streamdeck.py",
   '''            if self.arm.wanted[i]:
-                self._do_disarm(i, who="the purge ended",''',
+                self._do_disarm(i, who="the purge ended" if fresh else''',
   '''            if False:
-                self._do_disarm(i, who="the purge ended",'''),
+                self._do_disarm(i, who="the purge ended" if fresh else'''),
+
+ ("deck: one slow read's grace never ends, a quiet engine leaves the purge armed (T4)",
+  "ltcplay/streamdeck.py",
+  '''            if g is not None and 0 <= now - g[1] <= PURGE_STALE_GRACE_S \\
+                    and not self._latched_now():''',
+  '''            if g is not None and 0 <= now - g[1] \\
+                    and not self._latched_now():'''),
+
+ ("deck: one slow read disarms the purge again (no grace, the field bug of 2026-11-14)",
+  "ltcplay/streamdeck.py",
+  '''            if g is not None and 0 <= now - g[1] <= PURGE_STALE_GRACE_S \\
+                    and not self._latched_now():
+                return set(g[0]), None''',
+  '''            if False:
+                return set(g[0]), None'''),
+
+ ("deck: a group merely back in the purge list re-arms with no tap (review of #269, BLOCKER)",
+  "ltcplay/streamdeck.py",
+  '''        for i in sorted(pressed):''',
+  '''        for i in sorted(pressed | wanted):'''),
+
+ ("deck: an old purge tap arms (a deck restart acts on a tap long gone)",
+  "ltcplay/streamdeck.py",
+  '''            if i in wanted and 0 <= age <= PURGE_PRESS_FRESH_S * 1000:''',
+  '''            if i in wanted:'''),
+
+ ("deck: a purge tap arms a group the engine does not list",
+  "ltcplay/streamdeck.py",
+  '''            if i in wanted and 0 <= age <= PURGE_PRESS_FRESH_S * 1000:''',
+  '''            if 0 <= age <= PURGE_PRESS_FRESH_S * 1000:'''),
+
+ ("deck: the operator's tap on a selected, unarmed unit arms nothing (the stuck purge)",
+  "ltcplay/streamdeck.py",
+  '''        pressed = self._purge_presses(view, wanted) if fresh else set()''',
+  '''        pressed = set()'''),
+
+ ("deck: a disarm nobody pressed starts the 2 s wait and blocks the next tap",
+  "ltcplay/streamdeck.py",
+  '''        if not system:
+            self._disarmed_at[i] = self._clock()''',
+  '''        if True:
+            self._disarmed_at[i] = self._clock()'''),
+
+ ("deck: the deck's own purge refusal is not said to the page",
+  "ltcplay/streamdeck.py",
+  '''                self._purge_refused[i] = code or "refractory"
+                continue''',
+  '''                continue'''),
+
+ ("morning: a second purge tap within 2 s is taken (no double tap rule)",
+  "ltcplay/morning.py",
+  '''        if last is not None and 0 <= now - last < TAP_IGNORE_S:''',
+  '''        if False:'''),
+
+ ("morning: a tap on a selected, unarmed unit asks the deck for nothing",
+  "ltcplay/morning.py",
+  '''            self._press_n = max(self._press_n + 1, int(time.time() * 1000))
+            self._presses[m.group] = (self._press_n, now)''',
+  '''            if not again:
+                self._press_n = max(self._press_n + 1, int(time.time() * 1000))
+                self._presses[m.group] = (self._press_n, now)'''),
+
+ ("morning: the deck is never told of a purge tap",
+  "ltcplay/morning.py",
+  '''                          "presses": self.purge.presses_view(
+                              names, pv["groups_wanted"]) if open_ else []},''',
+  '''                          "presses": []},'''),
+
+ ("purge page: Space answered with nothing firing says FIRING",
+  "ltcplay/web/remote2.html",
+  '''    const lit = (j.firing || []).length > 0;
+    $("mo-msg").textContent = lit ?''',
+  '''    const lit = true;
+    $("mo-msg").textContent = lit ?'''),
+
+ ("purge page: a tap on a selected, unarmed unit takes it off instead of arming it",
+  "ltcplay/web/remote2.html",
+  '''  return !(purgeArmed(m, fl) || purgeStuckFor(m, fl));''',
+  '''  return false;'''),
+
+ ("purge page: a lasting refusal (no operator, role) makes a tap arm again, so the unit cannot be taken off",
+  "ltcplay/web/remote2.html",
+  '''  return !!g.purge_refused && g.purge_refused !== "refractory" && g.purge_refused !== "dropped";''',
+  '''  return g.purge_refused === "screenonly" || g.purge_refused === "neverpurged";'''),
+
+ ("purge page: with flamesafe stale no unit can be taken off by a tap",
+  "ltcplay/web/remote2.html",
+  '''  if(!fl || fl.stale || fl.connected === false) return true;''',
+  '''  if(!fl) return true;'''),
+
+ ("purge page: NOT FIRING asks for a tap while the key is held (the tap is refused)",
+  "ltcplay/web/remote2.html",
+  '''. Release the key first, then tap a unit that is not armed to arm it.";''',
+  '''. Tap a unit that is not armed to arm it.";'''),
+
+ ("morning: a tap on a selected unit skips the purge's refusals (a live show, a Hold)",
+  "ltcplay/morning.py",
+  '''            why, brief = self._refusal_kind(device, seen_ok)''',
+  '''            why, brief = self._refusal_kind(device, seen_ok) if \\
+                machine_id not in self.selected else ("", False)'''),
+
+ ("morning: a tap on a selected unit skips the lockout check",
+  "ltcplay/morning.py",
+  '''        if not why and self._lockout.is_locked("machine", machine_id):''',
+  '''        if not why and machine_id not in self.selected and \\
+                self._lockout.is_locked("machine", machine_id):'''),
+
+ ("morning: a tap on a selected unit joins a purge already firing (HIGH)",
+  "ltcplay/morning.py",
+  '''        if self.press_live():
+            # A machine never joins a press that is already firing (review''',
+  '''        if machine_id not in self.selected and self.press_live():
+            # A machine never joins a press that is already firing (review'''),
+
+ ("morning: Clear leaves the purge taps standing",
+  "ltcplay/morning.py",
+  '''            self._presses.clear()
+''',
+  ''''''),
+
+ ("purge page: the fire key reads FIRING with nothing lit",
+  "ltcplay/web/remote2.html",
+  '''purge.firing ? ((purge.firing_now || []).length ? "FIRING" : "NOT FIRING")''',
+  '''purge.firing ? "FIRING"'''),
+
+ ("purge page: the fire key says Deck FIRE with nothing armed",
+  "ltcplay/web/remote2.html",
+  '''anyArmed ? "Deck FIRE, or hold Space" : anySel ? "Selected, not armed"''',
+  '''anySel ? "Deck FIRE, or hold Space" : anySel ? "Selected, not armed"'''),
+
+ ("purge page: a map tile drops its 'not armed' words",
+  "ltcplay/web/remote2.html",
+  '''(wait === REARM_REFUSED_PURGE || !wait || purgeStuckFor(m, fl))) wait = purgeNotArmedText(m, fl);''',
+  '''(wait === REARM_REFUSED_PURGE || !wait || purgeStuckFor(m, fl))) wait = "";'''),
+
+ ("purge page: a group button with nothing armed says Armed",
+  "ltcplay/web/remote2.html",
+  '''notArmed.length ? purgeNotArmedText(notArmed[0], flg) : any ? "Selected and armed. Tap: off"''',
+  '''any ? "Armed. Tap: off"'''),
+
+ ("morning: an off tap starts no double tap window (off, then on 0.3 s later re-arms)",
+  "ltcplay/morning.py",
+  '''            if tap:
+                self._taps[(device, machine_id)] = self._clock()
+            if self.timed_running()''',
+  '''            if self.timed_running()'''),
+
+ ("morning: Clear starts no double tap window",
+  "ltcplay/morning.py",
+  '''                for mid in had:
+                    self._taps[(device, mid)] = now''',
+  '''                for mid in had:
+                    pass'''),
+
+ ("morning: an off tap is ignored inside the double tap window",
+  "ltcplay/morning.py",
+  '''        if not on:
+            # A tap that takes a machine off is never ignored, from any''',
+  '''        if not on and tap and 0 <= self._clock() - self._taps.get(
+                (device, machine_id), -1e9) < TAP_IGNORE_S:
+            return 200, {"ok": True, "ignored": True, "text": "ignored",
+                         "selected": list(self.selected)}
+        if not on:
+            # A tap that takes a machine off is never ignored, from any'''),
+
+ ("morning: a selected unit that cannot be armed now cannot be taken off by a tap",
+  "ltcplay/morning.py",
+  '''        if why:
+            # A tap on a selected unit that cannot be armed now (a lasting''',
+  '''        if False:
+            # A tap on a selected unit that cannot be armed now (a lasting'''),
+
+ ("remote: with the Stream Deck program down a tap cannot take a unit off",
+  "ltcplay/remote.py",
+  '''            if why and ids and all(str(i) in sel for i in ids):''',
+  '''            if False:'''),
+
+ ("purge page: with the Stream Deck program down a tap asks for an arm",
+  "ltcplay/web/remote2.html",
+  '''  if(purgeDeckDown()) return true;
+  if(purgeBrief(fl)) return false;''',
+  '''  if(purgeBrief(fl)) return false;'''),
+
+ ("morning: tap numbers start again at 1 after an engine restart (the deck skips a new tap)",
+  "ltcplay/morning.py",
+  '''            self._press_n = max(self._press_n + 1, int(time.time() * 1000))''',
+  '''            self._press_n += 1'''),
+
+ ("morning: a fat finger 0.5 s after an arm tap takes the unit off when a refusal comes up (window after the take off)",
+  "ltcplay/morning.py",
+  '''        if last is not None and 0 <= now - last < TAP_IGNORE_S:
+            # An arming tap within 2 s of this screen's last tap on it (on,''',
+  '''        if last is not None and 0 <= now - last < TAP_IGNORE_S and \\
+                not why:
+            # An arming tap within 2 s of this screen's last tap on it (on,'''),
+
+ ("morning: a brief refusal takes the unit off at once (a glitch costs the selection)",
+  "ltcplay/morning.py",
+  '''        if why and brief:
+            ep = self._transient.get(cause)''',
+  '''        if False:
+            ep = self._transient.get(cause)'''),
+
+ ("morning: a brief refusal episode never ends (an old glitch takes a unit off at its first new refusal)",
+  "ltcplay/morning.py",
+  '''            t0 = ep[0] if ep is not None and 0 <= now - ep[1] <= \\
+                TRANSIENT_S else now     # a gap: a new episode''',
+  '''            t0 = ep[0] if ep is not None else now'''),
+
+ ("morning: one brief refusal clock for every unit and screen",
+  "ltcplay/morning.py",
+  '''        cause = (device, machine_id, why.split(" (")[0][:60] if why else "")''',
+  '''        cause = ("", "", why.split(" (")[0][:60] if why else "")'''),
+
+ ("morning: a brief refusal never counts as lasting (the unit can never be taken off)",
+  "ltcplay/morning.py",
+  '''            if 0 <= now - t0 <= TRANSIENT_S:''',
+  '''            if 0 <= now - t0:'''),
+
+ ("morning: a brief refusal starts the double tap window",
+  "ltcplay/morning.py",
+  '''                return 409, {"error": f"{why} {m.name} stays selected; try "''',
+  '''                self._taps[(device, machine_id)] = now
+                return 409, {"error": f"{why} {m.name} stays selected; try "'''),
+
+ ("morning: flamesafe late for any time counts as brief",
+  "ltcplay/morning.py",
+  '''                    0 <= age <= TRANSIENT_S * 1000''',
+  '''                    0 <= age'''),
+
+ ("remote: a brief quiet of the Stream Deck program takes the unit off",
+  "ltcplay/remote.py",
+  '''                    deck_age <= self.DECK_QUIET_S + PURGE_TRANSIENT_S:''',
+  '''                    False:'''),
+
+ ("purge page: a brief glitch tells the operator a tap takes the unit off",
+  "ltcplay/web/remote2.html",
+  '''  if(brief) return "Selected, not armed (" + brief + "): try again in a moment";''',
+  ''''''),
+
+ ("purge page: selected reads as armed on the step",
+  "ltcplay/web/remote2.html",
+  '''n ? (na === n ? n + " armed. Deck FIRE or hold Space." :''',
+  '''n ? (true ? n + " armed. Deck FIRE or hold Space." :'''),
 
  ("deck: a purge arm ignores the re-arm refractory window (T8)",
   "ltcplay/streamdeck.py",
@@ -13747,12 +14061,10 @@ def build():
 
  ("deck: the page closing leaves the purge groups armed (T4, T11)",
   "ltcplay/streamdeck.py",
-  '''        if not m or m.get("open") is not True or \\
-                m.get("purge_enabled") is not True or self._latched_now():
-            return set()''',
-  '''        if not m or \\
-                m.get("purge_enabled") is not True or self._latched_now():
-            return set()'''),
+  '''        if m.get("open") is True and m.get("purge_enabled") is True and \\
+                not self._latched_now():''',
+  '''        if m.get("purge_enabled") is True and \\
+                not self._latched_now():'''),
 
  ("deck: a stale engine keeps the deck re-mapped and its purge groups armed (T4, T11)",
   "ltcplay/streamdeck.py",
@@ -15051,15 +15363,39 @@ def build():
   '                (name == "laser-test" and body.get("on") is True) or\n'
   '                (name == "laser-arm" and body.get("on") is True)) and \\',
   '                (name == "laser-test" and body.get("on") is True)) and \\'),
- ('lasers: arming is allowed while the show is on Hold',
+ ('lasers: a new arm goes through a Programming Pause',
   'ltcplay/remote.py',
-  '        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):',
-  '        if False:'),
- ('lasers: with no schedule, arming is allowed',
+  '        if look in ("HELD", "DARK") and (state not in ("HOLD", "PAUSED") or\n',
+  '        if look in ("HELD", "DARK") and (False or\n'),
+ ("lasers: lasers armed on Hold may be lit",
   'ltcplay/remote.py',
-  '            return ("the show state is not known (no schedule is loaded), "\n'
-  '                    "so no laser may be armed")',
-  '            return ""'),
+  '        if light and state in ("HOLD", "PAUSED"):\n',
+  '        if False:\n'),
+ ("lasers: lasers armed on a mid-show Hold may be lit",
+  'ltcplay/remote.py',
+  '        if light and state in ("HOLD", "PAUSED"):\n',
+  '        if light and state == "HOLD":\n'),
+ ("laser arm: a disarm leaves the watcher's permission standing",
+  'ltcplay/laserarm.py',
+  '            if ids:\n'
+  '                # Not every laser is armed now, so nothing is permitted:\n',
+  '            if False:\n'
+  '                # Not every laser is armed now, so nothing is permitted:\n'),
+ ("laser arm: a permitted arm is not remembered by the watcher",
+  'ltcplay/laserarm.py',
+  '            self._was_permitted = True\n'
+  '            self._queue("enable", f"every laser armed, the last by {label}",\n',
+  '            self._queue("enable", f"every laser armed, the last by {label}",\n'),
+ ('lasers: with no schedule, the lasers may be lit',
+  'ltcplay/remote.py',
+  '            if light:\n'
+  '                return ("the show state is not known (no schedule is "',
+  '            if False:\n'
+  '                return ("the show state is not known (no schedule is "'),
+ ('lasers: the lighting blockers ask the arming blockers without light',
+  'ltcplay/remote.py',
+  '        why = self.laser_arm_blockers(look=look, light=True)\n',
+  '        why = self.laser_arm_blockers(look=look)\n'),
  ('lasers: the rack screen never shows the lasers disarmed',
   'ltcplay/remote.py',
   '                    add("Laser arm", "off", "disarmed")',
@@ -15134,10 +15470,6 @@ def build():
   'ltcplay/laserarm.py',
   '        if self._was_permitted and why is not None and \\\n',
   '        if False and \\\n'),
- ('lasers: one laser disarmed by hand disarms all the others',
-  'ltcplay/laserarm.py',
-  '                len(self.armed_ids()) == len(self.order):',
-  '                True:'),
  ('lasers: an announcement does not disarm the lasers',
   'ltcplay/conductor.py',
   '            self._disarm_lasers("Announcement", who, screen)',
@@ -20754,11 +21086,12 @@ def build():
                                  f"{screen}", who, screen)''',
   '''            pass'''),
 
- ('timed purge: a Hold standing does not end it', 'ltcplay/remote.py',
-  '            if state == "HOLD":\n'
-  '                return ("a Hold is standing; Resume first, then ',
+ ('timed purge: Stop under way does not refuse or end it',
+  'ltcplay/remote.py',
+  '            if getattr(svc, "halting", lambda: False)() is True:\n'
+  '                return "Stop is under way."',
   '            if False:\n'
-  '                return ("a Hold is standing; Resume first, then '),
+  '                return "Stop is under way."'),
 
  ("timed purge: the flame link not sending does not end it",
   "ltcplay/remote.py",
@@ -23921,6 +24254,26 @@ def build():
   "  cursor:pointer;touch-action:pan-y;",
   "  cursor:pointer;touch-action:none;"),
 
+ ("ui 2.0 map: the fleet's tiles keep one size whatever the fleet",
+  "ltcplay/web/remote2.html",
+  "  mapFit();\n  renderArrange();",
+  "  renderArrange();"),
+
+ ("ui 2.0 map: a row too tight for its tiles is never drawn zig-zag",
+  "ltcplay/web/remote2.html",
+  "    r.zig = tw < MAP_TILE_MIN && r.length > 2 && d > 0.5;",
+  "    r.zig = false;"),
+
+ ("ui 2.0 map: the field never grows taller for its rows",
+  "ltcplay/web/remote2.html",
+  "  field.style.minHeight = h > base ? h + \"px\" : \"\";",
+  "  field.style.minHeight = \"\";"),
+
+ ("ui 2.0 map: the field never grows wider than the panel",
+  "ltcplay/web/remote2.html",
+  "  field.style.minWidth = w > avail ? (w + field.offsetWidth - field.clientWidth) + \"px\" : \"\";",
+  "  field.style.minWidth = \"\";"),
+
  ("ui 2.0 Arrange: started on a window too short for its bar",
   "ltcplay/web/remote2.html",
   "function arrangeRoom(){ return $(\"d-panel\").clientHeight >= ARRANGE_MIN_PX; }",
@@ -24791,6 +25144,237 @@ def build():
   '                self._htest_on = False\n                self._htest_until = None\n                # Abort and Stop switch every hazer OFF',
   '                # Abort and Stop switch every hazer OFF'),
 
+ ('hazer test: a Hold press leaves it on at the engine',
+  'ltcplay/remote.py',
+  '            self.hazer_test_cut(f"{who or \'someone\'} pressed Hold on the "\n',
+  '            (lambda *a: None)(f"{who or \'someone\'} pressed Hold on the "\n'),
+
+ ('tests off: Resume and Start now leave the operator tests on',
+  'ltcplay/remote.py',
+  '            tests_said = self.tests_off_for_show(\n',
+  '            tests_said = "" and self.tests_off_for_show(\n'),
+
+ ('tests off: Continue anyway leaves the operator tests on',
+  'ltcplay/remote.py',
+  '        said = self.tests_off_for_show("Continue anyway", who, screen)\n',
+  '        said = ""\n'),
+
+ ('tests off: the timed purge outlives Resume',
+  'ltcplay/remote.py',
+  '        if timed:\n            self.timed_purge_cut(why, who, screen)\n',
+  '        if False:\n            self.timed_purge_cut(why, who, screen)\n'),
+
+ ('tests off: a purge firing outlives Resume',
+  'ltcplay/remote.py',
+  '            if purge is not None and purge.fire is not None:\n                purge.stop(why)\n',
+  '            if False:\n                purge.stop(why)\n'),
+
+ ('tests off: a purge selected on Hold stays wanted into the show',
+  'ltcplay/remote.py',
+  '            if purge is not None and getattr(purge, "selected", None):\n                purge.clear(why)\n',
+  '            if False:\n                purge.clear(why)\n'),
+
+ ('purge: Resume and Start now go on with the purge groups still armed',
+  'ltcplay/remote.py',
+  '            why = self.purge_off_before_start(_what, who, screen, seq0=seq0)\n',
+  '            why = ""\n'),
+
+ ('purge: a start never waits for flamesafe to confirm the purge groups off',
+  'ltcplay/remote.py',
+  '        if not groups:\n            return ""\n        fs = self.flame_status\n',
+  '        if True:\n            return ""\n        fs = self.flame_status\n'),
+
+ ('purge: a tap racing a start adds a unit after the start cleared the purge',
+  'ltcplay/morning.py',
+  '            if late:\n                return 409, {"error": late}\n',
+  '            if False:\n                return 409, {"error": late}\n'),
+
+ ('ui2 page: the Hazers step is missing when only the hazer test is set up',
+  'ltcplay/web/remote2.html',
+  '  if(part !== "shut" && (hzOk || (st.hazer_test && st.hazer_test.available))){\n',
+  '  if(part !== "shut" && hzOk){\n'),
+
+ ('purge: a Stop during a start\'s wait for the purge groups loses to the start',
+  'ltcplay/remote.py',
+  '        self._halt_seq = getattr(self, "_halt_seq", 0) + 1\n        out = {"flames": None,',
+  '        out = {"flames": None,'),
+
+ ('purge: a Hold during a start\'s wait for the purge groups loses to the start',
+  'ltcplay/remote.py',
+  '            self._lasers_disarm_now(who, screen, name)\n            # A start waiting for the purge\'s groups never outlives a Hold\n            # pressed meanwhile (purge_off_before_start): Hold wins.\n            self._halt_seq = getattr(self, "_halt_seq", 0) + 1\n',
+  '            self._lasers_disarm_now(who, screen, name)\n'),
+
+ ('purge: the operator\'s Clear does not forget the purge groups',
+  'ltcplay/morning.py',
+  '            if device is not None:\n                self._purge_groups.clear()\n',
+  '            if False:\n                self._purge_groups.clear()\n'),
+
+ ('purge: a Hold press leaves the purge selection armed',
+  'ltcplay/remote.py',
+  '                    _purge.clear(f"{who or \'someone\'} pressed Hold on the "\n',
+  '                    (lambda *a: None)(f"{who or \'someone\'} pressed Hold on the "\n'),
+
+ ('tests off: the hazer test outlives Resume',
+  'ltcplay/remote.py',
+  '        if hz_on and self.hazer_test_cut(why, who, screen):\n',
+  '        if False:\n'),
+
+ ('tests off: the laser tests outlive Resume',
+  'ltcplay/remote.py',
+  '            if lt is not None and lt.on and lt.all_off(why):\n',
+  '            if False:\n'),
+
+ ('tests off: Resume does not say or journal what it turned off',
+  'ltcplay/remote.py',
+  '        if not ended:\n            return ""\n        text = (f"Tests turned off for {what}: "\n',
+  '        if True:\n            return ""\n        text = (f"Tests turned off for {what}: "\n'),
+
+ ('mid-show Hold: the Morning page tests while a show plays',
+  'ltcplay/remote.py',
+  '        if getattr(m, "state", None) != "PAUSED":\n            return self.morning_live_refusal()\n',
+  '        if False:\n            return self.morning_live_refusal()\n'),
+
+ ('mid-show Hold: the Morning page tests while the show clock plays',
+  'ltcplay/remote.py',
+  '        if clk is not None and getattr(clk, "playing", False):\n            return ("the show clock is playing a cue; nothing fires from "\n',
+  '        if False:\n            return ("the show clock is playing a cue; nothing fires from "\n'),
+
+ ('mid-show Hold: show control on refuses the timed purge',
+  'ltcplay/remote.py',
+  '            held = self._on_hold_for_tests()\n',
+  '            held = False\n'),
+
+ ('mid-show Hold: show control on refuses the hazer test',
+  'ltcplay/remote.py',
+  '            if self._on_hold_for_tests():\n                # On Hold (Jeff, 2026-11-14): show control stays on in a\n',
+  '            if False:\n                # On Hold (Jeff, 2026-11-14): show control stays on in a\n'),
+
+ ("mid-show Hold: the hazer test's per-frame gate shuts with show control on",
+  'ltcplay/remote.py',
+  '            if self._on_hold_for_tests():\n                return True\n',
+  ''),
+
+ ('mid-show Hold: show control on does not refuse while the show clock plays',
+  'ltcplay/remote.py',
+  '            return not (clk is not None and getattr(clk, "playing", False))\n',
+  '            return True\n'),
+
+ ('Hold: show control on refuses the tests on a Hold between shows',
+  'ltcplay/remote.py',
+  '            if getattr(m, "state", None) not in ("HOLD", "PAUSED"):\n                return False\n',
+  '            if getattr(m, "state", None) != "PAUSED":\n                return False\n'),
+
+ ('Hold: show control on does not refuse the tests outside a Hold',
+  'ltcplay/remote.py',
+  '            if getattr(m, "state", None) not in ("HOLD", "PAUSED"):\n                return False\n',
+  '            if False:\n                return False\n'),
+
+ ("Hold: show control's state unreadable lets the hazer test through",
+  'ltcplay/remote.py',
+  '                    return ("show control\'s state could not be read, so "\n'
+  '                            "the test is refused")\n',
+  '                    starting = False\n'),
+
+ ('Hold: a show file starting lets the hazer test through',
+  'ltcplay/remote.py',
+  '                if starting:\n                    return ("a show file is starting; wait for it, or turn "\n',
+  '                if False:\n                    return ("a show file is starting; wait for it, or turn "\n'),
+
+ ('mid-show Hold: a show file starting lets the timed purge through',
+  'ltcplay/remote.py',
+  '            if cs.get("starting") or (cs.get("running") and not held):\n',
+  '            if cs.get("running") and not held:\n'),
+
+ ('tests off: the show start step leaves the tests on',
+  'ltcplay/schedule_service.py',
+  '            hook = self.before_rig_up\n            if hook is not None:\n',
+  '            hook = None\n            if hook is not None:\n'),
+
+ ('tests off: ltc serve never hands the scheduler the tests-off step',
+  'ltcplay/web.py',
+  '                httpd_schedule.before_rig_up = \\\n                    httpd.remote.tests_off_before_rig_up\n',
+  '                pass\n'),
+
+ ('tests: a start under way does not refuse new tests',
+  'ltcplay/remote.py',
+  '            self._start_begin()\n        try:\n            return self._press_after_start(',
+  '            pass\n        try:\n            return self._press_after_start('),
+
+ ('tests: Continue anyway does not refuse new tests',
+  'ltcplay/remote.py',
+  '        self._start_begin()\n        try:\n            said = self.tests_off_for_show(',
+  '        pass\n        try:\n            said = self.tests_off_for_show('),
+
+ ('tests: the Morning page ignores a start under way',
+  'ltcplay/remote.py',
+  '        why = self.start_underway()\n        if why:\n            return why\n        m = getattr(svc, "machine", None)\n',
+  '        m = getattr(svc, "machine", None)\n'),
+
+ ('tests: the hazer test ignores a start under way',
+  'ltcplay/remote.py',
+  '            why = self.start_underway()\n            if why:\n                return why\n',
+  ''),
+
+ ('tests: the timed purge ignores a start under way',
+  'ltcplay/remote.py',
+  '            if self.start_underway():\n',
+  '            if False:\n'),
+
+ ('tests: the Morning page tests while Stop is under way',
+  'ltcplay/remote.py',
+  '                return "Stop is under way; nothing fires from this page now"\n',
+  '                pass\n'),
+
+ ('tests: the hazer test starts while Stop is under way',
+  'ltcplay/remote.py',
+  '                return "Stop is under way"\n',
+  '                pass\n'),
+
+ ('lasers: a Programming Pause on Hold lets a new arm through',
+  'ltcplay/remote.py',
+  '                                         self._programming_paused()):\n',
+  '                                         False):\n'),
+
+ ('tests off: Start now leaves the operator tests on',
+  'ltcplay/remote.py',
+  '        starting = name in ("resume", "start-now", "start-at-cue")\n',
+  '        starting = name in ("resume", "start-at-cue")\n'),
+
+ ('tests off: Start at a cue leaves the operator tests on',
+  'ltcplay/remote.py',
+  '        starting = name in ("resume", "start-now", "start-at-cue")\n',
+  '        starting = name in ("resume", "start-now")\n'),
+
+ ('Hold: a state read that raises counts as a Hold for the tests',
+  'ltcplay/remote.py',
+  '        except Exception:                        # noqa: BLE001\n            return False\n\n    def _ht_state',
+  '        except Exception:                        # noqa: BLE001\n            return True\n\n    def _ht_state'),
+
+ ('tests: the starts-under-way count changes without its lock',
+  'ltcplay/remote.py',
+  '        with _STARTS_LOCK:\n            self._starts = getattr(self, "_starts", 0) + 1\n\n    def _start_end(self):\n        with _STARTS_LOCK:\n',
+  '        if True:\n            self._starts = getattr(self, "_starts", 0) + 1\n\n    def _start_end(self):\n        if True:\n'),
+
+ ('lasers: a Programming Pause with no schedule lets a new arm through',
+  'ltcplay/remote.py',
+  '        if m is None and look in ("HELD", "DARK") and \\\n                self._programming_paused():\n',
+  '        if False:\n'),
+
+ ('lasers: an error asking Programming lets a new arm through',
+  'ltcplay/remote.py',
+  '        except Exception:                        # noqa: BLE001\n            return True\n\n    def laser_enable_blockers',
+  '        except Exception:                        # noqa: BLE001\n            return False\n\n    def laser_enable_blockers'),
+
+ ('mid-show Hold: live flame programming does not stop the tests',
+  'ltcplay/remote.py',
+  '        if lf is not None and getattr(lf, "on", False) is not False:\n',
+  '        if False:\n'),
+
+ ('mid-show Hold: web.serve gives the Morning page the old live check',
+  'ltcplay/web.py',
+  '                live_check=httpd.remote.morning_test_refusal,\n',
+  '                live_check=httpd.remote.morning_live_refusal,\n'),
+
  ('hazer test: a show starting leaves it on',
   'ltcplay/remote.py',
   '            if st == "playing":\n                return "a show is playing, and the show drives the hazers"\n',
@@ -24893,8 +25477,8 @@ def build():
 
  ('hazer test: a show state that cannot be read is idle',
   'ltcplay/remote.py',
-  '        except Exception as e:                   # noqa: BLE001\n            return f"the engine\'s state could not be read ({type(e).__name__})"\n        return ""\n\n    def _ht_state',
-  '        except Exception as e:                   # noqa: BLE001\n            return ""\n        return ""\n\n    def _ht_state'),
+  '        except Exception as e:                   # noqa: BLE001\n            return f"the engine\'s state could not be read ({type(e).__name__})"\n        return ""\n\n    def _on_hold_for_tests',
+  '        except Exception as e:                   # noqa: BLE001\n            return ""\n        return ""\n\n    def _on_hold_for_tests'),
 
  ("hazer test: a Hold's zero leaves it on at the link",
   'ltcplay/flamelink.py',
@@ -25004,8 +25588,8 @@ def build():
  # a refusal while it is on says turn it off, never press Stop.
  ('show control: the timed purge refusal says press Stop again',
   'ltcplay/remote.py',
-  '                       False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
-  '                       False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
+  '                                    "running", False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
+  '                                    "running", False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
 
  ('show control: a new show file refusal says press Stop again',
   'ltcplay/remote.py',

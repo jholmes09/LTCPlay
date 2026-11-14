@@ -117,11 +117,21 @@ from . import settings as settings_mod
 from . import users as users_mod
 from . import version as version_mod
 from .morning import (TIMED_DEFAULT_S, TIMED_MAX_DEFAULT_S,
-                      TIMED_MAX_LIMIT_S, TIMED_MIN_S, TIMED_PRESETS_S)
+                      TIMED_MAX_LIMIT_S, TIMED_MIN_S, TIMED_PRESETS_S,
+                      TRANSIENT_S as PURGE_TRANSIENT_S)
 from .fuelpump import (DEFAULT_S as PUMP_DEFAULT_S,
                        MAX_DEFAULT_S as PUMP_MAX_DEFAULT_S,
                        MAX_LIMIT_S as PUMP_MAX_LIMIT_S, MIN_S as PUMP_MIN_S)
 from .playhead import ShowAudioPlayhead
+
+# The count of starts under way (Remote._start_begin and _start_end): its
+# own lock, held only to change the number.
+_STARTS_LOCK = threading.Lock()
+# Why a new laser arm is refused during a Programming Pause (Jeff,
+# 2026-11-14: it stays refused; Continue would light it at once). Resume
+# does not end that Pause: Continue on the Programming screen does.
+PROGRAMMING_PAUSE_ARM = ("Programming playback is paused; press Continue on "
+                         "the Programming screen first, then arm")
 
 FIXED_PORT = 7878
 DISK_FILE = "disk-low.txt"          # packaging/windows/housekeeping.DISK_FILE
@@ -136,6 +146,14 @@ FLAME_STALE_S = 1.0
 # The routes this module answers, and nothing else. No "arm" among them.
 CONTROL_ROUTES = ("start-now", "hold", "resume",
                   "disarm-all", "stop", "run-off", "start-at-cue")
+# End of night (Jeff, 2026-11-14): the idle look the schedule holds after
+# the last show (after_last_show "idle") ends, to black. Anyone may press
+# it, signed in or not, like Stop (users.REMOTE_ROUTES: "safety"); the
+# page sends it only after a deliberate second tap, and the engine takes
+# it only with {"confirmed": true}.
+END_OF_NIGHT_ROUTES = ("end-of-night",)
+END_OF_NIGHT_CONFIRM = ("Tap End of night twice to end the idle look. "
+                        "Nothing was changed.")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
 # Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
 # and holds the schedule instead; "run-off" is the halt and then playback
@@ -202,6 +220,13 @@ PLAIN_CONFIRM_S = 1.0
 # every GROUP_DISARM_STEP_S for up to PLAIN_CONFIRM_S.
 GROUP_DISARM_SETTLE_S = 0.15
 GROUP_DISARM_STEP_S = 0.02
+# Before a show starts or resumes, how long the engine waits for flamesafe
+# to confirm every group the purge armed is off (Remote.
+# purge_off_before_start; #266 with #269, 2026-11-14): longer than the
+# Stream Deck's PURGE_STALE_GRACE_S (1 s) plus a status and the settle.
+PURGE_START_CONFIRM_S = 1.5
+PURGE_STILL_ARMED = ("A purge group is still armed: press Clear, then try "
+                     "again.")
 BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
 SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py, MORNING.md).
@@ -313,6 +338,8 @@ LIVE_FLAME_ENABLES = (
 # refill an admin (fuel.py checks). Kept apart from FUEL_POST_ROUTES.
 SHOWS_POST_ROUTES = ("fuel-shows",)
 POST_ROUTES = POST_ROUTES + SHOWS_POST_ROUTES
+# End of night (Jeff, 2026-11-14), above with CONTROL_ROUTES.
+POST_ROUTES = POST_ROUTES + END_OF_NIGHT_ROUTES
 # The switch "Fire flames while scrubbing" is gone (Jeff, 2026-10-29: "as
 # long as I am armed, then jumping around timecode will work"). On a show
 # that plays from the show audio, Programming playback is the show's own
@@ -1837,7 +1864,9 @@ def countdown_view(sched, show, cue_now):
     """What the page's countdown shows (Jeff, 2026-10-07). During a show,
     running or held, the time left in THAT show: its length minus where
     the engine's own show clock is in it (session.snapshot()'s "now", so a
-    Hold, which freezes the clock, freezes this too). A show whose length
+    Hold, which freezes the clock, freezes this too), and the show's length
+    (Jeff, 2026-11-14: the page shows time elapsed too, as the length less
+    the time left, so the two always add up). A show whose length
     is not known shows no countdown at all, never a guess. Between shows,
     the countdown to the next one, as before. None means show nothing.
     Display only: nothing here starts or stops anything."""
@@ -1856,6 +1885,7 @@ def countdown_view(sched, show, cue_now):
             return None
         return {"kind": "left", "label": "Left in this show",
                 "s": round(max(0.0, dur - max(0.0, el)), 1),
+                "length": round(dur, 1),
                 "running": not held}
     nx = sched.get("next") if sched.get("attached") else None
     if isinstance(nx, dict):
@@ -2142,6 +2172,10 @@ class Remote:
         # hazertest.HazerTest, set by web.serve with the hazers
         # (2026-11-11).
         self.hazer_test = None
+        # Resume, Start now, Start at a cue and Continue anyway under way
+        # (a count; start_underway): no new operator test starts meanwhile
+        # (Jeff, 2026-11-14), as while a show file is starting.
+        self._starts = 0
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -2651,6 +2685,15 @@ class Remote:
             return (*self.fireball_charge_empty(body, ctx),) + ({},)
         if name in FIREBALL_PRACTICE_POST_ROUTES:
             return (*self.fireball_practice_post(body, ctx),) + ({},)
+        if name in END_OF_NIGHT_ROUTES:
+            # Only takes something away (the held idle look, to black):
+            # never refused for a stale page or a sign in, from any
+            # surface; only the deliberate second tap is asked for.
+            stamp = getattr(self.schedule, "stamp_press", None)
+            if stamp is not None:
+                stamp()
+            who, screen, _surface = self._actor(ctx, body)
+            return (*self.end_of_night_press(who, screen, body),) + ({},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             out = self.press(name, body, ctx)
             if name in PRACTICE_ENDS_ROUTES:
@@ -2795,7 +2838,21 @@ class Remote:
             return 409, {"error": "Continue anyway needs the button held "
                                   "until it fills; a tap does nothing. "
                                   "Nothing was changed."}
-        got = svc.continue_anyway(who, screen)
+        seq0 = getattr(self, "_halt_seq", 0)
+        self._start_begin()
+        try:
+            said = self.tests_off_for_show("Continue anyway", who, screen)
+            why = self.purge_off_before_start("Continue anyway", who, screen,
+                                              seq0=seq0)
+            if why:
+                return 409, {"ok": False, "error": why, "text": why,
+                             "tests_off": said}
+            got = svc.continue_anyway(who, screen)
+        finally:
+            self._start_end()
+        if said and isinstance(got, dict):
+            got = dict(got, tests_off=said,
+                       text=f"{said} {got.get('text') or ''}".strip())
         return (200 if got.get("ok") else 409), (
             got if got.get("ok") else {"error": got.get("text", "")})
 
@@ -4445,6 +4502,39 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
+        starting = name in ("resume", "start-now", "start-at-cue")
+        if starting:
+            # From here until the press is answered no new test starts
+            # (Jeff, 2026-11-14): Start now can wait here for the show
+            # audio and the rig check while the schedule is still on Hold.
+            self._start_begin()
+        try:
+            return self._press_after_start(name, body, ctx, who, screen,
+                                           surface, pressed, starting)
+        finally:
+            if starting:
+                self._start_end()
+
+    def _press_after_start(self, name, body, ctx, who, screen, surface,
+                           pressed, starting):
+        tests_said = ""
+        if starting:
+            # Every operator test off first (Jeff, 2026-11-14): a test
+            # may run on Hold, even mid show, and must not outlive it into
+            # a show. At the press, before the scheduler; only takes risk
+            # away, so a press refused below still ends them.
+            _what = {"resume": "Resume", "start-now": "Start now",
+                     "start-at-cue": "Start at a cue"}[name]
+            # A Stop or Hold after this press wins (purge_off_before_start).
+            seq0 = getattr(self, "_halt_seq", 0)
+            tests_said = self.tests_off_for_show(
+                _what, who, screen)
+            # The groups the purge armed, confirmed off by flamesafe before
+            # the scheduler is asked; else refused, the show left held.
+            why = self.purge_off_before_start(_what, who, screen, seq0=seq0)
+            if why:
+                return 409, {"ok": False, "error": why, "text": why,
+                             "tests_off": tests_said}
         if name in ("start-now", "start-at-cue"):
             why = self.programming_playback_refusal()
             if why:
@@ -4477,6 +4567,26 @@ class Remote:
             # thread; the blank and BEYOND's DisableLaserOutput go on the
             # arm's own sender, so nothing here waits on BEYOND.
             self._lasers_disarm_now(who, screen, name)
+            # A start waiting for the purge's groups never outlives a Hold
+            # pressed meanwhile (purge_off_before_start): Hold wins.
+            self._halt_seq = getattr(self, "_halt_seq", 0) + 1
+            # The hazer test ends at a Hold press too (Jeff, 2026-11-14): a
+            # Hold no longer refuses it, so the press itself takes it off,
+            # as it does the timed purge. Only the link's cut here.
+            self.hazer_test_cut(f"{who or 'someone'} pressed Hold on the "
+                                f"{screen}", who, screen)
+            # And the momentary purge, its selection with it (#266 with
+            # #269, Jeff 2026-11-14): a Hold no longer refuses a purge tap,
+            # so the press itself ends any purge selected or firing; the
+            # deck sees no group wanted and disarms, and nothing arms again
+            # without a fresh tap.
+            _purge = getattr(self.morning, "purge", None)
+            if _purge is not None:
+                try:
+                    _purge.clear(f"{who or 'someone'} pressed Hold on the "
+                                 f"{screen}")
+                except Exception:                # noqa: BLE001
+                    pass
         if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
             why = "Confirm it on the page first. Nothing was changed."
             self._journal(who, screen, name, "refused",
@@ -4599,7 +4709,39 @@ class Remote:
                     r = self._resume_health(r, who, screen)
         except ValueError as e:
             return 400, {"error": str(e)}
+        if tests_said and isinstance(r, dict):
+            r = dict(r, tests_off=tests_said,
+                     text=f"{tests_said} {r.get('text') or ''}".strip())
         return (200 if r.get("ok") else 409), r
+
+    def end_of_night_press(self, who, screen, body):
+        """POST end-of-night {"confirmed": true}: the schedule's held idle
+        look ends (schedule_service.Service.end_of_night), journaled by
+        the engine with who pressed it, or "signed out". (code, body)."""
+        if body.get("confirmed") is not True:
+            self._journal(who, screen, "end of night", "refused",
+                          f"{who or 'Someone'}'s End of night on the "
+                          f"{screen} was refused. {END_OF_NIGHT_CONFIRM}")
+            return 400, {"ok": False, "error": END_OF_NIGHT_CONFIRM,
+                         "text": END_OF_NIGHT_CONFIRM}
+        svc = self.schedule
+        fn = getattr(svc, "end_of_night", None)
+        if fn is None:
+            why = ("There is no scheduler running in this engine, so there "
+                   "is no idle look to end. Nothing was changed.")
+            return 409, {"ok": False, "error": why, "text": why}
+        try:
+            r = fn(who, screen)
+        except Exception as e:                   # noqa: BLE001
+            why = (f"End of night did NOT go ({type(e).__name__}: {e}). "
+                   f"Press Stop to take the pixels dark.")
+            self._journal(who, screen, "end of night", "fault", why,
+                          fault=True)
+            return 500, {"ok": False, "error": why, "text": why}
+        if not r.get("ok"):
+            return 409, {"ok": False, "error": r.get("text"),
+                         "text": r.get("text")}
+        return 200, r
 
     # -- Start at a cue (play_from.py part 2) -----------------------------
     def start_at_cue(self, body):
@@ -5956,17 +6098,36 @@ class Remote:
 
     def hazer_test_show_busy(self):
         """Why a show owns the hazers now (the hazer test is refused, and
-        one running ends), or "": the scheduled show playing or held, or
-        show control on or starting (the timed purge's own test). Fails
-        closed."""
+        one running ends), or "": the scheduled show playing, or show
+        control on or starting (the timed purge's own test). Hold (between
+        shows, after a Stop, or a show paused mid show) and no schedule at
+        all are not busy (Jeff, 2026-11-14: hazers like flames); Resume
+        ends the test first (tests_off_for_show). Fails closed."""
         try:
             # Read here, not through hazer_show_state (which reads an error
             # as idle): an error is busy (fail closed).
             st = self._ht_state()
             if st == "playing":
                 return "a show is playing, and the show drives the hazers"
-            if st == "held":
-                return "a show is on Hold; the show drives the hazers"
+            if getattr(self.schedule, "halting",
+                       lambda: False)() is True:
+                return "Stop is under way"
+            why = self.start_underway()
+            if why:
+                return why
+            if self._on_hold_for_tests():
+                # On Hold (Jeff, 2026-11-14): show control stays on in a
+                # real night and does not refuse the test then; a show
+                # file starting still does.
+                try:
+                    starting = (self.control.state() or {}).get("starting")
+                except Exception:                # noqa: BLE001
+                    return ("show control's state could not be read, so "
+                            "the test is refused")
+                if starting:
+                    return ("a show file is starting; wait for it, or turn "
+                            "show control off first")
+                return ""
             # Stop leaves show control on (#231): the way out is to turn
             # it off (End rehearsal in a rehearsal), as the timed purge says.
             if getattr(getattr(self.control, "session", None), "running",
@@ -5989,15 +6150,36 @@ class Remote:
             return f"the engine's state could not be read ({type(e).__name__})"
         return ""
 
+    def _on_hold_for_tests(self):
+        """True only while the schedule is on Hold (HOLD between shows or
+        after a Stop, PAUSED when Hold was pressed in a show) and the show
+        clock is not playing a cue: then show control's being on does not
+        refuse the timed purge or the hazer test (Jeff, 2026-11-14: "with
+        a show held ... the operator should be able to test anything").
+        False on any error (fail closed: the show control rules apply).
+        Plain reads, no locks."""
+        try:
+            m = getattr(self.schedule, "machine", None)
+            if getattr(m, "state", None) not in ("HOLD", "PAUSED"):
+                return False
+            s = getattr(self.control, "session", None)
+            clk = getattr(s, "clock", None) if s is not None else None
+            return not (clk is not None and getattr(clk, "playing", False))
+        except Exception:                        # noqa: BLE001
+            return False
+
     def _ht_state(self):
-        """The scheduled show for the hazer test: "playing", "held" or
-        "idle"; raises when it cannot be read."""
+        """The scheduled show for the hazer test: "playing" (SHOW) or
+        "idle"; raises when it cannot be read. Hold (HOLD between shows or
+        after a Stop, PAUSED mid show) and no schedule loaded at all are
+        "idle" (Jeff, 2026-11-14: the operator may test anything then, as
+        with flames; no show drives the hazers on Hold, hazers.py)."""
         m = getattr(self.schedule, "machine", None)
+        if m is None:
+            return "idle"
         state = m.state
         if state == "SHOW":
             return "playing"
-        if state in ("HOLD", "PAUSED"):
-            return "held"
         return "idle"
 
     def hazer_test_gate(self):
@@ -6007,6 +6189,8 @@ class Remote:
         try:
             if self._ht_state() != "idle":
                 return False
+            if self._on_hold_for_tests():
+                return True
             if getattr(getattr(self.control, "session", None), "running",
                        False):
                 return False
@@ -6955,6 +7139,239 @@ class Remote:
                     "page until it is off")
         return ""
 
+    def morning_test_refusal(self):
+        """The Morning page's live_check (web.py): morning_live_refusal,
+        except that a show paused mid show (PAUSED, Hold pressed during
+        it) is not live here (Jeff, 2026-11-14: the operator tests
+        anything while the show is on Hold). The show clock playing a cue
+        and live flame programming still refuse. Resume ends every test
+        first (tests_off_for_show)."""
+        svc = self.schedule
+        try:
+            if getattr(svc, "halting", lambda: False)() is True:
+                return "Stop is under way; nothing fires from this page now"
+        except Exception:                        # noqa: BLE001
+            return "whether Stop is under way could not be read"
+        why = self.start_underway()
+        if why:
+            return why
+        m = getattr(svc, "machine", None)
+        if getattr(m, "state", None) != "PAUSED":
+            return self.morning_live_refusal()
+        s = getattr(self.control, "session", None)
+        clk = getattr(s, "clock", None) if s is not None else None
+        if clk is not None and getattr(clk, "playing", False):
+            return ("the show clock is playing a cue; nothing fires from "
+                    "this page meanwhile")
+        lf = self.live_flame
+        if lf is not None and getattr(lf, "on", False) is not False:
+            return ("live flame programming is on; nothing fires from this "
+                    "page until it is off")
+        return ""
+
+    def start_underway(self):
+        """A sentence while a Resume, Start now, Start at a cue or Continue
+        anyway is being handled (its wait for the show audio and its rig
+        check included), else "": no new operator test starts then."""
+        if getattr(self, "_starts", 0):
+            return ("a show is starting (Resume or Start now is under way); "
+                    "no test starts now")
+        return ""
+
+    def _start_begin(self):
+        # Presses run on separate server threads: the count changes only
+        # under its own small lock, never held while anything waits.
+        with _STARTS_LOCK:
+            self._starts = getattr(self, "_starts", 0) + 1
+
+    def _start_end(self):
+        with _STARTS_LOCK:
+            self._starts = max(0, getattr(self, "_starts", 0) - 1)
+
+    def tests_off_before_rig_up(self, label):
+        """schedule_service.Service.before_rig_up: on the conductor's line,
+        right before a show start or a Resume is sent, every operator test
+        still on goes off (tests_off_for_show), whatever started it, and
+        the groups the purge armed are waited for (purge_off_before_start,
+        at most PURGE_START_CONFIRM_S, and only when there are any). The
+        conductor's line cannot refuse a start (a scheduled start, or a
+        tap that raced a press): one flamesafe does not confirm off is
+        said at once, as a flames alert and a journal fault."""
+        said = self.tests_off_for_show(
+            label, "", "engine",
+            why=f"the show is starting ({label}): every test off first")
+        m = getattr(self, "morning", None)
+        try:
+            names = sorted(m.purge.purge_groups()) if m is not None else []
+        except Exception:                        # noqa: BLE001
+            names = []
+        why = self.purge_off_before_start(label, "", "engine")
+        if why:
+            try:
+                self.alerts.raise_(
+                    "flames", f"{label}: flamesafe did not confirm the "
+                              f"purge's groups ({', '.join(names)}) off "
+                              f"before the show started; it started "
+                              f"anyway. Check those flame groups now.")
+            except Exception:                    # noqa: BLE001
+                pass
+        return said
+
+    def purge_off_before_start(self, what, who="", screen="", seq0=None):
+        """"" once every group the purge asked to arm (morning.Purge.
+        purge_groups) is confirmed off, within PURGE_START_CONFIRM_S: by
+        flamesafe (disarmed and not wanted, in a fresh status received
+        GROUP_DISARM_SETTLE_S or more after this call), or, while
+        flamesafe's status is not reaching this engine, by the Stream Deck
+        reading the cleared purge twice (it disarms a purge group the
+        moment the purge stops wanting it; journaled as a fault). Else the
+        sentence that refuses the start, naming the cause and the way out.
+        Called after tests_off_for_show has cleared the purge (#266 with
+        #269, Jeff 2026-11-14: no test outlives the Hold into the show).
+        `seq0`: the Stop and Hold count when the start was pressed; a Stop
+        or Hold since ends the wait and refuses the start (Stop and Hold
+        always win). Nothing to wait for: "" at once."""
+        def halted():
+            return seq0 is not None and getattr(self, "_halt_seq", 0) != seq0
+
+        def refuse(why):
+            try:
+                self._journal(who or "system", screen or "engine", "purge",
+                              "refused", f"{what}: {why}", fault=True)
+            except Exception:                    # noqa: BLE001
+                pass
+            return why
+        stopped = (f"Stop or Hold was pressed while {what} waited for the "
+                   f"purge's groups, so nothing was started. Stop and Hold "
+                   f"always win.")
+        if halted():
+            return refuse(stopped)
+        m = getattr(self, "morning", None)
+        purge = getattr(m, "purge", None) if m is not None else None
+        try:
+            groups = purge.purge_groups() if purge is not None else set()
+        except Exception:                        # noqa: BLE001
+            groups = set()
+        if not groups:
+            return ""
+        fs = self.flame_status
+        try:
+            at0 = fs.clock()
+        except Exception:                        # noqa: BLE001
+            at0 = None
+        reads0 = getattr(self, "_deck_reads", 0)
+        stale = False
+        end = time.monotonic() + PURGE_START_CONFIRM_S
+        for _step in range(int(PURGE_START_CONFIRM_S /
+                               GROUP_DISARM_STEP_S) + 1):
+            if halted():
+                return refuse(stopped)
+            try:
+                v = fs.view()
+                stale = not v or bool(v.get("stale"))
+                got = fs.last_at
+                if not stale and at0 is not None and got is not None and \
+                        got - at0 >= GROUP_DISARM_SETTLE_S:
+                    by = {g.get("name"): g for g in v.get("groups") or []}
+                    if all((by.get(n) or {}).get("armed") == "disarmed" and
+                           not (by.get(n) or {}).get("wanted")
+                           for n in groups):
+                        purge.purge_groups_forget(groups)
+                        return ""
+                if stale and getattr(self, "_deck_reads", 0) - reads0 >= 2:
+                    purge.purge_groups_forget(groups)
+                    try:
+                        self._journal(
+                            who or "system", screen or "engine", "purge",
+                            "deck", f"{what}: flamesafe is not answering, "
+                            f"so it could not confirm the purge's groups "
+                            f"({', '.join(sorted(groups))}) off. The Stream "
+                            f"Deck has read the cleared purge, and lets a "
+                            f"purge group go the moment it is not wanted.",
+                            fault=True)
+                    except Exception:            # noqa: BLE001
+                        pass
+                    return ""
+            except Exception:                    # noqa: BLE001
+                pass
+            if time.monotonic() >= end:
+                break
+            try:
+                self._pause(GROUP_DISARM_STEP_S)
+            except Exception:                    # noqa: BLE001
+                break
+        if halted():
+            return refuse(stopped)
+        names = ", ".join(sorted(groups))
+        if stale:
+            return refuse(f"flamesafe is not answering and the Stream Deck "
+                          f"is not reading this engine, so nothing can "
+                          f"confirm the purge's groups ({names}) off. Press "
+                          f"Clear on the Purge step, then try again. The "
+                          f"show stays held.")
+        return refuse(f"{PURGE_STILL_ARMED} flamesafe has not reported "
+                      f"{names} off. The show stays held.")
+
+    def tests_off_for_show(self, what, who="", screen="", why=None):
+        """Every operator test off before a show may drive the rig again
+        (Jeff, 2026-11-14): Resume, Start now, Start at a cue and Continue
+        anyway. Tests may run on Hold, even mid show, so they end here,
+        at the press, before the scheduler is asked: the momentary purge,
+        the timed purge, the hazer test and every laser calibration test.
+        Lasers ARMED stay armed (Jeff's ruling). One plain sentence naming
+        what ended, journaled, or "" when nothing was on. Never raises."""
+        if why is None:
+            why = f"{who or 'someone'} pressed {what} on the {screen}"
+        ended = []
+        m = self.morning
+        purge = getattr(m, "purge", None) if m is not None else None
+        try:
+            timed = purge is not None and purge.timed_running()
+        except Exception:                        # noqa: BLE001
+            timed = True
+        if timed:
+            self.timed_purge_cut(why, who, screen)
+            ended.append("the timed purge")
+        try:
+            if purge is not None and purge.fire is not None:
+                purge.stop(why)
+                ended.append("the purge")
+        except Exception:                        # noqa: BLE001
+            pass
+        try:
+            # The momentary purge's selection too (#266 with #269): a purge
+            # selected on Hold must not keep its groups wanted into the
+            # show; after the start only a fresh tap arms. Named once.
+            if purge is not None and getattr(purge, "selected", None):
+                purge.clear(why)
+                if "the purge" not in ended and not timed:
+                    ended.append("the purge")
+        except Exception:                        # noqa: BLE001
+            pass
+        ht = self.hazer_test
+        try:
+            hz_on = ht is not None and bool(ht.running() or ht.run)
+        except Exception:                        # noqa: BLE001
+            hz_on = True
+        if hz_on and self.hazer_test_cut(why, who, screen):
+            ended.append("the hazer test")
+        lt = getattr(m, "lasers", None) if m is not None else None
+        try:
+            if lt is not None and lt.on and lt.all_off(why):
+                ended.append("the laser tests")
+        except Exception:                        # noqa: BLE001
+            pass
+        if not ended:
+            return ""
+        text = (f"Tests turned off for {what}: "
+                f"{', '.join(ended)}.")
+        try:
+            self._journal(who, screen, "tests-off", "done",
+                          f"{text} ({why}).")
+        except Exception:                        # noqa: BLE001
+            pass
+        return text
+
     def show_live_refusal(self):
         """Why nothing may fire from the Morning page right now: a show
         live (SHOW or PAUSED), or the show clock playing a cue. "" when a purge may go (between shows, nothing playing)."""
@@ -7147,6 +7564,39 @@ class Remote:
                           ctx.local, owner=self._page_owner(ctx),
                           token=getattr(ctx, "token", "") or "",
                           end_only=True)
+        if name == "purge-select" and body.get("on") is not False:
+            # A tap on units already selected when no arm can happen from
+            # here (purge arming off, the Stream Deck program not reading):
+            # it takes them off (Jeff, 2026-11-14: deselecting is always
+            # possible), never refused.
+            try:
+                deck_age = self.clock() - (self._deck_seen or -1e9)
+            except Exception:
+                deck_age = 1e9
+            why = "" if self.purge_enabled(ctx.local) else \
+                "Arming a purge from here is switched off."
+            if not why and not deck_age <= self.DECK_QUIET_S:
+                why = ("The Stream Deck program has not read this engine in "
+                       "the last 2 s, and it is what arms a group.")
+            ids = body.get("machines") if isinstance(
+                body.get("machines"), list) else [body.get("machine")]
+            sel = list(m.purge.selected)
+            if why and ids and all(str(i) in sel for i in ids) and \
+                    self.purge_enabled(ctx.local) and \
+                    deck_age <= self.DECK_QUIET_S + PURGE_TRANSIENT_S:
+                # The deck quiet only briefly (third review of #269): the
+                # units are kept, try again in a moment; quiet for longer,
+                # the tap takes them off (below).
+                return 409, {"error": f"{why} The selection is kept; try "
+                                      f"again in a moment.", "brief": True,
+                             "selected": sel}
+            if why and ids and all(str(i) in sel for i in ids):
+                code, out = m.post(name, dict(body, on=False), device, who,
+                                   screen, seen_ok, ctx.local)
+                if code == 200:
+                    out = dict(out, off=True, text=f"Taken off the purge: "
+                               f"it cannot be armed now. {why}")
+                return code, out
         if timed_start or \
                 (name == "purge-select" and body.get("on") is not False) or \
                 (name == "purge-fire" and users_mod.purge_fire_wanted(body)):
@@ -7227,20 +7677,25 @@ class Remote:
 
     def timed_purge_blockers(self, t):
         """morning.Purge's engine checks for a timed purge, at its start
-        (`t` None) and on every send while it runs: a Hold standing, Stop
-        under way, Run pressed or starting, the flame link not sending or
-        alarmed, and (running) the starter's sign-in gone. "" or why.
-        Plain reads; fails closed."""
+        (`t` None) and on every send while it runs: Stop under way, Run
+        pressed or starting, the flame link not sending or alarmed, and
+        (running) the starter's sign-in gone. "" or why. A show live is
+        the Morning page's own check (show_live_refusal). Plain reads;
+        fails closed."""
         try:
             svc = self.schedule
-            state = getattr(getattr(svc, "machine", None), "state", None)
-            if state == "HOLD":
-                return ("a Hold is standing; Resume first, then "
-                        "start it again.")
+            # The schedule's Hold (a Stop's too) is no blocker (Jeff,
+            # 2026-11-14: the operator tests anything on Hold); the Hold
+            # press ends a running one (timed_purge_cut at the press).
             if getattr(svc, "halting", lambda: False)() is True:
                 return "Stop is under way."
-            if getattr(getattr(self.control, "session", None), "running",
-                       False):
+            if self.start_underway():
+                return "a show is starting (Resume or Start now is under way)."
+            # On Hold show control stays on in a real night; it does not
+            # refuse the timed purge then (Jeff, 2026-11-14).
+            held = self._on_hold_for_tests()
+            if not held and getattr(getattr(self.control, "session", None),
+                                    "running", False):
                 return ("Show control is on (a show file is running), so "
                         "the show file owns the flame channels; turn show "
                         "control off first (End rehearsal in a rehearsal).")
@@ -7248,7 +7703,7 @@ class Remote:
                 cs = self.control.state() or {}
             except Exception:                    # noqa: BLE001
                 cs = {}
-            if cs.get("starting") or cs.get("running"):
+            if cs.get("starting") or (cs.get("running") and not held):
                 return ("Show control is on (a show file is running), so "
                         "the show file owns the flame channels; turn show "
                         "control off first (End rehearsal in a rehearsal).")
@@ -7486,27 +7941,60 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
-    def laser_arm_blockers(self, look=None):
-        """Why no laser may be armed (nor BEYOND's laser output switched
-        on) right now, or "": a Hold (a Stop's too) until Resume, the
-        night closing, and no schedule at all (the show state
-        unknown). Plain reads, never a lock: the laser gate asks this.
-        `look`: the conductor's look already read (laser_enable_blockers),
-        else read here."""
+    def laser_arm_blockers(self, look=None, light=False):
+        """Why no laser may be armed right now, or "": a conductor hold
+        that is not the schedule's Hold or a show paused by it (a
+        Programming Pause), and the night closing. On Hold (the
+        schedule's HOLD, a Stop's too, and a show paused mid show,
+        PAUSED) and with no schedule at all a laser MAY be armed (Jeff,
+        2026-11-14: lasers and hazers like flames, the operator tests
+        anything); `light` True (laser_enable_blockers) adds them back as
+        reasons the lasers may not be LIT, so an arm there never lights
+        anything by itself: BEYOND's laser output stays off until a show
+        plays again. Lasers so armed stay armed through Resume (Jeff,
+        2026-11-14) and light through the laser gate when the show plays. Plain reads, never a lock:
+        the laser gate asks this. `look`: the conductor's look already
+        read (laser_enable_blockers), else read here."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
-        if m is None:
-            return ("the show state is not known (no schedule is loaded), "
-                    "so no laser may be armed")
         cond = getattr(svc, "conductor", None)
-        state = getattr(m, "state", None)
         if look is None:
             look = getattr(cond, "_look", None)
-        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):
-            return "the show is on Hold; press Resume first, then arm"
+        if m is None and look in ("HELD", "DARK") and \
+                self._programming_paused():
+            # A Programming Pause refuses a new arm with no schedule too.
+            return PROGRAMMING_PAUSE_ARM
+        if m is None:
+            if light:
+                return ("the show state is not known (no schedule is "
+                        "loaded), so the lasers stay dark")
+            return ""
+        state = getattr(m, "state", None)
+        if look in ("HELD", "DARK") and (state not in ("HOLD", "PAUSED") or
+                                         self._programming_paused()):
+            return (PROGRAMMING_PAUSE_ARM if self._programming_paused()
+                    else "the show is held dark by the show conductor; arm "
+                         "once the show plays again")
+        if light and state in ("HOLD", "PAUSED"):
+            return ("the show is on Hold, so the lasers stay dark until a "
+                    "show plays after Resume")
         if state == "CLOSING":
             return "the night is closing"
         return ""
+
+    def _programming_paused(self):
+        """True while Programming playback started by Play from is paused
+        (its Continue would light armed lasers), whatever the schedule's
+        state: a new laser arm stays refused then (Jeff, 2026-11-14). An
+        error reads as paused (fail closed). Plain reads."""
+        ph = getattr(self, "playhead", None)
+        prog = getattr(self, "programming", None)
+        if ph is None or prog is None:
+            return False
+        try:
+            return bool(prog()[0] and ph.active())
+        except Exception:                        # noqa: BLE001
+            return True
 
     def laser_enable_blockers(self):
         """Why the lasers may not be LIT right now (laserarm.LaserArm's
@@ -7520,7 +8008,7 @@ class Remote:
         svc = self.schedule
         m = getattr(svc, "machine", None)
         if m is None:
-            return self.laser_arm_blockers()
+            return self.laser_arm_blockers(light=True)
         cond = getattr(svc, "conductor", None)
         # The conductor's look and its keep as ONE read (look_and_keep),
         # never the look and then the keep (cold review of #223, M2).
@@ -7530,7 +8018,7 @@ class Remote:
         except Exception:                           # noqa: BLE001
             look, keep = getattr(cond, "_look", None), False
         state = getattr(m, "state", None)
-        why = self.laser_arm_blockers(look=look)
+        why = self.laser_arm_blockers(look=look, light=True)
         if not why:
             return why
         try:
@@ -7703,6 +8191,9 @@ class Remote:
         (None when there is nothing of it in this engine) and the names of
         the steps that failed."""
         label = who or "An unnamed operator"
+        # A start waiting for the purge's groups never outlives a Stop
+        # (purge_off_before_start): Stop wins.
+        self._halt_seq = getattr(self, "_halt_seq", 0) + 1
         out = {"flames": None, "lasers": None, "lasers_blank": None,
                "show": None, "show_ended": False, "hold": None,
                "programming": None, "failed": []}
@@ -9874,6 +10365,9 @@ class Remote:
                     "conductor": cv.get("attached", False),
                     "lit": cv.get("lit") is True,
                     "stop_held": cv.get("stop_held") is True,
+                    # The idle look held after the last show: the SHOW
+                    # tab's End of night is there only while this is true.
+                    "held_look": st.get("held_look") is True,
                     "trouble": cv.get("trouble"),
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),
