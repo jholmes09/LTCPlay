@@ -13737,6 +13737,91 @@ def build():
   '''            if False:
                 self._do_disarm(i, who="the purge ended" if fresh else'''),
 
+ ("deck: one slow read's grace never ends, a quiet engine leaves the purge armed (T4)",
+  "ltcplay/streamdeck.py",
+  '''            if g is not None and 0 <= now - g[1] <= PURGE_STALE_GRACE_S \\
+                    and not self._latched_now():''',
+  '''            if g is not None and 0 <= now - g[1] \\
+                    and not self._latched_now():'''),
+
+ ("deck: one slow read disarms the purge again (no grace, the field bug of 2026-11-14)",
+  "ltcplay/streamdeck.py",
+  '''            if g is not None and 0 <= now - g[1] <= PURGE_STALE_GRACE_S \\
+                    and not self._latched_now():
+                return set(g[0]), None''',
+  '''            if False:
+                return set(g[0]), None'''),
+
+ ("deck: the purge re-arms on its own when the engine answers again (no tap)",
+  "ltcplay/streamdeck.py",
+  '''        if fresh:
+            self._purge_seen = wanted''',
+  '''        self._purge_seen = wanted'''),
+
+ ("deck: an old purge tap arms (a deck restart acts on a tap long gone)",
+  "ltcplay/streamdeck.py",
+  '''            if i in wanted and 0 <= age <= PURGE_PRESS_FRESH_S * 1000:''',
+  '''            if i in wanted:'''),
+
+ ("deck: a purge tap arms a group the engine does not list",
+  "ltcplay/streamdeck.py",
+  '''            if i in wanted and 0 <= age <= PURGE_PRESS_FRESH_S * 1000:''',
+  '''            if 0 <= age <= PURGE_PRESS_FRESH_S * 1000:'''),
+
+ ("deck: the operator's tap on a selected, unarmed unit arms nothing (the stuck purge)",
+  "ltcplay/streamdeck.py",
+  '''        for i in sorted(entered | pressed):''',
+  '''        for i in sorted(entered):'''),
+
+ ("deck: a disarm nobody pressed starts the 2 s wait and blocks the next tap",
+  "ltcplay/streamdeck.py",
+  '''        if not system:
+            self._disarmed_at[i] = self._clock()''',
+  '''        if True:
+            self._disarmed_at[i] = self._clock()'''),
+
+ ("deck: the deck's own purge refusal is not said to the page",
+  "ltcplay/streamdeck.py",
+  '''                self._purge_refused[i] = code or "refractory"
+                continue''',
+  '''                continue'''),
+
+ ("morning: a second purge tap within 2 s is taken (no double tap rule)",
+  "ltcplay/morning.py",
+  '''            if last is not None and 0 <= now - last < TAP_IGNORE_S:''',
+  '''            if False:'''),
+
+ ("morning: a tap on a selected, unarmed unit asks the deck for nothing",
+  "ltcplay/morning.py",
+  '''            self._press_n += 1
+            self._presses[m.group] = (self._press_n, now)''',
+  '''            if not again:
+                self._press_n += 1
+                self._presses[m.group] = (self._press_n, now)'''),
+
+ ("morning: the deck is never told of a purge tap",
+  "ltcplay/morning.py",
+  '''                          "presses": self.purge.presses_view(
+                              names, pv["groups_wanted"]) if open_ else []},''',
+  '''                          "presses": []},'''),
+
+ ("purge page: Space answered with nothing firing says FIRING",
+  "ltcplay/web/remote2.html",
+  '''    const lit = (j.firing || []).length > 0;
+    $("mo-msg").textContent = lit ?''',
+  '''    const lit = true;
+    $("mo-msg").textContent = lit ?'''),
+
+ ("purge page: a tap on a selected, unarmed unit takes it off instead of arming it",
+  "ltcplay/web/remote2.html",
+  '''  return !(purgeArmed(m, fl) || purgeStuckFor(m, fl));''',
+  '''  return false;'''),
+
+ ("purge page: selected reads as armed on the step",
+  "ltcplay/web/remote2.html",
+  '''n ? (na === n ? n + " armed. Deck FIRE or hold Space." :''',
+  '''n ? (true ? n + " armed. Deck FIRE or hold Space." :'''),
+
  ("deck: a purge arm ignores the re-arm refractory window (T8)",
   "ltcplay/streamdeck.py",
   '''        left = self._in_rearm_refractory(i, now)
