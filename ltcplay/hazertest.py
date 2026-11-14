@@ -47,8 +47,9 @@ The rules
     the link before its first copy), a Hold press (hazer_test_cut) and
     a Hold's zero, Hazers off, the page that started it going quiet for
     PAGE_QUIET_S (its beat), a show starting or paused mid show, show
-    control turning on, live flame programming, flamesafe's status not fresh, the flame
-    link not sending, or any error (fail closed: OFF, and said).
+    control turning on, live flame programming, flamesafe's status not
+    fresh, the flame link not sending, or any error (fail closed: OFF, and
+    said).
   - ON names its hazers (validated against the engine's own hazer list; a
     name it does not have refuses the whole press) and needs the role
     matrix's arm row (users.classify "hazer-test", the row that turns a

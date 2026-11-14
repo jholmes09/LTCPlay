@@ -4471,17 +4471,17 @@ class Remote:
             self.live_flame_cut(f"{who or 'someone'} pressed {name} on the "
                                 f"{screen}", who, screen)
         if name == "hold":
-            # The hazer test ends at a Hold press too (Jeff, 2026-11-14): a
-            # Hold no longer refuses it, so the press itself takes it off,
-            # as it does the timed purge. Only the link's cut here.
-            self.hazer_test_cut(f"{who or 'someone'} pressed Hold on the "
-                                f"{screen}", who, screen)
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
             # before the scheduler: only the arm's state changes on this
             # thread; the blank and BEYOND's DisableLaserOutput go on the
             # arm's own sender, so nothing here waits on BEYOND.
             self._lasers_disarm_now(who, screen, name)
+            # The hazer test ends at a Hold press too (Jeff, 2026-11-14): a
+            # Hold no longer refuses it, so the press itself takes it off,
+            # as it does the timed purge. Only the link's cut here.
+            self.hazer_test_cut(f"{who or 'someone'} pressed Hold on the "
+                                f"{screen}", who, screen)
         if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
             why = "Confirm it on the page first. Nothing was changed."
             self._journal(who, screen, name, "refused",

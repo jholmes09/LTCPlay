@@ -72496,6 +72496,53 @@ def test_hazer_test_at_the_engine():
             R.remote._ht_state = real_state
         check(st == 409 and "could not be read" in out["error"],
               f"the show's state unreadable: refused: {out}")
+        # The engine's own reading (Jeff, 2026-11-14: hazers like flames):
+        # no schedule loaded and the schedule's Hold are idle (the test may
+        # run); a show playing or paused mid show is not; a machine whose
+        # state cannot be read still raises (busy, fail closed).
+        import types as _ty
+
+        class _Unreadable:
+            @property
+            def state(self):
+                raise RuntimeError("selftest")
+        for sched, want in (
+                (None, "idle"),
+                (_ty.SimpleNamespace(machine=None), "idle"),
+                (_ty.SimpleNamespace(machine=_ty.SimpleNamespace(
+                    state="HOLD")), "idle"),
+                (_ty.SimpleNamespace(machine=_ty.SimpleNamespace(
+                    state="IDLE")), "idle"),
+                (_ty.SimpleNamespace(machine=_ty.SimpleNamespace(
+                    state="PAUSED")), "held"),
+                (_ty.SimpleNamespace(machine=_ty.SimpleNamespace(
+                    state="SHOW")), "playing")):
+            fake = _ty.SimpleNamespace(schedule=sched)
+            got = RM.Remote._ht_state(fake)
+            check(got == want, f"_ht_state for {sched}: {got!r}, not "
+                               f"{want!r}")
+        try:
+            RM.Remote._ht_state(_ty.SimpleNamespace(
+                schedule=_ty.SimpleNamespace(machine=_Unreadable())))
+            check(False, "an unreadable scheduler state read as a state")
+        except RuntimeError:
+            pass
+        sv_sched = R.remote.schedule
+        R.remote._ht_state = RM.Remote._ht_state.__get__(R.remote)
+        R.remote.schedule = None
+        try:
+            check(R.remote.hazer_test_show_busy() == "" and
+                  R.remote.hazer_test_gate() is True,
+                  f"no schedule loaded: the hazer test is not refused "
+                  f"(was an AttributeError): "
+                  f"{R.remote.hazer_test_show_busy()!r}")
+            st, out, _r = tap(True)
+            check(st == 200 and link.hazer_test_live_now(),
+                  f"no schedule loaded: the hazer test starts: {st} {out}")
+            tap(False)
+        finally:
+            R.remote.schedule = sv_sched
+            R.remote._ht_state = real_state
         # Fail closed: an error ends it and says so.
         st, out, run = tap(True)
         good = link.hazer_test_beat
@@ -88750,6 +88797,17 @@ def test_laser_arm_morning_page_routes_and_surfaces():
                       f"no schedule: every laser armed, BEYOND's output "
                       f"stays off, the conductor not told: {text} "
                       f"{R.laser_out.calls[n_out:]} {told}")
+                st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                                    {"laser": "laser-3", "on": True},
+                                    client=loop)
+                check(st == 200 and "laser-3" in R.m.lasers.on,
+                      f"no schedule: a laser test goes on: {st} {out}")
+                st, _h, out = R.ask("POST", "/api/remote/laser-test",
+                                    {"laser": "laser-3", "on": False},
+                                    client=loop)
+                check(st == 200 and not R.m.lasers.on and
+                      "enable" not in R.laser_out.calls[n_out:],
+                      f"and off, BEYOND's output never on: {st} {out}")
             finally:
                 R.m.laser_arm.on_permitted = was_p
                 R.m.laser_arm.disarm_all("selftest", defer=False)
@@ -106744,6 +106802,92 @@ def test_show_control_refusals_say_turn_it_off():
           "Stop and Run after it is back" not in src,
           "the terminal's rig-not-answering line says turn show control "
           "off and on (Stop, then Run on the Mac page)")
+    print("  ok")
+
+
+def test_hold_and_no_schedule_allow_tests_not_a_live_show():
+    section("Jeff, 2026-11-14: lasers and hazers like flames. On the "
+            "schedule's Hold (a Stop's too) and with no schedule loaded "
+            "the operator tests anything: a timed purge, the hazer test, "
+            "arming a laser (never lit there). Still refused: a show live "
+            "(SHOW, or PAUSED mid show), the show clock playing a cue, "
+            "show control on, Stop under way, the night closing")
+    import types
+    from ltcplay import remote as RM
+    NS = types.SimpleNamespace
+
+    def fake(state, session_running=False, cs=None, halting=False,
+             playing=False, look=None, no_machine=False):
+        m = None if no_machine else NS(state=state)
+        f = NS(schedule=NS(machine=m, conductor=NS(_look=look),
+                           halting=lambda: halting),
+               control=NS(session=NS(running=session_running,
+                                     clock=NS(playing=playing)),
+                          state=lambda: dict(cs or {})),
+               morning=None, _deck_seen=None, clock=lambda: 0.0,
+               show_control_on=lambda c: bool(c.get("running")))
+        for name in ("_ht_state", "laser_arm_blockers",
+                     "show_live_refusal"):
+            setattr(f, name, getattr(RM.Remote, name).__get__(f))
+        return f
+    # ALLOWED: the schedule's Hold, between shows and after a Stop, and no
+    # schedule loaded.
+    for label, f in (("on Hold", fake("HOLD", look="HELD")),
+                     ("on Hold, look DARK", fake("HOLD", look="DARK")),
+                     ("no schedule", fake(None, no_machine=True))):
+        check(RM.Remote.timed_purge_blockers(f, None) == "",
+              f"{label}: a timed purge is allowed: "
+              f"{RM.Remote.timed_purge_blockers(f, None)!r}")
+        check(RM.Remote.hazer_test_show_busy(f) == "" and
+              RM.Remote.hazer_test_gate(f) is True,
+              f"{label}: the hazer test is allowed: "
+              f"{RM.Remote.hazer_test_show_busy(f)!r}")
+        check(f.laser_arm_blockers() == "",
+              f"{label}: arming a laser is allowed: "
+              f"{f.laser_arm_blockers()!r}")
+        check(f.laser_arm_blockers(light=True) != "",
+              f"{label}: but the lasers may not be lit")
+        check(f.show_live_refusal() == "",
+              f"{label}: flame tests and laser tests are not refused as "
+              f"live: {f.show_live_refusal()!r}")
+    # STILL REFUSED: a live show.
+    for st in ("SHOW", "PAUSED"):
+        f = fake(st, look="HELD" if st == "PAUSED" else "PLAYING")
+        check("live" in f.show_live_refusal(),
+              f"{st}: flame and laser tests refused as live: "
+              f"{f.show_live_refusal()!r}")
+        check(RM.Remote.hazer_test_show_busy(f) != "" and
+              RM.Remote.hazer_test_gate(f) is False,
+              f"{st}: the hazer test refused: "
+              f"{RM.Remote.hazer_test_show_busy(f)!r}")
+    check(fake("PAUSED").laser_arm_blockers() ==
+          "the show is on Hold; press Resume first, then arm",
+          "PAUSED (a show held mid show): a new laser arm is refused")
+    # The show clock playing a cue (no schedule needed).
+    f = fake(None, no_machine=True, playing=True)
+    check("show clock" in f.show_live_refusal(),
+          f"the show clock playing: refused: {f.show_live_refusal()!r}")
+    # Show control on, on Hold and with no schedule: still refused.
+    for label, kw in (("the session running", {"session_running": True}),
+                      ("the engine's state running",
+                       {"cs": {"running": True}}),
+                      ("the engine's state starting",
+                       {"cs": {"starting": True}})):
+        for f in (fake("HOLD", **kw), fake(None, no_machine=True, **kw)):
+            check("show control is on" in
+                  RM.Remote.timed_purge_blockers(f, None).lower(),
+                  f"show control on ({label}): a timed purge refused: "
+                  f"{RM.Remote.timed_purge_blockers(f, None)!r}")
+            check("show control" in RM.Remote.hazer_test_show_busy(f),
+                  f"show control on ({label}): the hazer test refused: "
+                  f"{RM.Remote.hazer_test_show_busy(f)!r}")
+    # Stop under way, and the night closing.
+    f = fake("HOLD", halting=True)
+    check(RM.Remote.timed_purge_blockers(f, None) == "Stop is under way.",
+          f"Stop under way: a timed purge refused: "
+          f"{RM.Remote.timed_purge_blockers(f, None)!r}")
+    check(fake("CLOSING").laser_arm_blockers() == "the night is closing",
+          "the night closing: no laser arms")
     print("  ok")
 
 
@@ -124992,6 +125136,7 @@ if __name__ == "__main__":
         test_streamdeck_deck_journal_prints_and_posts,
         test_streamdeck_reconnect_never_remembers_old_state,
         test_show_control_refusals_say_turn_it_off,
+        test_hold_and_no_schedule_allow_tests_not_a_live_show,
         test_streamdeck_never_imports_flamesafe,
         test_conductor_devices_hold_blanks_beyond_before_anything_fades,
         test_conductor_devices_stop_blanks_at_once_never_ramps,
