@@ -916,6 +916,13 @@ class Service:
         # called (after the lock is free) when the schedule goes on Hold or
         # is paused, so pre-show audio stops at once.
         self.on_schedule_held = None
+        # A plain callable(label), or None, set by web.py (the remote's
+        # tests_off_before_rig_up): called on the conductor's line right
+        # before a show start or a Resume is sent, so no operator test
+        # (a laser or hazer test, a purge) is still on when the show drives
+        # the rig (Jeff, 2026-11-14). Never trusted to succeed: an error is
+        # ignored and the start goes on.
+        self.before_rig_up = None
         # Bumped by _apply() every time the machine crosses into or out of
         # a held or paused state. See hold_for_announcement and
         # hold_still_claimed: the second, read-only check an announcement
@@ -1849,6 +1856,16 @@ class Service:
                     action="conductor", outcome="held back",
                     reason=f"{call.method} held back, show control off")
             return
+        if call.method in ("start_show", "show_starting", "resume"):
+            # Every operator test off right before the show may drive the
+            # rig again, whatever started it (a press, the schedule's own
+            # tick): the press's own turn-off can be minutes old by now.
+            hook = self.before_rig_up
+            if hook is not None:
+                try:
+                    hook(call.label)
+                except Exception:                # noqa: BLE001
+                    pass
         try:
             if call.method == "start_show":
                 # The Fire & Ice show runner, not the conductor (see

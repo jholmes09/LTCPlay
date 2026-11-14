@@ -2142,6 +2142,10 @@ class Remote:
         # hazertest.HazerTest, set by web.serve with the hazers
         # (2026-11-11).
         self.hazer_test = None
+        # Resume, Start now, Start at a cue and Continue anyway under way
+        # (a count; start_underway): no new operator test starts meanwhile
+        # (Jeff, 2026-11-14), as while a show file is starting.
+        self._starts = 0
         self.live_flame = None       # flameprog.LiveFlame, set by web.serve
         self.clock = clock
         self.wall = wall
@@ -2795,8 +2799,12 @@ class Remote:
             return 409, {"error": "Continue anyway needs the button held "
                                   "until it fills; a tap does nothing. "
                                   "Nothing was changed."}
-        said = self.tests_off_for_show("Continue anyway", who, screen)
-        got = svc.continue_anyway(who, screen)
+        self._start_begin()
+        try:
+            said = self.tests_off_for_show("Continue anyway", who, screen)
+            got = svc.continue_anyway(who, screen)
+        finally:
+            self._start_end()
         if said and isinstance(got, dict):
             got = dict(got, tests_off=said,
                        text=f"{said} {got.get('text') or ''}".strip())
@@ -4449,8 +4457,23 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
+        starting = name in ("resume", "start-now", "start-at-cue")
+        if starting:
+            # From here until the press is answered no new test starts
+            # (Jeff, 2026-11-14): Start now can wait here for the show
+            # audio and the rig check while the schedule is still on Hold.
+            self._start_begin()
+        try:
+            return self._press_after_start(name, body, ctx, who, screen,
+                                           surface, pressed, starting)
+        finally:
+            if starting:
+                self._start_end()
+
+    def _press_after_start(self, name, body, ctx, who, screen, surface,
+                           pressed, starting):
         tests_said = ""
-        if name in ("resume", "start-now", "start-at-cue"):
+        if starting:
             # Every operator test off first (Jeff, 2026-11-14): a test
             # may run on Hold, even mid show, and must not outlive it into
             # a show. At the press, before the scheduler; only takes risk
@@ -5988,6 +6011,12 @@ class Remote:
             st = self._ht_state()
             if st == "playing":
                 return "a show is playing, and the show drives the hazers"
+            if getattr(self.schedule, "halting",
+                       lambda: False)() is True:
+                return "Stop is under way"
+            why = self.start_underway()
+            if why:
+                return why
             if self._on_hold_for_tests():
                 # On Hold (Jeff, 2026-11-14): show control stays on in a
                 # real night and does not refuse the test then; a show
@@ -7019,7 +7048,16 @@ class Remote:
         anything while the show is on Hold). The show clock playing a cue
         and live flame programming still refuse. Resume ends every test
         first (tests_off_for_show)."""
-        m = getattr(self.schedule, "machine", None)
+        svc = self.schedule
+        try:
+            if getattr(svc, "halting", lambda: False)() is True:
+                return "Stop is under way; nothing fires from this page now"
+        except Exception:                        # noqa: BLE001
+            return "whether Stop is under way could not be read"
+        why = self.start_underway()
+        if why:
+            return why
+        m = getattr(svc, "machine", None)
         if getattr(m, "state", None) != "PAUSED":
             return self.morning_live_refusal()
         s = getattr(self.control, "session", None)
@@ -7033,7 +7071,30 @@ class Remote:
                     "page until it is off")
         return ""
 
-    def tests_off_for_show(self, what, who="", screen=""):
+    def start_underway(self):
+        """A sentence while a Resume, Start now, Start at a cue or Continue
+        anyway is being handled (its wait for the show audio and its rig
+        check included), else "": no new operator test starts then."""
+        if getattr(self, "_starts", 0):
+            return ("a show is starting (Resume or Start now is under way); "
+                    "no test starts now")
+        return ""
+
+    def _start_begin(self):
+        self._starts = getattr(self, "_starts", 0) + 1
+
+    def _start_end(self):
+        self._starts = max(0, getattr(self, "_starts", 0) - 1)
+
+    def tests_off_before_rig_up(self, label):
+        """schedule_service.Service.before_rig_up: on the conductor's line,
+        right before a show start or a Resume is sent, every operator test
+        still on goes off (tests_off_for_show), whatever started it."""
+        return self.tests_off_for_show(
+            label, "", "engine",
+            why=f"the show is starting ({label}): every test off first")
+
+    def tests_off_for_show(self, what, who="", screen="", why=None):
         """Every operator test off before a show may drive the rig again
         (Jeff, 2026-11-14): Resume, Start now, Start at a cue and Continue
         anyway. Tests may run on Hold, even mid show, so they end here,
@@ -7041,7 +7102,8 @@ class Remote:
         the timed purge, the hazer test and every laser calibration test.
         Lasers ARMED stay armed (Jeff's ruling). One plain sentence naming
         what ended, journaled, or "" when nothing was on. Never raises."""
-        why = f"{who or 'someone'} pressed {what} on the {screen}"
+        if why is None:
+            why = f"{who or 'someone'} pressed {what} on the {screen}"
         ended = []
         m = self.morning
         purge = getattr(m, "purge", None) if m is not None else None
@@ -7366,6 +7428,8 @@ class Remote:
             # press ends a running one (timed_purge_cut at the press).
             if getattr(svc, "halting", lambda: False)() is True:
                 return "Stop is under way."
+            if self.start_underway():
+                return "a show is starting (Resume or Start now is under way)."
             # On Hold show control stays on in a real night; it does not
             # refuse the timed purge then (Jeff, 2026-11-14).
             held = self._on_hold_for_tests()
@@ -7641,7 +7705,8 @@ class Remote:
         state = getattr(m, "state", None)
         if look is None:
             look = getattr(cond, "_look", None)
-        if look in ("HELD", "DARK") and state not in ("HOLD", "PAUSED"):
+        if look in ("HELD", "DARK") and (state not in ("HOLD", "PAUSED") or
+                                         self._programming_paused()):
             return "the show is on Hold; press Resume first, then arm"
         if light and state in ("HOLD", "PAUSED"):
             return ("the show is on Hold, so the lasers stay dark until a "
@@ -7649,6 +7714,20 @@ class Remote:
         if state == "CLOSING":
             return "the night is closing"
         return ""
+
+    def _programming_paused(self):
+        """True while Programming playback started by Play from is paused
+        (its Continue would light armed lasers), whatever the schedule's
+        state: a new laser arm stays refused then (Jeff, 2026-11-14). An
+        error reads as paused (fail closed). Plain reads."""
+        ph = getattr(self, "playhead", None)
+        prog = getattr(self, "programming", None)
+        if ph is None or prog is None:
+            return False
+        try:
+            return bool(prog()[0] and ph.active())
+        except Exception:                        # noqa: BLE001
+            return True
 
     def laser_enable_blockers(self):
         """Why the lasers may not be LIT right now (laserarm.LaserArm's
