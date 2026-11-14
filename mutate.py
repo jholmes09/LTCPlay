@@ -24868,7 +24868,7 @@ def build():
 
  ('mid-show Hold: live flame programming does not stop the tests',
   'ltcplay/remote.py',
-  '        if lf is not None and getattr(lf, "on", False):\n',
+  '        if lf is not None and getattr(lf, "on", False) is not False:\n',
   '        if False:\n'),
 
  ('mid-show Hold: web.serve gives the Morning page the old live check',

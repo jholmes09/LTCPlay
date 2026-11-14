@@ -89378,6 +89378,9 @@ def test_laser_arm_through_web_serve():
               R.laser_enable_blockers and
               la._enable_blockers == httpd.morning._arm_enable_blockers,
               "ltc serve did not wire the lasers in Programming")
+        check(httpd.morning._live_check == R.morning_test_refusal,
+              "ltc serve did not give the Morning page the live check that "
+              "lets tests run on a mid-show Hold (Jeff, 2026-11-14)")
         m_ = httpd.morning
         real_b, real_e = m_._laser_blockers, m_._laser_enable_blockers
         m_._laser_blockers = lambda: "held for a new arm"

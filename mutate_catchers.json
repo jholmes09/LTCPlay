@@ -3938,7 +3938,7 @@
 "mid-show Hold: the Morning page tests while a show plays": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
 "mid-show Hold: the Morning page tests while the show clock plays": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
 "mid-show Hold: live flame programming does not stop the tests": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
-"mid-show Hold: web.serve gives the Morning page the old live check": "test_laser_arm_morning_page_routes_and_surfaces",
+"mid-show Hold: web.serve gives the Morning page the old live check": "test_laser_arm_through_web_serve",
 "hazer test: a show starting leaves it on": "test_hazer_test_at_the_engine",
 "hazer test: show control on leaves it on": "test_hazer_test_at_the_engine",
 "hazer test: ON skips the checks arming a hazer has": "test_hazer_test_at_the_engine",

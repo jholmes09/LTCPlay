@@ -6995,7 +6995,7 @@ class Remote:
             return ("the show clock is playing a cue; nothing fires from "
                     "this page meanwhile")
         lf = self.live_flame
-        if lf is not None and getattr(lf, "on", False):
+        if lf is not None and getattr(lf, "on", False) is not False:
             return ("live flame programming is on; nothing fires from this "
                     "page until it is off")
         return ""
