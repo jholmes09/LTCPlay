@@ -507,7 +507,8 @@ click and always works, signed in or not; BEYOND's laser output comes on
 only once EVERY laser is armed and none is locked out, because BEYOND's
 only known command is for all lasers at once; Stop, Hold and the night
 closing disarm every laser, and after Resume they stay dark until
-you arm them again; the Lasers pill at the top of the rack screen says how
+you arm them again; on Hold and with no schedule loaded you may arm them
+and run their tests, but they stay dark there (Jeff, 2026-11-14); the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
 how BEYOND is told is not set yet, so each laser says "Calibration cue not
@@ -564,7 +565,8 @@ stop by themselves, even if the page or the iPad is closed. The rack
 screen, the line at the top of every tab and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
 (on the Startup page or the banner, from any screen, signed in or
-not), or Stop or Hold; Start now, Show control on, a disarm of one of
+not), or Stop or Hold; on Hold (and after a Stop, before Resume) you
+may start one (Jeff, 2026-11-14), with show control off; Start now, Show control on, a disarm of one of
 its groups, a lock, signing out and any other purge press (Space, the
 deck's FIRE, the button again) also end it at once. Only one purge at a
 time; the Fireball page, the cleaning and live flame programming wait for
@@ -989,7 +991,11 @@ channel, and is either ARMED or DISARMED.
   (HAZE ON in the top bar, HAZE TEST on its tile) only when the engine
   says so; Not known with no contact, and then the button is Turn off.
   - Each turns off by itself 60 s after its press.
-  - Off on Stop, Hold, Hazers off, a show or show control starting.
+  - Off on Stop, a Hold press, Hazers off, a show or show control
+    starting.
+  - Allowed on Hold (between shows and after a Stop) and with no
+    schedule loaded; refused while a show plays or is paused mid show,
+    and with show control on (Jeff, 2026-11-14).
   - Off if this screen goes quiet 10 s.
   It needs the arm row (as arming a hazer) and every check arming a
   hazer has, and a Haze level above 0 on each hazer turned on.
@@ -1872,8 +1878,14 @@ stop:
   finished. The Stop's fade never waits on a file being written or on
   the scheduler.
 - **Stop never turns show control off.** It stays on: Hold (or a Stop's Hold) is
-  how the schedule is stopped. Each flame group needs arming again, and
-  the lasers can only be armed again after Resume. The line under the
+  how the schedule is stopped. Each flame group and laser needs arming
+  again. On the Stop's Hold, before Resume, you may test anything, as on
+  any Hold (Jeff, 2026-11-14): fire a flame test, run a timed purge or the
+  hazer test (with show control off), arm a laser and run its test. A
+  laser armed on Hold stays dark (BEYOND's laser output stays off), and
+  Resume does not light it: it lights at the next show start, like any
+  armed laser. Armed is not safe: disarm it before Resume if it should
+  stay dark. The line under the
   buttons says what happened ("Stopped. The show ended and the rig is
   fading to dark. ... The schedule is on Hold: no show starts until you
   press Resume.") or, if any part did not work, which part, and what to
