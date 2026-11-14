@@ -1906,7 +1906,6 @@
 "lasers: enable_output ignores armed=False": "test_laser_output_allow_list_is_exactly_the_three_addresses",
 "lasers: enable_output's armed type check is removed": "test_laser_output_allow_list_is_exactly_the_three_addresses",
 "lasers: ltc serve never hands the laser arm to the conductor": "test_fire_ice_status_mirror_reaches_the_flame_link",
-"lasers: one laser disarmed by hand disarms all the others": "test_laser_arm_morning_page_routes_and_surfaces",
 "lasers: re-arming lights a show whose flame cues are not released": "test_laser_arm_stop_and_hold_disarm_and_need_rearming",
 "lasers: re-arming runs the whole up sequence, not only the lasers": "test_laser_arm_stop_and_hold_disarm_and_need_rearming",
 "lasers: re-arming starts a new sequence over one still running": "test_laser_arm_stop_and_hold_disarm_and_need_rearming",
