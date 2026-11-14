@@ -60818,6 +60818,7 @@ def test_programming_lasers_engine_refusal_and_blockers():
         return p
     r.programming = programming
     for name in ("laser_arm_blockers", "laser_enable_blockers",
+                 "_programming_paused",
                  "_programming_pause_keeps_lasers",
                  "programming_lasers_refusal"):
         setattr(r, name, getattr(Remote, name).__get__(r))
@@ -60869,15 +60870,32 @@ def test_programming_lasers_engine_refusal_and_blockers():
         st[key] = old
     held = ("the show is on Hold, so the lasers stay dark until a "
             "show plays after Resume")
-    for s_, want in (("HOLD", held), ("PAUSED", held),
+    # (Programming playback paused here: a Programming Pause refuses on
+    # any schedule state, Jeff 2026-11-14.)
+    for s_, want in (("HOLD", hold), ("PAUSED", hold),
                      ("CLOSING", hold)):
         machine.state = s_
         check(r.laser_enable_blockers() == want,
               f"{s_}: the Pause's exemption still applied: "
               f"{r.laser_enable_blockers()!r}")
+    # A Programming Pause with the schedule on Hold too: a new arm is
+    # still refused (Jeff, 2026-11-14), on HOLD and PAUSED alike.
+    for s_ in ("HOLD", "PAUSED"):
+        machine.state = s_
+        check(r.laser_arm_blockers() == hold,
+              f"{s_} during a Programming Pause: a new arm refused: "
+              f"{r.laser_arm_blockers()!r}")
+    st["prog"] = ValueError("no session")
+    machine.state = "HOLD"
+    check(r.laser_arm_blockers() == hold,
+          f"HOLD, Programming not askable: a new arm refused (fail "
+          f"closed): {r.laser_arm_blockers()!r}")
+    st["prog"] = (True, "")
     # On Hold (Jeff, 2026-11-14), between shows (HOLD) or mid show
-    # (PAUSED): a NEW arm is allowed, with the conductor HELD or DARK too
-    # (an announcement's Hold), but never lit while held.
+    # (PAUSED), no Programming playback: a NEW arm is allowed, with the
+    # conductor HELD or DARK too (an announcement's Hold), but never lit
+    # while held.
+    st["active"] = False
     for look in ("HELD", "DARK", "PLAYING"):
         st["look"] = look
         for s_ in ("HOLD", "PAUSED"):
@@ -60888,6 +60906,7 @@ def test_programming_lasers_engine_refusal_and_blockers():
                   f"{r.laser_arm_blockers()!r} "
                   f"{r.laser_enable_blockers()!r}")
     st["look"] = "HELD"
+    st["active"] = True
     machine.state = "IDLE"
     # No schedule loaded (Jeff, 2026-11-14): a new arm is allowed, the
     # lasers are never lit (the show state is not known).
@@ -60969,6 +60988,7 @@ def _prog_laser_rig():
     remote = types.SimpleNamespace(morning=types.SimpleNamespace(
         lasers=tests))
     for name in ("laser_arm_blockers", "laser_enable_blockers",
+                 "_programming_paused",
                  "_programming_pause_keeps_lasers",
                  "programming_lasers_refusal"):
         setattr(remote, name, getattr(Remote, name).__get__(remote))
@@ -89046,8 +89066,26 @@ def test_laser_arm_morning_page_routes_and_surfaces():
         # lasers stay armed (Jeff's ruling) and light with the show
         # through the gate, never with a test still on.
         n_off = R.m.lasers.last_result.get("laser-3")
-        st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
-                            client=loop)
+        # While the Resume is handled no new test starts (cold review of
+        # #266, 1): seen from inside the scheduler's press.
+        real_op = R.svc.operator_press
+        inside = []
+
+        def op_press(*a, **k):
+            inside.append((R.remote.start_underway(),
+                           R.remote.morning_test_refusal(),
+                           R.remote.timed_purge_blockers(None)))
+            return real_op(*a, **k)
+        R.svc.operator_press = op_press
+        try:
+            st, _h, out = R.ask("POST", "/api/remote/resume",
+                                {"seen": R.seen()}, client=loop)
+        finally:
+            R.svc.operator_press = real_op
+        check(inside and all("a show is starting" in x for x in inside[0]),
+              f"a Resume under way refuses every new test: {inside}")
+        check(R.remote.start_underway() == "",
+              "and the refusal ends with the press")
         check(not R.m.lasers.on and
               "Tests turned off for Resume: the laser tests." in
               out.get("text", "") and
@@ -89067,6 +89105,27 @@ def test_laser_arm_morning_page_routes_and_surfaces():
               f"test on: {R.svc.machine.state} {n_off}")
         st, _h, out = R.ask("POST", "/api/remote/hold", {}, client=loop)
         check(R.m.laser_arm.armed_ids() == [], "Hold in the show disarms")
+        R.settle()
+        R.feed()
+        # A test left on and a Resume that never passes the page's press
+        # (the scheduler's own, here pressed on the service): the step on
+        # the conductor's line turns it off right before the Resume is
+        # sent (cold review of #266, 1).
+        R.svc.before_rig_up = R.remote.tests_off_before_rig_up
+        R.m.laser_arm.arm(["laser-3"], who="Andy", confirmed=True)
+        R.m.lasers.set("laser-3", True, who="Andy")
+        check("laser-3" in R.m.lasers.on, "setup: a test on while held")
+        R.svc.operator_press("resume", "Andy", "Rack screen",
+                             confirmed=True, surface=True)
+        R.settle()
+        check(not R.m.lasers.on and any(
+            "Tests turned off for Resume: the laser tests." in
+            (r.get("text") or "") for r in R.svc.journal),
+              f"the step before the Resume turned the test off and said "
+              f"so: {R.m.lasers.on}")
+        R.svc.before_rig_up = None
+        R.feed()
+        st, _h, out = R.ask("POST", "/api/remote/hold", {}, client=loop)
         R.settle()
         R.feed()
         st, _h, out = R.ask("POST", "/api/remote/resume", {"seen": R.seen()},
@@ -89407,6 +89466,10 @@ def test_laser_arm_through_web_serve():
               R.laser_enable_blockers and
               la._enable_blockers == httpd.morning._arm_enable_blockers,
               "ltc serve did not wire the lasers in Programming")
+        check(getattr(httpd.schedule, "before_rig_up", None) ==
+              R.tests_off_before_rig_up,
+              "ltc serve did not hand the scheduler the tests-off step that "
+              "runs right before every show start and Resume")
         check(httpd.morning._live_check == R.morning_test_refusal,
               "ltc serve did not give the Morning page the live check that "
               "lets tests run on a mid-show Hold (Jeff, 2026-11-14)")
@@ -103640,6 +103703,12 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
         preroll=pr, schedule=svc, users_active=lambda: True,
         tests_off_for_show=lambda what, who, screen: (
             tests_off.append((what, who, screen, len(said))), "")[-1])
+    for _n in ("_start_begin", "_start_end", "start_underway"):
+        setattr(me, _n, getattr(RM.Remote, _n).__get__(me))
+    starting_seen = []
+    svc.continue_anyway = lambda who, screen: (
+        said.append((who, screen)), starting_seen.append(me.start_underway()),
+        {"ok": True, "text": "started"})[-1]
     ctx = types.SimpleNamespace(user="Andy", local=True, screen="Rack screen",
                                 device="rack")
     go = lambda body, cx=ctx: RM.Remote.preroll_continue(me, body, cx)  # noqa
@@ -103668,6 +103737,10 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
     check(tests_off == [("Continue anyway", "Andy", "Rack screen", 0)],
           f"every test is turned off first, before the show starts (Jeff, "
           f"2026-11-14): {tests_off}")
+    check(starting_seen and starting_seen[0] != "" and
+          me.start_underway() == "",
+          f"no new test starts while Continue anyway is under way, and the "
+          f"refusal ends with it: {starting_seen}")
     st, out = go({"phase": "done", "token": "t4"})
     check(st == 409 and len(said) == 1, "a hold is used once")
     # What a Continue leaves off, from the failed checks.
@@ -106859,7 +106932,8 @@ def test_show_control_refusals_say_turn_it_off():
              types.SimpleNamespace(session=None,
                                    state=lambda: {"starting": True}))):
         fake = types.SimpleNamespace(schedule=None, control=ctl,
-                                     _on_hold_for_tests=lambda: False)
+                                     _on_hold_for_tests=lambda: False,
+                                     start_underway=lambda: "")
         why = RM.Remote.timed_purge_blockers(fake, None)
         check(why.startswith("Show control is on") and want in why and
               "press Stop" not in why,
@@ -106883,6 +106957,7 @@ def test_show_control_refusals_say_turn_it_off():
         fake = types.SimpleNamespace(schedule=None, control=ctl,
                                      _ht_state=lambda: "idle",
                                      _on_hold_for_tests=lambda: False,
+                                     start_underway=lambda: "",
                                      show_control_on=lambda cs: False)
         why = RM.Remote.hazer_test_show_busy(fake)
         check(why == "show control is on; turn show control off first "
@@ -106921,7 +106996,8 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
                show_control_on=lambda c: bool(c.get("running")))
         for name in ("_ht_state", "laser_arm_blockers",
                      "show_live_refusal", "morning_live_refusal",
-                     "_on_hold_for_tests"):
+                     "_on_hold_for_tests", "_programming_paused",
+                     "start_underway"):
             setattr(f, name, getattr(RM.Remote, name).__get__(f))
         return f
     # ALLOWED: the schedule's Hold, between shows and after a Stop, and no
@@ -107059,6 +107135,31 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
     f.schedule = NS(machine=NS())
     check(f._on_hold_for_tests() is False, "a state that cannot be read is "
                                        "not a Hold")
+    # Stop under way refuses every test, mid show too (cold review of
+    # #266, 2): before the PR PAUSED was live and refused everything.
+    for st_ in ("PAUSED", "HOLD", None):
+        f = fake(st_, look="HELD", halting=True, no_machine=st_ is None)
+        check("Stop is under way" in RM.Remote.morning_test_refusal(f) and
+              "Stop is under way" in RM.Remote.hazer_test_show_busy(f) and
+              RM.Remote.timed_purge_blockers(f, None) == "Stop is under "
+                                                         "way.",
+              f"{st_}, Stop under way: every test refused: "
+              f"{RM.Remote.morning_test_refusal(f)!r} "
+              f"{RM.Remote.hazer_test_show_busy(f)!r}")
+    # A start under way (Resume, Start now, Start at a cue, Continue
+    # anyway: cold review of #266, 1): no new test starts, on any state.
+    for st_ in ("PAUSED", "HOLD", "IDLE"):
+        f = fake(st_, look="HELD")
+        f._starts = 1
+        check("a show is starting" in RM.Remote.morning_test_refusal(f) and
+              "a show is starting" in RM.Remote.hazer_test_show_busy(f) and
+              "a show is starting" in
+              RM.Remote.timed_purge_blockers(f, None),
+              f"{st_}, a start under way: every new test refused: "
+              f"{RM.Remote.morning_test_refusal(f)!r}")
+        f._starts = 0
+        check(RM.Remote.morning_test_refusal(f) == "" or st_ == "IDLE",
+              "and allowed again once it is answered")
     # Stop under way, and the night closing.
     f = fake("HOLD", halting=True)
     check(RM.Remote.timed_purge_blockers(f, None) == "Stop is under way.",

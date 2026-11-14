@@ -15053,8 +15053,8 @@ def build():
   '                (name == "laser-test" and body.get("on") is True)) and \\'),
  ('lasers: a new arm goes through a Programming Pause',
   'ltcplay/remote.py',
-  '        if look in ("HELD", "DARK") and state not in ("HOLD", "PAUSED"):\n',
-  '        if False:\n'),
+  '        if look in ("HELD", "DARK") and (state not in ("HOLD", "PAUSED") or\n',
+  '        if look in ("HELD", "DARK") and (False or\n'),
  ("lasers: lasers armed on Hold may be lit",
   'ltcplay/remote.py',
   '        if light and state in ("HOLD", "PAUSED"):\n',
@@ -24907,6 +24907,61 @@ def build():
   'ltcplay/remote.py',
   '            if cs.get("starting") or (cs.get("running") and not held):\n',
   '            if cs.get("running") and not held:\n'),
+
+ ('tests off: the show start step leaves the tests on',
+  'ltcplay/schedule_service.py',
+  '            hook = self.before_rig_up\n            if hook is not None:\n',
+  '            hook = None\n            if hook is not None:\n'),
+
+ ('tests off: ltc serve never hands the scheduler the tests-off step',
+  'ltcplay/web.py',
+  '                httpd_schedule.before_rig_up = \\\n                    httpd.remote.tests_off_before_rig_up\n',
+  '                pass\n'),
+
+ ('tests: a start under way does not refuse new tests',
+  'ltcplay/remote.py',
+  '            self._start_begin()\n        try:\n            return self._press_after_start(',
+  '            pass\n        try:\n            return self._press_after_start('),
+
+ ('tests: Continue anyway does not refuse new tests',
+  'ltcplay/remote.py',
+  '        self._start_begin()\n        try:\n            said = self.tests_off_for_show(',
+  '        pass\n        try:\n            said = self.tests_off_for_show('),
+
+ ('tests: the Morning page ignores a start under way',
+  'ltcplay/remote.py',
+  '        why = self.start_underway()\n        if why:\n            return why\n        m = getattr(svc, "machine", None)\n',
+  '        m = getattr(svc, "machine", None)\n'),
+
+ ('tests: the hazer test ignores a start under way',
+  'ltcplay/remote.py',
+  '            why = self.start_underway()\n            if why:\n                return why\n',
+  ''),
+
+ ('tests: the timed purge ignores a start under way',
+  'ltcplay/remote.py',
+  '            if self.start_underway():\n',
+  '            if False:\n'),
+
+ ('tests: the Morning page tests while Stop is under way',
+  'ltcplay/remote.py',
+  '                return "Stop is under way; nothing fires from this page now"\n',
+  '                pass\n'),
+
+ ('tests: the hazer test starts while Stop is under way',
+  'ltcplay/remote.py',
+  '                return "Stop is under way"\n',
+  '                pass\n'),
+
+ ('lasers: a Programming Pause on Hold lets a new arm through',
+  'ltcplay/remote.py',
+  '                                         self._programming_paused()):\n',
+  '                                         False):\n'),
+
+ ('lasers: an error asking Programming lets a new arm through',
+  'ltcplay/remote.py',
+  '        except Exception:                        # noqa: BLE001\n            return True\n\n    def laser_enable_blockers',
+  '        except Exception:                        # noqa: BLE001\n            return False\n\n    def laser_enable_blockers'),
 
  ('mid-show Hold: live flame programming does not stop the tests',
   'ltcplay/remote.py',
