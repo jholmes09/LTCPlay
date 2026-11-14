@@ -3948,6 +3948,8 @@
 "tests off: Continue anyway leaves the operator tests on": "test_preroll_continue_anyway_needs_a_signed_in_hold",
 "tests off: the timed purge outlives Resume": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
 "tests off: a purge firing outlives Resume": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
+"tests off: a purge selected on Hold stays wanted into the show": "test_purge_on_a_mid_show_hold_ends_at_resume_and_never_rearms",
+"purge: a Hold press leaves the purge selection armed": "test_purge_stop_cancels_and_nothing_rearms_after_it",
 "tests off: the hazer test outlives Resume": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
 "tests off: the laser tests outlive Resume": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
 "tests off: Resume does not say or journal what it turned off": "test_hold_and_no_schedule_allow_tests_not_a_live_show",

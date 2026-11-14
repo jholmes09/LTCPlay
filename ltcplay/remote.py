@@ -4550,6 +4550,18 @@ class Remote:
             # as it does the timed purge. Only the link's cut here.
             self.hazer_test_cut(f"{who or 'someone'} pressed Hold on the "
                                 f"{screen}", who, screen)
+            # And the momentary purge, its selection with it (#266 with
+            # #269, Jeff 2026-11-14): a Hold no longer refuses a purge tap,
+            # so the press itself ends any purge selected or firing; the
+            # deck sees no group wanted and disarms, and nothing arms again
+            # without a fresh tap.
+            _purge = getattr(self.morning, "purge", None)
+            if _purge is not None:
+                try:
+                    _purge.clear(f"{who or 'someone'} pressed Hold on the "
+                                 f"{screen}")
+                except Exception:                # noqa: BLE001
+                    pass
         if name in CONFIRM_ROUTES and body.get("confirmed") is not True:
             why = "Confirm it on the page first. Nothing was changed."
             self._journal(who, screen, name, "refused",
@@ -7183,6 +7195,16 @@ class Remote:
             if purge is not None and purge.fire is not None:
                 purge.stop(why)
                 ended.append("the purge")
+        except Exception:                        # noqa: BLE001
+            pass
+        try:
+            # The momentary purge's selection too (#266 with #269): a purge
+            # selected on Hold must not keep its groups wanted into the
+            # show; after the start only a fresh tap arms. Named once.
+            if purge is not None and getattr(purge, "selected", None):
+                purge.clear(why)
+                if "the purge" not in ended and not timed:
+                    ended.append("the purge")
         except Exception:                        # noqa: BLE001
             pass
         ht = self.hazer_test

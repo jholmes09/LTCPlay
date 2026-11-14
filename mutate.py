@@ -25169,6 +25169,16 @@ def build():
   '            if purge is not None and purge.fire is not None:\n                purge.stop(why)\n',
   '            if False:\n                purge.stop(why)\n'),
 
+ ('tests off: a purge selected on Hold stays wanted into the show',
+  'ltcplay/remote.py',
+  '            if purge is not None and getattr(purge, "selected", None):\n                purge.clear(why)\n',
+  '            if False:\n                purge.clear(why)\n'),
+
+ ('purge: a Hold press leaves the purge selection armed',
+  'ltcplay/remote.py',
+  '                    _purge.clear(f"{who or \'someone\'} pressed Hold on the "\n',
+  '                    (lambda *a: None)(f"{who or \'someone\'} pressed Hold on the "\n'),
+
  ('tests off: the hazer test outlives Resume',
   'ltcplay/remote.py',
   '        if hz_on and self.hazer_test_cut(why, who, screen):\n',

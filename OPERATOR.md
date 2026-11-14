@@ -573,7 +573,8 @@ reason). What a tap does:
 - Selected, but it cannot be armed now for any reason (the Stream Deck
   program not reading the engine, no Stream Deck operator chosen, your
   role, no Stream Deck key, flamesafe's own reason, flamesafe not
-  reporting, a lock, a Hold, another screen holding the selection): takes
+  reporting, a lock, a show playing, Stop under way, another screen
+  holding the selection): takes
   it off. The words end "a tap takes it off". A unit can always be taken
   off with a tap, from any screen; only a press already firing refuses a
   tap (let go of the key first).
@@ -592,7 +593,12 @@ reason). What a tap does:
   deliberate tap after one of those always works.
 
 Nothing arms on its own: no retry, no re-arm after a Stop, a Hold, a lost
-connection or a disarm on the deck. One slow read by the Stream Deck no
+connection or a disarm on the deck. Pressing Hold or Stop clears the
+purge selection and ends a purge firing. On a Hold (between shows, after
+a Stop, or pressed during a show) a fresh tap may select and arm a unit
+again, as for any test on Hold (Jeff, 2026-11-14); Resume, Start now,
+Start at a cue and Continue anyway clear the purge selection first, and
+after the start only a fresh tap arms. One slow read by the Stream Deck no
 longer disarms a purge (it keeps the groups for 1 s); if the engine is
 quiet for longer the groups are disarmed and stay selected, and the next
 tap arms them. If Space or FIRE answers but nothing is armed, the page

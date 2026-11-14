@@ -59511,9 +59511,10 @@ def test_purge_nothing_arms_without_a_tap_after_a_glitch():
 def test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule():
     section("Purge (second review of #269): a tap on a unit ALREADY "
             "selected, asking for its arm again, goes through every rule a "
-            "first tap has: a live show or Hold, a lock, a press already "
-            "firing (a group never joins a live press) each refuse it and "
-            "number no tap; Clear ends every double tap window")
+            "first tap has: a live show, Stop under way, a lock, a press "
+            "already firing (a group never joins a live press) each refuse "
+            "it and number no tap; a Hold allows it (#266); Clear ends "
+            "every double tap window")
     S = _sched()
     if S is None:
         return
@@ -59572,18 +59573,54 @@ def test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule():
         P.tap("g1")
         P.step(n=3)
         drop()
-        # A show on Hold: refused before anything is numbered.
+        # A show on Hold mid show (PAUSED, nothing playing): a test like
+        # any other (#266, Jeff 2026-11-14), so the tap is taken and asks
+        # for the arm, numbered once.
         old = P.R.svc.machine
         try:
             P.R.svc.machine = _dc.replace(old, state="PAUSED")
             before = dict(P.R.m.purge._presses)
             st, out = P.tap("g1")
+            check(st == 200 and out.get("rearm") is True and
+                  P.R.m.purge._presses != before and
+                  "g1" in P.R.m.purge.view()["selected"],
+                  f"a tap during a Hold asks for the arm (tests allowed on "
+                  f"Hold): {st} {out}")
+            P.step(n=3)
+            check(P.arm.wanted[0] is True,
+                  f"and the deck arms it on that Hold: {P.arm.wanted}")
+        finally:
+            P.R.svc.machine = old
+        drop()
+        # A live show (SHOW): refused before anything is numbered.
+        try:
+            P.R.svc.machine = _dc.replace(old, state="SHOW")
+            before = dict(P.R.m.purge._presses)
+            st, out = P.tap("g1")
             check(st == 200 and out.get("off") is True and
                   P.R.m.purge._presses == before and
                   "g1" not in P.R.m.purge.view()["selected"],
-                  f"a tap during a Hold asks for no arm; it takes the unit "
-                  f"off: {st} {out}")
+                  f"a tap during a live show asks for no arm; it takes the "
+                  f"unit off: {st} {out}")
         finally:
+            P.R.svc.machine = old
+        # Stop under way, on a Hold: refused before anything is numbered.
+        P.step(n=45)
+        P.tap("g1")
+        P.step(n=3)
+        drop()
+        try:
+            P.R.svc.machine = _dc.replace(old, state="PAUSED")
+            P.R.svc.halting = lambda: True
+            before = dict(P.R.m.purge._presses)
+            st, out = P.tap("g1")
+            check(st == 200 and out.get("off") is True and
+                  P.R.m.purge._presses == before and
+                  "g1" not in P.R.m.purge.view()["selected"],
+                  f"a tap while Stop is under way asks for no arm; it takes "
+                  f"the unit off: {st} {out}")
+        finally:
+            del P.R.svc.halting
             P.R.svc.machine = old
         P.step(n=60)
         check(P.arm.wanted[0] is False, "nothing armed by any of them")
@@ -59674,24 +59711,123 @@ def test_purge_stop_cancels_and_nothing_rearms_after_it():
         P.step(n=3)
         check(out.get("rearm") is True and P.arm.wanted[0] is True,
               f"the operator's tap after it arms: {out}")
-        # A Hold (a show PAUSED): the purge is cleared, nothing re-arms.
+        # A Hold (a show PAUSED, Hold pressed): the press clears the purge,
+        # nothing re-arms on its own. On that Hold a fresh tap may arm again
+        # (#266, Jeff 2026-11-14: the operator tests anything on Hold).
         import dataclasses as _dc
         old = P.R.svc.machine
         try:
             P.R.svc.machine = _dc.replace(old, state="PAUSED")
+            P.post("hold", {"confirmed": True})
             P.step(n=5)
             check(P.R.m.purge.view()["selected"] == [] and
                   P.arm.wanted[0] is False,
                   f"a Hold clears the purge; the deck disarms: "
                   f"{P.arm.wanted}")
+            P.step(n=60)
+            check(P.arm.wanted[0] is False,
+                  "after the Hold nothing re-arms on its own")
+            (st, out), lit = P.fire(3)
+            check(lit == [], f"nothing fires after the Hold: {st} {out}")
             st, out = P.tap("g1")
-            check(st == 409, f"and no tap arms during it: {st} {out}")
+            P.step(n=3)
+            check(st == 200 and not out.get("ignored") and
+                  not out.get("off") and
+                  P.R.m.purge.view()["selected"] == ["g1"] and
+                  P.arm.wanted[0] is True,
+                  f"a fresh tap on the Hold arms (tests allowed on Hold): "
+                  f"{st} {out} {P.arm.wanted}")
+            st, out = P.tap("g1", on=False)
+            P.step(n=5)
+            check(st == 200 and P.arm.wanted[0] is False,
+                  f"and a tap takes it off again: {st} {out}")
         finally:
             P.R.svc.machine = old
         P.step(n=60)
         check(P.arm.wanted[0] is False,
               "after the Hold nothing re-arms on its own")
     finally:
+        P.close()
+    print("  ok")
+
+
+def test_purge_on_a_mid_show_hold_ends_at_resume_and_never_rearms():
+    section("Purge on a Hold mid show (#266 with #269, Jeff 2026-11-14): "
+            "with the show PAUSED two taps select and arm two units, Space "
+            "fires them; Resume turns the purge and its selection off "
+            "before the scheduler is asked (tests off before every start), "
+            "the deck disarms, and nothing re-arms after Resume without a "
+            "fresh tap")
+    S = _sched()
+    if S is None:
+        return
+    import dataclasses as _dc
+    P = _PurgePressRig(S)
+    old = P.R.svc.machine
+    seen_at_start = []
+    real_press = P.R.svc.operator_press
+
+    def press(name, *a, **kw):
+        if name == "resume":
+            pv = P.R.m.purge.view()
+            seen_at_start.append((pv["selected"], pv["firing"],
+                                  pv["groups_wanted"]))
+            # The rig's machine is a stand-in: the scheduler's own Resume
+            # is not what this test is about, only what came before it.
+            return {"ok": True, "text": "Resumed."}
+        return real_press(name, *a, **kw)
+    try:
+        P.step()
+        P.R.svc.machine = _dc.replace(old, state="PAUSED")
+        P.step(n=3)
+        for mid in ("g1", "s1"):
+            st, out = P.tap(mid)
+            check(st == 200 and not out.get("off") and
+                  not out.get("ignored"),
+                  f"on Hold mid show a tap on {mid} is taken: {st} {out}")
+        P.step(n=3)
+        check(P.arm.wanted[:2] == [True, True],
+              f"both units armed on the Hold: {P.arm.wanted}")
+        n0 = len(P.R.link.frames)
+        st, out = P.post("purge-fire", {"on": True})
+        P.step(0.1)
+        st2, out2 = P.post("purge-fire", {"on": True,
+                                          "fire_id": out.get("fire_id")})
+        P.step(0.1)
+        lit = sorted({i + 1 for f in P.R.link.frames[n0:]
+                      for i, v in enumerate(f) if v})
+        check(st == 200 and P.R.m.purge.view()["firing"] and lit,
+              f"Space fires them on the Hold: {st} {out} {lit}")
+        # Resume with Space still held.
+        P.R.svc.operator_press = press
+        st, _h, out = P.R.ask("POST", "/api/remote/resume",
+                              {"seen": P.R.seen()}, client=P.LOOP)
+        check(seen_at_start == [([], False, [])],
+              f"the purge, its fire and its selection were off before the "
+              f"scheduler was asked to resume: {seen_at_start}")
+        check("the purge" in (out.get("tests_off") or ""),
+              f"Resume says the purge was turned off: {st} {out}")
+        n1 = len(P.R.link.frames)
+        P.step(n=10)
+        check(P.arm.wanted[:2] == [False, False],
+              f"the deck disarms both: {P.arm.wanted}")
+        check(not any(any(f) for f in P.R.link.frames[n1:]),
+              "nothing reaches the link after Resume")
+        st, out = P.post("purge-fire", {"on": True,
+                                        "fire_id": out2.get("fire_id")})
+        P.step(0.1)
+        check(not P.R.m.purge.view()["firing"] and
+              not any(any(f) for f in P.R.link.frames[n1:]),
+              f"the held Space fires nothing after Resume: {st} {out}")
+        P.post("purge-stop", {})
+        P.step(n=80)
+        check(P.arm.wanted[:2] == [False, False] and
+              P.R.m.purge.view()["selected"] == [],
+              f"nothing re-arms after Resume without a fresh tap: "
+              f"{P.arm.wanted}")
+    finally:
+        P.R.svc.operator_press = real_press
+        P.R.svc.machine = old
         P.close()
     print("  ok")
 
@@ -127570,6 +127706,7 @@ if __name__ == "__main__":
         test_purge_nothing_arms_without_a_tap_after_a_glitch,
         test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule,
         test_purge_stop_cancels_and_nothing_rearms_after_it,
+        test_purge_on_a_mid_show_hold_ends_at_resume_and_never_rearms,
         test_purge_page_says_selected_vs_armed_and_not_firing,
         test_rack_window_fits_the_work_area_above_the_taskbar,
         test_deck_chip_shows_live_truth,
