@@ -12356,8 +12356,8 @@ def build():
 
  ("morning: the deck is never told which groups are never purged",
   "ltcplay/morning.py",
-  "                          \"firing\": pv[\"firing\"], \"never_groups\": never},",
-  "                          \"firing\": pv[\"firing\"], \"never_groups\": []},"),
+  "                          \"firing\": pv[\"firing\"], \"never_groups\": never,",
+  "                          \"firing\": pv[\"firing\"], \"never_groups\": [],"),
 
  ("morning: every default-built group counts as G-Flames (review of #126, P2-3)",
   "ltcplay/morning.py",
@@ -12881,11 +12881,12 @@ def build():
 
  ("deck: a purge arm skips the hold's own guards (T8)",
   "ltcplay/streamdeck.py",
-  '''            self._do_arm_fire(i, now, who=who, screen="Morning page")
-            if not self.arm.wanted[i]:
-                continue             # refused; _do_arm_fire said why''',
-  '''            self.arm.set_group(i, True)
-            self.arm.send(self.names)'''),
+  '''            code = self._do_arm_fire(i, now, who=who, screen="Morning page")
+            if not self.arm.wanted[i]:''',
+  '''            code = None
+            self.arm.set_group(i, True)
+            self.arm.send(self.names)
+            if not self.arm.wanted[i]:'''),
 
  ("morning: a purge from the show network needs no screen_arming (T9)",
   "ltcplay/remote.py",
@@ -13732,9 +13733,9 @@ def build():
  ("deck: a purge group stays armed after the page stops asking for it (T4)",
   "ltcplay/streamdeck.py",
   '''            if self.arm.wanted[i]:
-                self._do_disarm(i, who="the purge ended",''',
+                self._do_disarm(i, who="the purge ended" if fresh else''',
   '''            if False:
-                self._do_disarm(i, who="the purge ended",'''),
+                self._do_disarm(i, who="the purge ended" if fresh else'''),
 
  ("deck: a purge arm ignores the re-arm refractory window (T8)",
   "ltcplay/streamdeck.py",
@@ -13747,12 +13748,10 @@ def build():
 
  ("deck: the page closing leaves the purge groups armed (T4, T11)",
   "ltcplay/streamdeck.py",
-  '''        if not m or m.get("open") is not True or \\
-                m.get("purge_enabled") is not True or self._latched_now():
-            return set()''',
-  '''        if not m or \\
-                m.get("purge_enabled") is not True or self._latched_now():
-            return set()'''),
+  '''        if m.get("open") is True and m.get("purge_enabled") is True and \\
+                not self._latched_now():''',
+  '''        if m.get("purge_enabled") is True and \\
+                not self._latched_now():'''),
 
  ("deck: a stale engine keeps the deck re-mapped and its purge groups armed (T4, T11)",
   "ltcplay/streamdeck.py",

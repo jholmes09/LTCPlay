@@ -58384,11 +58384,11 @@ console.log(JSON.stringify(out));
 
 
 def test_streamdeck_reports_rearm_wait_and_purge_refusal():
-    section("Stream Deck (Jeff, 2026-10-26): each group's re-arm "
-            "refractory window and a purge arm refused for it are reported "
-            "for the rack screen's words; arming is decided exactly as "
-            "before (a refused purge group arms only when it enters the "
-            "list again)")
+    section("Stream Deck (Jeff, 2026-10-26; ruling of 2026-11-14): each "
+            "group's re-arm refractory window and a purge arm refused for "
+            "it are reported for the rack screen's words; a refused purge "
+            "group is never re-armed on its own, and the operator's next "
+            "tap for it (a new number in morning.purge.presses) arms it")
     from ltcplay import streamdeck as sd
     names = ["front row", "cat-walk", "wave flamer"]
     arm = _FakeArmSocket(3)
@@ -58403,28 +58403,449 @@ def test_streamdeck_reports_rearm_wait_and_purge_refusal():
     c = sd.Controller(arm, status, names, operator_provider=lambda: "Andy",
                       show_running_provider=lambda: True,
                       clock=lambda: t[0], screen=Scr())
-    c._disarmed_at[0] = 0.0
+    c._disarmed_at[0] = 0.0        # the operator's own disarm, at 0
     t[0] = 0.5
     c.purge_pass(t[0])
     check(arm.wanted == [False, False, False],
-          "a purge arm inside the refractory window is refused, as before")
+          "a purge arm inside the refractory window of the operator's own "
+          "disarm is refused, as before")
     check(c.rearm_report() == ({0: 1500}, {0: "refractory"}),
           f"and reported: the wait left and the refusal: {c.rearm_report()}")
     t[0] = 3.0
     c.purge_pass(t[0])
     check(arm.wanted == [False, False, False] and
           c.rearm_report() == ({}, {0: "refractory"}),
-          f"the wait over, the group still listed: not armed (it arms only "
-          f"on entering the list, unchanged), still reported refused: "
-          f"{arm.wanted} {c.rearm_report()}")
-    view["purge"] = {"wanted_groups": []}
+          f"the wait over, the group still listed, no new tap: NOT armed "
+          f"(nothing re-arms on its own, Jeff 2026-11-14), still reported "
+          f"refused: {arm.wanted} {c.rearm_report()}")
+    view["purge"] = {"wanted_groups": [0], "presses": [[0, 7, 4000]]}
     c.purge_pass(t[0])
-    check(c.rearm_report() == ({}, {}), "out of the list: nothing reported")
-    view["purge"] = {"wanted_groups": [0]}
+    check(arm.wanted == [False, False, False],
+          f"a tap number older than PURGE_PRESS_FRESH_S arms nothing: "
+          f"{arm.wanted}")
+    view["purge"] = {"wanted_groups": [0], "presses": [[0, 8, 40]]}
     c.purge_pass(t[0])
     check(arm.wanted == [True, False, False] and c.rearm_report() == ({}, {}),
-          f"clicked again after the wait: armed, nothing refused: "
-          f"{arm.wanted} {c.rearm_report()}")
+          f"the operator's tap (a new, fresh number): armed, nothing "
+          f"refused: {arm.wanted} {c.rearm_report()}")
+    arm.set_group(0, False)
+    c.purge_pass(t[0])
+    check(arm.wanted == [False, False, False],
+          "the same tap number again is never acted on twice")
+    view["purge"] = {"wanted_groups": [], "presses": [[2, 9, 40]]}
+    c.purge_pass(t[0])
+    check(arm.wanted == [False, False, False] and c.rearm_report() == ({}, {}),
+          "a tap for a group not in the list arms nothing; out of the "
+          "list, nothing reported")
+    print("  ok")
+
+
+class _PurgePressRig:
+    """The engine (a _morning_rig: the real routes, Morning and Purge on the
+    test's clocks), a real Stream Deck Controller reading the engine's own
+    deck-input "morning" (a read can be made to fail: `blip`), and a fake
+    flamesafe that follows the arm link. Fake flame link only (Jeff,
+    2026-11-14: the Purge step's field bug, reproduced)."""
+
+    LOOP = ("127.0.0.1", 5000)
+
+    def __init__(self, S):
+        from ltcplay import streamdeck as sd
+        self.sd = sd
+        R = self.R = _morning_rig(S, _MO_CONFIG)
+        names = [g["name"] for g in _MO_FLAMESAFE["groups"]]
+        R.groups = [{"name": n, "armed": "disarmed", "wanted": False,
+                     "reason": ""} for n in names]
+        R.fs_lockout = {"slots": [], "state": "read"}
+        R.feed()
+        self.blip = False
+        rig = self
+
+        class Scr(_FakeScreen):
+            def morning(self):
+                return None if rig.blip else \
+                    R.remote.deck_input().get("morning")
+        self.arm = _FakeArmSocket(len(names))
+        self.events = []
+        self.deck = sd.Controller(
+            self.arm, _FakeStatusSocket(), names,
+            operator_provider=lambda: "Andy",
+            show_running_provider=lambda: False, clock=lambda: R.mono[0],
+            screen=Scr(),
+            journal=lambda t_, **kw: self.events.append(t_))
+        for i in range(len(names)):
+            self.deck._disarmed_at[i] = -1e9
+
+    def step(self, dt=0.05, n=1):
+        R = self.R
+        for _ in range(n):
+            R.mono[0] += dt
+            R.wall[0] += dt
+            R.remote._deck_seen = R.mono[0]
+            R.m.open_beat("Rack screen")
+            self.deck.screen_pass()
+            self.deck.tick()
+            for i, w in enumerate(self.arm.wanted):
+                R.groups[i]["armed"] = "armed" if w else "disarmed"
+                R.groups[i]["wanted"] = bool(w)
+            R.feed()
+            R.m.tick()
+
+    def post(self, route, body):
+        b = dict(body)
+        b.setdefault("seen", self.R.seen())
+        st, _h, out = self.R.ask("POST", "/api/remote/" + route, b,
+                                 client=self.LOOP)
+        return st, out
+
+    def tap(self, mid, on=True):
+        return self.post("purge-select", {"machine": mid, "on": on})
+
+    def fire(self, beats=10):
+        """Space held for `beats` heartbeats: (last answer, slots lit)."""
+        n0 = len(self.R.link.frames)
+        fid, last = None, None
+        for _ in range(beats):
+            body = {"on": True}
+            if fid is not None:
+                body["fire_id"] = fid
+            st, out = self.post("purge-fire", body)
+            last = (st, out)
+            if st != 200:
+                break
+            fid = out.get("fire_id")
+            self.step(0.1)
+        self.post("purge-stop", {})
+        lit = sorted({i + 1 for f in self.R.link.frames[n0:]
+                      for i, v in enumerate(f) if v})
+        return last, lit
+
+    def close(self):
+        self.R.m.close()
+        self.R.close()
+
+
+def test_purge_a_deliberate_press_arms_a_selected_unit():
+    section("Purge (Jeff's ruling, 2026-11-14: 'an individual arming of a "
+            "unit should work, no auto-arming ... The two second rule was to "
+            "prevent fat-fingering or double taps. That is all.'): one slow "
+            "deck read no longer disarms the purge; past the grace the unit "
+            "stays selected and NOT armed until the operator taps it, and "
+            "that tap arms it at once; a tap within 2 s of the operator's "
+            "own last tap is ignored; a disarm the deck did on its own "
+            "starts no 2 s window; nothing fires without a hold")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import morning as MO
+    from ltcplay import streamdeck as sd
+    check(MO.TAP_IGNORE_S == sd.REARM_REFRACTORY_S == 2.0,
+          "the engine's double tap window is the deck's 2 s")
+    P = _PurgePressRig(S)
+    try:
+        P.step()
+        for mid in ("g1", "g2"):
+            st, out = P.tap(mid)
+            check(st == 200 and "selected for the purge" in out["text"] and
+                  "armed for the purge" not in out["text"],
+                  f"a tap answers 'selected', never 'armed': {out}")
+        P.step(n=3)
+        check(P.arm.wanted[0] is True, "the tap armed group front row")
+        # The field bug: one deck read 0.35 s late.
+        P.blip = True
+        P.step(0.35)
+        P.blip = False
+        P.step(n=40)
+        check(P.arm.wanted[0] is True and not P.deck._purge_refused,
+              f"one slow deck read keeps the purge armed (the grace): "
+              f"{P.arm.wanted} {P.deck._purge_refused}")
+        (st, out), lit = P.fire()
+        check(st == 200 and out["firing"] == ["Ground 1", "Ground 2"] and
+              lit == [411, 412],
+              f"and Space fires both: {st} {out} {lit}")
+        # Longer than the grace: the deck lets go, and nothing re-arms on
+        # its own when the engine answers again.
+        P.blip = True
+        P.step(0.05, n=int(sd.PURGE_STALE_GRACE_S / 0.05) + 6)
+        P.blip = False
+        P.step(n=10)
+        check(P.arm.wanted[0] is False and
+              P.R.m.purge.view()["selected"] == ["g1", "g2"] and
+              P.deck._purge_refused.get(0) == "dropped",
+              f"past the grace: disarmed, still selected, said why, and NOT "
+              f"re-armed on its own: {P.arm.wanted} "
+              f"{P.deck._purge_refused}")
+        (st, out), lit = P.fire()
+        check(st == 200 and out["firing"] == [] and lit == [] and
+              all("not armed" in w for w in out["waiting"]),
+              f"Space now fires nothing and says why: {out} {lit}")
+        flg = P.R.remote.status_view() if hasattr(P.R.remote,
+                                                  "status_view") else None
+        # The press: a tap on the selected, unarmed unit arms it at once
+        # (the deck's own disarm started no 2 s wait).
+        st, out = P.tap("g1")
+        P.step(n=3)
+        check(st == 200 and out.get("rearm") is True and
+              P.arm.wanted[0] is True and not P.deck._purge_refused and
+              P.R.m.purge.view()["selected"] == ["g1", "g2"],
+              f"the tap on the selected unit arms it, stays selected: {st} "
+              f"{out} {P.arm.wanted}")
+        (st, out), lit = P.fire()
+        check(st == 200 and lit == [411, 412],
+              f"and Space fires again: {out} {lit}")
+        # A double tap: off, then on 0.3 s later: the second is ignored.
+        P.step(n=45)
+        st, out = P.tap("g1", on=False)
+        check(st == 200 and P.R.m.purge.view()["selected"] == ["g2"],
+              f"a tap on an armed unit takes it off, never ignored: {out}")
+        P.step(0.3)
+        st, out = P.tap("g1")
+        P.step(n=3)
+        check(st == 200 and out.get("ignored") is True and
+              P.R.m.purge.view()["selected"] == ["g2"] and
+              "double tap" in out["text"],
+              f"a tap within 2 s of the operator's own tap is ignored: "
+              f"{out}")
+        P.step(n=34)                       # 1.7 + 0.3 + 0.15: past 2 s
+        st, out = P.tap("g1")
+        P.step(n=3)
+        check(st == 200 and not out.get("ignored") and
+              P.R.m.purge.view()["selected"] == ["g2", "g1"] and
+              P.arm.wanted[0] is True,
+              f"past 2 s of the last tap: taken and armed: {out} "
+              f"{P.arm.wanted}")
+        # A tap within 2 s of the operator's own tap on a selected,
+        # unarmed unit: ignored (not a re-arm, not a toggle off).
+        P.arm.set_group(0, False)
+        P.step(n=2)
+        st, out = P.tap("g1")
+        check(st == 200 and out.get("ignored") is True and
+              P.arm.wanted[0] is False and
+              P.R.m.purge.view()["selected"] == ["g2", "g1"],
+              f"a second tap within 2 s on a selected unit that is not armed "
+              f"is ignored: {out}")
+        P.step(n=40)
+        st, out = P.tap("g1")
+        P.step(n=3)
+        check(out.get("rearm") is True and P.arm.wanted[0] is True,
+              f"after 2 s the tap re-arms the dropped group: {out}")
+        # A tap never re-arms what the operator disarmed on the deck within
+        # 2 s; the next tap after it does.
+        P.step(n=45)
+        down = [False] * 6
+        d2 = list(down)
+        d2[sd.GROUP_KEYS[0]] = True
+        P.deck.run_once(d2)
+        P.deck.run_once(down)
+        P.step()
+        check(P.arm.wanted[0] is False, "the operator's deck tap disarms")
+        P.step(n=50)
+        check(P.arm.wanted[0] is False,
+              "and the purge list never re-arms it on its own")
+        st, out = P.tap("g2")
+        P.step(n=3)
+        check(P.arm.wanted[0] is True,
+              f"a tap on a selected unit of that group arms it: {out}")
+    finally:
+        P.close()
+    print("  ok")
+
+
+def test_purge_stop_cancels_and_nothing_rearms_after_it():
+    section("Purge (Jeff, 2026-11-14): Stop and a Hold still cancel the "
+            "purge and win; nothing re-arms after them without a new tap; "
+            "the deck's own Stop disarm keeps its 2 s wait, and a tap "
+            "after it arms; nothing fires without Space or FIRE held")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import streamdeck as sd
+    P = _PurgePressRig(S)
+    try:
+        P.step()
+        P.tap("g1")
+        P.tap("s1")
+        P.step(n=3)
+        check(P.arm.wanted[:2] == [True, True], "setup: two groups armed")
+        check(not P.R.link.frames or not any(any(f) for f in P.R.link.frames),
+              "armed is not firing: nothing reached the link without a hold")
+        st, _h, out = P.R.ask("POST", "/api/remote/stop", {}, client=P.LOOP)
+        P.step(n=60)
+        check(P.R.m.purge.view()["selected"] == [] and
+              P.arm.wanted[:2] == [False, False],
+              f"Stop clears the purge and the deck disarms: {st} "
+              f"{P.arm.wanted}")
+        (st, out), lit = P.fire(3)
+        check(st != 200 and lit == [],
+              f"nothing fires after a Stop: {st} {out}")
+        # The deck's own Stop: every group's 2 s wait starts (unchanged).
+        P.tap("g1")
+        P.step(n=3)
+        check(P.arm.wanted[0] is True, "a new tap after the Stop arms")
+        P.deck._disarm_all_groups("Stop pressed")
+        P.step(n=10)
+        check(P.arm.wanted[0] is False and
+              P.deck._in_rearm_refractory(0, P.R.mono[0]) > 0,
+              "the deck's Stop disarms all and starts the 2 s wait")
+        P.step(n=60)
+        check(P.arm.wanted[0] is False,
+              "and nothing re-arms after it on its own, the unit still "
+              "selected")
+        st, out = P.tap("g1")
+        P.step(n=3)
+        check(out.get("rearm") is True and P.arm.wanted[0] is True,
+              f"the operator's tap after it arms: {out}")
+        # A Hold (a show PAUSED): the purge is cleared, nothing re-arms.
+        import dataclasses as _dc
+        old = P.R.svc.machine
+        try:
+            P.R.svc.machine = _dc.replace(old, state="PAUSED")
+            P.step(n=5)
+            check(P.R.m.purge.view()["selected"] == [] and
+                  P.arm.wanted[0] is False,
+                  f"a Hold clears the purge; the deck disarms: "
+                  f"{P.arm.wanted}")
+            st, out = P.tap("g1")
+            check(st == 409, f"and no tap arms during it: {st} {out}")
+        finally:
+            P.R.svc.machine = old
+        P.step(n=60)
+        check(P.arm.wanted[0] is False,
+              "after the Hold nothing re-arms on its own")
+    finally:
+        P.close()
+    print("  ok")
+
+
+def test_purge_page_says_selected_vs_armed_and_not_firing():
+    section("Purge page (Jeff, 2026-11-14): Space or FIRE answered 200 with "
+            "nothing firing says NOT FIRING and why, never FIRING; a selected "
+            "unit or group button flamesafe has not armed says 'Selected, "
+            "not armed: tap the unit again' in the group's own words; the "
+            "step says N selected and N armed, two words; a tap on a "
+            "selected, unarmed unit asks for its arm, on an armed one takes "
+            "it off")
+    import json as _j
+    import shutil
+    page = screen_text()
+    # The engine's answer to a tap says selected, never armed.
+    from ltcplay import morning as MO
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "ltcplay", "morning.py"), encoding="utf-8").read()
+    check('armed for the purge. "' not in src and
+          "selected for the purge" in src,
+          "the engine's answer to a tap says 'selected', not 'armed'")
+    check(MO.TAP_IGNORE_S == 2.0, "the double tap window is 2 s")
+    here = os.path.dirname(os.path.abspath(__file__))
+    op = open(os.path.join(here, "OPERATOR.md"), encoding="utf-8").read()
+    part = op[op.index("**Selected is not armed"):
+              op.index("**The timed purge (Startup page")]
+    flat = " ".join(part.split())
+    for need in ("Selected, not armed: tap the unit again",
+                 "Selected, not armed: arms it again",
+                 "a tap that would arm is ignored as a double tap",
+                 "never from a disarm nobody pressed",
+                 "Nothing arms on its own", "says NOT FIRING and why"):
+        check(need in flat, f"OPERATOR.md's purge section says {need!r}")
+    check("\u2014" not in part and "\u2013" not in part,
+          "and has no em or en dashes")
+    mo_doc = open(os.path.join(here, "MORNING.md"), encoding="utf-8").read()
+    check("PURGE_STALE_GRACE_S" in mo_doc and "TAP_IGNORE_S" in mo_doc and
+          "0.3 s after the engine stops answering" not in mo_doc,
+          "MORNING.md says the grace and the double tap rule")
+    for need in ("purgeTap(m.id);", "await purgeTap(b.dataset.m);",
+                 'const PURGE_SEL_NOT_ARMED = "Selected, not armed: tap the '
+                 'unit again";'):
+        check(need in page, f"the page has {need!r}")
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not on this machine, so the words were "
+              "checked by reading only (CI runs it)")
+        print("  ok")
+        return
+    fns = "\n".join(_js_function(page, n) or "" for n in (
+        "purgeGroupOf", "purgeArmed", "purgeWhyNot", "purgeStuckFor",
+        "purgeSelected", "purgeNotArmedText", "purgeTapOn", "fireBeat",
+        "isLive", "short8", "dayList", "daySteps"))
+    consts = "\n".join(line for line in page.splitlines()
+                       if line.startswith(("const PURGE_SEL_NOT_ARMED",
+                                           "const PURGE_TAP_AT")))
+    i = page.index("const PURGE_REFUSAL_WORDS")
+    consts += "\n" + page[i:page.index("};", i) + 2]
+    lo = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
+    js = lo + r"""
+const els = {"mo-msg":{textContent:"", title:""}, "mo-key":{className:"", textContent:""}};
+const $ = id => els[id];
+let FIRE = null, LAST_OK = Date.now(), ANSWER = null;
+const KEY_REPEAT_GRACE_MS = 2500, KEY_REPEAT_GAP_MS = 1000;
+function isStale(){ return false; }
+function fireKeyLapsed(){ return false; }
+function moActor(x){ return x; }
+async function post(route, body){ return ANSWER; }
+function fireStop(){ FIRE = null; }
+""" + consts + "\n" + fns + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+(async () => {
+  const realST = setTimeout;
+  globalThis.setTimeout = () => 0;
+  FIRE = {id:null, startAt:Date.now(), repeatAt:0};
+  ANSWER = {fire_id:1, firing:[], waiting:["Ground 1: group front row is not armed", "Ground 2: group front row is not armed"]};
+  await fireBeat(FIRE);
+  const msg = els["mo-msg"].textContent;
+  t(msg.startsWith("NOT FIRING: Ground 1: group front row is not armed; Ground 2"), "a 200 firing nothing says NOT FIRING and why: " + msg);
+  t(!/(^|[^T ])FIRING /.test(msg.replace("NOT FIRING", "")), "and never FIRING: " + msg);
+  t(els["mo-key"].textContent === "NOT FIRING" && !/firing/.test(els["mo-key"].className), "the key says NOT FIRING, not lit: " + JSON.stringify(els["mo-key"]));
+  ANSWER = {fire_id:1, firing:["Ground 1"], waiting:[]};
+  FIRE = {id:null, startAt:Date.now(), repeatAt:0};
+  await fireBeat(FIRE);
+  t(els["mo-msg"].textContent === "FIRING Ground 1" && els["mo-key"].textContent === "FIRING" && /firing/.test(els["mo-key"].className), "something lit: FIRING: " + els["mo-msg"].textContent);
+  ANSWER = {fire_id:1, firing:[], waiting:[]};
+  FIRE = {id:null, startAt:Date.now(), repeatAt:0};
+  await fireBeat(FIRE);
+  t(els["mo-msg"].textContent.startsWith("NOT FIRING: nothing selected is armed"), "nothing waiting either: NOT FIRING: " + els["mo-msg"].textContent);
+  globalThis.setTimeout = realST;
+  // Selected vs armed.
+  const m = {id:"g1", group:"front row"};
+  const mo = {purge_state:{selected:["g1"]}};
+  const fl = g => ({groups:[Object.assign({name:"front row", armed:"disarmed"}, g)]});
+  t(purgeTapOn(m, {purge_state:{selected:[]}}, fl({})) === true, "not selected: a tap selects");
+  t(purgeTapOn(m, mo, fl({armed:"armed"})) === false, "selected and armed: a tap takes it off");
+  t(purgeTapOn(m, mo, fl({})) === true, "selected, not armed: a tap asks for the arm again");
+  t(purgeTapOn(m, mo, fl({purge_refused:"screenonly"})) === false, "no deck key: a tap takes it off");
+  t(purgeTapOn(m, mo, {stale:true, groups:[{name:"front row", armed:"armed"}]}) === true, "flamesafe stale: not known armed");
+  const w = purgeNotArmedText(m, fl({purge_refused:"dropped"}));
+  t(w === "Selected, not armed: tap the unit again (the Stream Deck could not read the engine for over a second and disarmed it)", "the deck's word: " + w);
+  t(purgeNotArmedText(m, fl({purge_refused:"refractory"})).startsWith(PURGE_SEL_NOT_ARMED + " (the Stream Deck's 2 s wait"), "the 2 s wait said");
+  t(purgeNotArmedText(m, fl({reason:"pump not ready"})) === PURGE_SEL_NOT_ARMED + " (pump not ready)", "flamesafe's own reason");
+  PURGE_TAP_AT.g1 = Date.now();
+  t(purgeNotArmedText(m, fl({})) === "Arming...", "for 2 s after this page's own tap: Arming...");
+  delete PURGE_TAP_AT.g1;
+  // The step: selected and armed are two words.
+  const mo2 = {groups:{"Ground G-Flames":["g1","g2"]}, purge_enabled:true, machines:[{id:"g1", group:"front row"}, {id:"g2", group:"front row"}],
+               purge_state:{selected:["g1","g2"]}};
+  const st = a => ({me:{}, flames:{groups:[{name:"front row", armed:a}]}});
+  let p = daySteps("start", {st:st("disarmed"), mo:mo2, seen:() => false}).find(x => x.key === "purge");
+  t(p && p.why === "2 selected, 0 armed. Tap a unit to arm it.", "selected, none armed: " + (p && p.why));
+  p = daySteps("start", {st:st("armed"), mo:mo2, seen:() => false}).find(x => x.key === "purge");
+  t(p && p.why === "2 armed. Deck FIRE or hold Space.", "all armed: " + (p && p.why));
+  mo2.purge_state.firing = true; mo2.purge_state.firing_now = [];
+  p = daySteps("start", {st:st("disarmed"), mo:mo2, seen:() => false}).find(x => x.key === "purge");
+  t(p && p.why === "NOT FIRING: nothing armed.", "a press going that lights nothing: " + (p && p.why));
+  mo2.purge_state.firing_now = ["Ground 1"];
+  p = daySteps("start", {st:st("armed"), mo:mo2, seen:() => false}).find(x => x.key === "purge");
+  t(p && p.why === "FIRING.", "lit: FIRING: " + (p && p.why));
+  console.log(JSON.stringify(out));
+})();
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = _j.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = None
+    check(bad == [], f"the page's purge words in node: {bad} "
+                     f"{r.stderr[-1500:]}")
     print("  ok")
 
 
@@ -75908,8 +76329,30 @@ def test_morning_deck_remap_and_purge_arming():
     check(arm.wanted == [False, True, False], "armed for the purge")
     scr.mo = None
     step()
+    check(arm.wanted == [False, True, False],
+          "one read with no fresh word (Jeff, 2026-11-14): the purge group "
+          "stays armed for the stale read grace")
+    step(sd.PURGE_STALE_GRACE_S)
+    check(arm.wanted == [False, False, False] and
+          c._purge_refused.get(1) == "dropped",
+          f"no fresh word for longer than the grace: the purge group is "
+          f"disarmed, and said why: {arm.wanted} {c._purge_refused}")
+    check(c._in_rearm_refractory(1, t[0]) == 0,
+          "a disarm the deck did on its own starts no re-arm wait")
+    mo(True, [1])
+    step()
+    step()
     check(arm.wanted == [False, False, False],
-          "no fresh word from the engine: the purge group is disarmed")
+          "the engine back, the group still listed: nothing re-arms on its "
+          "own (only a tap does)")
+    scr.mo["purge"]["presses"] = [[1, 41, 30]]
+    step()
+    check(arm.wanted == [False, True, False] and 1 in c._purge_armed and
+          not c._purge_refused,
+          f"the operator's tap arms it at once, no 2 s wait after the "
+          f"deck's own disarm: {arm.wanted} {c._purge_refused}")
+    mo(True, [])
+    step()
     # Purge arming off at the engine, or the rig latched: nothing arms.
     mo(True, [1], enabled=False)
     step()
@@ -77712,13 +78155,13 @@ def test_morning_group_button_skips_locked_and_always_disarms():
                   f"member refused: {st} {out}")
             if locked:
                 check("front-row-4 is locked out" in out["text"] and
-                      "5 of 6 armed" in out["text"] and
+                      "5 of 6 selected" in out["text"] and
                       out["refused"] == [
                           "front-row-4 is locked out, so it cannot be armed "
                           "for a purge. Unlock it first."],
                       f"and names front-row-4 and why: {out}")
             else:
-                check(out["refused"] == [] and "6 of 6 armed" in out["text"],
+                check(out["refused"] == [] and "6 of 6 selected" in out["text"],
                       f"all six, nothing refused: {out}")
             R.m.open_beat("Rack screen")
             dk = R.remote.deck_input()["morning"]["purge"]["wanted_groups"]
@@ -77801,7 +78244,9 @@ def test_morning_group_button_skips_locked_and_always_disarms():
     # The page: the click's direction comes from ANY member selected.
     page = screen_text()
     gblock = "\n".join(_js_function(page, n) or "" for n in (
-        "groupAnySelected", "groupButtonDisabled", "groupClick")) + "\n"
+        "groupAnySelected", "groupButtonDisabled", "purgeGroupOf",
+        "purgeArmed", "purgeStuckFor", "purgeSelected", "purgeMachine",
+        "groupUnarmed", "groupClick")) + "\n"
     check("function groupClick(" in gblock and
           "function groupButtonDisabled(" in gblock,
           "the page has its group click")
@@ -77818,8 +78263,11 @@ def test_morning_group_button_skips_locked_and_always_disarms():
         js = r"""
 const posts = [];
 function moPress(route, extra){ posts.push([route, extra]); }
+const PURGE_TAP_AT = {};
 let MO = {groups:{"Ground G-Flames":["fr1","fr2","fr3","fr4","fr5","fr6"]},
+          machines:["fr1","fr2","fr3","fr4","fr5","fr6"].map(id => ({id:id, group:"front row"})),
           purge_state:{selected:[]}};
+let ST = {flames:{groups:[{name:"front row", armed:"armed"}]}};
 """ + page[page.find("function mayRow("):page.find("function armState(")] + \
             gblock + r"""
 const out = [];
@@ -77832,6 +78280,18 @@ t(posts[1][1].on === false && posts[1][1].machines.length === 6, "five of six (o
 MO.purge_state.selected = ["fr2"];
 groupClick("Ground G-Flames");
 t(posts[2][1].on === false, "any one selected: the click disarms");
+// Jeff, 2026-11-14: selected but flamesafe has not armed the group: the
+// click asks for the arm again (never takes it off); a refusal another
+// tap cannot change (no deck key) takes it off.
+ST.flames.groups[0].armed = "disarmed";
+groupClick("Ground G-Flames");
+t(posts[3][1].on === true && posts[3][1].machines.length === 6, "selected, not armed: the click arms again: " + JSON.stringify(posts[3]));
+ST.flames.stale = true; ST.flames.groups[0].armed = "armed";
+groupClick("Ground G-Flames");
+t(posts[4][1].on === true, "flamesafe stale: not known armed, so the click asks for the arm");
+ST.flames.stale = false; ST.flames.groups[0].armed = "disarmed"; ST.flames.groups[0].purge_refused = "screenonly";
+groupClick("Ground G-Flames");
+t(posts[5][1].on === false, "a screen-only group (no deck key) is taken off");
 // The button's enabled state: an off (any member selected) is never
 // disabled; an arm is, by purge arming off, Arrange mode or signed out.
 const six = MO.groups["Ground G-Flames"], out_ = {me:{may:{arm:false}}}, in_ = {me:{may:{arm:true}}};
@@ -111592,10 +112052,14 @@ def test_ui2_show_tab_in_a_browser():
 
 # The DAY tab's copies of 1.0's Startup page code: purge selection, open
 # beats, lock and unlock, the fire key, the cleaning's holds.
+# groupClick and fireBeat left 1.0 on 2026-11-14 (Jeff's ruling: a tap on
+# a selected unit that is not armed arms it; a 200 that fires nothing says
+# NOT FIRING): the same routes and bodies, checked below and in
+# test_morning_group_button_skips_locked_and_always_disarms's node run.
 UI2_DAY_COPIES = ("moActor", "openBeatBody", "groupAnySelected",
-                  "groupButtonDisabled", "groupClick", "moPress",
+                  "groupButtonDisabled", "moPress",
                   "lockClick", "lockBody", "lockUndoOffer", "lockUndoGone",
-                  "lockUndo", "fireStart", "fireBeat", "fireStop",
+                  "lockUndo", "fireStart", "fireStop",
                   "morningPoll", "cleaningView", "wcPoll", "wcNow",
                   "wcLetGo", "wcStart", "wcBeat", "wcStopPress")
 
@@ -124950,6 +125414,9 @@ if __name__ == "__main__":
         test_rack_screen_one_laser_pill,
         test_rack_screen_flame_group_machine_count,
         test_streamdeck_reports_rearm_wait_and_purge_refusal,
+        test_purge_a_deliberate_press_arms_a_selected_unit,
+        test_purge_stop_cancels_and_nothing_rearms_after_it,
+        test_purge_page_says_selected_vs_armed_and_not_firing,
         test_rack_window_fits_the_work_area_above_the_taskbar,
         test_deck_chip_shows_live_truth,
         test_pixels_chip_shows_live_truth,
