@@ -135,7 +135,15 @@ FLAME_STALE_S = 1.0
 
 # The routes this module answers, and nothing else. No "arm" among them.
 CONTROL_ROUTES = ("start-now", "hold", "resume",
-                  "disarm-all", "stop", "run-off", "start-at-cue")
+                  "disarm-all", "stop", "run-off", "start-at-cue",
+                  "end-of-night")
+# End of night (Jeff, 2026-11-14): the idle look the schedule holds after
+# the last show (after_last_show "idle") ends, to black. Anyone may press
+# it, signed in or not, like Stop (users.REMOTE_ROUTES: "safety"); the
+# page sends it only after a deliberate second tap, and the engine takes
+# it only with {"confirmed": true}.
+END_OF_NIGHT_CONFIRM = ("Tap End of night twice to end the idle look. "
+                        "Nothing was changed.")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
 # Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
 # and holds the schedule instead; "run-off" is the halt and then playback
@@ -4433,6 +4441,11 @@ class Remote:
             # Only takes risk away: never refused for a stale page or a
             # missing confirm, from any surface (review of #144, F7).
             return self.stop_press(who, screen)
+        if name == "end-of-night":
+            # Only takes something away (the held idle look, to black):
+            # never refused for a stale page or a sign in, from any
+            # surface; only the deliberate second tap is asked for.
+            return self.end_of_night_press(who, screen, body)
         if name == "run-off":
             # Run off (2026-10-30): the Stop, then playback stops. Its
             # role is the show row's (users.REMOTE_ROUTES), never a stale
@@ -4600,6 +4613,35 @@ class Remote:
         except ValueError as e:
             return 400, {"error": str(e)}
         return (200 if r.get("ok") else 409), r
+
+    def end_of_night_press(self, who, screen, body):
+        """POST end-of-night {"confirmed": true}: the schedule's held idle
+        look ends (schedule_service.Service.end_of_night), journaled by
+        the engine with who pressed it, or "signed out". (code, body)."""
+        if body.get("confirmed") is not True:
+            self._journal(who, screen, "end of night", "refused",
+                          f"{who or 'Someone'}'s End of night on the "
+                          f"{screen} was refused. {END_OF_NIGHT_CONFIRM}")
+            return 400, {"ok": False, "error": END_OF_NIGHT_CONFIRM,
+                         "text": END_OF_NIGHT_CONFIRM}
+        svc = self.schedule
+        fn = getattr(svc, "end_of_night", None)
+        if fn is None:
+            why = ("There is no scheduler running in this engine, so there "
+                   "is no idle look to end. Nothing was changed.")
+            return 409, {"ok": False, "error": why, "text": why}
+        try:
+            r = fn(who, screen)
+        except Exception as e:                   # noqa: BLE001
+            why = (f"End of night did NOT go ({type(e).__name__}: {e}). "
+                   f"Press Stop to take the pixels dark.")
+            self._journal(who, screen, "end of night", "fault", why,
+                          fault=True)
+            return 500, {"ok": False, "error": why, "text": why}
+        if not r.get("ok"):
+            return 409, {"ok": False, "error": r.get("text"),
+                         "text": r.get("text")}
+        return 200, r
 
     # -- Start at a cue (play_from.py part 2) -----------------------------
     def start_at_cue(self, body):
@@ -9874,6 +9916,9 @@ class Remote:
                     "conductor": cv.get("attached", False),
                     "lit": cv.get("lit") is True,
                     "stop_held": cv.get("stop_held") is True,
+                    # The idle look held after the last show: the SHOW
+                    # tab's End of night is there only while this is true.
+                    "held_look": st.get("held_look") is True,
                     "trouble": cv.get("trouble"),
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),

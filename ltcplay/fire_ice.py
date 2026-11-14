@@ -2720,6 +2720,16 @@ class ShowRunner:
         # backstop behind the Stop's Hold and the vetoes). One attribute
         # read, no lock. None: never asked.
         self.practice_refusal = None
+        # (why) -> every hazer OFF (remote.Remote.hazers_cut), set by
+        # web.serve with the hazers: the night closing with the idle look
+        # held turns them off (Jeff, 2026-11-14). None: no hazers here.
+        self.hazers_off = None
+        # The pixels were left on the idle look by a closing that held it
+        # (after_last_show "idle"), and the night of it: once the held
+        # look is gone without a closing of its own or a show (the hand
+        # over to the next night, a Stop while closing, a schedule saved
+        # with "close"), the pixels go black (_held_look_over).
+        self._idle_held = None
 
     def _note(self, text, **fields):
         if self._journal is not None:
@@ -3194,6 +3204,12 @@ class ShowRunner:
         was, self._seen_state = self._seen_state, state
         with self._lock:
             cue = self._cue
+        if state in ("SHOW", "PAUSED"):
+            # A show took the pixels: nothing of a held look is left.
+            self._idle_held = None
+        elif self._idle_held is not None and state != "CLOSING" and \
+                not getattr(sch, "held_look", False):
+            self._held_look_over(sch)
         if state == "CLOSING":
             if not self._closing_reported:
                 self._closing_reported = True
@@ -3341,11 +3357,38 @@ class ShowRunner:
         return None
 
     def _close(self, after_show=False):
+        m = self.svc.machine
+        held = bool(getattr(m, "held_look", False))
+        # Whether or not show control is on now: it may be turned on while
+        # the look is held, and the look's end still goes black then.
+        self._idle_held = str(getattr(m, "date", "")) if held else None
+        if held:
+            # The idle look held (after_last_show "idle"): the hazers OFF
+            # whatever show control is doing (flamesafe's own link, not
+            # the rig output Run gates).
+            self._hazers_off_for_held()
         if self.show._session() is None:
             # Run is not pressed: the closing sends nothing to the rig.
             self._note("Closing: show control is off, so nothing was "
                        "sent to the rig.", action="closing",
                        outcome="held back")
+        elif held:
+            fn = getattr(self.conductor, "closing_held", None) or \
+                self.conductor.intermission
+            r = fn("the scheduler", "")
+            if not r.ok:
+                self._note(f"Closing: {r.sentence}", fault=True,
+                           action="closing", outcome="failed")
+            self._note("Closing with the idle look held (after_last_show "
+                       "is idle): the pixels stay on the idle look until "
+                       "someone presses End of night. Flame cues are zero, "
+                       "the lasers dark, the hazers off and MadMapper's "
+                       "video faded to black with its show bank stopped.",
+                       action="closing", outcome="idle_look_held")
+            self.svc.report("CLOSING_DONE",
+                            "flame cues zero, lasers blanked, hazers off, "
+                            "MadMapper dark, pixels on the idle look (held)")
+            return
         else:
             r = self.conductor.intermission("the scheduler", "")
             if not r.ok:
@@ -3367,7 +3410,48 @@ class ShowRunner:
         self._note("Closing: the MadMapper stop is not performed in this "
                    "build.", action="closing", outcome="not performed")
         self.svc.report("CLOSING_DONE",
+                        "show control off, the idle look held" if held else
                         "flame cues zero, lasers blanked, pixels black")
+
+    def _hazers_off_for_held(self):
+        """Every hazer OFF for the held idle look. Never raises."""
+        fn = self.hazers_off
+        if fn is None:
+            return
+        try:
+            fn("the night closed with the idle look held (after_last_show "
+               "is idle), so every hazer is off")
+        except Exception as e:                   # noqa: BLE001
+            self._note(f"Closing: the hazers off did NOT go out "
+                       f"({type(e).__name__}: {e}). Press Hazers off.",
+                       fault=True, action="closing", outcome="hazers")
+
+    def _held_look_over(self, sch):
+        """The held idle look ended without a closing of its own (the
+        night handed over to the next one, a Stop while it was closing, a
+        schedule saved with after_last_show "close"): the pixels go black,
+        as the closing would have left them. Never raises."""
+        night, self._idle_held = self._idle_held, None
+        now = str(getattr(sch, "date", "")) if sch is not None else ""
+        why = (f"the night of {night} handed over to the night of {now}"
+               if night and now and now != night else
+               "it is no longer held")
+        try:
+            if self.show._session() is None:
+                self._note(f"The idle look held after the last show ended "
+                           f"({why}). Show control is off, so nothing was "
+                           f"sent to the rig.", action="end of night",
+                           outcome="held back")
+                return
+            self.show.pixels_fade_out(1.0)
+            self._note(f"The idle look held after the last show ended "
+                       f"({why}): the pixels are black.",
+                       action="end of night", outcome="black")
+        except Exception as e:                   # noqa: BLE001
+            self._note(f"The idle look held after the last show ended "
+                       f"({why}), but the pixels to black failed "
+                       f"({type(e).__name__}: {e}). Press Stop.", fault=True,
+                       action="end of night", outcome="failed")
 
     def _run(self):
         while not self._stop.wait(self.POLL_S):

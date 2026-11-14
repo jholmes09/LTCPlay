@@ -1524,6 +1524,14 @@ class Service:
     # list). STOP_CONDUCTOR, FADE_PIXELS and BLACKOUT have no conductor
     # method, so they stay "not performed".
     _CLOSING_CLAIMS = frozenset((sch.ZERO_FLAME_CUES,))
+    # The closing with the idle look held (after_last_show "idle"): the
+    # conductor's closing_held() zeroes the flame cues, blanks the lasers
+    # and fades MadMapper's video to black, then stops its show bank; the
+    # pixels are left on the idle look (the runner's _close).
+    _HELD_CLOSING_CLAIMS = frozenset((sch.ZERO_FLAME_CUES,
+                                      sch.STOP_CONDUCTOR,
+                                      sch.FADE_VIDEO_OUT,
+                                      sch.IDLE_LOOK_HELD))
 
     def _drive_conductor(self, out, ev):
         """What the show conductor (conductor.Conductor) is to be asked to
@@ -1578,7 +1586,15 @@ class Service:
             else:
                 plan.append(("Show stopped", "show_stopped",
                              self._ABORT_EFFECTS))
-        if sch.BLACKOUT in kinds:
+        if sch.IDLE_LOOK_HELD in kinds:
+            # A conductor without closing_held (an older or a test one)
+            # is asked for intermission(), and the video is left as it is.
+            held = "closing_held" if hasattr(self.conductor,
+                                             "closing_held") else None
+            plan.append(("Closing, the idle look held", held or
+                         "intermission", self._HELD_CLOSING_CLAIMS if held
+                         else self._CLOSING_CLAIMS))
+        elif sch.BLACKOUT in kinds:
             plan.append(("Out of the show", "intermission",
                          self._CLOSING_CLAIMS))
         elif sch.INTERMISSION in kinds or sch.PRESHOW_LOOK in kinds:
@@ -1750,6 +1766,11 @@ class Service:
                          "Acknowledge."),
         "intermission": (" Out of the show: flame cues to zero and the "
                          "lasers blanked."),
+        "closing_held": (" The night closes with the idle look held: flame "
+                         "cues to zero, the lasers blanked, MadMapper's "
+                         "video faded to black and its show bank stopped. "
+                         "The pixels stay on the idle look until End of "
+                         "night."),
     }
 
     @staticmethod
@@ -2353,6 +2374,17 @@ class Service:
         # at the nightly reset, with or without a delayed show waiting.
         if self.machine.state == sch.HOLD:
             self.hold_epoch += 1
+        if self.machine.held_look:
+            # The idle look held after the last show (after_last_show
+            # "idle") never outlives its night: it ends here, to black
+            # (fire_ice.ShowRunner sees the held look gone), and the next
+            # night starts as it always does (Jeff, 2026-11-14).
+            self._journal_line(
+                "system", f"The idle look held since the last show of the "
+                          f"night of {self.machine.date} ends: the night "
+                          f"hands over to {d}, and nobody pressed End of "
+                          f"night. The pixels go to black.",
+                action="end of night", outcome="handed over")
         # A Stop's Hold nobody has Resumed outlives its night: _stop_carry,
         # enforced on every tick (_keep_stop_hold).
         m = self._load_tonight(d, now)
@@ -2980,6 +3012,53 @@ class Service:
                 # After the conductor has the Stop, never before it.
                 self._stop_carry_write()
 
+    END_OF_NIGHT_NOT_HELD = ("The idle look is not being held, so there is "
+                             "nothing for End of night to end. Nothing was "
+                             "changed.")
+
+    def end_of_night(self, who, screen):
+        """End of night (Jeff, 2026-11-14): the idle look held after the
+        last show (after_last_show "idle") ends, to black, as Close for
+        the night closes a night. Anyone may press it, signed in or not,
+        from any screen, like Stop: never refused for who or where (the
+        page asks for the deliberate second tap first). Refused, with a
+        sentence, when the look is not held (a stale page, a night already
+        over). Journaled by the engine with who, or "signed out".
+        {"ok", "text", "state"}."""
+        who = str(who or "").strip()
+        if who.lower() in sch.SIGNED_OUT_WHO:
+            who = "signed out"
+        screen = str(screen or "").strip() or "screen"
+        screen = {x.lower(): x for x in self.screens}.get(screen.lower(),
+                                                           screen)
+        with self._locked():
+            self.tick()
+            m = self.machine
+            if m is None or not m.held_look:
+                sentence = (self.END_OF_NIGHT_NOT_HELD if m is not None
+                            else (self.error or "There is no schedule "
+                                  "loaded. Nothing was changed."))
+                self.journal_press(who, screen, "end of night", "refused",
+                                   f"End of night ({who}) on the {screen} "
+                                   f"was refused. {sentence}")
+                return {"ok": False, "text": sentence,
+                        "state": getattr(m, "state", None)}
+            self._press_stamp = self.stamp_press()
+            try:
+                out = self._apply(sch.Event(
+                    sch.END_NIGHT, "operator", who=who, screen=screen,
+                    confirmed=True, surface=True,
+                    detail=sch.END_OF_NIGHT_DETAIL))
+            finally:
+                self._press_stamp = None
+            if out.refused:
+                return {"ok": False, "text": out.refused,
+                        "state": self.machine.state}
+            text = " ".join(self._reworded(le).text for le in out.log
+                            if le.text)
+            return {"ok": True, "text": text or "Done.",
+                    "state": self.machine.state}
+
     STOP_HELD_LATER = ("Nothing is held right now (the night is closing, "
                        "over, or has no shows), but the Stop's Hold stands: "
                        "no show starts by itself, tonight or on a later "
@@ -3008,6 +3087,25 @@ class Service:
             # No show left tonight (the last one just ended): the night
             # closes as it would (round 3, F2); the Stop's Hold stands for
             # the next night with shows.
+            return {"ok": True, "kind": "carried", "state": st,
+                    "text": self.STOP_HELD_LATER}
+        elif m.held_look and st == sch.OFF:
+            # The idle look held after the last show (after_last_show
+            # "idle"): a Stop ends it to black, as End of night does (Jeff,
+            # 2026-11-14). The conductor's Stop, asked at the press, has
+            # taken the look down already; this closes the night for good,
+            # so a restart never holds it again.
+            ev = sch.Event(sch.END_NIGHT, "operator", who=who, screen=screen,
+                           confirmed=True, surface=True,
+                           detail=sch.END_OF_NIGHT_DETAIL)
+            kind = "carried"
+        elif m.held_look:
+            # Still closing: the closing has not finished, so the held
+            # look is dropped here and the closing's own black follows
+            # (fire_ice.ShowRunner: a held look that ends goes black).
+            self.machine = replace(m, held_look=False,
+                                   closed_by_operator=True)
+            self._save_tonight()
             return {"ok": True, "kind": "carried", "state": st,
                     "text": self.STOP_HELD_LATER}
         elif st in self.SHOWTIME_FROM:

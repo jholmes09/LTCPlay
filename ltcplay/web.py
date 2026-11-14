@@ -2500,6 +2500,11 @@ def _attach_hazers(httpd):
     except Exception as e:                       # noqa: BLE001
         print(f"The hazers could not be set up: {type(e).__name__}: {e}")
         return
+    # The night closing with the idle look held turns every hazer off
+    # (schedule after_last_show "idle", Jeff 2026-11-14; fire_ice.ShowRunner).
+    perf = getattr(getattr(remote, "schedule", None), "performer", None)
+    if perf is not None:
+        perf.hazers_off = lambda why: remote.hazers_cut(why)
     say = getattr(link, "journal_line", None)
     if say is not None:
         say("Flame link: hazers " + "; ".join(

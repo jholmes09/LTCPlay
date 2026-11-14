@@ -158,6 +158,10 @@ ABORT_FADE_S = 1.0        # Abort: video, pixels, music together (the
 ANNOUNCE_FADE_S = 0.25    # an announcement's fade to black. The handoff
                           # gives no number; the Hold's own fade is used.
 ANNOUNCE_DARK_S = 0.5     # "waits about 0.5 s in the dark"
+# The night closing with the idle look held (closing_held, Jeff,
+# 2026-11-14): MadMapper's video fades to black over this, as a closing's
+# pixels do (schedule.CLOSING_FADE_S), then its show bank stops.
+CLOSING_HELD_FADE_S = 1.0
 CONFIRM_S = 0.5           # beyond the fade, how long the clock has to say
                           # it froze (Hold) or is moving again (Resume)
 START_CONFIRM_S = 2.0     # a Programming Play from (show_starting with
@@ -985,6 +989,25 @@ class Conductor:
             return done("Out of the show: flame cues zero, lasers "
                         "dark.")
 
+    def closing_held(self, who="", screen=""):
+        """The night closing with the idle look held (the schedule's
+        after_last_show "idle", Jeff, 2026-11-14): intermission() (flame
+        cues zero, the lasers blanked) and MadMapper dark too: its video
+        faded to black over CLOSING_HELD_FADE_S, then its show bank
+        stopped, the same video steps a Stop takes. The pixels and the
+        music are left alone (the pixels stay on the idle look). Nothing
+        is armed or disarmed here. The next show's start brings the video
+        back up as it does after a Stop."""
+        with self._lock:
+            if self._look == STOPPED_DARK:
+                return done("The show was stopped, so the rig is "
+                            "already dark.")
+            self._accept("Closing, idle look held", BETWEEN, who, screen,
+                         fade_s=CLOSING_HELD_FADE_S, video_dark=True)
+            return done("Closing with the idle look held: flame cues zero, "
+                        "lasers dark, MadMapper's video fading to black, "
+                        "then its show bank stopped.")
+
     def show_stopped(self, who="", screen=""):
         """A show cut short by ltcplay restarting (and the dark sequence
         sent again by a start that finds the rig meant to be dark). The rig
@@ -1629,11 +1652,26 @@ class Conductor:
                             want.get("who", ""), want.get("screen", ""))
 
     def _run_between(self, gen, want, progress):
-        """BETWEEN: flame cues zero, lasers blanked. Nothing else."""
+        """BETWEEN: flame cues zero, lasers blanked. Nothing else, except
+        for closing_held (video_dark): MadMapper's video faded to black,
+        then its show bank stopped."""
         self._step(gen, "flames", ZERO, "flame cues zeroed", progress,
                    self.show.flames_zero)
         self._step(gen, "lasers", BLACK, "lasers blanked for intermission",
                    progress, self.devices.lasers_blank)
+        if want.get("video_dark") is True:
+            fade = want.get("fade_s", CLOSING_HELD_FADE_S)
+            # From wherever the picture is now, every time (as a Stop's).
+            if self._step(gen, "video", BLACK, "video faded", progress,
+                          self.devices.video_fade_out, fade, force=True):
+                self._pause(gen, fade)
+            self._step(gen, "video", STOPPED, "video bank stopped",
+                       progress, self.devices.video_stop, force=True)
+            if progress:
+                self._note(f"The night closed with the idle look held: "
+                           f"{', '.join(progress)}. The pixels stay on the "
+                           f"idle look until End of night.",
+                           action="closing held", outcome="done")
 
     def _run_abort(self, gen, want, progress):
         fade = want["fade_s"]
