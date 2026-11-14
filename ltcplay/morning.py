@@ -71,6 +71,15 @@ BEAT_STALE_S = 0.25
 # its own. A tap that takes a machine off is never ignored. Equal to the
 # Stream Deck's REARM_REFRACTORY_S (selftest pins it).
 TAP_IGNORE_S = 2.0
+# A refusal that clears by itself in a moment (this page's status late,
+# flamesafe's status under this old, a lock or Fireball state read failing
+# once): a tap on a selected unit meant to arm it is refused, the unit kept,
+# no double tap window started, "try again in a moment". Lasting longer
+# than this (counted from the first such refusal), it counts as lasting and
+# the tap takes the unit off, as for every lasting refusal (third review of
+# #269: deselecting is always possible, a brief glitch never costs the
+# selection).
+TRANSIENT_S = 3.0
 # The timed purge (Jeff, 2026-10-29: "In addition to momentary purges, we
 # would like a designated time length purge option. This is to allow for
 # longer spurts of testing in case there is a DMX issue."). The page offers
@@ -1292,6 +1301,7 @@ class Purge:
         self._taps = {}
         self._presses = {}
         self._press_n = 0
+        self._transient_at = None    # clock of the first brief refusal
         # The last fire heartbeat's machines: firing and waiting (why not),
         # for the page's "NOT FIRING" words.
         self.last_firing = []
@@ -1308,33 +1318,46 @@ class Purge:
     # -- rules ---------------------------------------------------------------
     def _refusal(self, device, seen_ok, need_flames=True):
         """Why nothing may be selected or fired right now, or ""."""
+        return self._refusal_kind(device, seen_ok, need_flames)[0]
+
+    def _refusal_kind(self, device, seen_ok, need_flames=True):
+        """(why, brief): _refusal's sentence, and whether it is one that
+        clears by itself in a moment (TRANSIENT_S): this page's status
+        late, flamesafe's status late but under TRANSIENT_S old, a lock or
+        Fireball state that could not be read."""
         why = self._live()
         if why:
-            return why
+            return why, False
         if not seen_ok:
             return ("The page's status is more than 1 s old. Wait for it "
-                    "to be live, then try again.")
+                    "to be live, then try again."), True
         if need_flames:
             fl = self._flames()
             if not fl or fl.get("stale") or fl.get("age_ms") is None or \
                     fl["age_ms"] > FRESH_S * 1000:
+                age = (fl or {}).get("age_ms")
+                brief = isinstance(age, (int, float)) and \
+                    not isinstance(age, bool) and \
+                    0 <= age <= TRANSIENT_S * 1000
                 return ("flamesafe has not reported in the last second, so "
                         "its real armed state is not known. Nothing can be "
-                        "purged until it does.")
+                        "purged until it does."), brief
         if self._link() is None:
             return ("No flame link is connected in this engine, so a purge "
-                    "could reach nothing.")
+                    "could reach nothing."), False
         try:
             why = self._locks_ok() or ""
         except Exception as e:                           # noqa: BLE001
-            why = f"the lock state could not be read ({type(e).__name__})."
+            return (f"the lock state could not be read "
+                    f"({type(e).__name__})."), True
         if why:
-            return why
+            return why, False
         try:
             why = self._other() or ""
         except Exception as e:                           # noqa: BLE001
-            why = f"the Fireball page could not be read ({type(e).__name__})."
-        return why
+            return (f"the Fireball page could not be read "
+                    f"({type(e).__name__})."), True
+        return why, False
 
     def press_live(self, now=None):
         """True while a fire press is going (a heartbeat within
@@ -1390,8 +1413,11 @@ class Purge:
             return 200, {"ok": True, "text": f"{m.name} off the purge.",
                          "selected": list(self.selected)}
         never = cfg.purge_refusal(m)
-        why = (f"{m.name} is never purged: {never}"
-               if never in NEVER_SELECTED else self._refusal(device, seen_ok))
+        brief = False
+        if never in NEVER_SELECTED:
+            why = f"{m.name} is never purged: {never}"
+        else:
+            why, brief = self._refusal_kind(device, seen_ok)
         if not why and self._lockout.is_locked("machine", machine_id):
             why = (f"{m.name} is locked out, so it cannot be armed for a "
                    f"purge. Unlock it first.")
@@ -1399,16 +1425,8 @@ class Purge:
                 and self.selected:
             why = (f"{self.owner} has the purge selection. One device at a "
                    f"time.")
-        if why and tap and machine_id in self.selected and \
-                not self.press_live():
-            # A tap on a selected unit that cannot be armed now, for any
-            # reason, takes it off (Jeff: deselecting is always possible).
-            code, out = self.select(machine_id, False, device, seen_ok,
-                                    tap=True)
-            out = dict(out, off=True, text=f"{m.name} off the purge: it "
-                                           f"cannot be armed now. {why}")
-            return code, out
-        if why:
+        selected = machine_id in self.selected
+        if why and not (tap and selected):
             return 409, {"error": why if never not in NEVER_SELECTED else
                          why + ". Nothing was armed."}
         if self.press_live():
@@ -1424,12 +1442,34 @@ class Purge:
         if last is not None and 0 <= now - last < TAP_IGNORE_S:
             # An arming tap within 2 s of this screen's last tap on it (on,
             # off or Clear): a double tap or a fat finger. Nothing changes,
-            # and the window is not restarted.
+            # and the window is not restarted. Before any take off below:
+            # a fat finger never costs the selection (third review of #269).
             return 200, {"ok": True, "ignored": True,
                          "text": f"{m.name}: a second tap within "
                                  f"{TAP_IGNORE_S:g} s was ignored (a double "
                                  f"tap). Tap again in a moment.",
                          "selected": list(self.selected)}
+        if not why or not brief:
+            self._transient_at = None
+        if why and brief:
+            t0 = self._transient_at if self._transient_at is not None \
+                else now
+            self._transient_at = t0
+            if 0 <= now - t0 <= TRANSIENT_S:
+                # A refusal that clears by itself: the unit is kept, no
+                # window starts; the operator tries again in a moment.
+                return 409, {"error": f"{why} {m.name} stays selected; try "
+                                      f"again in a moment.", "brief": True,
+                             "selected": list(self.selected)}
+        if why:
+            # A tap on a selected unit that cannot be armed now (a lasting
+            # reason, or a brief one for over TRANSIENT_S) takes it off
+            # (Jeff: deselecting is always possible).
+            code, out = self.select(machine_id, False, device, seen_ok,
+                                    tap=True)
+            out = dict(out, off=True, text=f"{m.name} off the purge: it "
+                                           f"cannot be armed now. {why}")
+            return code, out
         with self._lock:
             if self.owner is not None and self.owner != device and \
                     self.selected:

@@ -117,7 +117,8 @@ from . import settings as settings_mod
 from . import users as users_mod
 from . import version as version_mod
 from .morning import (TIMED_DEFAULT_S, TIMED_MAX_DEFAULT_S,
-                      TIMED_MAX_LIMIT_S, TIMED_MIN_S, TIMED_PRESETS_S)
+                      TIMED_MAX_LIMIT_S, TIMED_MIN_S, TIMED_PRESETS_S,
+                      TRANSIENT_S as PURGE_TRANSIENT_S)
 from .fuelpump import (DEFAULT_S as PUMP_DEFAULT_S,
                        MAX_DEFAULT_S as PUMP_MAX_DEFAULT_S,
                        MAX_LIMIT_S as PUMP_MAX_LIMIT_S, MIN_S as PUMP_MIN_S)
@@ -7153,18 +7154,26 @@ class Remote:
             # it takes them off (Jeff, 2026-11-14: deselecting is always
             # possible), never refused.
             try:
-                deck_alive = self.clock() - (self._deck_seen or -1e9) <= \
-                    self.DECK_QUIET_S
+                deck_age = self.clock() - (self._deck_seen or -1e9)
             except Exception:
-                deck_alive = False
+                deck_age = 1e9
             why = "" if self.purge_enabled(ctx.local) else \
                 "Arming a purge from here is switched off."
-            if not why and not deck_alive:
+            if not why and not deck_age <= self.DECK_QUIET_S:
                 why = ("The Stream Deck program has not read this engine in "
                        "the last 2 s, and it is what arms a group.")
             ids = body.get("machines") if isinstance(
                 body.get("machines"), list) else [body.get("machine")]
             sel = list(m.purge.selected)
+            if why and ids and all(str(i) in sel for i in ids) and \
+                    self.purge_enabled(ctx.local) and \
+                    deck_age <= self.DECK_QUIET_S + PURGE_TRANSIENT_S:
+                # The deck quiet only briefly (third review of #269): the
+                # units are kept, try again in a moment; quiet for longer,
+                # the tap takes them off (below).
+                return 409, {"error": f"{why} The selection is kept; try "
+                                      f"again in a moment.", "brief": True,
+                             "selected": sel}
             if why and ids and all(str(i) in sel for i in ids):
                 code, out = m.post(name, dict(body, on=False), device, who,
                                    screen, seen_ok, ctx.local)

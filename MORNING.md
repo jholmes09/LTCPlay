@@ -268,7 +268,12 @@ already selected whose group is not armed is such a tap: the page sends
 `refractory`, `dropped`; otherwise the tap takes it off), the engine keeps
 the selection and numbers the tap; one that cannot be armed now for any
 reason (deck program not reading, purge arming off, a refusal, a lock,
-another screen's selection) takes the machine off instead. Every tap a
+another screen's selection) takes the machine off instead; one refused
+for a moment only (`TRANSIENT_S`, 3 s: the page's status late, flamesafe
+late under 3 s, a state read failing once, the deck quiet under 5 s) is
+refused with the machine kept and no double tap window started, and
+counts as lasting once it has repeated for over 3 s. The double tap check
+comes before any take off. Every tap a
 screen makes on a machine (on or off) and its Clear start a `TAP_IGNORE_S`
 (2 s) window for that screen and machine; an arming tap inside it is
 ignored as a double tap, an off tap and Clear never are. Tap numbers are

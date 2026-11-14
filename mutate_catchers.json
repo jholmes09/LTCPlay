@@ -2210,7 +2210,7 @@
 "morning: a row name alone makes a multi-safety group purgeable": "test_morning_unknown_multi_channel_group_is_never_purged",
 "morning: a screen going into Arrange mode keeps its purge selection armed": "test_morning_arrange_mode_arms_nothing",
 "morning: a screen in Arrange mode can still arm or unlock at the engine": "test_laser_arm_morning_page_routes_and_surfaces",
-"morning: a stale page can still arm and fire a purge (T3)": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
+"morning: a stale page can still arm and fire a purge (T3)": "test_purge_rules_at_the_engine",
 "morning: a view-only device's Arrange beat marks the page open": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
 "morning: a waver with no pan or tilt slot is not purge-refused": "test_morning_default_wave_flamer_is_never_purged",
 "morning: an Arrange entry whose page crashed holds firing off for ever": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
@@ -4128,5 +4128,12 @@
 "morning: a selected unit that cannot be armed now cannot be taken off by a tap": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
 "remote: with the Stream Deck program down a tap cannot take a unit off": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
 "purge page: with the Stream Deck program down a tap asks for an arm": "test_purge_page_says_selected_vs_armed_and_not_firing",
-"morning: tap numbers start again at 1 after an engine restart (the deck skips a new tap)": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule"
+"morning: tap numbers start again at 1 after an engine restart (the deck skips a new tap)": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
+"morning: a fat finger 0.5 s after an arm tap takes the unit off when a refusal comes up (window after the take off)": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"morning: a brief refusal takes the unit off at once (a glitch costs the selection)": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"morning: a brief refusal never counts as lasting (the unit can never be taken off)": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"morning: a brief refusal starts the double tap window": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"morning: flamesafe late for any time counts as brief": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"remote: a brief quiet of the Stream Deck program takes the unit off": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"purge page: a brief glitch tells the operator a tap takes the unit off": "test_purge_page_says_selected_vs_armed_and_not_firing"
 }

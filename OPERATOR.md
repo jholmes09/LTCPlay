@@ -573,6 +573,11 @@ reason). What a tap does:
   it off. The words end "a tap takes it off". A unit can always be taken
   off with a tap, from any screen; only a press already firing refuses a
   tap (let go of the key first).
+- Selected, not armed for a moment only (this page's status late,
+  flamesafe's status late under 3 s, a lock or Fireball state read
+  failing once, the Stream Deck program quiet under 5 s): the tap is
+  refused and the unit stays selected; the words end "try again in a
+  moment". If it lasts over 3 s, the next tap takes the unit off.
 - Double taps: every tap you make on a unit (on or off) and Clear start a
   2 s window for that screen and unit. A tap that would arm inside it is
   ignored ("a second tap within 2 s was ignored ... Tap again in a

@@ -11629,11 +11629,11 @@ def build():
   "ltcplay/morning.py",
   '''        why = self._live()
         if why:
-            return why
+            return why, False
         if not seen_ok:''',
   '''        why = ""
         if why:
-            return why
+            return why, False
         if not seen_ok:'''),
 
  ("morning: a stale page can still arm and fire a purge (T3)",
@@ -12199,8 +12199,8 @@ def build():
 
  ("morning: a click on a fireball arms its group for a purge",
   "ltcplay/morning.py",
-  "               if never in NEVER_SELECTED else self._refusal(device, seen_ok))",
-  "               if False else self._refusal(device, seen_ok))"),
+  "        if never in NEVER_SELECTED:\n            why = f\"{m.name} is never purged: {never}\"",
+  "        if False:\n            why = f\"{m.name} is never purged: {never}\""),
 
  ("morning: a fireball in the purge selection asks the deck to arm its group",
   "ltcplay/morning.py",
@@ -13821,8 +13821,8 @@ def build():
 
  ("purge page: with flamesafe stale no unit can be taken off by a tap",
   "ltcplay/web/remote2.html",
-  '''  if(purgeDeckDown() || !fl || fl.stale || fl.connected === false) return true;''',
-  '''  if(purgeDeckDown() || !fl) return true;'''),
+  '''  if(!fl || fl.stale || fl.connected === false) return true;''',
+  '''  if(!fl) return true;'''),
 
  ("purge page: NOT FIRING asks for a tap while the key is held (the tap is refused)",
   "ltcplay/web/remote2.html",
@@ -13831,11 +13831,9 @@ def build():
 
  ("morning: a tap on a selected unit skips the purge's refusals (a live show, a Hold)",
   "ltcplay/morning.py",
-  '''               if never in NEVER_SELECTED else self._refusal(device, seen_ok))''',
-  '''               if never in NEVER_SELECTED else ("" if machine_id in
-                                                 self.selected else
-                                                 self._refusal(device,
-                                                               seen_ok)))'''),
+  '''            why, brief = self._refusal_kind(device, seen_ok)''',
+  '''            why, brief = self._refusal_kind(device, seen_ok) if \\
+                machine_id not in self.selected else ("", False)'''),
 
  ("morning: a tap on a selected unit skips the lockout check",
   "ltcplay/morning.py",
@@ -13903,9 +13901,10 @@ def build():
 
  ("morning: a selected unit that cannot be armed now cannot be taken off by a tap",
   "ltcplay/morning.py",
-  '''        if why and tap and machine_id in self.selected and \\
-                not self.press_live():''',
-  '''        if False:'''),
+  '''        if why:
+            # A tap on a selected unit that cannot be armed now (a lasting''',
+  '''        if False:
+            # A tap on a selected unit that cannot be armed now (a lasting'''),
 
  ("remote: with the Stream Deck program down a tap cannot take a unit off",
   "ltcplay/remote.py",
@@ -13914,13 +13913,55 @@ def build():
 
  ("purge page: with the Stream Deck program down a tap asks for an arm",
   "ltcplay/web/remote2.html",
-  '''  if(purgeDeckDown() || !fl || fl.stale || fl.connected === false) return true;''',
-  '''  if(!fl || fl.stale || fl.connected === false) return true;'''),
+  '''  if(purgeDeckDown()) return true;
+  if(purgeBrief(fl)) return false;''',
+  '''  if(purgeBrief(fl)) return false;'''),
 
  ("morning: tap numbers start again at 1 after an engine restart (the deck skips a new tap)",
   "ltcplay/morning.py",
   '''            self._press_n = max(self._press_n + 1, int(time.time() * 1000))''',
   '''            self._press_n += 1'''),
+
+ ("morning: a fat finger 0.5 s after an arm tap takes the unit off when a refusal comes up (window after the take off)",
+  "ltcplay/morning.py",
+  '''        if last is not None and 0 <= now - last < TAP_IGNORE_S:
+            # An arming tap within 2 s of this screen's last tap on it (on,''',
+  '''        if last is not None and 0 <= now - last < TAP_IGNORE_S and \\
+                not why:
+            # An arming tap within 2 s of this screen's last tap on it (on,'''),
+
+ ("morning: a brief refusal takes the unit off at once (a glitch costs the selection)",
+  "ltcplay/morning.py",
+  '''        if why and brief:
+            t0 = self._transient_at''',
+  '''        if False:
+            t0 = self._transient_at'''),
+
+ ("morning: a brief refusal never counts as lasting (the unit can never be taken off)",
+  "ltcplay/morning.py",
+  '''            if 0 <= now - t0 <= TRANSIENT_S:''',
+  '''            if 0 <= now - t0:'''),
+
+ ("morning: a brief refusal starts the double tap window",
+  "ltcplay/morning.py",
+  '''                return 409, {"error": f"{why} {m.name} stays selected; try "''',
+  '''                self._taps[(device, machine_id)] = now
+                return 409, {"error": f"{why} {m.name} stays selected; try "'''),
+
+ ("morning: flamesafe late for any time counts as brief",
+  "ltcplay/morning.py",
+  '''                    0 <= age <= TRANSIENT_S * 1000''',
+  '''                    0 <= age'''),
+
+ ("remote: a brief quiet of the Stream Deck program takes the unit off",
+  "ltcplay/remote.py",
+  '''                    deck_age <= self.DECK_QUIET_S + PURGE_TRANSIENT_S:''',
+  '''                    False:'''),
+
+ ("purge page: a brief glitch tells the operator a tap takes the unit off",
+  "ltcplay/web/remote2.html",
+  '''  if(brief) return "Selected, not armed (" + brief + "): try again in a moment";''',
+  ''''''),
 
  ("purge page: selected reads as armed on the step",
   "ltcplay/web/remote2.html",

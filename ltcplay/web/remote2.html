@@ -5295,8 +5295,19 @@ function purgeWhyNot(m, fl){
 // chosen, the role, latched, a flamesafe reason, flamesafe stale or not
 // connected, the group unknown): the tap takes the unit OFF instead, so a
 // unit can always be deselected by a tap (Jeff, 2026-11-14).
+// A reason that clears by itself in a moment (third review of #269): this
+// page's own status late, or flamesafe's late but under 3 s old. The engine
+// then refuses an arming tap and keeps the unit (try again in a moment);
+// longer, it counts as lasting and the tap takes the unit off.
+function purgeBrief(fl){
+  if(typeof LAST_OK !== "undefined" && LAST_OK !== null && Date.now() - LAST_OK > 1000) return "this page's status is late";
+  if(fl && fl.stale && typeof fl.age_ms === "number" && fl.age_ms <= 3000) return "flamesafe's status is late";
+  return "";
+}
 function purgeStuckFor(m, fl){
-  if(purgeDeckDown() || !fl || fl.stale || fl.connected === false) return true;
+  if(purgeDeckDown()) return true;
+  if(purgeBrief(fl)) return false;
+  if(!fl || fl.stale || fl.connected === false) return true;
   const g = purgeGroupOf(m, fl);
   if(!g || g.reason) return true;
   return !!g.purge_refused && g.purge_refused !== "refractory" && g.purge_refused !== "dropped";
@@ -5305,6 +5316,8 @@ function purgeSelected(id, mo){ return (((mo || {}).purge_state || {}).selected 
 // Words for a selected unit that is not armed: "Arming..." for 2 s after
 // this page's own tap on it, then PURGE_SEL_NOT_ARMED and why.
 function purgeNotArmedText(m, fl){
+  const brief = purgeDeckDown() ? "" : purgeBrief(fl);
+  if(brief) return "Selected, not armed (" + brief + "): try again in a moment";
   const why = purgeWhyNot(m, fl);
   if(purgeStuckFor(m, fl)) return "Selected, not armed" + (why ? " (" + why + ")" : "") + ": a tap takes it off";
   if(Date.now() - (PURGE_TAP_AT[m.id] || 0) < 2000) return "Arming...";
