@@ -421,9 +421,15 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #d-mapsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
 #d-mapsec[hidden]{display:none}
 #mo-field{height:clamp(300px,50vh,620px);position:relative;border:2px solid var(--line);border-radius:12px;background:#0e0b08;overflow:hidden;flex:0 0 auto}
+/* mapFit() sizes the field and the tiles for the fleet: a tile is 88 to
+   176 px wide, a row too tight for its tiles is drawn zig-zag, the field
+   grows tall enough that no two tiles overlap, and wider than the panel
+   (scrolled sideways here) only when even that cannot fit. The saved
+   places (percent) are never changed. */
+#mo-scroll{overflow-x:auto;overflow-y:hidden;min-width:0;flex:0 0 auto}
 #mo-field .edge{position:absolute;left:8px;right:8px;color:var(--muted);pointer-events:none;font-size:calc(var(--fs) - 4px)}
 #mo-field .edge.top{top:6px} #mo-field .edge.bot{bottom:6px;text-align:right}
-.mach{position:absolute;transform:translate(-50%,-50%);width:clamp(132px,11vw,176px);min-height:56px;border-radius:10px;
+.mach{position:absolute;transform:translate(-50%,calc(-50% + var(--mo-dy,0px)));width:var(--mo-tw,clamp(132px,11vw,176px));min-height:56px;border-radius:10px;
   border:2px solid var(--line);background:var(--panel2);color:var(--cream);padding:5px 6px 4px;text-align:center;
   cursor:pointer;touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 /* Only while arranging does a press on a tile hold the pointer (a drag). */
@@ -431,6 +437,7 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .mach b,.mach .w,.mach .k{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mach .w{font-weight:800;text-transform:uppercase}
 .mach .k,.mach .wait{color:var(--muted);font-size:calc(var(--fs) - 6px)}
+.mach[data-fit="tight"] .k{font-size:calc(var(--fs) - 9px)}
 .mach .wait:empty{display:none}
 .mach .lk{display:none}
 .mach.sel{border-color:var(--amber);background:#3A2606}
@@ -438,7 +445,7 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .mach.firing{border-color:var(--red);background:var(--red-deep);color:#fff}
 .mach.locked{border-style:dashed;color:var(--muted)}
 .mach.drag{border-color:var(--cream);cursor:grab}
-.mach.lift{cursor:grabbing;z-index:5;box-shadow:0 0 0 3px var(--cream),0 10px 28px rgba(0,0,0,.7)}
+.mach.lift{transform:translate(-50%,-50%);cursor:grabbing;z-index:5;box-shadow:0 0 0 3px var(--cream),0 10px 28px rgba(0,0,0,.7)}
 #mo-arrange-bar{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);border:2px solid var(--amber);background:rgba(245,160,30,.16);border-radius:12px;padding:6px 10px}
 #mo-arrange-bar[hidden]{display:none}
 #mo-arrange-bar b{flex:1 1 auto;color:var(--amber)}
@@ -868,7 +875,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <button class="b green" id="mo-arr-save"><svg class="i"><use href="#i-check"/></svg>Save layout</button><button class="b" id="mo-arr-reset"><svg class="i"><use href="#i-reset"/></svg>Reset layout</button><button data-safe class="b" id="mo-arr-cancel"><svg class="i"><use href="#i-x"/></svg>Cancel</button>
             <span class="pline">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
           <div class="drow"><button class="b" id="mo-arrange" hidden><svg class="i"><use href="#i-list"/></svg>Arrange</button><span class="pline">Tap a machine to arm it for the purge, as a group button does.</span></div>
-          <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
+          <div id="mo-scroll"><div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div></div>
         </div>
         <!-- P8, P9, P10 (docs/REMOVE_1_0_PLAN.md): 1.0's Fireball page,
              its fuel warning and recent refills, and its timed purge, with
@@ -5941,8 +5948,95 @@ function dayMap(k){
   $("mo-arrange").hidden = !(ME && ME.local);
   if(!on) return;
   renderField(MO, (ST && ST.flames) || {}, MO.purge_state || {});
+  mapFit();
   renderArrange();
 }
+// The map's fit (Jeff, 2026-11-14: tiles overlapped on the 2K screen with
+// the whole fleet). Each tile stays at its saved place, in percent of the
+// field; this sizes the field and the tiles around those places so no two
+// tiles overlap and none is cut off, whatever the fleet: tiles of a row
+// (the same height, within MAP_ROW_PCT) narrow from MAP_TILE_MAX to
+// MAP_TILE_MIN; a row still too tight is drawn zig-zag (every other tile
+// half a row up or down, never saved); the field grows taller until rows
+// clear each other, and wider than the panel, scrolled sideways, only when
+// even a zig-zag row of the narrowest tiles cannot fit.
+const MAP_TILE_MIN = 88, MAP_TILE_MAX = 176, MAP_TILE_TIGHT = 132, MAP_GAP = 6, MAP_ROW_PCT = 3, MAP_EDGE_PCT = 2;
+function mapFit(){
+  const field = $("mo-field"), sc = $("mo-scroll");
+  if(!field || !sc || !MO || $("d-mapsec").hidden || (DRAG && DRAG.field)) return;
+  const tiles = [...field.querySelectorAll(".mach")].map(el => {
+    const p = (ARRANGE && ARRANGE_POS[el.dataset.id]) || (MO.layout || {})[el.dataset.id] || {x:50, y:50};
+    return {el:el, x:+p.x || 0, y:+p.y || 0};
+  });
+  if(!tiles.length) return;
+  // Rows: tiles sorted by height on the field, a row while within MAP_ROW_PCT.
+  const rows = [];
+  tiles.slice().sort((a, b) => a.y - b.y || a.x - b.x).forEach(t => {
+    const r = rows[rows.length - 1];
+    if(r && t.y - r[0].y <= MAP_ROW_PCT) r.push(t); else rows.push([t]);
+  });
+  rows.forEach(r => r.sort((a, b) => a.x - b.x));
+  const avail = sc.clientWidth - (field.offsetWidth - field.clientWidth);
+  const want = Math.min(MAP_TILE_MAX, Math.max(MAP_TILE_TIGHT, 0.11 * innerWidth));
+  // The narrowest gap (percent) between tiles `k` apart in a row.
+  const step = (r, k) => { let d = Infinity; for(let i = 0; i + k < r.length; i++) d = Math.min(d, r[i + k].x - r[i].x); return d; };
+  const edge = t => Math.min(t.x, 100 - t.x);
+  // The field's width: wide enough for every row's tiles at MAP_TILE_MIN.
+  let w = avail;
+  rows.forEach(r => {
+    const d = step(r, 1), d2 = step(r, 2);
+    const one = d > 0.5 ? 100 * (MAP_TILE_MIN + MAP_GAP) / d : Infinity;
+    const two = d2 > 0.5 ? 100 * (MAP_TILE_MIN + MAP_GAP) / d2 : Infinity;
+    if(one > avail) w = Math.max(w, Math.min(two, 6000));
+    r.forEach(t => { if(edge(t) >= MAP_EDGE_PCT) w = Math.max(w, 100 * (MAP_TILE_MIN / 2 + 2) / edge(t)); });
+  });
+  w = Math.ceil(w);
+  // Each row's tile width and whether it zig-zags, at that width.
+  rows.forEach(r => {
+    const d = step(r, 1), d2 = step(r, 2);
+    let tw = Math.min(want, d * w / 100 - MAP_GAP);
+    r.zig = tw < MAP_TILE_MIN && r.length > 2 && d > 0.5;
+    if(r.zig) tw = Math.min(want, d2 * w / 100 - MAP_GAP);
+    else if(r.length === 2 && tw < MAP_TILE_MIN) r.zig = true, tw = want;
+    r.forEach(t => { if(edge(t) >= MAP_EDGE_PCT) tw = Math.min(tw, 2 * (edge(t) * w / 100 - 2)); });
+    r.tw = Math.max(MAP_TILE_MIN, Math.floor(tw));
+    r.forEach(t => {
+      t.w = r.tw;
+      const v = r.tw + "px";
+      if(t.el.style.getPropertyValue("--mo-tw") !== v) t.el.style.setProperty("--mo-tw", v);
+      const fit = r.tw < MAP_TILE_TIGHT ? "tight" : "";
+      if((t.el.dataset.fit || "") !== fit) t.el.dataset.fit = fit;
+    });
+  });
+  field.style.minWidth = w > avail ? (w + field.offsetWidth - field.clientWidth) + "px" : "";
+  // Heights, at those widths; a zig-zag row's tiles half a row up and down.
+  rows.forEach(r => {
+    r.forEach(t => { t.h = t.el.offsetHeight; });
+    const hr = Math.max(...r.map(t => t.h));
+    r.forEach((t, i) => {
+      t.dy = r.zig ? (i % 2 ? 1 : -1) * (hr + MAP_GAP) / 2 : 0;
+      const v = t.dy + "px";
+      if(t.el.style.getPropertyValue("--mo-dy") !== v) t.el.style.setProperty("--mo-dy", v);
+    });
+  });
+  // The field's height: every two tiles that would touch sideways clear
+  // each other up and down, and no tile passes the top or the bottom.
+  const base = Math.min(620, Math.max(300, 0.5 * innerHeight));
+  let h = 0;
+  for(let i = 0; i < tiles.length; i++){
+    const a = tiles[i];
+    if(a.y >= MAP_EDGE_PCT) h = Math.max(h, 100 * (a.h / 2 - a.dy + 2) / a.y);
+    if(100 - a.y >= MAP_EDGE_PCT) h = Math.max(h, 100 * (a.h / 2 + a.dy + 2) / (100 - a.y));
+    for(let j = 0; j < tiles.length; j++){
+      const b = tiles[j];
+      if(b.y - a.y <= 0 || Math.abs(b.x - a.x) * w / 100 >= (a.w + b.w) / 2 + MAP_GAP) continue;
+      h = Math.max(h, 100 * ((a.h + b.h) / 2 + MAP_GAP - (b.dy - a.dy)) / (b.y - a.y));
+    }
+  }
+  h = Math.min(Math.ceil(h + field.offsetHeight - field.clientHeight), 6000);
+  field.style.minHeight = h > base ? h + "px" : "";
+}
+window.addEventListener("resize", mapFit);
 // Arrange needs room for its bar, with Save layout and Cancel, and some
 // of the field (review of #212, 5): on a window too short, it is not
 // started, and a window turning too short leaves it (unsaved moves are
