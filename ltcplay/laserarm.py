@@ -372,6 +372,9 @@ class LaserArm:
                     pass
         why = self.may_enable()
         if why is None:
+            # Permitted from this arm on: a blocker appearing before the
+            # watcher's next pass still disarms (tick).
+            self._was_permitted = True
             self._queue("enable", f"every laser armed, the last by {label}",
                         who, screen)
             if self.on_permitted is not None:
@@ -399,6 +402,12 @@ class LaserArm:
                    lid in self.armed]
             for lid in ids:
                 self.armed.pop(lid, None)
+            if ids:
+                # Not every laser is armed now, so nothing is permitted:
+                # the watcher must not take a later arm on Hold, before
+                # its next pass, for lasers lit before it (Jeff,
+                # 2026-11-14: arming on Hold is allowed).
+                self._was_permitted = False
         reason = why or f"disarmed by {label}"
         names = ", ".join(self.names.get(i, i) for i in was)
         text = (f"{names} DISARMED ({reason})." if was else
