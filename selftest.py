@@ -108181,6 +108181,13 @@ def test_ui2_time_elapsed_and_left():
           'tm.elapsed + " | " + tm.left);' in two and
           'setText($("cd-v"), "- | -")' in two,
           "the state strip shows Elapsed | Left, and - | - when not known")
+    # A phone (390x844 CI, Stop show was pushed under the footer): the top
+    # line leaves its times out there; the state strip just below has both.
+    ph = two[two.find("@media (max-width:600px){\n  /* A phone: the logo"):]
+    ph = ph[:ph.find("\n}\n")]
+    check("#next-t .tm{display:none}" in ph and
+          'sp.className = "tm"; sp.textContent = " " + ns.times;' in two,
+          "on a phone the top line's times are left out, the strip keeps both")
     check(two.count("showTimes(c, cdLength(") == 2,
           "the top line and the state strip use the same showTimes")
     import shutil
@@ -108241,6 +108248,9 @@ const base = () => ({schedule:{attached:true, state:"SHOW", running:4, next:{sho
 let s = base(); CD = countdownAnchor(null, s.countdown, 0); MONO = 0;
 let n = nextStep(s, false, true, []).text;
 t(n === "Show 4 running. Elapsed 2:00, left 5:20." && n.split(/\s+/).length <= 8, "the top line: " + n);
+{ const ns = nextStep(s, false, true, []);
+  t(ns.base === "Show 4 running." && ns.times === "Elapsed 2:00, left 5:20." && ns.text === ns.base + " " + ns.times,
+    "the times are their own part of the top line (left out on a phone): " + JSON.stringify(ns)); }
 s = base(); s.countdown = {kind:"left", s:320, running:true}; CD = countdownAnchor(null, s.countdown, 0);
 n = nextStep(s, false, true, []).text;
 t(n === "Show 4 running. Elapsed -, left 5:20.", "the top line, length not known: " + n);

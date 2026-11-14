@@ -717,6 +717,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #t-show{grid-template-rows:none;height:auto}
   #app{grid-template-rows:auto auto minmax(0,1fr) auto}
   #next{min-height:64px;padding:8px 12px;flex-wrap:wrap}
+  #next-t .tm{display:none}
   #mini .b{flex:1 1 40%}
   #pins{flex:1 1 100%;flex-wrap:wrap}
   #pins .b{flex:1 1 40%;min-height:56px}
@@ -1788,6 +1789,16 @@ function cdLength(st){
   const c = st && st.countdown;
   return c && c.kind === "left" ? c.length : null;
 }
+// The top line's words; a show's times in a span of their own (.tm).
+function drawNextText(ns){
+  const nt = $("next-t");
+  if(!ns.times){ if(nt.children.length || nt.textContent !== ns.text) nt.textContent = ns.text; return; }
+  if(nt.textContent === ns.text && nt.children.length) return;
+  nt.textContent = ns.base;
+  const sp = document.createElement("span");
+  sp.className = "tm"; sp.textContent = " " + ns.times;
+  nt.appendChild(sp);
+}
 // The line at the top: what to do next, in eight words or fewer.
 function nextStep(st, isStaleNow, local, items){
   if(!st) return {tone:"warn", icon:"clock", text:"Connecting to the show PC"};
@@ -1814,7 +1825,12 @@ function nextStep(st, isStaleNow, local, items){
   if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Show control is off." : "Show control off: turn on at show PC."};
   const c = countdownRead(CD, monoNow());
   const tm = showTimes(c, cdLength(st));
-  if(sch.state === "SHOW") return {tone:"ok", icon:"play", text:"Show " + (sch.running || "") + " running." + (tm ? " Elapsed " + tm.elapsed + ", left " + tm.left + "." : "")};
+  // The times are drawn in their own span (.tm), left out on a phone,
+  // where the state strip just below shows both and room is short.
+  if(sch.state === "SHOW"){
+    const base = "Show " + (sch.running || "") + " running.", times = tm ? "Elapsed " + tm.elapsed + ", left " + tm.left + "." : "";
+    return {tone:"ok", icon:"play", text:base + (times ? " " + times : ""), base:base, times:times};
+  }
   if(sch.start_waiting) return {tone:"ok", icon:"clock", text:"Starting when the show audio loads."};
   const nx = sch.next;
   if(nx){
@@ -2205,7 +2221,7 @@ function renderStale(){
   const local = !!(ME && ME.local);
   // the next step and the state
   const ns = nextStep(ST, isSt, local, ALERTS);
-  $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : ""); setIcon($("next").querySelector("svg"), ns.icon); setText($("next-t"), ns.text);
+  $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
   const pl = pillLook(ST, isSt, ALERTS);
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
