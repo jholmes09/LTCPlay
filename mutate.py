@@ -24864,17 +24864,17 @@ def build():
 
  ('mid-show Hold: show control on refuses the timed purge',
   'ltcplay/remote.py',
-  '            held = self._held_mid_show()\n',
+  '            held = self._on_hold_for_tests()\n',
   '            held = False\n'),
 
  ('mid-show Hold: show control on refuses the hazer test',
   'ltcplay/remote.py',
-  '            if self._held_mid_show():\n                # Held mid show (Jeff, 2026-11-14): show control stays on\n',
-  '            if False:\n                # Held mid show (Jeff, 2026-11-14): show control stays on\n'),
+  '            if self._on_hold_for_tests():\n                # On Hold (Jeff, 2026-11-14): show control stays on in a\n',
+  '            if False:\n                # On Hold (Jeff, 2026-11-14): show control stays on in a\n'),
 
  ("mid-show Hold: the hazer test's per-frame gate shuts with show control on",
   'ltcplay/remote.py',
-  '            if self._held_mid_show():\n                return True\n',
+  '            if self._on_hold_for_tests():\n                return True\n',
   ''),
 
  ('mid-show Hold: show control on does not refuse while the show clock plays',
@@ -24882,10 +24882,26 @@ def build():
   '            return not (clk is not None and getattr(clk, "playing", False))\n',
   '            return True\n'),
 
- ('mid-show Hold: show control on does not refuse on a Hold between shows',
+ ('Hold: show control on refuses the tests on a Hold between shows',
   'ltcplay/remote.py',
-  '            if getattr(m, "state", None) != "PAUSED":\n                return False\n',
-  '            if getattr(m, "state", None) not in ("PAUSED", "HOLD"):\n                return False\n'),
+  '            if getattr(m, "state", None) not in ("HOLD", "PAUSED"):\n                return False\n',
+  '            if getattr(m, "state", None) != "PAUSED":\n                return False\n'),
+
+ ('Hold: show control on does not refuse the tests outside a Hold',
+  'ltcplay/remote.py',
+  '            if getattr(m, "state", None) not in ("HOLD", "PAUSED"):\n                return False\n',
+  '            if False:\n                return False\n'),
+
+ ("Hold: show control's state unreadable lets the hazer test through",
+  'ltcplay/remote.py',
+  '                    return ("show control\'s state could not be read, so "\n'
+  '                            "the test is refused")\n',
+  '                    starting = False\n'),
+
+ ('Hold: a show file starting lets the hazer test through',
+  'ltcplay/remote.py',
+  '                if starting:\n                    return ("a show file is starting; wait for it, or turn "\n',
+  '                if False:\n                    return ("a show file is starting; wait for it, or turn "\n'),
 
  ('mid-show Hold: a show file starting lets the timed purge through',
   'ltcplay/remote.py',
@@ -25004,8 +25020,8 @@ def build():
 
  ('hazer test: a show state that cannot be read is idle',
   'ltcplay/remote.py',
-  '        except Exception as e:                   # noqa: BLE001\n            return f"the engine\'s state could not be read ({type(e).__name__})"\n        return ""\n\n    def _held_mid_show',
-  '        except Exception as e:                   # noqa: BLE001\n            return ""\n        return ""\n\n    def _held_mid_show'),
+  '        except Exception as e:                   # noqa: BLE001\n            return f"the engine\'s state could not be read ({type(e).__name__})"\n        return ""\n\n    def _on_hold_for_tests',
+  '        except Exception as e:                   # noqa: BLE001\n            return ""\n        return ""\n\n    def _on_hold_for_tests'),
 
  ("hazer test: a Hold's zero leaves it on at the link",
   'ltcplay/flamelink.py',

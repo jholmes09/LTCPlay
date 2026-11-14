@@ -568,9 +568,8 @@ screen, the line at the top of every tab and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
 (on the Startup page or the banner, from any screen, signed in or
 not), or Stop or Hold; on Hold (also during a show, and after a Stop,
-before Resume) you may start one (Jeff, 2026-11-14), with show control
-off (during a Hold pressed in a show, show control on is fine), and
-Resume ends it first; Start now, Show control on, a disarm of one of
+before Resume) you may start one (Jeff, 2026-11-14), show control on or
+off, and Resume ends it first; Start now, Show control on, a disarm of one of
 its groups, a lock, signing out and any other purge press (Space, the
 deck's FIRE, the button again) also end it at once. Only one purge at a
 time; the Fireball page, the cleaning and live flame programming wait for
@@ -997,11 +996,11 @@ channel, and is either ARMED or DISARMED.
   - Each turns off by itself 60 s after its press.
   - Off on Stop, a Hold press, Hazers off, a show or show control
     starting.
-  - Allowed on Hold (between shows, after a Stop, or during a show) and
-    with no schedule loaded, with show control off; during a Hold
-    pressed in a show also with show control on. Refused while a show
-    plays, and with show control on at any other time (Jeff,
-    2026-11-14). Resume turns it off first.
+  - Allowed on any Hold (between shows, after a Stop, or during a show),
+    show control on or off, and with no schedule loaded with show
+    control off. Refused while a show plays, while the show clock plays,
+    while a show file is starting, and with show control on when not on
+    Hold (Jeff, 2026-11-14). Resume turns it off first.
   - Off if this screen goes quiet 10 s.
   It needs the arm row (as arming a hazer) and every check arming a
   hazer has, and a Haze level above 0 on each hazer turned on.
@@ -1887,9 +1886,8 @@ stop:
   how the schedule is stopped. Each flame group and laser needs arming
   again. On the Stop's Hold, before Resume, you may test anything, as on
   any Hold, also one pressed during a show (Jeff, 2026-11-14): fire a
-  flame test, run a timed purge or the hazer test (with show control
-  off, except during a Hold pressed in a show, where show control stays
-  on and they are still allowed), arm a laser and run its test. A laser armed on Hold stays dark
+  flame test, run a timed purge or the hazer test (show control may stay
+  on during any Hold), arm a laser and run its test. A laser armed on Hold stays dark
   while held. Resume does not disarm it (Jeff's ruling): it lights with
   no fresh arm when the show plays again (at once after a Hold during a
   show, else at the next show start). Armed is not safe: disarm it

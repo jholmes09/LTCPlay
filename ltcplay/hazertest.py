@@ -58,8 +58,8 @@ The rules
     (remote.may_act_from), every check that turning a hazer On has today
     (hazers.Hazers.refusal), no show playing (on Hold, between shows,
     after a Stop or during a show, and with no schedule loaded it may run:
-    Jeff, 2026-11-14), show control off (during a Hold pressed in a show
-    show control stays on and does not refuse it: remote._held_mid_show),
+    Jeff, 2026-11-14), show control off (on any Hold show control stays
+    on and does not refuse it: remote._on_hold_for_tests),
     and a Haze level above 0 on each selected hazer.
   - OFF: always, anyone, signed in or not; for the named hazers, or all.
     An OFF naming a hazer the engine does not have turns every one off.

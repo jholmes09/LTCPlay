@@ -5988,9 +5988,18 @@ class Remote:
             st = self._ht_state()
             if st == "playing":
                 return "a show is playing, and the show drives the hazers"
-            if self._held_mid_show():
-                # Held mid show (Jeff, 2026-11-14): show control stays on
-                # in a real show and does not refuse the test then.
+            if self._on_hold_for_tests():
+                # On Hold (Jeff, 2026-11-14): show control stays on in a
+                # real night and does not refuse the test then; a show
+                # file starting still does.
+                try:
+                    starting = (self.control.state() or {}).get("starting")
+                except Exception:                # noqa: BLE001
+                    return ("show control's state could not be read, so "
+                            "the test is refused")
+                if starting:
+                    return ("a show file is starting; wait for it, or turn "
+                            "show control off first")
                 return ""
             # Stop leaves show control on (#231): the way out is to turn
             # it off (End rehearsal in a rehearsal), as the timed purge says.
@@ -6014,15 +6023,17 @@ class Remote:
             return f"the engine's state could not be read ({type(e).__name__})"
         return ""
 
-    def _held_mid_show(self):
-        """True only while a show is held mid show (the schedule PAUSED by
-        Hold) and the show clock is not playing a cue: then show control's
-        being on does not refuse the timed purge or the hazer test (Jeff,
-        2026-11-14). False on any error (fail closed: the show control
-        rules apply). Plain reads, no locks."""
+    def _on_hold_for_tests(self):
+        """True only while the schedule is on Hold (HOLD between shows or
+        after a Stop, PAUSED when Hold was pressed in a show) and the show
+        clock is not playing a cue: then show control's being on does not
+        refuse the timed purge or the hazer test (Jeff, 2026-11-14: "with
+        a show held ... the operator should be able to test anything").
+        False on any error (fail closed: the show control rules apply).
+        Plain reads, no locks."""
         try:
             m = getattr(self.schedule, "machine", None)
-            if getattr(m, "state", None) != "PAUSED":
+            if getattr(m, "state", None) not in ("HOLD", "PAUSED"):
                 return False
             s = getattr(self.control, "session", None)
             clk = getattr(s, "clock", None) if s is not None else None
@@ -6051,7 +6062,7 @@ class Remote:
         try:
             if self._ht_state() != "idle":
                 return False
-            if self._held_mid_show():
+            if self._on_hold_for_tests():
                 return True
             if getattr(getattr(self.control, "session", None), "running",
                        False):
@@ -7355,9 +7366,9 @@ class Remote:
             # press ends a running one (timed_purge_cut at the press).
             if getattr(svc, "halting", lambda: False)() is True:
                 return "Stop is under way."
-            # A show held mid show keeps show control on in a real show;
-            # it does not refuse the timed purge then (Jeff, 2026-11-14).
-            held = self._held_mid_show()
+            # On Hold show control stays on in a real night; it does not
+            # refuse the timed purge then (Jeff, 2026-11-14).
+            held = self._on_hold_for_tests()
             if not held and getattr(getattr(self.control, "session", None),
                                     "running", False):
                 return ("Show control is on (a show file is running), so "
