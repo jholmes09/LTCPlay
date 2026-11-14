@@ -360,6 +360,17 @@ ARM_HOLD_S = 0.6
 # flinch-press, short enough that a deliberate re-arm a few seconds later
 # is never mistaken for one.
 REARM_REFRACTORY_S = 2.0
+# The Purge step (Jeff, 2026-11-14: "an individual arming of a unit should
+# work, no auto-arming ... The two second rule was to prevent fat-fingering
+# or double taps. That is all."). One slow or failed deck-input read must
+# not disarm the purge's groups: the groups the engine's last FRESH answer
+# wanted stay wanted for this long after it (then they are disarmed, and
+# only an operator's tap arms them again; nothing re-arms on its own).
+PURGE_STALE_GRACE_S = 1.0
+# An operator's purge tap (deck-input morning.purge.presses) arms its group
+# only while it is this fresh: a deck program that starts, or comes back,
+# long after a tap never acts on it (only on a new tap).
+PURGE_PRESS_FRESH_S = 2.0
 # The keys are drawn as the approved demo draws them: once per marquee step
 # (CHASE_STEP_S), and every FRAME_S while something on them moves (a key
 # held, a screen hold, a hold ring filling); at least every DRAW_IDLE_S for
@@ -3108,6 +3119,16 @@ class Controller:
         # instead of "Arming..." forever (Jeff, 2026-10-26). Reporting
         # only: whether and when a group arms is decided exactly as before.
         self._purge_refused = {}
+        # An operator's purge taps (Jeff, 2026-11-14): the engine numbers
+        # each tap that asks for a group's arm (deck-input morning.purge.
+        # presses); the last number this deck saw per group. A new number,
+        # fresh (PURGE_PRESS_FRESH_S), for a group still wanted and not
+        # armed is a deliberate press, and it arms the group under every
+        # rule a click always had. Nothing else re-arms a group.
+        self._purge_press_seen = {}
+        # The last FRESH engine answer's wanted groups and when (the stale
+        # read grace, PURGE_STALE_GRACE_S): (frozenset, clock) or None.
+        self._purge_good = None
         self.purge_fire = None        # PurgeFire, given by _main
         # Item 1's second line of defence: what THIS deck itself last sent,
         # so a status frame that disagrees can be caught even if a rogue
@@ -3539,16 +3560,23 @@ class Controller:
         left = REARM_REFRACTORY_S - (now - at)
         return left if left > 0 else 0.0
 
-    def _do_disarm(self, i, who=None, screen="Stream Deck"):
+    def _do_disarm(self, i, who=None, screen="Stream Deck", system=False):
         """Disarm stays an instant single tap, no hold, gate or no gate
         (Jeff, 2026-10-01; items 5 and 7: disarm is NEVER behind the
         operator gate, and NEVER waits on anything -- flip `wanted` and
         send BEFORE looking up who, so even a slow operator_provider()
         cannot delay the disarm itself). `who` and `screen` are given for a
-        disarm pressed on the remote page (screen_pass)."""
+        disarm pressed on the remote page (screen_pass). `system`: a disarm
+        nobody pressed (purge_pass: the purge selection went, the page
+        closed, the engine went quiet). It disarms exactly the same, but
+        does not start the re-arm refractory window: that window is only
+        against an operator's double tap (Jeff, 2026-11-14), and a disarm
+        the deck did on its own must never block the operator's next
+        deliberate press."""
         self.arm.set_group(i, False)
         self.arm.send(self.names)
-        self._disarmed_at[i] = self._clock()
+        if not system:
+            self._disarmed_at[i] = self._clock()
         self._purge_armed.discard(i)
         if who is None:
             who = self._who()
@@ -3643,16 +3671,54 @@ class Controller:
     def purge_wanted(self):
         """The flamesafe group indices the engine's purge selection needs
         armed right now: only while the page is open, purge arming is on
-        at the engine, the engine is fresh and the rig is not latched."""
+        at the engine and the rig is not latched. With no fresh answer
+        (one slow or failed read), the last fresh answer's groups for
+        PURGE_STALE_GRACE_S after it, then none."""
+        return self._purge_read()[0]
+
+    def _purge_read(self):
+        """(wanted, view): purge_wanted's groups, and the engine's fresh
+        Morning view they came from, or None when they are the stale read
+        grace's (or none at all)."""
         m = self.morning_view()
-        if not m or m.get("open") is not True or \
-                m.get("purge_enabled") is not True or self._latched_now():
-            return set()
+        now = self._clock()
+        if m is None:
+            g = self._purge_good
+            if g is not None and 0 <= now - g[1] <= PURGE_STALE_GRACE_S \
+                    and not self._latched_now():
+                return set(g[0]), None
+            return set(), None
+        out = set()
+        if m.get("open") is True and m.get("purge_enabled") is True and \
+                not self._latched_now():
+            p = m.get("purge") if isinstance(m.get("purge"), dict) else {}
+            for i in p.get("wanted_groups") or []:
+                if isinstance(i, int) and not isinstance(i, bool) and \
+                        0 <= i < len(self.names):
+                    out.add(i)
+        self._purge_good = (frozenset(out), now)
+        return out, m
+
+    def _purge_presses(self, m, wanted):
+        """The wanted groups an operator tapped for since this deck last
+        looked (deck-input morning.purge.presses: [group, tap number, age
+        in ms]), each only while fresh. Every number seen is remembered,
+        fresh or not, so a tap is acted on once at most."""
         p = m.get("purge") if isinstance(m.get("purge"), dict) else {}
         out = set()
-        for i in p.get("wanted_groups") or []:
-            if isinstance(i, int) and not isinstance(i, bool) and \
-                    0 <= i < len(self.names):
+        for e in p.get("presses") or []:
+            if not (isinstance(e, list) and len(e) == 3):
+                continue
+            i, n, age = e
+            if not (isinstance(i, int) and not isinstance(i, bool) and
+                    0 <= i < len(self.names)) or isinstance(n, bool) or \
+                    not isinstance(n, int) or isinstance(age, bool) or \
+                    not isinstance(age, (int, float)):
+                continue
+            if self._purge_press_seen.get(i) == n:
+                continue
+            self._purge_press_seen[i] = n
+            if i in wanted and 0 <= age <= PURGE_PRESS_FRESH_S * 1000:
                 out.add(i)
         return out
 
@@ -3676,13 +3742,26 @@ class Controller:
         once, as is every one when the page closes, the engine goes quiet
         or the rig latches. A group the operator armed themselves is left
         alone, and a group they tap off is not re-armed (it is only armed
-        when it enters the list)."""
-        wanted = self.purge_wanted()
+        when it enters the list, or on the operator's next tap for it).
+
+        Jeff, 2026-11-14: one slow or failed read keeps the last fresh
+        answer's groups for PURGE_STALE_GRACE_S (_purge_read); past it they
+        are disarmed, and when the engine answers again they are NOT taken
+        as entering the list (nothing re-arms on its own): the page says
+        "selected, not armed", and the operator's next tap (a new number
+        in morning.purge.presses) arms it. Such a disarm, like every
+        disarm this pass does by itself, does not start the re-arm
+        refractory window (_do_disarm's `system`)."""
+        wanted, view = self._purge_read()
+        fresh = view is not None
         entered = wanted - self._purge_seen
-        self._purge_seen = wanted
-        for i in sorted(entered):
+        pressed = self._purge_presses(view, wanted) if fresh else set()
+        if fresh:
+            self._purge_seen = wanted
+        for i in sorted(entered | pressed):
             if self.arm.wanted[i]:
-                continue             # already armed by the operator
+                self._purge_refused.pop(i, None)
+                continue             # already armed
             if self._never_purged(i):
                 # A fireball group, or one the Morning page never purges:
                 # never armed for a purge on the deck either, a second
@@ -3710,27 +3789,33 @@ class Controller:
             # operator gate (a purge needs a chosen operator on the deck,
             # like any arm). Only the hold itself is waived (Jeff).
             who = self._who()
-            if self._in_rearm_refractory(i, now) > 0:
-                self._purge_refused[i] = "refractory"   # reporting only
-            else:
-                self._purge_refused.pop(i, None)
-            self._do_arm_fire(i, now, who=who, screen="Morning page")
+            code = self._do_arm_fire(i, now, who=who, screen="Morning page")
             if not self.arm.wanted[i]:
-                continue             # refused; _do_arm_fire said why
+                # Refused; _do_arm_fire said why. Reported so the page says
+                # "selected, not armed" in the deck's words (reporting only).
+                self._purge_refused[i] = code or "refractory"
+                continue
+            self._purge_refused.pop(i, None)
             self._purge_armed.add(i)
             self._log(f"Stream Deck: {self.names[i]} armed for a PURGE from "
                       f"the Morning and Shutdown page (a click, Jeff's "
                       f"exception to hold-to-arm). It is disarmed the "
                       f"moment the page stops asking for it.", action="arm",
                       who=who, screen="Morning page")
-        for i in [i for i in self._purge_refused if i not in wanted]:
-            del self._purge_refused[i]
+        if fresh:
+            for i in [i for i in self._purge_refused if i not in wanted]:
+                del self._purge_refused[i]
         for i in sorted(self._purge_armed - wanted):
             self._purge_armed.discard(i)
             if self.arm.wanted[i]:
-                self._do_disarm(i, who="the purge ended",
-                                screen="Morning page")
+                self._do_disarm(i, who="the purge ended" if fresh else
+                                "the engine could not be read for over "
+                                f"{PURGE_STALE_GRACE_S:g} s",
+                                screen="Morning page", system=True)
                 self._purge_deselected[i] = self._clock()
+                if not fresh:
+                    # Reporting only: the page says why it is not armed.
+                    self._purge_refused[i] = "dropped"
         if not self.morning_open():
             self._fire_release("the Morning page is not open")
 
