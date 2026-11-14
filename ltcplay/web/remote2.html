@@ -570,8 +570,9 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #t-day{flex:1 1 0}
 .dpanel{overflow-y:auto}
 .dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 0 auto}
-/* The Purge step's hazers (2026-11-13): turn the ticked ones on or off
-   now; no arming here. Compact: the buttons first, then the hazers. */
+/* The Hazers step's Turn on or off (2026-11-13; on the Purge step until
+   Jeff moved it, 2026-11-14): turn the ticked ones on or off now; no
+   arming here. Compact: the buttons first, then the hazers. */
 .hzt-st{font-weight:800;padding:2px 10px;border-radius:999px;border:2px solid var(--line)}
 .hzt-st.on{color:#06210f;background:var(--green);border-color:var(--green);animation:hztpulse 1.2s ease-in-out infinite}
 .hzt-st.unk{border-style:dashed;color:var(--grey)}
@@ -900,9 +901,11 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <div class="pline" id="tp-st" aria-live="polite"></div>
           </div>
         </div>
-        <!-- The Purge step's hazers (hazertest.py, Jeff and Andy
-             2026-11-13): tick hazers, then Turn on or Turn off; All on,
-             All off. They run now, 60 s each; no arming here. -->
+        <!-- The Hazers step's Turn on or off (hazertest.py, Jeff and
+             Andy 2026-11-13; on the Purge step until Jeff moved it to the
+             Hazers step, 2026-11-14): tick hazers, then Turn on or Turn
+             off; All on, All off. They run now, 60 s each; no arming
+             here. Shown under the step's Levels and Hazers off. -->
         <div id="d-hz" class="dsec" hidden>
           <div id="hzt" aria-label="Hazers: turn on or off">
             <div class="drow"><b>Hazers: turn on or off</b><span class="hzt-st" id="hzt-st" role="status">Off</span>
@@ -1722,7 +1725,7 @@ function pinItems(st){
   // The hazer test (2026-11-11): the engine's word and its countdown.
   const ht = s.hazer_test;
   if(ht && ht.on === true) out.push({key:"hzt", text:"Hazers on: " + timedLeft(ht.left_s) + " left.", pill:"HAZE ON " + timedLeft(ht.left_s),
-    btn:"Hazers all off", full:"Hazers running now from the Purge page, at their levels. Each turns off by itself."});
+    btn:"Hazers all off", full:"Hazers running now from the Hazers step, at their levels. Each turns off by itself."});
   const wc = s.cleaning;
   if(wc && wc.state && wc.state !== "idle") out.push({key:"wc", text:wc.state === "unknown" ? "Cleaning state not known. Stop it." : "Cleaning running. Stop when done.",
     pill:"CLEANING", btn:"Stop cleaning", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : ".")});
@@ -4381,8 +4384,8 @@ $("pm-off").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/fuel-pump", actor({on: false})); say(j.text || "The fuel pump is OFF.", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
 });
-// The Purge page's hazers (hazertest.py, Jeff 2026-11-11, per hazer
-// 2026-11-13): select hazers, then Turn on (each runs NOW at its levels,
+// The Hazers step's Turn on or off (hazertest.py, Jeff 2026-11-11, per
+// hazer 2026-11-13; on the Purge step until 2026-11-14): select hazers, then Turn on (each runs NOW at its levels,
 // 60 s from its own press) or Turn off; All on and All off. No arming
 // here. The state shown is only ever the engine's: no contact is "Not
 // known", never On, and the toggle then turns the selection off. While
@@ -4462,7 +4465,7 @@ function renderHazerTest(s){
   const v = s && s.hazer_test;
   const sec = $("d-hz");
   if(!v || !v.available){ if(sec) sec.hidden = true; hztBeatStop(); return; }
-  if(sec) sec.hidden = DAY_K !== "purge";
+  if(sec) sec.hidden = DAY_K !== "hazers";
   const known = hztKnown(v);
   const on = known && v.on === true;
   setText($("hzt-max"), "Each turns off after " + (Number(v.max_s) || 60) + " s.");
@@ -5699,9 +5702,11 @@ function daySteps(part, s){
       why: on ? on + " test grid on." : "Test grid on, check, then off."});
   }
   // Hazers (#168): their levels and arming are the SHOW tab's own sheet.
-  const hz = st.hazers;
-  if(part !== "shut" && hz && hz.available && (hz.hazers || []).length){
-    const n = hz.hazers.filter(h => h.armed).length;
+  // Turn on or off (hazertest.py) is here too (Jeff, 2026-11-14), so the
+  // step is there while either is.
+  const hz = st.hazers, hzOk = !!(hz && hz.available && (hz.hazers || []).length);
+  if(part !== "shut" && (hzOk || (st.hazer_test && st.hazer_test.available))){
+    const n = hzOk ? hz.hazers.filter(h => h.armed).length : 0;
     out.push({key:"hazers", title:"Hazers", icon:"wind", state: seen("hazers") ? "done" : "todo",
       why: n ? n + " of " + hz.hazers.length + " armed." : "Set levels, then arm for the show."});
   }
@@ -5810,7 +5815,7 @@ const DAY_HELP = {
   fuel:"Tap a tank you filled. Or select units, then fill.",
   purge:"Pick a group. Fire with the Deck's FIRE key or hold Space. Let go to stop.",
   lasers:"Test grid on, check the aim, then off.",
-  hazers:"Levels sets each hazer's haze and fan, and arms it.",
+  hazers:"Levels sets each hazer's haze and fan, and arms it. Turn on runs the ticked hazers now, to check them.",
   locks:"Tap a machine to lock it out for tonight, or unlock it.", "locks-shut":"Tap a machine to lock it out, or unlock it.",
   fireball:"Each pad drives one Fireball channel by hand. Arm the Fireball first; nothing here arms.",
   clean:"Hold until phase 1 starts. Later hold again for the bursts. Stop ends it.",
@@ -5921,7 +5926,7 @@ function daySections(k){
   $("d-fb").hidden = k !== "fireball";
   $("d-fu").hidden = k !== "fuel" || !DAY_FU_REC;
   $("d-tp").hidden = k !== "purge";
-  $("d-hz").hidden = k !== "purge" || !(ST && ST.hazer_test && ST.hazer_test.available);
+  $("d-hz").hidden = k !== "hazers" || !(ST && ST.hazer_test && ST.hazer_test.available);
   fireballView(k === "fireball");
   fbFit();
   if(k === "fuel") renderFuelUndo();
