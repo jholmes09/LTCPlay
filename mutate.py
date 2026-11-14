@@ -12883,6 +12883,73 @@ def build():
   '''        lockout = "ltcplay_lockout.json" if source != "config" else None''',
   '''        lockout = None'''),
 
+ # End of night (Jeff, 2026-11-14): the schedule's after_last_show "idle"
+ # holds the idle look after the last show until End of night.
+ ("end of night: one tap ends the held idle look", "ltcplay/remote.py",
+  """        if body.get("confirmed") is not True:
+            self._journal(who, screen, "end of night", "refused",""",
+  """        if False:
+            self._journal(who, screen, "end of night", "refused","""),
+
+ ("end of night: signed out may not press it", "ltcplay/users.py",
+  """    "end-of-night": "safety",""",
+  """    "end-of-night": "show","""),
+
+ ("end of night: a Stop leaves the held idle look lit",
+  "ltcplay/schedule_service.py",
+  """        elif m.held_look and st == sch.OFF:""",
+  """        elif False:"""),
+
+ ("end of night: the held idle look outlives the hand over",
+  "ltcplay/fire_ice.py",
+  """            self._held_look_over(sch)""",
+  """            pass"""),
+
+ ("end of night: the held closing leaves the hazers on",
+  "ltcplay/fire_ice.py",
+  """            self._hazers_off_for_held()""",
+  """            pass"""),
+
+ ("end of night: the held closing leaves MadMapper lit",
+  "ltcplay/conductor.py",
+  """        if want.get("video_dark") is True:""",
+  """        if False:"""),
+
+ ("end of night: a restart holds a look that was dark",
+  "ltcplay/schedule.py",
+  """    if m.resumed_from in (CLOSING, OFF):
+        return m.held_look""",
+  """    if m.resumed_from in (CLOSING, OFF):
+        return True"""),
+
+ ("end of night: a Stop or failed start at the last show holds the look",
+  "ltcplay/schedule.py",
+  """    if m.after_last_show != AFTER_IDLE or dark or closed_by_operator(m):""",
+  """    if m.after_last_show != AFTER_IDLE or closed_by_operator(m):"""),
+
+ ("end of night: the button closes a night still running",
+  "ltcplay/schedule.py",
+  """    if ev.kind == END_NIGHT and ev.detail == END_OF_NIGHT_DETAIL and \\
+            not m.held_look:""",
+  """    if False and \\
+            not m.held_look:"""),
+
+ ("end of night: a Stop is journaled as End of night",
+  "ltcplay/schedule_service.py",
+  """                           detail=sch.HELD_LOOK_STOP_DETAIL)""",
+  """                           detail=sch.END_OF_NIGHT_DETAIL)"""),
+
+ ("end of night: signed out over Tailscale is not said",
+  "ltcplay/schedule.py",
+  """    if rest and head.lower() in SIGNED_OUT_WHO:
+        return True, rest.strip()""",
+  """    if False:
+        return True, rest.strip()"""),
+
+ ("end of night: the default holds the idle look", "ltcplay/schedule.py",
+  """    after = doc.get("after_last_show", AFTER_CLOSE)""",
+  """    after = doc.get("after_last_show", AFTER_IDLE)"""),
+
  ("deck: a purge arm skips the hold's own guards (T8)",
   "ltcplay/streamdeck.py",
   '''            self._do_arm_fire(i, now, who=who, screen="Morning page")

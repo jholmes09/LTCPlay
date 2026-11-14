@@ -446,6 +446,16 @@ every engine start and restart is DISARMED, and BEYOND's
   morning) works again afterwards. The engine stopping disarms too, and so
   does a blocker that appears while every laser is armed (a lockout or
   settings problem, the blanking lost).
+- **The idle look held after the last show** (the schedule's "After the
+  last show: Keep the idle look until End of night", Jeff, 2026-11-14;
+  OPERATOR.md): the night still closes, so the lasers are disarmed on the
+  way into CLOSING and OFF exactly as above, every hazer is turned off
+  (and the hazer test with it), the flame cues go to zero and MadMapper's
+  video fades to black and its show bank stops. Only the pixels stay on
+  the idle look, until End of night, a Stop or the hand over. Nothing is
+  armed by it. Arming for the morning's purges and laser tests works on
+  a held night as on any closed night; the Shutdown steps can be done
+  with the look still held.
 - **Startup**: `ltc serve` blanks the lasers and sends DisableLaserOutput
   itself at start, before the Morning page is built, so a page that fails
   to build cannot leave BEYOND's output on.

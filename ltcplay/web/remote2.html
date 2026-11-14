@@ -178,6 +178,10 @@ body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mo
 #pins{display:flex;gap:var(--gap);flex:0 0 auto}
 #pins .b{min-height:56px;font-size:var(--fs)}
 #pins:empty{display:none}
+/* End of night (Jeff, 2026-11-14): there only while the idle look is held
+   after the last show; two lines, as Stop show's. */
+#b-eon{min-height:56px;font-size:var(--fs);gap:6px;padding:0 10px;flex:0 0 auto}
+#b-eon .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
 /* Two or three live modes on a narrow screen: their Stops are the words. */
 @media (max-width:1300px) and (min-width:601px){ #next.many .t{display:none} #next.many #pins{flex:1 1 auto} #next.many #pins .b{flex:1 1 0;min-width:0;padding:0 8px} }
 #mini{display:flex;flex-wrap:wrap;gap:var(--gap);min-width:0}
@@ -794,7 +798,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
      flames in rehearsal) pinned here with its own Stop, never paged. -->
-<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span id="next-b" data-brand hidden></span><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
+<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span id="next-b" data-brand hidden></span><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button data-safe class="b red" id="b-eon" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="eon-l">End of night</span><small id="eon-s">tap twice</small></span></button><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
 <main>
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
@@ -979,6 +983,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <label class="fl"><span>Show length, seconds</span><input class="f" id="se-len" type="number" min="1"></label>
           <label class="fl"><span>Gap before a show, seconds</span><input class="f" id="se-guard" type="number" min="0"></label>
           <label class="fl"><span>Late start allowed, seconds</span><input class="f" id="se-grace" type="number" min="0" max="300" title="A show more than this many seconds late is missed. Default 120, most 300."></label>
+          <label class="fl"><span>After the last show</span><select class="f" id="se-after" title="Go dark: the night closes and the pixels go black, as always. Keep the idle look: the pixels stay on the idle look, with flames, lasers, hazers and MadMapper off, until someone presses End of night."><option value="close">Go dark</option><option value="idle">Keep the idle look until End of night</option></select></label>
         </div>
         <div class="pbar"><button class="b green" id="se-save"><svg class="i"><use href="#i-check"/></svg>Save the schedule</button><button class="b" id="se-reload"><svg class="i"><use href="#i-reset"/></svg>Reload from the file</button></div>
         <div class="pline" id="se-msg" role="status"></div>
@@ -2235,6 +2240,7 @@ function renderStale(){
   const pl = pillLook(ST, isSt, ALERTS);
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
+  try{ drawEon(); }catch(e){}
   try{ renderAnnounce(); }catch(e){}
   try{ renderTools(isSt); }catch(e){}
   try{ if(TAB === "schedule"){ if($("fbt").hidden) fbtOpen(true); fbtGate(isSt); } }catch(e){}
@@ -3012,9 +3018,60 @@ function renderFuelUndo(){
   $("fu-undo").hidden = !f.may_undo || !rec.length;
   $("fu-recent").innerHTML = rec.map(b => `<div class="fu-rec"><span>${esc(fuWhen(b.at_ms))}: ${esc(b.who)} refilled ${esc((b.units || []).join(", "))}${b.undone ? ". Undone by " + esc(b.undone.who) : ""}</span>${b.undone ? "" : `<button class="ghost" data-undo="${b.id}">Undo</button>`}</div>`).join("");
 }
+// End of night (Jeff, 2026-11-14): the idle look the schedule holds
+// after the last show (the schedule's after_last_show "idle") ends, to
+// black, the night closed as Close for the night closes it. In the
+// next-step bar, on every tab, and only while the engine says the look
+// is held (schedule.held_look). Anyone may press it, signed in or not,
+// like Stop show, and like Stop show it takes two taps within
+// STOP_TAP_MS (stopTapStep): a lone tap sends nothing. The engine takes
+// it only with confirmed true, and journals who pressed it, or "signed
+// out". The button's words live here, not in remote_rules.js.
+const EON_WORDS = {label:"End of night", sub:"tap twice", again:"Tap again", left:"to go dark", busy:"Ending",
+  first:"Tap End of night again to end the idle look.", missed:"End of night not sent: tap twice."};
+let EON_TAP = null, EON_TIMER = null, EON_TICK = null, EON_BUSY = false;
+function eonShown(st){ return !!(st && st.schedule && st.schedule.attached && st.schedule.held_look === true); }
+function drawEon(){
+  const b = $("b-eon"); if(!b) return;
+  const on = EON_BUSY || eonShown(ST);
+  if(!on && EON_TAP) eonTapDone();
+  if(b.hidden !== !on) b.hidden = !on;
+  b.classList.toggle("tap1", !!EON_TAP);
+  setText($("eon-l"), EON_BUSY ? EON_WORDS.busy : EON_TAP ? EON_WORDS.again : EON_WORDS.label);
+  setText($("eon-s"), EON_BUSY ? "" : EON_TAP ? EON_WORDS.left + " (" + stopLeftS(EON_TAP.at + STOP_TAP_MS - monoNow()) + ")" : EON_WORDS.sub);
+  b.disabled = EON_BUSY;
+}
+function eonTapDone(){
+  if(EON_TIMER) clearTimeout(EON_TIMER);
+  if(EON_TICK) clearInterval(EON_TICK);
+  EON_TAP = null; EON_TIMER = null; EON_TICK = null;
+}
+async function eonTap(e){
+  const kind = stopTapKind(e);
+  if(kind !== "key") $("b-eon").blur();
+  if(EON_BUSY) return;
+  // The time between the taps decides, as Stop show's.
+  const step = stopTapStep(EON_TAP, monoNow(), kind, false);
+  if(!step.fire){
+    eonTapDone();
+    EON_TAP = step.next;
+    EON_TIMER = setTimeout(() => { eonTapDone(); say(EON_WORDS.missed, "One tap is not End of night: tap it twice within " + (STOP_TAP_MS / 1000) + " s to end the idle look and go dark.", "warn"); drawEon(); }, STOP_TAP_MS);
+    EON_TICK = setInterval(drawEon, 250);
+    say(EON_WORDS.first, "Tap End of night again within " + (STOP_TAP_MS / 1000) + " s: the pixels go dark and the night is closed.", "warn");
+    drawEon();
+    return;
+  }
+  eonTapDone();
+  EON_BUSY = true; drawEon();
+  try{ await press("end-of-night", {confirmed:true}); }
+  finally{ EON_BUSY = false; drawEon(); }
+}
+$("b-eon").addEventListener("click", e => eonTap(e));
+$("b-eon").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });
 // A press: 1.0's press(), the answer in a few words.
 const PRESS_SAID = {"hold":"Held.", "resume":"Resumed.", "start-now":"Starting.",
-  "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed."};
+  "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed.",
+  "end-of-night":"End of night: going dark."};
 async function press(route, extra){
   if(route === "hold") HALT_SEQ++;
   let j = null;
@@ -3391,7 +3448,24 @@ $("se-save").addEventListener("click", async () => {
 let SE_READ = false, SE_BASE = null, SE_BASE_DOC = null;
 // Unsaved edits (review of #210): the form against what it showed when
 // the file was last drawn into it (1.0's drawSchedule sets SCHED_DOC).
+// After the last show (Jeff, 2026-11-14): the schedule's after_last_show,
+// drawn from the file the form shows and written back into it, so 1.0's
+// readSchedule (a copy of SCHED_DOC) saves it. "close" is the default and
+// is left out of the file.
+let SE_AFTER_DOC = null;
+function seAfterSync(){
+  const sel = $("se-after");
+  if(!sel || !SCHED_DOC || SCHED_DOC === SE_AFTER_DOC) return;
+  SE_AFTER_DOC = SCHED_DOC;
+  sel.value = SCHED_DOC.after_last_show === "idle" ? "idle" : "close";
+}
+$("se-after").addEventListener("change", () => {
+  if(!SCHED_DOC) return;
+  if($("se-after").value === "idle") SCHED_DOC.after_last_show = "idle";
+  else delete SCHED_DOC.after_last_show;
+});
 function seBaseline(){
+  seAfterSync();
   if(SCHED_DOC && SCHED_DOC !== SE_BASE_DOC){ SE_BASE_DOC = SCHED_DOC; SE_BASE = JSON.stringify(readSchedule()); }
 }
 function seDirty(){
