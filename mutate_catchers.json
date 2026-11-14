@@ -808,7 +808,7 @@
 "deck: a playback stop that alone failed reads CHECK RACK (review of #130, low 1)": "test_stop_halt_low_items_of_130",
 "deck: a purge arm ignores the re-arm refractory window (T8)": "test_streamdeck_arm_fire_refuses_latched_and_refractory",
 "deck: a purge arm skips the hold's own guards (T8)": "test_streamdeck_reports_rearm_wait_and_purge_refusal",
-"deck: a purge click arms a group the page never purges (review of #126, P2-4)": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",
+"deck: a purge click arms a group the page never purges (review of #126, P2-4)": "test_stream_deck_review_of_120",
 "deck: a purge click arms a group with no key (review of #120, P1)": "test_stream_deck_review_of_120",
 "deck: a purge group stays armed after the page stops asking for it (T4)": "test_stream_deck_review_of_120",
 "deck: a purge group's own arm makes Stop win over FIRE": "test_deck_wedged_deck_never_keeps_a_purge_firing",

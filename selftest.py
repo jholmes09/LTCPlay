@@ -58439,8 +58439,10 @@ def test_streamdeck_reports_rearm_wait_and_purge_refusal():
     check(arm.wanted == [False, False, False],
           "the same tap number again is never acted on twice")
     view["purge"] = {"wanted_groups": [], "presses": [[2, 9, 40]]}
+    n_sends = len(arm.sends)
     c.purge_pass(t[0])
-    check(arm.wanted == [False, False, False] and c.rearm_report() == ({}, {}),
+    check(arm.wanted == [False, False, False] and c.rearm_report() == ({}, {})
+          and not any(sd_[2] for sd_ in arm.sends[n_sends:]),
           "a tap for a group not in the list arms nothing; out of the "
           "list, nothing reported")
     print("  ok")
