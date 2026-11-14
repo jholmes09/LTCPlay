@@ -49328,6 +49328,18 @@ def test_end_of_night_end_to_end_on_the_rig():
     r = n.svc.end_of_night("Andy", "Rack screen")
     check(not r.get("ok") and "not being held" in r.get("text", ""),
           f"a second End of night is refused, saying why: {r}")
+    check(S.signed_out_who("unsigned, Jeff's iPhone") ==
+          (True, "Jeff's iPhone") and S.signed_out_who("unsigned") ==
+          (True, "") and S.signed_out_who("Andy, Jeff's iPhone") ==
+          (False, "Andy, Jeff's iPhone") and
+          S.signed_out_who("Andy") == (False, "Andy"),
+          "signed out over Tailscale (\"unsigned, <device>\") is signed "
+          "out; a signed-in name is kept as it is")
+    check("stay off" not in S.HELD_LOOK_WORDS and
+          "switched off at the closing" in S.HELD_LOOK_WORDS,
+          "the journal does not claim the lasers and hazers stay off "
+          "(they can be armed again while held); it says they were "
+          "switched off at the closing")
     now3 = [_den(S, 19, 30)]
     svc3 = _svc(S, n.work, now3)
     svc3.tick()
@@ -49338,8 +49350,14 @@ def test_end_of_night_end_to_end_on_the_rig():
     shutil.rmtree(n.work, ignore_errors=True)
     # A Stop while held: black, the night closed.
     n = _idle_fi_night(S)
-    r = n.svc.halt_schedule("Andy", "Rack screen")
+    r = n.svc.halt_schedule("Andy", "Stream Deck")
     _settle(n.svc, n.c)
+    rows = [x for x in n.svc.journal if x.get("action") == "END_NIGHT"]
+    check(rows and "Andy pressed Stop on the Stream Deck" in
+          rows[-1].get("text", "") and
+          "End of night" not in rows[-1].get("text", ""),
+          f"a Stop that ends the held look is journaled as a Stop, never "
+          f"as End of night: {rows[-1:]}")
     n.w.runner.poll()
     _settle(n.svc, n.c)
     n.w.runner.poll()
@@ -49430,6 +49448,21 @@ def test_end_of_night_route_anyone_two_steps():
         rows = [x for x in R.svc.journal if x.get("action") == "END_NIGHT"]
         check(rows and rows[-1].get("who") == "signed out",
               f"journaled as signed out: {rows[-1:]}")
+        # Signed out over Tailscale: remote._actor says "unsigned, <the
+        # device>"; the journal says signed out, and keeps the device.
+        R.svc.machine = replace(R.svc.machine, state=S.OFF,
+                                held_look=True, closed_by_operator=False)
+        r = R.svc.end_of_night("unsigned, Jeff's iPhone",
+                               "Tailscale at 100.88.1.2")
+        R.settle()
+        rows = [x for x in R.svc.journal if x.get("action") == "END_NIGHT"]
+        text = rows[-1].get("text", "") if rows else ""
+        check(r.get("ok") and
+              rows[-1].get("who") == "signed out, Jeff's iPhone" and
+              "signed out" in text and "Jeff's iPhone" in text and
+              "unsigned" not in text,
+              f"over Tailscale, signed out: journaled as signed out, with "
+              f"the device: {rows[-1:]}")
     finally:
         R.remote.users = None
         R.close()

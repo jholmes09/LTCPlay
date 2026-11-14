@@ -12930,6 +12930,18 @@ def build():
   """    if False and \\
             not m.held_look:"""),
 
+ ("end of night: a Stop is journaled as End of night",
+  "ltcplay/schedule_service.py",
+  """                           detail=sch.HELD_LOOK_STOP_DETAIL)""",
+  """                           detail=sch.END_OF_NIGHT_DETAIL)"""),
+
+ ("end of night: signed out over Tailscale is not said",
+  "ltcplay/schedule.py",
+  """    if rest and head.lower() in SIGNED_OUT_WHO:
+        return True, rest.strip()""",
+  """    if False:
+        return True, rest.strip()"""),
+
  ("end of night: the default holds the idle look", "ltcplay/schedule.py",
   """    after = doc.get("after_last_show", AFTER_CLOSE)""",
   """    after = doc.get("after_last_show", AFTER_IDLE)"""),

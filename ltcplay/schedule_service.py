@@ -3026,8 +3026,11 @@ class Service:
         over). Journaled by the engine with who, or "signed out".
         {"ok", "text", "state"}."""
         who = str(who or "").strip()
-        if who.lower() in sch.SIGNED_OUT_WHO:
-            who = "signed out"
+        anon, dev = sch.signed_out_who(who)
+        if anon:
+            # Over Tailscale the surface comes with it ("unsigned,
+            # Jeff's iPhone"): kept, after the words "signed out".
+            who = "signed out" + (f", {dev}" if dev else "")
         screen = str(screen or "").strip() or "screen"
         screen = {x.lower(): x for x in self.screens}.get(screen.lower(),
                                                            screen)
@@ -3097,7 +3100,7 @@ class Service:
             # so a restart never holds it again.
             ev = sch.Event(sch.END_NIGHT, "operator", who=who, screen=screen,
                            confirmed=True, surface=True,
-                           detail=sch.END_OF_NIGHT_DETAIL)
+                           detail=sch.HELD_LOOK_STOP_DETAIL)
             kind = "carried"
         elif m.held_look and st == sch.CLOSING:
             # Still closing: the closing has not finished, so the held

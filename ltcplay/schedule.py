@@ -290,6 +290,22 @@ AFTER_LAST_SHOW = (AFTER_CLOSE, AFTER_IDLE)
 END_OF_NIGHT_DETAIL = "End of night"
 # Who End of night names when nobody was signed in (users.UNSIGNED).
 SIGNED_OUT_WHO = ("", "unsigned", "signed out")
+# A Stop that ends the held idle look (schedule_service.halt_schedule): the
+# same close as End of night, journaled as the Stop it was.
+HELD_LOOK_STOP_DETAIL = "Stop"
+
+
+def signed_out_who(who):
+    """(True, the device or "") when `who` names nobody signed in: "", the
+    users' "unsigned", "signed out", or Tailscale's "unsigned, <device>"
+    (remote._actor); else (False, who). Pure."""
+    who = str(who or "").strip()
+    head, _, rest = who.partition(", ")
+    if who.lower() in SIGNED_OUT_WHO:
+        return True, ""
+    if rest and head.lower() in SIGNED_OUT_WHO:
+        return True, rest.strip()
+    return False, who
 
 
 # -------------------------------------------------------------- the rule --
@@ -2376,12 +2392,15 @@ def _end_held_look(m, ev, now):
     tx = _Tx(m, ev, now)
     tx.m = replace(tx.m, closed_by_operator=True, held_from="")
     _enter(tx, CLOSING, held=False)
-    who = ev.who.strip()
     # Anyone may press it (Jeff, 2026-11-14), signed in or not: the
-    # journal names who, or says nobody was signed in.
-    by = (f"{END_OF_NIGHT_DETAIL} was pressed{_screen(ev)}, signed out "
-          f"(nobody was signed in)" if who.lower() in SIGNED_OUT_WHO else
-          f"{who} pressed {END_OF_NIGHT_DETAIL}{_screen(ev)}")
+    # journal names who, or says nobody was signed in. A Stop that ends
+    # the look is journaled as the Stop it was.
+    what = ("Stop" if ev.detail == HELD_LOOK_STOP_DETAIL else
+            END_OF_NIGHT_DETAIL)
+    anon, who = signed_out_who(ev.who)
+    by = (f"{what} was pressed{_screen(ev)}, signed out (nobody was signed "
+          f"in{', from ' + who if who else ''})" if anon else
+          f"{who} pressed {what}{_screen(ev)}")
     tx.note(END_NIGHT, "done", "the held idle look ended",
             f"{by}. The idle look held since the last show ends: flame cues "
             f"to zero, MadMapper stopped, pixels faded, blackout. The "
@@ -2397,7 +2416,9 @@ HELD_CLOSING_WORDS = ("Closing with the idle look held (after_last_show is "
 HELD_LOOK_WORDS = ("The pixels stay on the idle look until someone presses "
                    "End of night on the SHOW tab (anyone, no sign in, tap "
                    "twice), or a Stop, or the night hands over to the next "
-                   "one. Flames, lasers, hazers and MadMapper stay off.")
+                   "one. Flame cues, lasers, hazers and MadMapper were "
+                   "switched off at the closing; nothing here turns them "
+                   "on again.")
 
 
 RESET_MISSED = f"MISSED (still waiting at the {reset_words()} nightly reset)"

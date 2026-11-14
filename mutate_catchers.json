@@ -2058,6 +2058,8 @@
 "end of night: a restart holds a look that was dark": "test_after_last_show_idle_holds_the_look_until_end_of_night",
 "end of night: a Stop or failed start at the last show holds the look": "test_after_last_show_idle_holds_the_look_until_end_of_night",
 "end of night: the button closes a night still running": "test_after_last_show_idle_holds_the_look_until_end_of_night",
+"end of night: a Stop is journaled as End of night": "test_end_of_night_end_to_end_on_the_rig",
+"end of night: signed out over Tailscale is not said": "test_end_of_night_end_to_end_on_the_rig",
 "end of night: the default holds the idle look": "test_after_last_show_default_still_closes_dark",
 "live flame: a live show sends the program frame": "test_live_flame_values_and_zero_on_silence",
 "live flame: a locked slot fires from xLights": "test_schedule_conductor_calls_after_the_save_and_off_the_lock",

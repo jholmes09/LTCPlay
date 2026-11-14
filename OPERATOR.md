@@ -2036,8 +2036,10 @@ the Schedule tab's editor (the schedule file's `after_last_show`):
 | The schedule is saved with "Go dark" | the held look ends: the pixels go black |
 
 The setting only changes what the pixels do. Nothing is armed or lit
-because of it: flames, lasers, hazers and MadMapper are off as at any
-closing. The pixels are lit with nobody at the show PC until someone
+because of it: the flame cues, lasers, hazers and MadMapper are switched
+off at the closing. They are not locked off while the look is held: arming
+for the morning (lasers, hazers, purges) works as on any closed night. The
+pixels are lit with nobody at the show PC until someone
 presses End of night, a Stop, or the hand over.
 
 **Every start clears it.** Start now, a scheduled start and Programming's
