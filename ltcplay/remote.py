@@ -2795,7 +2795,11 @@ class Remote:
             return 409, {"error": "Continue anyway needs the button held "
                                   "until it fills; a tap does nothing. "
                                   "Nothing was changed."}
+        said = self.tests_off_for_show("Continue anyway", who, screen)
         got = svc.continue_anyway(who, screen)
+        if said and isinstance(got, dict):
+            got = dict(got, tests_off=said,
+                       text=f"{said} {got.get('text') or ''}".strip())
         return (200 if got.get("ok") else 409), (
             got if got.get("ok") else {"error": got.get("text", "")})
 
@@ -4445,6 +4449,15 @@ class Remote:
                               f"{who or 'Someone'}'s {name} on the {screen} "
                               f"was refused. {why}")
                 return 409, {"error": why, "stale": True}
+        tests_said = ""
+        if name in ("resume", "start-now", "start-at-cue"):
+            # Every operator test off first (Jeff, 2026-11-14): a test
+            # may run on Hold, even mid show, and must not outlive it into
+            # a show. At the press, before the scheduler; only takes risk
+            # away, so a press refused below still ends them.
+            tests_said = self.tests_off_for_show(
+                {"resume": "Resume", "start-now": "Start now",
+                 "start-at-cue": "Start at a cue"}[name], who, screen)
         if name in ("start-now", "start-at-cue"):
             why = self.programming_playback_refusal()
             if why:
@@ -4604,6 +4617,9 @@ class Remote:
                     r = self._resume_health(r, who, screen)
         except ValueError as e:
             return 400, {"error": str(e)}
+        if tests_said and isinstance(r, dict):
+            r = dict(r, tests_off=tests_said,
+                     text=f"{tests_said} {r.get('text') or ''}".strip())
         return (200 if r.get("ok") else 409), r
 
     # -- Start at a cue (play_from.py part 2) -----------------------------
@@ -5961,19 +5977,17 @@ class Remote:
 
     def hazer_test_show_busy(self):
         """Why a show owns the hazers now (the hazer test is refused, and
-        one running ends), or "": the scheduled show playing or paused mid
-        show, or show control on or starting (the timed purge's own test).
-        The schedule's Hold and no schedule at all are not busy (Jeff,
-        2026-11-14: hazers like flames). Fails closed."""
+        one running ends), or "": the scheduled show playing, or show
+        control on or starting (the timed purge's own test). Hold (between
+        shows, after a Stop, or a show paused mid show) and no schedule at
+        all are not busy (Jeff, 2026-11-14: hazers like flames); Resume
+        ends the test first (tests_off_for_show). Fails closed."""
         try:
             # Read here, not through hazer_show_state (which reads an error
             # as idle): an error is busy (fail closed).
             st = self._ht_state()
             if st == "playing":
                 return "a show is playing, and the show drives the hazers"
-            if st == "held":
-                return ("a show is paused mid show (PAUSED); the show "
-                        "drives the hazers")
             # Stop leaves show control on (#231): the way out is to turn
             # it off (End rehearsal in a rehearsal), as the timed purge says.
             if getattr(getattr(self.control, "session", None), "running",
@@ -5997,20 +6011,17 @@ class Remote:
         return ""
 
     def _ht_state(self):
-        """The scheduled show for the hazer test: "playing" (SHOW), "held"
-        (PAUSED: a show paused mid show) or "idle"; raises when it cannot
-        be read. The schedule's Hold (between shows, a Stop's too) and no
-        schedule loaded at all are "idle" (Jeff, 2026-11-14: the operator
-        may test anything then, as with flames; no show drives the hazers
-        on Hold, hazers.py)."""
+        """The scheduled show for the hazer test: "playing" (SHOW) or
+        "idle"; raises when it cannot be read. Hold (HOLD between shows or
+        after a Stop, PAUSED mid show) and no schedule loaded at all are
+        "idle" (Jeff, 2026-11-14: the operator may test anything then, as
+        with flames; no show drives the hazers on Hold, hazers.py)."""
         m = getattr(self.schedule, "machine", None)
         if m is None:
             return "idle"
         state = m.state
         if state == "SHOW":
             return "playing"
-        if state == "PAUSED":
-            return "held"
         return "idle"
 
     def hazer_test_gate(self):
@@ -6968,6 +6979,76 @@ class Remote:
                     "page until it is off")
         return ""
 
+    def morning_test_refusal(self):
+        """The Morning page's live_check (web.py): morning_live_refusal,
+        except that a show paused mid show (PAUSED, Hold pressed during
+        it) is not live here (Jeff, 2026-11-14: the operator tests
+        anything while the show is on Hold). The show clock playing a cue
+        and live flame programming still refuse. Resume ends every test
+        first (tests_off_for_show)."""
+        m = getattr(self.schedule, "machine", None)
+        if getattr(m, "state", None) != "PAUSED":
+            return self.morning_live_refusal()
+        s = getattr(self.control, "session", None)
+        clk = getattr(s, "clock", None) if s is not None else None
+        if clk is not None and getattr(clk, "playing", False):
+            return ("the show clock is playing a cue; nothing fires from "
+                    "this page meanwhile")
+        lf = self.live_flame
+        if lf is not None and lf.on:
+            return ("live flame programming is on; nothing fires from this "
+                    "page until it is off")
+        return ""
+
+    def tests_off_for_show(self, what, who="", screen=""):
+        """Every operator test off before a show may drive the rig again
+        (Jeff, 2026-11-14): Resume, Start now, Start at a cue and Continue
+        anyway. Tests may run on Hold, even mid show, so they end here,
+        at the press, before the scheduler is asked: the momentary purge,
+        the timed purge, the hazer test and every laser calibration test.
+        Lasers ARMED stay armed (Jeff's ruling). One plain sentence naming
+        what ended, journaled, or "" when nothing was on. Never raises."""
+        why = f"{who or 'someone'} pressed {what} on the {screen}"
+        ended = []
+        m = self.morning
+        purge = getattr(m, "purge", None) if m is not None else None
+        try:
+            timed = purge is not None and purge.timed_running()
+        except Exception:                        # noqa: BLE001
+            timed = True
+        if timed:
+            self.timed_purge_cut(why, who, screen)
+            ended.append("the timed purge")
+        try:
+            if purge is not None and purge.fire is not None:
+                purge.stop(why)
+                ended.append("the purge")
+        except Exception:                        # noqa: BLE001
+            pass
+        ht = self.hazer_test
+        try:
+            hz_on = ht is not None and bool(ht.running() or ht.run)
+        except Exception:                        # noqa: BLE001
+            hz_on = True
+        if hz_on and self.hazer_test_cut(why, who, screen):
+            ended.append("the hazer test")
+        lt = getattr(m, "lasers", None) if m is not None else None
+        try:
+            if lt is not None and lt.on and lt.all_off(why):
+                ended.append("the laser tests")
+        except Exception:                        # noqa: BLE001
+            pass
+        if not ended:
+            return ""
+        text = (f"Tests turned off for {what}: "
+                f"{', '.join(ended)}.")
+        try:
+            self._journal(who, screen, "tests-off", "done",
+                          f"{text} ({why}).")
+        except Exception:                        # noqa: BLE001
+            pass
+        return text
+
     def show_live_refusal(self):
         """Why nothing may fire from the Morning page right now: a show
         live (SHOW or PAUSED), or the show clock playing a cue. "" when a purge may go (between shows, nothing playing)."""
@@ -7500,15 +7581,17 @@ class Remote:
             return None
 
     def laser_arm_blockers(self, look=None, light=False):
-        """Why no laser may be armed right now, or "": a show paused mid
-        show (PAUSED) or a conductor hold that is not the schedule's Hold
-        (a Programming Pause), and the night closing. On the schedule's
-        Hold (a Stop's too) and with no schedule at all a laser MAY be
-        armed (Jeff, 2026-11-14: lasers and hazers like flames, the
-        operator tests anything); `light` True (laser_enable_blockers)
-        adds both back as reasons the lasers may not be LIT, so an arm
-        there never lights anything by itself: BEYOND's laser output
-        stays off until the show plays again. Plain reads, never a lock:
+        """Why no laser may be armed right now, or "": a conductor hold
+        that is not the schedule's Hold or a show paused by it (a
+        Programming Pause), and the night closing. On Hold (the
+        schedule's HOLD, a Stop's too, and a show paused mid show,
+        PAUSED) and with no schedule at all a laser MAY be armed (Jeff,
+        2026-11-14: lasers and hazers like flames, the operator tests
+        anything); `light` True (laser_enable_blockers) adds them back as
+        reasons the lasers may not be LIT, so an arm there never lights
+        anything by itself: BEYOND's laser output stays off until a show
+        plays again. Lasers so armed stay armed through Resume (Jeff,
+        2026-11-14) and light through the laser gate when the show plays. Plain reads, never a lock:
         the laser gate asks this. `look`: the conductor's look already
         read (laser_enable_blockers), else read here."""
         svc = self.schedule
@@ -7522,12 +7605,11 @@ class Remote:
         state = getattr(m, "state", None)
         if look is None:
             look = getattr(cond, "_look", None)
-        if state == "PAUSED" or (look in ("HELD", "DARK") and
-                                 state != "HOLD"):
+        if look in ("HELD", "DARK") and state not in ("HOLD", "PAUSED"):
             return "the show is on Hold; press Resume first, then arm"
-        if light and state == "HOLD":
-            return ("the schedule is on Hold, so the lasers stay dark "
-                    "until a show plays after Resume")
+        if light and state in ("HOLD", "PAUSED"):
+            return ("the show is on Hold, so the lasers stay dark until a "
+                    "show plays after Resume")
         if state == "CLOSING":
             return "the night is closing"
         return ""
