@@ -59,19 +59,23 @@ only once an operator arms them again. The night closing disarms them too
 (ruling 4). Nothing here starts a show or presses Run (ruling 5).
 
 Arming on Hold and with no schedule (Jeff, 2026-11-14, replacing the
-"refused on Hold" half of ruling 3): lasers behave like flames, so on the
-schedule's Hold (a Stop's too) and with no schedule loaded an operator MAY
-arm a laser and run its calibration test. ARMED there is not LIT: the
-engine's lighting blockers (`enable_blockers`, remote.laser_enable_blockers)
-still name the Hold and the missing schedule, so may_enable() says no, no
+"refused on Hold" half of ruling 3): lasers behave like flames, so on Hold
+(the schedule's HOLD between shows, a Stop's Hold, and a show held mid
+show, PAUSED) and with no schedule loaded an operator MAY arm a laser and
+run its calibration test. ARMED there is not LIT while held: the engine's
+lighting blockers (`enable_blockers`, remote.laser_enable_blockers) still
+name the Hold and the missing schedule, so may_enable() says no, no
 EnableLaserOutput is sent and the conductor is not told (on_permitted).
-Resume lights nothing by itself either: the lasers light only when the
-laser gate (fire_ice.attach: the show state gate, SHOW, PAUSED or
-REHEARSAL, or Programming playback, AND may_enable) says yes, at the next
-show start or the Resume of a show that is playing, exactly as for lasers
-armed before it. Still refused: a show paused mid show (PAUSED), a
-Programming Pause, the night closing, a lockout or settings problem, and
-a Stop or Hold press under way (press_begin).
+Resume does NOT disarm them (Jeff's ruling, 2026-11-14): lasers armed on
+a Hold stay armed and light, without a fresh arm, as soon as the laser
+gate (fire_ice.attach: the show state gate, SHOW, PAUSED or REHEARSAL, or
+Programming playback, AND may_enable) says yes: at the Resume of a show
+held mid show, or at the next show start. Resume (and Start now, Start at
+a cue, Continue anyway) turns every laser TEST off first
+(remote.tests_off_for_show); a test has no time limit of its own. Still
+refused: a Programming Pause (Programming playback paused mid cue, whose
+Continue would light a new arm at once), the night closing, a lockout or
+settings problem, and a Stop or Hold press under way (press_begin).
 
 The sender
 ==========
