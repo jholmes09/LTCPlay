@@ -109059,7 +109059,7 @@ const q = id => document.getElementById(id);
 const sent = () => posts.filter(p => /hazer-test/.test(p.u)).map(p => { const b = JSON.parse(p.b); delete b.seen; return b; });
 function look(){
   if(typeof showTab === "function" && TAB !== "day") showTab("day");
-  q("t-day").hidden = false; daySections("purge"); renderHazerTest(ST);
+  q("t-day").hidden = false; daySections("hazers"); renderHazerTest(ST);
   const sec = q("d-hz"), b = q("hzt-btn");
   const words = [q("hzt").querySelector("b").textContent].concat(
     Array.from(q("hzt").querySelectorAll("li")).map(l => l.textContent));
@@ -109086,7 +109086,11 @@ function pick(name){
 async function go(){
   for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.hazer_test !== undefined); i++) await wait(100);
   await wait(400);
-  const out = {first: look()};
+  // Moved to the Hazers step (Jeff, 2026-11-14): on the Purge step the
+  // block is hidden, whatever renders it.
+  daySections("purge"); renderHazerTest(ST);
+  const out0 = {purge_shown: !q("d-hz").hidden && q("d-hz").getClientRects().length > 0};
+  const out = Object.assign({first: look()}, out0);
   pick("Hazer 1"); out.picked = look();
   // An iPad with Arming from a screen off: Turn on waits, said plainly.
   const was = [ME.local, ST.arming];
@@ -109117,8 +109121,9 @@ setTimeout(() => go().then(o => o, e => ({error: String(e && e.stack || e)})).th
 
 
 def _ui2_status_hazer_test(kind):
-    """Show control off, no show: the hazers and the Purge page's hazers
-    in one of their states."""
+    """Show control off, no show: the hazers and the Hazers step's Turn
+    on or off (on the Purge step until 2026-11-14) in one of their
+    states."""
     st = _ui2_status_running()
     st["show"] = {"running": False, "starting": False}
     st["flames"]["groups"] = st["flames"]["groups"][:3]
@@ -109157,9 +109162,10 @@ def _ui2_status_hazer_test(kind):
 
 
 def test_ui2_hazer_test_in_a_browser():
-    section("interface 2.0's Purge page hazers drawn (Jeff and Andy, "
-            "2026-11-13): 'Hazers: turn on or off', no arming words or "
-            "button there; each hazer with its levels; select hazers, then "
+    section("interface 2.0's Hazers step's Turn on or off drawn (Jeff and "
+            "Andy, 2026-11-13; moved from the Purge step to the Hazers "
+            "step, Jeff 2026-11-14): never on the Purge step; 'Hazers: "
+            "turn on or off', no arming words or button in it; each hazer with its levels; select hazers, then "
             "Turn on (posts the selection) or Turn off (as the engine "
             "says); All on posts every hazer, All off posts off and is "
             "never disabled; Not known with no contact, and then the "
@@ -109173,7 +109179,7 @@ def test_ui2_hazer_test_in_a_browser():
                        "<script>" + lo + "</script>", 1)
     card = page[page.find('id="d-hz"'):page.find('id="d-hz"') + 1400]
     check("—" not in card and "–" not in card,
-          "no dashes in the Purge page's hazer words")
+          "no dashes in the Hazers step's Turn on or off words")
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -109193,14 +109199,17 @@ def test_ui2_hazer_test_in_a_browser():
                                        frag="?tour=0", routes=brand,
                                        posts=ok_on, budget_ms=14000)
         for (w, h), r in got.items():
-            where = f"2.0 Purge page hazers, {kind}, {w}x{h}"
+            where = f"2.0 Hazers step, Turn on or off, {kind}, {w}x{h}"
             if not check(isinstance(r, dict) and "first" in r,
                          f"{where}: drawn and measured: {r!r}"[:900]):
                 continue
             a = r["first"]
+            check(r.get("purge_shown") is False,
+                  f"{where}: not on the Purge step (Jeff, 2026-11-14): "
+                  f"{r.get('purge_shown')!r}")
             check(a["shown"] and a["xscroll"] <= 0 and a["in_sight"] and
                   a["btn_row"] == 1,
-                  f"{where}: on the Purge step, nothing off the side; Turn "
+                  f"{where}: on the Hazers step, nothing off the side; Turn "
                   f"on, All on and All off in one row, in sight without "
                   f"scrolling: {a}")
             head, bullets = a["words"][0], a["words"][1:]
@@ -109210,7 +109219,8 @@ def test_ui2_hazer_test_in_a_browser():
                   "Each turns off after 60 s." in bullets,
                   f"{where}: the text rule: {a['words']}")
             check("arm" not in a["text"].lower() and not a["armall"],
-                  f"{where}: no arming on the Purge page: {a['text']!r}")
+                  f"{where}: no arming words in Turn on or off: "
+                  f"{a['text']!r}")
             check([x[:2] for x in a["rows"]] ==
                   [["Hazer 1", "Haze 40%, Fan 60%"],
                    ["Hazer 2", "Haze 20%, Fan 10%"],
@@ -110039,7 +110049,8 @@ if(out.look.fits){
 
 # The Startup steps' layout (Jeff, 2026-11-13, the show PC at 125 percent,
 # bench-2026.11.13-c1f7a73): the Purge step's own rows were drawn on top of
-# each other. #d-ctl (the step's buttons) could shrink below its content
+# each other. (The hazer test has been on the Hazers step since Jeff,
+# 2026-11-14.) #d-ctl (the step's buttons) could shrink below its content
 # when the step's sections were taller than the DAY panel, so the timed
 # purge and the hazer test below it were drawn over its buttons. Every
 # step is drawn at every size here and every visible control is measured.
@@ -110077,7 +110088,10 @@ for(const k of [...document.querySelectorAll("#d-steps .st")].map(b => b.dataset
   }
   const R = P.getBoundingClientRect();
   const side = els.filter(e => { const r = e.getBoundingClientRect(); return r.left < R.left - 1 || r.right > R.right + 1; }).map(nm);
-  out.steps[k] = {n:els.length, over:over.slice(0, 8), spill:spill.slice(0, 8), side:side.slice(0, 8), hs:P.scrollWidth - P.clientWidth};
+  // Every hazer control drawn on this step (Jeff, 2026-11-14: on the
+  // Hazers step, never the Purge step).
+  const hz = [...P.querySelectorAll('#d-hz, [id^="hzt"], [id^="d-hz"], [data-hzt], [data-hzb], [data-hza], [data-hzl]')].filter(vis).map(e => e.id || e.dataset.hzt || "hz");
+  out.steps[k] = {n:els.length, over:over.slice(0, 8), spill:spill.slice(0, 8), side:side.slice(0, 8), hs:P.scrollWidth - P.clientWidth, hz:hz};
 }
 """
 
@@ -110169,8 +110183,19 @@ def test_ui2_startup_steps_never_overlap():
                "locks"} <= set(steps),
               f"{where}: every Startup step is drawn: {sorted(steps)}")
         check(steps.get("purge", {}).get("n", 0) >= 14,
-              f"{where}: the Purge step's groups, timed purge and hazer "
-              f"test are all there to measure: {steps.get('purge')}")
+              f"{where}: the Purge step's groups, Machines, Map and timed "
+              f"purge are all there to measure: {steps.get('purge')}")
+        # Jeff, 2026-11-14: "move the current functions to the haze page
+        # instead of the purge page".
+        check(steps.get("purge", {}).get("hz") == [],
+              f"{where}: no hazer control on the Purge step: "
+              f"{steps.get('purge', {}).get('hz')}")
+        hzs = set(steps.get("hazers", {}).get("hz") or [])
+        check({"d-hz", "hzt-btn", "hzt-allon", "hzt-alloff", "hzt-list",
+               "d-hz-open", "d-hz-off"} <= hzs and
+              len(steps.get("hazers", {}).get("hz") or []) >= 10,
+              f"{where}: the Hazers step has Levels, Hazers off, Turn on, "
+              f"All on, All off and each hazer to tick: {sorted(hzs)}")
         for k, r in steps.items():
             check(not r["over"] and not r["spill"] and not r["side"] and
                   r["hs"] <= 1,

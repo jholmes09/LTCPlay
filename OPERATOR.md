@@ -981,7 +981,9 @@ channel, and is either ARMED or DISARMED.
   each one again (wait a second after a Stop).
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
-- **Purge page: Hazers: turn on or off (Startup page, Purge step).**
+- **Hazers: turn on or off (DAY tab, Startup, the Hazers step, under
+  Levels and Hazers off; on the Purge step until 2026-11-14).** The
+  Purge step has no hazer controls now: only the flame purge.
   This runs hazers NOW, for checking them; it never arms one. Tick the
   hazers you want (each shows its Haze and Fan level), then **Turn on**
   or **Turn off**. **All on** runs every hazer; **All off** turns every
@@ -2984,12 +2986,15 @@ tab, and the hardware e-stop always works.
   "Hold to continue anyway" (a hold; a tap does nothing). On the show PC the
   alert's details have Check again.
 - DAY tab: the day as steps. Startup (sign in, rig checks, the startup
-  list, fuel, purge, laser test, locks) or Shutdown (the shutdown list,
+  list, fuel, purge, laser test, hazers, locks) or Shutdown (the shutdown list,
   wave flamer cleaning, locks, sign out); only the steps that apply now,
   each with its mark, and one big Next. A purge fires only with the Stream Deck's
   FIRE key or Space held, the cleaning starts only with its two holds,
   and Lock is one tap per machine with Undo. The Purge step has the
-  machine map and Arrange; the checklist steps have Verify records, the
+  flame purge only (the group buttons, Machines, the machine map and
+  Arrange, the timed purge); the Hazers step has Levels, Hazers off and
+  Hazers: turn on or off (All on, All off), which runs hazers now even
+  with no show; the checklist steps have Verify records, the
   PDF and Export all.
 - DAY tab, machine rows. The Fuel step shows the tanks one row per type
   (all Wave Flamers on one row, all G-Flames on another); a row wraps only
