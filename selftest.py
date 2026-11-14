@@ -108239,16 +108239,16 @@ t(cdLength({countdown:cd(1, true, 440)}) === 440 && cdLength({countdown:{kind:"n
 const base = () => ({schedule:{attached:true, state:"SHOW", running:4, next:{show:5, start:"19:50", in_s:900}},
   countdown:cd(320, true, 440), show:{running:true, show_control_on:true}, flames:{connected:true, groups:[{name:"a", armed:"disarmed"}]}, arming:{enabled:true}, me:{may:{show:true, arm:true}}});
 let s = base(); CD = countdownAnchor(null, s.countdown, 0); MONO = 0;
-let n = nextStep(s, false, true, alertItems(s)).text;
+let n = nextStep(s, false, true, []).text;
 t(n === "Show 4 running. Elapsed 2:00, left 5:20." && n.split(/\s+/).length <= 8, "the top line: " + n);
 s = base(); s.countdown = {kind:"left", s:320, running:true}; CD = countdownAnchor(null, s.countdown, 0);
-n = nextStep(s, false, true, alertItems(s)).text;
+n = nextStep(s, false, true, []).text;
 t(n === "Show 4 running. Elapsed -, left 5:20.", "the top line, length not known: " + n);
 s = base(); s.countdown = null; CD = null;
-n = nextStep(s, false, true, alertItems(s)).text;
+n = nextStep(s, false, true, []).text;
 t(n === "Show 4 running.", "the top line, no countdown: no numbers: " + n);
 s = base(); s.schedule.state = "PAUSED"; s.schedule.held = true; CD = countdownAnchor(null, cd(320, false, 440), 0);
-n = nextStep(s, false, true, alertItems(s)).text;
+n = nextStep(s, false, true, []).text;
 t(n === "Held. Press Resume to carry on.", "held: the top line says Resume: " + n);
 console.log(JSON.stringify(out));
 """
