@@ -60885,6 +60885,11 @@ def test_programming_lasers_engine_refusal_and_blockers():
         check(r.laser_arm_blockers() == hold,
               f"{s_} during a Programming Pause: a new arm refused: "
               f"{r.laser_arm_blockers()!r}")
+    r.schedule.machine = None
+    check(r.laser_arm_blockers() == hold,
+          f"no schedule during a Programming Pause: a new arm refused: "
+          f"{r.laser_arm_blockers()!r}")
+    r.schedule.machine = machine
     st["prog"] = ValueError("no session")
     machine.state = "HOLD"
     check(r.laser_arm_blockers() == hold,
@@ -60908,8 +60913,10 @@ def test_programming_lasers_engine_refusal_and_blockers():
     st["look"] = "HELD"
     st["active"] = True
     machine.state = "IDLE"
-    # No schedule loaded (Jeff, 2026-11-14): a new arm is allowed, the
-    # lasers are never lit (the show state is not known).
+    # No schedule loaded (Jeff, 2026-11-14), no Programming Pause: a new
+    # arm is allowed, the lasers are never lit (the show state is not
+    # known).
+    st["active"] = False
     r.schedule.machine = None
     check(r.laser_arm_blockers() == "" and
           r.laser_enable_blockers() == "the show state is not known (no "
@@ -60917,6 +60924,7 @@ def test_programming_lasers_engine_refusal_and_blockers():
           f"no schedule: arm allowed, never lit: {r.laser_arm_blockers()!r} "
           f"{r.laser_enable_blockers()!r}")
     r.schedule.machine = machine
+    st["active"] = True
     # A Resume landing while the watcher reads (M2): the conductor's own
     # look attribute still says HELD, its one-read snapshot says PLAYING.
     # The lighting blockers go by the snapshot only.
@@ -107160,6 +107168,31 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
         f._starts = 0
         check(RM.Remote.morning_test_refusal(f) == "" or st_ == "IDLE",
               "and allowed again once it is answered")
+    # The count of starts under way, from many press threads at once
+    # (cold re-review of #266, 1): it ends at zero, never stuck above it.
+    import threading as _th
+    import sys as _sys
+    counter = NS(_starts=0)
+    for _n in ("_start_begin", "_start_end", "start_underway"):
+        setattr(counter, _n, getattr(RM.Remote, _n).__get__(counter))
+    old_si = _sys.getswitchinterval()
+    _sys.setswitchinterval(1e-6)
+
+    def hammer():
+        for _ in range(20000):
+            counter._start_begin()
+            counter._start_end()
+    try:
+        ths = [_th.Thread(target=hammer) for _ in range(4)]
+        for t_ in ths:
+            t_.start()
+        for t_ in ths:
+            t_.join()
+    finally:
+        _sys.setswitchinterval(old_si)
+    check(counter._starts == 0 and counter.start_underway() == "",
+          f"starts under way from 4 threads end at zero: "
+          f"{counter._starts}")
     # Stop under way, and the night closing.
     f = fake("HOLD", halting=True)
     check(RM.Remote.timed_purge_blockers(f, None) == "Stop is under way.",

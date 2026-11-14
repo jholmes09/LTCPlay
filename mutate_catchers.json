@@ -3955,6 +3955,8 @@
 "tests: the Morning page tests while Stop is under way": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
 "tests: the hazer test starts while Stop is under way": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
 "lasers: a Programming Pause on Hold lets a new arm through": "test_programming_lasers_engine_refusal_and_blockers",
+"tests: the starts-under-way count changes without its lock": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
+"lasers: a Programming Pause with no schedule lets a new arm through": "test_programming_lasers_engine_refusal_and_blockers",
 "lasers: an error asking Programming lets a new arm through": "test_programming_lasers_engine_refusal_and_blockers",
 "mid-show Hold: live flame programming does not stop the tests": "test_hold_and_no_schedule_allow_tests_not_a_live_show",
 "mid-show Hold: web.serve gives the Morning page the old live check": "test_laser_arm_through_web_serve",

@@ -24958,6 +24958,16 @@ def build():
   '                                         self._programming_paused()):\n',
   '                                         False):\n'),
 
+ ('tests: the starts-under-way count changes without its lock',
+  'ltcplay/remote.py',
+  '        with _STARTS_LOCK:\n            self._starts = getattr(self, "_starts", 0) + 1\n',
+  '        if True:\n            self._starts = getattr(self, "_starts", 0) + 1\n'),
+
+ ('lasers: a Programming Pause with no schedule lets a new arm through',
+  'ltcplay/remote.py',
+  '        if m is None and look in ("HELD", "DARK") and \\\n                self._programming_paused():\n',
+  '        if False:\n'),
+
  ('lasers: an error asking Programming lets a new arm through',
   'ltcplay/remote.py',
   '        except Exception:                        # noqa: BLE001\n            return True\n\n    def laser_enable_blockers',

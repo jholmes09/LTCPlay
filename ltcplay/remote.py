@@ -123,6 +123,10 @@ from .fuelpump import (DEFAULT_S as PUMP_DEFAULT_S,
                        MAX_LIMIT_S as PUMP_MAX_LIMIT_S, MIN_S as PUMP_MIN_S)
 from .playhead import ShowAudioPlayhead
 
+# The count of starts under way (Remote._start_begin and _start_end): its
+# own lock, held only to change the number.
+_STARTS_LOCK = threading.Lock()
+
 FIXED_PORT = 7878
 DISK_FILE = "disk-low.txt"          # packaging/windows/housekeeping.DISK_FILE
 DISK_READ_S = 30.0
@@ -7081,10 +7085,14 @@ class Remote:
         return ""
 
     def _start_begin(self):
-        self._starts = getattr(self, "_starts", 0) + 1
+        # Presses run on separate server threads: the count changes only
+        # under its own small lock, never held while anything waits.
+        with _STARTS_LOCK:
+            self._starts = getattr(self, "_starts", 0) + 1
 
     def _start_end(self):
-        self._starts = max(0, getattr(self, "_starts", 0) - 1)
+        with _STARTS_LOCK:
+            self._starts = max(0, getattr(self, "_starts", 0) - 1)
 
     def tests_off_before_rig_up(self, label):
         """schedule_service.Service.before_rig_up: on the conductor's line,
@@ -7696,15 +7704,19 @@ class Remote:
         read (laser_enable_blockers), else read here."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
+        cond = getattr(svc, "conductor", None)
+        if look is None:
+            look = getattr(cond, "_look", None)
+        if m is None and look in ("HELD", "DARK") and \
+                self._programming_paused():
+            # A Programming Pause refuses a new arm with no schedule too.
+            return "the show is on Hold; press Resume first, then arm"
         if m is None:
             if light:
                 return ("the show state is not known (no schedule is "
                         "loaded), so the lasers stay dark")
             return ""
-        cond = getattr(svc, "conductor", None)
         state = getattr(m, "state", None)
-        if look is None:
-            look = getattr(cond, "_look", None)
         if look in ("HELD", "DARK") and (state not in ("HOLD", "PAUSED") or
                                          self._programming_paused()):
             return "the show is on Hold; press Resume first, then arm"
