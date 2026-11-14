@@ -103603,8 +103603,11 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
     svc = types.SimpleNamespace(continue_anyway=lambda who, screen: (
         said.append((who, screen)),
         {"ok": True, "text": "started"})[-1])
+    tests_off = []
     me = types.SimpleNamespace(
-        preroll=pr, schedule=svc, users_active=lambda: True)
+        preroll=pr, schedule=svc, users_active=lambda: True,
+        tests_off_for_show=lambda what, who, screen: (
+            tests_off.append((what, who, screen, len(said))), "")[-1])
     ctx = types.SimpleNamespace(user="Andy", local=True, screen="Rack screen",
                                 device="rack")
     go = lambda body, cx=ctx: RM.Remote.preroll_continue(me, body, cx)  # noqa
@@ -103630,6 +103633,9 @@ def test_preroll_continue_anyway_needs_a_signed_in_hold():
     st, out = go({"phase": "done", "token": "t4"})
     check(st == 200 and said == [("Andy", "Rack screen")],
           f"held: continued: {st} {out} {said}")
+    check(tests_off == [("Continue anyway", "Andy", "Rack screen", 0)],
+          f"every test is turned off first, before the show starts (Jeff, "
+          f"2026-11-14): {tests_off}")
     st, out = go({"phase": "done", "token": "t4"})
     check(st == 409 and len(said) == 1, "a hold is used once")
     # What a Continue leaves off, from the failed checks.
@@ -106932,6 +106938,12 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
     check("show clock" in RM.Remote.morning_test_refusal(f),
           f"PAUSED with the show clock playing: refused: "
           f"{RM.Remote.morning_test_refusal(f)!r}")
+    f = fake("PAUSED", look="HELD")
+    f.live_flame = NS(on=True)
+    check("live flame programming is on" in
+          RM.Remote.morning_test_refusal(f),
+          f"PAUSED with live flame programming on: refused: "
+          f"{RM.Remote.morning_test_refusal(f)!r}")
     # The show clock playing a cue (no schedule needed).
     f = fake(None, no_machine=True, playing=True)
     check("show clock" in f.show_live_refusal(),
@@ -106957,6 +106969,62 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
           f"{RM.Remote.timed_purge_blockers(f, None)!r}")
     check(fake("CLOSING").laser_arm_blockers() == "the night is closing",
           "the night closing: no laser arms")
+    # Resume, Start now, Start at a cue and Continue anyway turn every
+    # operator test off first (Jeff, 2026-11-14), in one plain line,
+    # journaled; ARMED lasers are left armed (his ruling).
+    calls, lines = [], []
+
+    class _Purge:
+        fire = {"device": "Rack screen"}
+
+        def timed_running(self):
+            return True
+
+        def stop(self, why):
+            calls.append(("purge stop", why))
+            self.fire = None
+
+    class _Tests:
+        on = {"laser-3": {}}
+
+        def all_off(self, why):
+            calls.append(("laser tests off", why))
+            ids, self.on = list(self.on), {}
+            return ids
+
+    class _HT:
+        run = {"names": ["Hazer 1"]}
+
+        def running(self):
+            return {"Hazer 1"}
+    armed = ["l1", "l2"]
+    f = NS(morning=NS(purge=_Purge(), lasers=_Tests(),
+                      laser_arm=NS(armed_ids=lambda: list(armed))),
+           hazer_test=_HT(),
+           timed_purge_cut=lambda why, who, screen: calls.append(
+               ("timed purge cut", why)) or True,
+           hazer_test_cut=lambda why, who, screen: calls.append(
+               ("hazer test cut", why)) or True,
+           _journal=lambda *a, **k: lines.append(a))
+    said = RM.Remote.tests_off_for_show(f, "Resume", "Andy", "Rack screen")
+    check(said == "Tests turned off for Resume: the timed purge, the "
+                  "purge, the hazer test, the laser tests.",
+          f"Resume: every test named in one line: {said!r}")
+    check([c[0] for c in calls] == ["timed purge cut", "purge stop",
+                                    "hazer test cut", "laser tests off"]
+          and all("Andy pressed Resume on the Rack screen" in c[1]
+                  for c in calls),
+          f"each test ended, with who and where: {calls}")
+    check(len(lines) == 1 and lines[0][2] == "tests-off" and
+          said in lines[0][4],
+          f"journaled once: {lines}")
+    check(armed == ["l1", "l2"], "armed lasers are left armed")
+    del calls[:], lines[:]
+    f.morning.purge.timed_running = lambda: False
+    f.hazer_test = NS(run=None, running=lambda: set())
+    check(RM.Remote.tests_off_for_show(f, "Start now", "Andy", "Rack") ==
+          "" and calls == [] and lines == [],
+          f"nothing on: nothing said, nothing journaled: {calls} {lines}")
     print("  ok")
 
 

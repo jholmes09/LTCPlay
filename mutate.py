@@ -15051,19 +15051,29 @@ def build():
   '                (name == "laser-test" and body.get("on") is True) or\n'
   '                (name == "laser-arm" and body.get("on") is True)) and \\',
   '                (name == "laser-test" and body.get("on") is True)) and \\'),
- ('lasers: arming is allowed while a show is paused mid show',
-  'ltcplay/remote.py',
-  '        if state == "PAUSED" or (look in ("HELD", "DARK") and\n'
-  '                                 state != "HOLD"):',
-  '        if False:'),
  ('lasers: a new arm goes through a Programming Pause',
   'ltcplay/remote.py',
-  '        if state == "PAUSED" or (look in ("HELD", "DARK") and\n',
-  '        if state == "PAUSED" or (False and\n'),
- ("lasers: lasers armed on the schedule's Hold may be lit",
-  'ltcplay/remote.py',
-  '        if light and state == "HOLD":\n',
+  '        if look in ("HELD", "DARK") and state not in ("HOLD", "PAUSED"):\n',
   '        if False:\n'),
+ ("lasers: lasers armed on Hold may be lit",
+  'ltcplay/remote.py',
+  '        if light and state in ("HOLD", "PAUSED"):\n',
+  '        if False:\n'),
+ ("lasers: lasers armed on a mid-show Hold may be lit",
+  'ltcplay/remote.py',
+  '        if light and state in ("HOLD", "PAUSED"):\n',
+  '        if light and state == "HOLD":\n'),
+ ("laser arm: a disarm leaves the watcher's permission standing",
+  'ltcplay/laserarm.py',
+  '            if ids:\n'
+  '                # Not every laser is armed now, so nothing is permitted:\n',
+  '            if False:\n'
+  '                # Not every laser is armed now, so nothing is permitted:\n'),
+ ("laser arm: a permitted arm is not remembered by the watcher",
+  'ltcplay/laserarm.py',
+  '            self._was_permitted = True\n'
+  '            self._queue("enable", f"every laser armed, the last by {label}",\n',
+  '            self._queue("enable", f"every laser armed, the last by {label}",\n'),
  ('lasers: with no schedule, the lasers may be lit',
   'ltcplay/remote.py',
   '            if light:\n'
@@ -24811,10 +24821,60 @@ def build():
   '            self.hazer_test_cut(f"{who or \'someone\'} pressed Hold on the "\n',
   '            (lambda *a: None)(f"{who or \'someone\'} pressed Hold on the "\n'),
 
- ('hazer test: a show paused mid show leaves it on',
+ ('tests off: Resume and Start now leave the operator tests on',
   'ltcplay/remote.py',
-  '        if state == "PAUSED":\n            return "held"\n',
-  ''),
+  '            tests_said = self.tests_off_for_show(\n',
+  '            tests_said = "" and self.tests_off_for_show(\n'),
+
+ ('tests off: Continue anyway leaves the operator tests on',
+  'ltcplay/remote.py',
+  '        said = self.tests_off_for_show("Continue anyway", who, screen)\n',
+  '        said = ""\n'),
+
+ ('tests off: the timed purge outlives Resume',
+  'ltcplay/remote.py',
+  '        if timed:\n            self.timed_purge_cut(why, who, screen)\n',
+  '        if False:\n            self.timed_purge_cut(why, who, screen)\n'),
+
+ ('tests off: a purge firing outlives Resume',
+  'ltcplay/remote.py',
+  '            if purge is not None and purge.fire is not None:\n                purge.stop(why)\n',
+  '            if False:\n                purge.stop(why)\n'),
+
+ ('tests off: the hazer test outlives Resume',
+  'ltcplay/remote.py',
+  '        if hz_on and self.hazer_test_cut(why, who, screen):\n',
+  '        if False:\n'),
+
+ ('tests off: the laser tests outlive Resume',
+  'ltcplay/remote.py',
+  '            if lt is not None and lt.on and lt.all_off(why):\n',
+  '            if False:\n'),
+
+ ('tests off: Resume does not say or journal what it turned off',
+  'ltcplay/remote.py',
+  '        if not ended:\n            return ""\n        text = (f"Tests turned off for {what}: "\n',
+  '        if True:\n            return ""\n        text = (f"Tests turned off for {what}: "\n'),
+
+ ('mid-show Hold: the Morning page tests while a show plays',
+  'ltcplay/remote.py',
+  '        if getattr(m, "state", None) != "PAUSED":\n            return self.morning_live_refusal()\n',
+  '        if False:\n            return self.morning_live_refusal()\n'),
+
+ ('mid-show Hold: the Morning page tests while the show clock plays',
+  'ltcplay/remote.py',
+  '        if clk is not None and getattr(clk, "playing", False):\n            return ("the show clock is playing a cue; nothing fires from "\n',
+  '        if False:\n            return ("the show clock is playing a cue; nothing fires from "\n'),
+
+ ('mid-show Hold: live flame programming does not stop the tests',
+  'ltcplay/remote.py',
+  '        if lf is not None and getattr(lf, "on", False):\n',
+  '        if False:\n'),
+
+ ('mid-show Hold: web.serve gives the Morning page the old live check',
+  'ltcplay/web.py',
+  '                live_check=httpd.remote.morning_test_refusal,\n',
+  '                live_check=httpd.remote.morning_live_refusal,\n'),
 
  ('hazer test: a show starting leaves it on',
   'ltcplay/remote.py',
