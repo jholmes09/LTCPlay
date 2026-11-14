@@ -3359,7 +3359,7 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 httpd.remote.folder, flamesafe_config=flamesafe_config,
                 link_get=lambda: getattr(httpd.fire_ice, "flame_link", None),
                 flames_get=_flames_view,
-                live_check=httpd.remote.morning_live_refusal,
+                live_check=httpd.remote.morning_test_refusal,
                 group_names=_group_names if fstatus is not None else None,
                 journal=httpd.remote._morning_journal,
                 night=getattr(httpd_schedule, "_night", None),
@@ -3372,6 +3372,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                 laser_blank=_laser_blank, night_state=_night_state,
                 audit=getattr(httpd.remote, "audit", None))
             httpd.remote.morning = httpd.morning
+            # Every operator test off right before a show start or a Resume
+            # is sent, on the conductor's line (Jeff, 2026-11-14).
+            if httpd_schedule is not None:
+                httpd_schedule.before_rig_up = \
+                    httpd.remote.tests_off_before_rig_up
             # The timed purge's engine checks (a Hold, Run, the flame link,
             # the starter's sign-in): without them no timed purge starts.
             httpd.morning.timed_blockers = httpd.remote.timed_purge_blockers

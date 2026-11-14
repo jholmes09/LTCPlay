@@ -342,7 +342,7 @@ fires a slot only for a group it reports ARMED.
   to 0.1 s later; meanwhile flamesafe itself sends nothing for a disarmed
   group, so the link's value for it reaches no flame.
 - **What ends it at once.** Stop purge (from any screen, signed in or
-  not), Stop, Hold (and a Hold standing), Start now, Turn show control
+  not), Stop, a Hold press, Start now, Turn show control
   on (refused or not), a show going live or the show clock playing,
   flamesafe's status over 1 s old, the flame link not sending or alarmed or
   zeroed, a selected machine locked out or taken off, a disarm of one of
@@ -351,6 +351,15 @@ fires a slot only for a group it reports ARMED.
   press (Space, the deck's FIRE, another hold from any screen). Each is a
   journal line with why and the seconds it actually ran; the start line
   says the machines, the seconds, who and where.
+- **On Hold (Jeff, 2026-11-14).** Hold, between shows, after a Stop or
+  pressed during a show, no longer refuses or ends a timed purge: one may
+  start on Hold and runs to its own end (the Hold PRESS still ends one
+  that is running, and Resume ends one first). On any Hold, show
+  control on (as it stays on a real night, also after a Stop) does not
+  refuse it (Jeff, 2026-11-14). Still refused: a show playing, the show
+  clock playing, show control on when the schedule is not on Hold, a
+  show file starting, Stop under way, flamesafe or the flame link not
+  answering. The hazer test follows the same rules.
 - **One at a time.** No timed purge while Space or FIRE fires, and a
   momentary press while one runs ends it. The Fireball page, the wave
   flamer cleaning and live flame programming already refuse while a purge
@@ -405,9 +414,12 @@ every engine start and restart is DISARMED, and BEYOND's
   then Arm in the confirm box. All or none. Refused, with the reason, when
   the lasers' blanking is not set up ("Lasers: blanking not set up": no
   `beyond` block with its host and port), when the laser is locked out,
-  while the show is on Hold, while the night
-  is closing, and while this page's settings or lockout cannot be
-  trusted. It is the role matrix's "arm" row (as for arming flames), and
+  while a Programming Pause holds, while the night is closing, and while
+  this page's settings or lockout cannot be trusted. On Hold (between
+  shows, a Stop's Hold, and Hold pressed during a show) and with no
+  schedule loaded, arming IS allowed (Jeff, 2026-11-14: lasers like
+  flames, the operator tests anything), and a laser test may run, but
+  nothing lights while held: see "Armed on Hold is not lit" below. It is the role matrix's "arm" row (as for arming flames), and
   from the show network it needs `screen_arming`, as a laser test ON does.
   Held back from a screen in Arrange mode.
 - **Disarm**: the Disarm button on a laser or group, or **Disarm all
@@ -434,6 +446,37 @@ every engine start and restart is DISARMED, and BEYOND's
   never re-arms: the lasers stay dark until someone arms them again,
   and arming during a show that is already up lights them through the
   laser gate.
+- **Armed on Hold is not lit, and stays armed (Jeff, 2026-11-14).**
+  Lasers armed on Hold, or with no schedule loaded, stay dark while held:
+  the engine's lighting blockers (`remote.laser_enable_blockers`) still
+  name the Hold and the missing schedule, so EnableLaserOutput is not
+  sent, the conductor is not told, and the page says "BEYOND's laser
+  output stays OFF" with the reason. Resume does NOT disarm them (Jeff's
+  ruling): they stay armed and light WITHOUT a fresh arm as soon as the
+  laser gate says yes (the show state SHOW, PAUSED or REHEARSAL, or
+  Programming playback in IDLE, OFF or BOOT, AND every laser armed, none
+  locked out, nothing blocking): at once when a show held mid show
+  resumes, else at the next show start. Armed is not safe: disarm what
+  you armed for a test before you press Resume if they should stay dark.
+  A laser test has no time limit (ON until pressed again, Jeff's ruling);
+  Resume turns it off first (below), as do a disarm, a Hold press, a show
+  going live and a lockout.
+- **Resume ends every test first (Jeff, 2026-11-14).** Tests may run on
+  Hold, even mid show, so Resume, Start now, Start at a cue and Continue
+  anyway turn off, at the press and before the scheduler is asked, every
+  test still on: the purge, the timed purge, the hazer test and every
+  laser calibration test (`remote.tests_off_for_show`). The answer starts
+  with one plain line ("Tests turned off for Resume: the hazer test, the
+  laser tests.") and the journal says it. From the press until it is
+  answered (a Start now can wait up to 20 s for the show audio and the
+  rig check while the schedule is still on Hold) no new test starts: "a
+  show is starting". And right before any show start or Resume is sent
+  to the show conductor, whatever started it (a press, or the schedule's
+  own start), every test still on is turned off again
+  (`Service.before_rig_up`, journaled the same way). No test starts while
+  a Stop is under way. Armed lasers and flame groups are left armed. A
+  Programming Pause refuses a new laser arm whatever the schedule's
+  state.
 - **Announcements** disarm every laser the way a Hold does (blank,
   DisableLaserOutput, arm again by hand afterwards). Jeff has not ruled on
   this; it is the safe default and can be reverted.

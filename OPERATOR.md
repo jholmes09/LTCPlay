@@ -506,8 +506,12 @@ on a laser group, then Arm in the confirm box; Disarm all lasers is one
 click and always works, signed in or not; BEYOND's laser output comes on
 only once EVERY laser is armed and none is locked out, because BEYOND's
 only known command is for all lasers at once; Stop, Hold and the night
-closing disarm every laser, and after Resume they stay dark until
-you arm them again; the Lasers pill at the top of the rack screen says how
+closing disarm every laser at the press. While on Hold (also during a
+show) and with no schedule loaded you may arm them again and run their
+tests: they stay dark while held, stay armed through Resume and light
+with the show without a fresh arm (Jeff, 2026-11-14); lasers you did not
+arm again stay dark. Resume, Start now, Start at a cue and Continue
+anyway turn every test off first; the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
 how BEYOND is told is not set yet, so each laser says "Calibration cue not
@@ -564,7 +568,9 @@ stop by themselves, even if the page or the iPad is closed. The rack
 screen, the line at the top of every tab and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
 (on the Startup page or the banner, from any screen, signed in or
-not), or Stop or Hold; Start now, Show control on, a disarm of one of
+not), or Stop or Hold; on Hold (also during a show, and after a Stop,
+before Resume) you may start one (Jeff, 2026-11-14), show control on or
+off, and Resume ends it first; Start now, Show control on, a disarm of one of
 its groups, a lock, signing out and any other purge press (Space, the
 deck's FIRE, the button again) also end it at once. Only one purge at a
 time; the Fireball page, the cleaning and live flame programming wait for
@@ -991,7 +997,13 @@ channel, and is either ARMED or DISARMED.
   (HAZE ON in the top bar, HAZE TEST on its tile) only when the engine
   says so; Not known with no contact, and then the button is Turn off.
   - Each turns off by itself 60 s after its press.
-  - Off on Stop, Hold, Hazers off, a show or show control starting.
+  - Off on Stop, a Hold press, Hazers off, a show or show control
+    starting.
+  - Allowed on any Hold (between shows, after a Stop, or during a show),
+    show control on or off, and with no schedule loaded with show
+    control off. Refused while a show plays, while the show clock plays,
+    while a show file is starting, and with show control on when not on
+    Hold (Jeff, 2026-11-14). Resume turns it off first.
   - Off if this screen goes quiet 10 s.
   It needs the arm row (as arming a hazer) and every check arming a
   hazer has, and a Haze level above 0 on each hazer turned on.
@@ -1874,8 +1886,20 @@ stop:
   finished. The Stop's fade never waits on a file being written or on
   the scheduler.
 - **Stop never turns show control off.** It stays on: Hold (or a Stop's Hold) is
-  how the schedule is stopped. Each flame group needs arming again, and
-  the lasers can only be armed again after Resume. The line under the
+  how the schedule is stopped. Each flame group and laser needs arming
+  again. On the Stop's Hold, before Resume, you may test anything, as on
+  any Hold, also one pressed during a show (Jeff, 2026-11-14): fire a
+  flame test, run a timed purge or the hazer test (show control may stay
+  on during any Hold), arm a laser and run its test. A laser armed on Hold stays dark
+  while held. Resume does not disarm it (Jeff's ruling): it lights with
+  no fresh arm when the show plays again (at once after a Hold during a
+  show, else at the next show start). Armed is not safe: disarm it
+  before Resume if it should stay dark. Resume, Start now, Start at a
+  cue and Continue anyway turn every test still on off first and say so
+  in one line; no new test
+  starts until the press is answered, and every test is turned off again
+  right before the show starts or resumes, also when the schedule starts
+  a show by itself. No test starts while a Stop is under way. The line under the
   buttons says what happened ("Stopped. The show ended and the rig is
   fading to dark. ... The schedule is on Hold: no show starts until you
   press Resume.") or, if any part did not work, which part, and what to
