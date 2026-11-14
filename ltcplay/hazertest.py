@@ -44,10 +44,10 @@ The rules
     on, with a countdown on the screen; its starter's sign-in ending, or
     flamesafe not passing it for NOT_PASSING_S, ends that hazer.
   - Every hazer of the test ends on Stop and Abort (disarm_all ends it at
-    the link before its first copy), a Hold press (and a Hold's zero),
-    Hazers off, the page that started it going quiet for PAGE_QUIET_S
-    (its beat), a show starting or paused mid show, show control turning
-    on, live flame programming, flamesafe's status not fresh, the flame
+    the link before its first copy), a Hold press (hazer_test_cut) and
+    a Hold's zero, Hazers off, the page that started it going quiet for
+    PAGE_QUIET_S (its beat), a show starting or paused mid show, show
+    control turning on, live flame programming, flamesafe's status not fresh, the flame
     link not sending, or any error (fail closed: OFF, and said).
   - ON names its hazers (validated against the engine's own hazer list; a
     name it does not have refuses the whole press) and needs the role
