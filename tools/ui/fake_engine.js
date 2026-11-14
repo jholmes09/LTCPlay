@@ -76,7 +76,7 @@ function baseStatus(){
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
       label: "Hazer " + n + " DISARMED", state: "disarmed", haze: 102, fan: 153, haze_pct: 40, fan_pct: 60, why: null}))};
-  // The Purge page's hazers (hazertest.py, 2026-11-13): each off, ready.
+  // The Hazers step's Turn on or off (hazertest.py, 2026-11-13; on the Purge step until 2026-11-14): each off, ready.
   s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, names_on: [], state: "off", left_s: null,
     max_s: 60, beat_s: 2, refusal: "", last_off: null,
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, on: false, state: "off", left_s: null, haze_pct: 40, fan_pct: 60}))};
