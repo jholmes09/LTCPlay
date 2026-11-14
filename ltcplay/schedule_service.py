@@ -3099,7 +3099,7 @@ class Service:
                            confirmed=True, surface=True,
                            detail=sch.END_OF_NIGHT_DETAIL)
             kind = "carried"
-        elif m.held_look:
+        elif m.held_look and st == sch.CLOSING:
             # Still closing: the closing has not finished, so the held
             # look is dropped here and the closing's own black follows
             # (fire_ice.ShowRunner: a held look that ends goes black).
