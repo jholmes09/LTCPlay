@@ -25004,8 +25004,8 @@ def build():
 
  ('hazer test: a show state that cannot be read is idle',
   'ltcplay/remote.py',
-  '        except Exception as e:                   # noqa: BLE001\n            return f"the engine\'s state could not be read ({type(e).__name__})"\n        return ""\n\n    def _ht_state',
-  '        except Exception as e:                   # noqa: BLE001\n            return ""\n        return ""\n\n    def _ht_state'),
+  '        except Exception as e:                   # noqa: BLE001\n            return f"the engine\'s state could not be read ({type(e).__name__})"\n        return ""\n\n    def _held_mid_show',
+  '        except Exception as e:                   # noqa: BLE001\n            return ""\n        return ""\n\n    def _held_mid_show'),
 
  ("hazer test: a Hold's zero leaves it on at the link",
   'ltcplay/flamelink.py',
@@ -25115,8 +25115,8 @@ def build():
  # a refusal while it is on says turn it off, never press Stop.
  ('show control: the timed purge refusal says press Stop again',
   'ltcplay/remote.py',
-  '                       False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
-  '                       False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
+  '                                    "running", False):\n                return ("Show control is on (a show file is running), so "\n                        "the show file owns the flame channels; turn show "\n                        "control off first (End rehearsal in a rehearsal).")\n            try:\n                cs = self.control.state() or {}',
+  '                                    "running", False):\n                return ("Run is pressed (a show file is running), so the "\n                        "show file owns the flame channels; press Stop first.")\n            try:\n                cs = self.control.state() or {}'),
 
  ('show control: a new show file refusal says press Stop again',
   'ltcplay/remote.py',

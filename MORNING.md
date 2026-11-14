@@ -354,9 +354,11 @@ fires a slot only for a group it reports ARMED.
 - **On Hold (Jeff, 2026-11-14).** Hold, between shows, after a Stop or
   pressed during a show, no longer refuses or ends a timed purge: one may
   start on Hold and runs to its own end (the Hold PRESS still ends one
-  that is running, and Resume ends one first). Still refused: a show
-  playing, the show clock playing, show control on, Stop under way,
-  flamesafe or the flame link not answering.
+  that is running, and Resume ends one first). During a Hold pressed in
+  a show, show control on (as it is in a real show) does not refuse it
+  (Jeff, 2026-11-14). Still refused: a show playing, the show clock
+  playing, show control on at any other time, a show file starting, Stop
+  under way, flamesafe or the flame link not answering.
 - **One at a time.** No timed purge while Space or FIRE fires, and a
   momentary press while one runs ends it. The Fireball page, the wave
   flamer cleaning and live flame programming already refuse while a purge
