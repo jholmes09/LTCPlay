@@ -2186,6 +2186,7 @@
 "rows: Refueled +1 and Fill selected go through from a screen that is arranging": "test_machine_rows_refills_held_back_while_arranging",
 "rows: the arranging beat is never recorded": "test_machine_rows_refills_held_back_while_arranging",
 "ui 2.0: an arranging tank is drawn as a refill button": "test_ui2_fuel_arrange_driven",
+"ui 2.0: an arranging tank says the older fuel estimate, not its Shows left": "test_ui2_fuel_arrange_driven",
 "ui 2.0: Select to fill (Refill all's place) stays on while arranging": "test_ui2_fuel_arrange_driven",
 "rows: the saved rows file is never used": "test_machine_rows_one_file_both_steps",
 "rows: a rows file of another format is used": "test_machine_rows_one_file_both_steps",

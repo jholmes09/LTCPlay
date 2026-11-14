@@ -110217,7 +110217,7 @@ def _ui2_status_rows(problem=""):
 # The overlap and spill measure of _UI2_STEP_LAYOUT_JS, for any box.
 _UI2_ROWS_MEASURE_JS = r"""
 const vis = e => e.getClientRects().length && getComputedStyle(e).visibility !== "hidden";
-const nm = e => e.id || (e.dataset && (e.dataset.refill || e.dataset.mid || e.dataset.m)) || e.textContent.trim().replace(/\s+/g, " ").slice(0, 24);
+const nm = e => e.id || (e.dataset && (e.dataset.refill || e.dataset.stepUnit || e.dataset.mid || e.dataset.m)) || e.textContent.trim().replace(/\s+/g, " ").slice(0, 24);
 const measure = P => {
   const els = [...P.querySelectorAll("button, input, select, textarea, a, [role=button]")].filter(vis);
   const over = [];
@@ -110372,6 +110372,8 @@ const mid = el => { const r = el.getBoundingClientRect(); return [r.left + r.wid
 const fuelPosts = () => window.__posts.filter(p => p.route === "fuel-refill");
 const beats = () => window.__posts.filter(p => p.route === "arrangement" && p.body.beat === true);
 const saves = () => window.__posts.filter(p => p.route === "arrangement" && p.body.beat !== true);
+// Each tank's fuel words (its card's first small), by id.
+const words = () => Object.fromEntries([...document.querySelectorAll("#d-fuel .mrow-c > button")].map(b => [b.dataset.refill || b.dataset.stepUnit || b.dataset.mid, (b.querySelector("small") || {}).textContent]));
 await h.sleep(900);
 step("fuel");
 await h.sleep(700);
@@ -110382,11 +110384,13 @@ out.said_again = document.getElementById("fu-msg").textContent;
 const ab = document.getElementById("fu-arrange");
 out.btn = {hidden:ab.hidden, disabled:ab.disabled, text:ab.textContent.trim()};
 out.before = ids();
+out.words_before = words();
 ab.click();
 await h.sleep(400);
+out.words_arr = words();
 const bar = document.getElementById("fu-arr-bar");
 out.bar = {shown:!bar.hidden, head:bar.querySelector("b").textContent, bullets:[...bar.querySelectorAll("li")].map(l => l.textContent),
-  buttons:[...bar.querySelectorAll("button")].map(b => b.textContent.trim()), refills:document.querySelectorAll("#d-fuel [data-refill]").length,
+  buttons:[...bar.querySelectorAll("button")].map(b => b.textContent.trim()), refills:document.querySelectorAll("#d-fuel [data-refill], #d-fuel [data-step-unit]").length,
   all:document.getElementById("fu-fill").disabled, mv:[...bar.querySelectorAll("[data-mv]")].every(b => b.disabled)};
 out.beat_on = beats().length > 0 && beats().every(p => p.body.arranging === true && p.body.inst);
 // Every way a finger can press a tank while arranging: no refill leaves.
@@ -110417,7 +110421,8 @@ document.getElementById("fu-arr-save").click();
 await h.sleep(700);
 out.save = saves().map(p => p.body);
 out.beat_off = beats().slice(nb).some(p => p.body.arranging === false);
-out.after = {bar:!bar.isConnected || bar.hidden, refills:document.querySelectorAll("#d-fuel [data-refill]").length, msg:document.getElementById("fu-msg").textContent};
+out.after = {bar:!bar.isConnected || bar.hidden, refills:document.querySelectorAll("#d-fuel [data-refill], #d-fuel [data-step-unit]").length, msg:document.getElementById("fu-msg").textContent};
+out.words_saved = words();
 // Cancel: nothing saved.
 const ns = saves().length;
 document.getElementById("fu-arrange").click(); await h.sleep(300);
@@ -110454,7 +110459,9 @@ def test_ui2_fuel_arrange_driven():
             "while arranging no tap, click or Refill all sends a refill "
             "and the engine hears the arranging beat; tap and Right, Row "
             "up, New row, and a drag move tanks; Save layout sends every "
-            "row, Cancel and leaving the step send nothing; afterwards a "
+            "row, Cancel and leaving the step send nothing; every card "
+            "says the same fuel words before, while and after arranging; "
+            "afterwards a "
             "tap asks to log a refill again; a broken rows file is said "
             "once; the new strings are short, with no dashes")
     chrome = _find_chromium()
@@ -110482,6 +110489,17 @@ def test_ui2_fuel_arrange_driven():
     check(m["btn"] == {"hidden": False, "disabled": False,
                        "text": "Arrange"} and m["before"] == want,
           f"Arrange on the show PC with Show files: {m['btn']}")
+    wb, wa, ws = m["words_before"], m["words_arr"], m["words_saved"]
+    check(wb.get("ground-2") == "Shows left: 7" and
+          wb.get("scaffold-2") == "Shows left: 3, estimating" and
+          wb.get("ground-1") == "12 shows left" and
+          set(wb) == {u["id"] for u in fx["units"]},
+          f"before Arrange: a tank with a countdown says its Shows left, "
+          f"one without its estimate: {wb}")
+    check(wa == wb and ws == wb,
+          f"the same fuel words on every card before Arrange, while "
+          f"arranging and after Save layout (Jeff, 2026-11-14): "
+          f"{[(k, wb.get(k), wa.get(k), ws.get(k)) for k in sorted(set(wb) | set(wa) | set(ws)) if not wb.get(k) == wa.get(k) == ws.get(k)]}")
     b = m["bar"]
     check(b["shown"] and b["head"] == "ARRANGING: refills held back" and
           b["refills"] == 0 and b["all"] and b["mv"] and m["beat_on"],
