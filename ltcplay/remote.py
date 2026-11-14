@@ -4471,6 +4471,11 @@ class Remote:
             self.live_flame_cut(f"{who or 'someone'} pressed {name} on the "
                                 f"{screen}", who, screen)
         if name == "hold":
+            # The hazer test ends at a Hold press too (Jeff, 2026-11-14): a
+            # Hold no longer refuses it, so the press itself takes it off,
+            # as it does the timed purge. Only the link's cut here.
+            self.hazer_test_cut(f"{who or 'someone'} pressed Hold on the "
+                                f"{screen}", who, screen)
             # Every laser disarmed at the press too (Jeff, 2026-10-22,
             # ruling 3), from every surface, before the confirm check and
             # before the scheduler: only the arm's state changes on this
@@ -5956,9 +5961,10 @@ class Remote:
 
     def hazer_test_show_busy(self):
         """Why a show owns the hazers now (the hazer test is refused, and
-        one running ends), or "": the scheduled show playing or held, or
-        show control on or starting (the timed purge's own test). Fails
-        closed."""
+        one running ends), or "": the scheduled show playing or paused mid
+        show, or show control on or starting (the timed purge's own test).
+        The schedule's Hold and no schedule at all are not busy (Jeff,
+        2026-11-14: hazers like flames). Fails closed."""
         try:
             # Read here, not through hazer_show_state (which reads an error
             # as idle): an error is busy (fail closed).
@@ -5966,7 +5972,8 @@ class Remote:
             if st == "playing":
                 return "a show is playing, and the show drives the hazers"
             if st == "held":
-                return "a show is on Hold; the show drives the hazers"
+                return ("a show is paused mid show (PAUSED); the show "
+                        "drives the hazers")
             # Stop leaves show control on (#231): the way out is to turn
             # it off (End rehearsal in a rehearsal), as the timed purge says.
             if getattr(getattr(self.control, "session", None), "running",
@@ -5990,13 +5997,19 @@ class Remote:
         return ""
 
     def _ht_state(self):
-        """The scheduled show for the hazer test: "playing", "held" or
-        "idle"; raises when it cannot be read."""
+        """The scheduled show for the hazer test: "playing" (SHOW), "held"
+        (PAUSED: a show paused mid show) or "idle"; raises when it cannot
+        be read. The schedule's Hold (between shows, a Stop's too) and no
+        schedule loaded at all are "idle" (Jeff, 2026-11-14: the operator
+        may test anything then, as with flames; no show drives the hazers
+        on Hold, hazers.py)."""
         m = getattr(self.schedule, "machine", None)
+        if m is None:
+            return "idle"
         state = m.state
         if state == "SHOW":
             return "playing"
-        if state in ("HOLD", "PAUSED"):
+        if state == "PAUSED":
             return "held"
         return "idle"
 
@@ -7227,16 +7240,16 @@ class Remote:
 
     def timed_purge_blockers(self, t):
         """morning.Purge's engine checks for a timed purge, at its start
-        (`t` None) and on every send while it runs: a Hold standing, Stop
-        under way, Run pressed or starting, the flame link not sending or
-        alarmed, and (running) the starter's sign-in gone. "" or why.
-        Plain reads; fails closed."""
+        (`t` None) and on every send while it runs: Stop under way, Run
+        pressed or starting, the flame link not sending or alarmed, and
+        (running) the starter's sign-in gone. "" or why. A show live is
+        the Morning page's own check (show_live_refusal). Plain reads;
+        fails closed."""
         try:
             svc = self.schedule
-            state = getattr(getattr(svc, "machine", None), "state", None)
-            if state == "HOLD":
-                return ("a Hold is standing; Resume first, then "
-                        "start it again.")
+            # The schedule's Hold (a Stop's too) is no blocker (Jeff,
+            # 2026-11-14: the operator tests anything on Hold); the Hold
+            # press ends a running one (timed_purge_cut at the press).
             if getattr(svc, "halting", lambda: False)() is True:
                 return "Stop is under way."
             if getattr(getattr(self.control, "session", None), "running",
@@ -7486,24 +7499,35 @@ class Remote:
         except Exception:                        # noqa: BLE001
             return None
 
-    def laser_arm_blockers(self, look=None):
-        """Why no laser may be armed (nor BEYOND's laser output switched
-        on) right now, or "": a Hold (a Stop's too) until Resume, the
-        night closing, and no schedule at all (the show state
-        unknown). Plain reads, never a lock: the laser gate asks this.
-        `look`: the conductor's look already read (laser_enable_blockers),
-        else read here."""
+    def laser_arm_blockers(self, look=None, light=False):
+        """Why no laser may be armed right now, or "": a show paused mid
+        show (PAUSED) or a conductor hold that is not the schedule's Hold
+        (a Programming Pause), and the night closing. On the schedule's
+        Hold (a Stop's too) and with no schedule at all a laser MAY be
+        armed (Jeff, 2026-11-14: lasers and hazers like flames, the
+        operator tests anything); `light` True (laser_enable_blockers)
+        adds both back as reasons the lasers may not be LIT, so an arm
+        there never lights anything by itself: BEYOND's laser output
+        stays off until the show plays again. Plain reads, never a lock:
+        the laser gate asks this. `look`: the conductor's look already
+        read (laser_enable_blockers), else read here."""
         svc = self.schedule
         m = getattr(svc, "machine", None)
         if m is None:
-            return ("the show state is not known (no schedule is loaded), "
-                    "so no laser may be armed")
+            if light:
+                return ("the show state is not known (no schedule is "
+                        "loaded), so the lasers stay dark")
+            return ""
         cond = getattr(svc, "conductor", None)
         state = getattr(m, "state", None)
         if look is None:
             look = getattr(cond, "_look", None)
-        if state in ("PAUSED", "HOLD") or look in ("HELD", "DARK"):
+        if state == "PAUSED" or (look in ("HELD", "DARK") and
+                                 state != "HOLD"):
             return "the show is on Hold; press Resume first, then arm"
+        if light and state == "HOLD":
+            return ("the schedule is on Hold, so the lasers stay dark "
+                    "until a show plays after Resume")
         if state == "CLOSING":
             return "the night is closing"
         return ""
@@ -7520,7 +7544,7 @@ class Remote:
         svc = self.schedule
         m = getattr(svc, "machine", None)
         if m is None:
-            return self.laser_arm_blockers()
+            return self.laser_arm_blockers(light=True)
         cond = getattr(svc, "conductor", None)
         # The conductor's look and its keep as ONE read (look_and_keep),
         # never the look and then the keep (cold review of #223, M2).
@@ -7530,7 +7554,7 @@ class Remote:
         except Exception:                           # noqa: BLE001
             look, keep = getattr(cond, "_look", None), False
         state = getattr(m, "state", None)
-        why = self.laser_arm_blockers(look=look)
+        why = self.laser_arm_blockers(look=look, light=True)
         if not why:
             return why
         try:

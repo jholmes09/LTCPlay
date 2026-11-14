@@ -2423,9 +2423,11 @@ class Morning:
     def _arm_blockers(self, enable=False):
         """Why no laser may be armed, nor BEYOND's laser output switched on,
         right now (laserarm.LaserArm's `blockers`): this page's settings or
-        lockout cannot be trusted, then the engine's own (an Abort latch,
-        a Hold, the night closing). "" when nothing blocks. `enable`: the
-        engine's lighting blockers instead (_arm_enable_blockers)."""
+        lockout cannot be trusted, then the engine's own (a show paused mid
+        show, the night closing). "" when nothing blocks. `enable`: the
+        engine's lighting blockers instead (_arm_enable_blockers), which
+        also name the schedule's Hold and no schedule loaded: an arm there
+        is allowed (Jeff, 2026-11-14) but lights nothing."""
         if self.config_error:
             return (f"ltcplay_morning.json could not be read "
                     f"({self.config_error})")

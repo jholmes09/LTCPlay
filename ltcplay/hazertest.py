@@ -44,18 +44,20 @@ The rules
     on, with a countdown on the screen; its starter's sign-in ending, or
     flamesafe not passing it for NOT_PASSING_S, ends that hazer.
   - Every hazer of the test ends on Stop and Abort (disarm_all ends it at
-    the link before its first copy), Hold (a zero), Hazers off, the page
-    that started it going quiet for PAGE_QUIET_S (its beat), a show
-    starting or held, show control turning on, live flame programming,
-    flamesafe's status not fresh, the flame link not sending, or any error
-    (fail closed: OFF, and said).
+    the link before its first copy), a Hold press (and a Hold's zero),
+    Hazers off, the page that started it going quiet for PAGE_QUIET_S
+    (its beat), a show starting or paused mid show, show control turning
+    on, live flame programming, flamesafe's status not fresh, the flame
+    link not sending, or any error (fail closed: OFF, and said).
   - ON names its hazers (validated against the engine's own hazer list; a
     name it does not have refuses the whole press) and needs the role
     matrix's arm row (users.classify "hazer-test", the row that turns a
     hazer On for the show), from the show network screen_arming too
     (remote.may_act_from), every check that turning a hazer On has today
-    (hazers.Hazers.refusal), no show playing or held, show control off,
-    and a Haze level above 0 on each selected hazer.
+    (hazers.Hazers.refusal), no show playing or paused mid show (on the
+    schedule's Hold, after a Stop, and with no schedule loaded it may run:
+    Jeff, 2026-11-14), show control off, and a Haze level above 0 on
+    each selected hazer.
   - OFF: always, anyone, signed in or not; for the named hazers, or all.
     An OFF naming a hazer the engine does not have turns every one off.
 """

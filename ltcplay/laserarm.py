@@ -55,9 +55,23 @@ anything else is asked, and the blank and DisableLaserOutput go out on
 this module's own sender thread: the press never waits on a lock, a disk
 or BEYOND. Abort's existing blank on the pressing thread stays the fast
 path. A disarm is never undone by Resume or Reset: the lasers come back
-only once an operator arms them again (refused while the Abort latch
-stands or the show is on Hold). The night closing disarms them too
+only once an operator arms them again. The night closing disarms them too
 (ruling 4). Nothing here starts a show or presses Run (ruling 5).
+
+Arming on Hold and with no schedule (Jeff, 2026-11-14, replacing the
+"refused on Hold" half of ruling 3): lasers behave like flames, so on the
+schedule's Hold (a Stop's too) and with no schedule loaded an operator MAY
+arm a laser and run its calibration test. ARMED there is not LIT: the
+engine's lighting blockers (`enable_blockers`, remote.laser_enable_blockers)
+still name the Hold and the missing schedule, so may_enable() says no, no
+EnableLaserOutput is sent and the conductor is not told (on_permitted).
+Resume lights nothing by itself either: the lasers light only when the
+laser gate (fire_ice.attach: the show state gate, SHOW, PAUSED or
+REHEARSAL, or Programming playback, AND may_enable) says yes, at the next
+show start or the Resume of a show that is playing, exactly as for lasers
+armed before it. Still refused: a show paused mid show (PAUSED), a
+Programming Pause, the night closing, a lockout or settings problem, and
+a Stop or Hold press under way (press_begin).
 
 The sender
 ==========
@@ -143,8 +157,8 @@ class LaserArm:
                 output_fault, output_enable() and output_disable() are the
                 only way this module reaches BEYOND.
     blockers    callable() -> "" or a sentence: why nothing may be armed
-                or enabled now (an Abort latch, a Hold, the night closing,
-                a settings or lockout problem). Raises: blocked.
+                now (a show paused mid show, the night closing, a settings
+                or lockout problem). Raises: blocked.
     blank_now   callable(what) or None: the lasers' blank on the caller's
                 thread (the conductor's lasers_dark_now, which keeps its
                 record). None: output().blank().
@@ -171,10 +185,11 @@ class LaserArm:
         # What keeps the lasers from being LIT (may_enable: the laser
         # gate, the Blanking's per-packet check and the watcher's
         # disarm-on-blocker), when that differs from what refuses a new
-        # ARM (refusal). None: the same `blockers` for both. The one
-        # difference today is a Programming Pause (Jeff, 2026-11-06,
-        # remote.laser_enable_blockers): lasers already armed stay armed
-        # through it, but a new arm is still refused as in a show's Hold.
+        # ARM (refusal). None: the same `blockers` for both. The
+        # differences today (remote.laser_enable_blockers): a Programming
+        # Pause (Jeff, 2026-11-06) keeps lasers already armed armed but
+        # refuses a new arm; the schedule's Hold and no schedule loaded
+        # (Jeff, 2026-11-14) allow a new arm but never light it.
         self._enable_blockers = enable_blockers
         self.blank_now = blank_now
         self.per_laser = per_laser
