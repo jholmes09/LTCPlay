@@ -4114,14 +4114,19 @@
 "purge page: a lasting refusal (no operator, role) makes a tap arm again, so the unit cannot be taken off": "test_purge_page_says_selected_vs_armed_and_not_firing",
 "purge page: with flamesafe stale no unit can be taken off by a tap": "test_purge_page_says_selected_vs_armed_and_not_firing",
 "purge page: NOT FIRING asks for a tap while the key is held (the tap is refused)": "test_purge_page_says_selected_vs_armed_and_not_firing",
-"morning: a tap that takes a unit off starts the double tap window": "test_purge_a_deliberate_press_arms_a_selected_unit",
 "morning: a tap on a selected unit skips the purge's refusals (a live show, a Hold)": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
 "morning: a tap on a selected unit skips the lockout check": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
 "morning: a tap on a selected unit joins a purge already firing (HIGH)": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
-"morning: Clear leaves the double tap windows, so a tap after Clear is ignored": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
 "morning: Clear leaves the purge taps standing": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
 "purge page: the fire key reads FIRING with nothing lit": "test_purge_page_says_selected_vs_armed_and_not_firing",
 "purge page: the fire key says Deck FIRE with nothing armed": "test_purge_page_says_selected_vs_armed_and_not_firing",
 "purge page: a map tile drops its 'not armed' words": "test_purge_page_says_selected_vs_armed_and_not_firing",
-"purge page: a group button with nothing armed says Armed": "test_purge_page_says_selected_vs_armed_and_not_firing"
+"purge page: a group button with nothing armed says Armed": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"morning: an off tap starts no double tap window (off, then on 0.3 s later re-arms)": "test_purge_a_deliberate_press_arms_a_selected_unit",
+"morning: Clear starts no double tap window": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
+"morning: an off tap is ignored inside the double tap window": "test_purge_a_deliberate_press_arms_a_selected_unit",
+"morning: a selected unit that cannot be armed now cannot be taken off by a tap": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
+"remote: with the Stream Deck program down a tap cannot take a unit off": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"purge page: with the Stream Deck program down a tap asks for an arm": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"morning: tap numbers start again at 1 after an engine restart (the deck skips a new tap)": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule"
 }

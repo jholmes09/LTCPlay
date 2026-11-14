@@ -7147,6 +7147,31 @@ class Remote:
                           ctx.local, owner=self._page_owner(ctx),
                           token=getattr(ctx, "token", "") or "",
                           end_only=True)
+        if name == "purge-select" and body.get("on") is not False:
+            # A tap on units already selected when no arm can happen from
+            # here (purge arming off, the Stream Deck program not reading):
+            # it takes them off (Jeff, 2026-11-14: deselecting is always
+            # possible), never refused.
+            try:
+                deck_alive = self.clock() - (self._deck_seen or -1e9) <= \
+                    self.DECK_QUIET_S
+            except Exception:
+                deck_alive = False
+            why = "" if self.purge_enabled(ctx.local) else \
+                "Arming a purge from here is switched off."
+            if not why and not deck_alive:
+                why = ("The Stream Deck program has not read this engine in "
+                       "the last 2 s, and it is what arms a group.")
+            ids = body.get("machines") if isinstance(
+                body.get("machines"), list) else [body.get("machine")]
+            sel = list(m.purge.selected)
+            if why and ids and all(str(i) in sel for i in ids):
+                code, out = m.post(name, dict(body, on=False), device, who,
+                                   screen, seen_ok, ctx.local)
+                if code == 200:
+                    out = dict(out, off=True, text=f"Taken off the purge: "
+                               f"it cannot be armed now. {why}")
+                return code, out
         if timed_start or \
                 (name == "purge-select" and body.get("on") is not False) or \
                 (name == "purge-fire" and users_mod.purge_fire_wanted(body)):

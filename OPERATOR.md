@@ -565,17 +565,22 @@ reason). What a tap does:
 - Selected, not armed because it simply is not armed yet, the Stream
   Deck's 2 s wait refused it, or the deck let it go: arms it again (it
   stays selected). This is the deliberate press: it always works, unless
-  it is within 2 s of this screen's last arm tap on that machine.
-- Selected, not armed for a reason another tap cannot change (no Stream
-  Deck operator chosen, your role, no Stream Deck key, flamesafe's own
-  reason, flamesafe not reporting): takes it off. The words end "a tap
-  takes it off". A unit can always be taken off with a tap.
-- Within 2 s of this screen's last arm tap taken on the same machine, a tap that would
-  arm is ignored as a double tap ("a second tap within 2 s was ignored").
-  Tap again after 2 s. The 2 s count from this screen's arm taps only: a
-  tap that takes a unit off and Clear end the window; a refused tap,
+  it is a double tap (below).
+- Selected, but it cannot be armed now for any reason (the Stream Deck
+  program not reading the engine, no Stream Deck operator chosen, your
+  role, no Stream Deck key, flamesafe's own reason, flamesafe not
+  reporting, a lock, a Hold, another screen holding the selection): takes
+  it off. The words end "a tap takes it off". A unit can always be taken
+  off with a tap, from any screen; only a press already firing refuses a
+  tap (let go of the key first).
+- Double taps: every tap you make on a unit (on or off) and Clear start a
+  2 s window for that screen and unit. A tap that would arm inside it is
+  ignored ("a second tap within 2 s was ignored ... Tap again in a
+  moment"), so a double tap on an armed unit leaves it off. A tap that
+  takes a unit off is never ignored, and Clear never is. A refused tap,
   another screen's tap and a disarm nobody pressed (the page changing
-  step, the Stream Deck losing the engine) start nothing.
+  step, the Stream Deck losing the engine) start nothing, so the next
+  deliberate tap after one of those always works.
 
 Nothing arms on its own: no retry, no re-arm after a Stop, a Hold, a lost
 connection or a disarm on the deck. One slow read by the Stream Deck no

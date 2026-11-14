@@ -11584,10 +11584,8 @@ def build():
  # fire unintentionally, or fail to stop (MORNING.md's threat table).
  ("morning: a locked machine can be armed for a purge (T5)",
   "ltcplay/morning.py",
-  '''        if self._lockout.is_locked("machine", machine_id):
-            return 409, {"error": f"{m.name} is locked out, so it cannot "''',
-  '''        if False:
-            return 409, {"error": f"{m.name} is locked out, so it cannot "'''),
+  '''        if not why and self._lockout.is_locked("machine", machine_id):''',
+  '''        if False:'''),
 
  # A group button (Jeff, 2026-10-28, show PC: front-row-4 locked out
  # stopped the group at 1 to 3, the button stayed grey and the second
@@ -12201,8 +12199,8 @@ def build():
 
  ("morning: a click on a fireball arms its group for a purge",
   "ltcplay/morning.py",
-  "        never = cfg.purge_refusal(m)\n        if never in NEVER_SELECTED:",
-  "        never = cfg.purge_refusal(m)\n        if False:"),
+  "               if never in NEVER_SELECTED else self._refusal(device, seen_ok))",
+  "               if False else self._refusal(device, seen_ok))"),
 
  ("morning: a fireball in the purge selection asks the deck to arm its group",
   "ltcplay/morning.py",
@@ -13787,15 +13785,15 @@ def build():
 
  ("morning: a second purge tap within 2 s is taken (no double tap rule)",
   "ltcplay/morning.py",
-  '''            if last is not None and 0 <= now - last < TAP_IGNORE_S:''',
-  '''            if False:'''),
+  '''        if last is not None and 0 <= now - last < TAP_IGNORE_S:''',
+  '''        if False:'''),
 
  ("morning: a tap on a selected, unarmed unit asks the deck for nothing",
   "ltcplay/morning.py",
-  '''            self._press_n += 1
+  '''            self._press_n = max(self._press_n + 1, int(time.time() * 1000))
             self._presses[m.group] = (self._press_n, now)''',
   '''            if not again:
-                self._press_n += 1
+                self._press_n = max(self._press_n + 1, int(time.time() * 1000))
                 self._presses[m.group] = (self._press_n, now)'''),
 
  ("morning: the deck is never told of a purge tap",
@@ -13823,40 +13821,27 @@ def build():
 
  ("purge page: with flamesafe stale no unit can be taken off by a tap",
   "ltcplay/web/remote2.html",
-  '''  if(!fl || fl.stale || fl.connected === false) return true;''',
-  '''  if(!fl) return true;'''),
+  '''  if(purgeDeckDown() || !fl || fl.stale || fl.connected === false) return true;''',
+  '''  if(purgeDeckDown() || !fl) return true;'''),
 
  ("purge page: NOT FIRING asks for a tap while the key is held (the tap is refused)",
   "ltcplay/web/remote2.html",
   '''. Release the key first, then tap a unit that is not armed to arm it.";''',
   '''. Tap a unit that is not armed to arm it.";'''),
 
- ("morning: a tap that takes a unit off starts the double tap window",
-  "ltcplay/morning.py",
-  '''            if tap:
-                self._taps.pop((device, machine_id), None)''',
-  '''            if tap:
-                self._taps[(device, machine_id)] = self._clock()'''),
-
  ("morning: a tap on a selected unit skips the purge's refusals (a live show, a Hold)",
   "ltcplay/morning.py",
-  '''        why = self._refusal(device, seen_ok)
-        if why:
-            return 409, {"error": why}
-        if self._lockout.is_locked("machine", machine_id):''',
-  '''        why = "" if machine_id in self.selected else \\
-            self._refusal(device, seen_ok)
-        if why:
-            return 409, {"error": why}
-        if self._lockout.is_locked("machine", machine_id):'''),
+  '''               if never in NEVER_SELECTED else self._refusal(device, seen_ok))''',
+  '''               if never in NEVER_SELECTED else ("" if machine_id in
+                                                 self.selected else
+                                                 self._refusal(device,
+                                                               seen_ok)))'''),
 
  ("morning: a tap on a selected unit skips the lockout check",
   "ltcplay/morning.py",
-  '''        if self._lockout.is_locked("machine", machine_id):
-            return 409, {"error": f"{m.name} is locked out, so it cannot "''',
-  '''        if machine_id not in self.selected and \\
-                self._lockout.is_locked("machine", machine_id):
-            return 409, {"error": f"{m.name} is locked out, so it cannot "'''),
+  '''        if not why and self._lockout.is_locked("machine", machine_id):''',
+  '''        if not why and machine_id not in self.selected and \\
+                self._lockout.is_locked("machine", machine_id):'''),
 
  ("morning: a tap on a selected unit joins a purge already firing (HIGH)",
   "ltcplay/morning.py",
@@ -13864,12 +13849,6 @@ def build():
             # A machine never joins a press that is already firing (review''',
   '''        if machine_id not in self.selected and self.press_live():
             # A machine never joins a press that is already firing (review'''),
-
- ("morning: Clear leaves the double tap windows, so a tap after Clear is ignored",
-  "ltcplay/morning.py",
-  '''            self._taps.clear()
-''',
-  ''''''),
 
  ("morning: Clear leaves the purge taps standing",
   "ltcplay/morning.py",
@@ -13896,6 +13875,52 @@ def build():
   "ltcplay/web/remote2.html",
   '''notArmed.length ? purgeNotArmedText(notArmed[0], flg) : any ? "Selected and armed. Tap: off"''',
   '''any ? "Armed. Tap: off"'''),
+
+ ("morning: an off tap starts no double tap window (off, then on 0.3 s later re-arms)",
+  "ltcplay/morning.py",
+  '''            if tap:
+                self._taps[(device, machine_id)] = self._clock()
+            if self.timed_running()''',
+  '''            if self.timed_running()'''),
+
+ ("morning: Clear starts no double tap window",
+  "ltcplay/morning.py",
+  '''                for mid in had:
+                    self._taps[(device, mid)] = now''',
+  '''                for mid in had:
+                    pass'''),
+
+ ("morning: an off tap is ignored inside the double tap window",
+  "ltcplay/morning.py",
+  '''        if not on:
+            # A tap that takes a machine off is never ignored, from any''',
+  '''        if not on and tap and 0 <= self._clock() - self._taps.get(
+                (device, machine_id), -1e9) < TAP_IGNORE_S:
+            return 200, {"ok": True, "ignored": True, "text": "ignored",
+                         "selected": list(self.selected)}
+        if not on:
+            # A tap that takes a machine off is never ignored, from any'''),
+
+ ("morning: a selected unit that cannot be armed now cannot be taken off by a tap",
+  "ltcplay/morning.py",
+  '''        if why and tap and machine_id in self.selected and \\
+                not self.press_live():''',
+  '''        if False:'''),
+
+ ("remote: with the Stream Deck program down a tap cannot take a unit off",
+  "ltcplay/remote.py",
+  '''            if why and ids and all(str(i) in sel for i in ids):''',
+  '''            if False:'''),
+
+ ("purge page: with the Stream Deck program down a tap asks for an arm",
+  "ltcplay/web/remote2.html",
+  '''  if(purgeDeckDown() || !fl || fl.stale || fl.connected === false) return true;''',
+  '''  if(!fl || fl.stale || fl.connected === false) return true;'''),
+
+ ("morning: tap numbers start again at 1 after an engine restart (the deck skips a new tap)",
+  "ltcplay/morning.py",
+  '''            self._press_n = max(self._press_n + 1, int(time.time() * 1000))''',
+  '''            self._press_n += 1'''),
 
  ("purge page: selected reads as armed on the step",
   "ltcplay/web/remote2.html",

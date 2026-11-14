@@ -5278,7 +5278,11 @@ const PURGE_TAP_AT = {};
 let PURGE_SAID = "";   // the not armed words the message line last got (said once, never over another message)
 function purgeGroupOf(m, fl){ return ((fl && fl.groups) || []).find(x => x.name === m.group) || null; }
 function purgeArmed(m, fl){ const g = purgeGroupOf(m, fl); return !!(g && g.armed === "armed" && fl && !fl.stale); }
+// The Stream Deck program not reading the engine (its status, ST.deck):
+// nothing can be armed until it does.
+function purgeDeckDown(){ return typeof ST !== "undefined" && !!ST && !!ST.deck && ST.deck.heard === false; }
 function purgeWhyNot(m, fl){
+  if(purgeDeckDown()) return "the Stream Deck program is not reading the engine";
   if(!fl || fl.stale) return "flamesafe has not reported";
   const g = purgeGroupOf(m, fl);
   if(!g) return "flamesafe does not list group " + m.group;
@@ -5292,7 +5296,7 @@ function purgeWhyNot(m, fl){
 // connected, the group unknown): the tap takes the unit OFF instead, so a
 // unit can always be deselected by a tap (Jeff, 2026-11-14).
 function purgeStuckFor(m, fl){
-  if(!fl || fl.stale || fl.connected === false) return true;
+  if(purgeDeckDown() || !fl || fl.stale || fl.connected === false) return true;
   const g = purgeGroupOf(m, fl);
   if(!g || g.reason) return true;
   return !!g.purge_refused && g.purge_refused !== "refractory" && g.purge_refused !== "dropped";

@@ -266,10 +266,14 @@ the page closed) it stays disarmed until the next tap. A tap on a machine
 already selected whose group is not armed is such a tap: the page sends
 `on: true` for it (only while the refusal is one a tap can clear: none,
 `refractory`, `dropped`; otherwise the tap takes it off), the engine keeps
-the selection and numbers the tap. An arm tap within `TAP_IGNORE_S` (2 s)
-of the same screen's last arm tap taken on that machine is ignored as a
-double tap (Clear and an off tap end the window); a
-tap that takes a machine off is never ignored and starts no window. Nothing re-arms on its own: a group the deck
+the selection and numbers the tap; one that cannot be armed now for any
+reason (deck program not reading, purge arming off, a refusal, a lock,
+another screen's selection) takes the machine off instead. Every tap a
+screen makes on a machine (on or off) and its Clear start a `TAP_IGNORE_S`
+(2 s) window for that screen and machine; an arming tap inside it is
+ignored as a double tap, an off tap and Clear never are. Tap numbers are
+wall clock based, so a deck that outlives an engine restart never skips a
+new tap. Nothing re-arms on its own: a group the deck
 let go (a quiet engine past the grace, reported as `dropped`), refused or
 an operator disarmed on the deck stays selected and unarmed until the next
 tap. A disarm the deck does by itself (purge_pass: the list changed, the
