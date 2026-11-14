@@ -1,0 +1,17 @@
+{
+ "available": true,
+ "on": false,
+ "file": "C:\\Users\\show\\AppData\\Local\\ltcplay\\Announcements\\welcome.wav",
+ "name": "welcome.wav",
+ "file_ok": true,
+ "file_why": null,
+ "length_s": 30.0,
+ "error": null,
+ "lead_s": 120,
+ "last": null,
+ "choices": [
+  {"path": "C:\\Users\\show\\AppData\\Local\\ltcplay\\Announcements\\welcome.wav", "name": "welcome.wav", "available": true, "reason": null, "length_s": 30.0},
+  {"path": "C:\\Users\\show\\AppData\\Local\\ltcplay\\Announcements\\doors.wav", "name": "doors.wav", "available": true, "reason": null, "length_s": 12.0},
+  {"path": "C:\\Users\\show\\AppData\\Local\\ltcplay\\Announcements\\delayed.wav", "name": "delayed.wav", "available": true, "reason": null, "length_s": 12.0}
+ ]
+}

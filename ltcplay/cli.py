@@ -1527,6 +1527,9 @@ def _cmd_serve(args):
         args.port = remote_mod.FIXED_PORT
         flamesafe_config = flamesafe_config or rs["flamesafe_config"]
     network_fallback, network_note = _network_if_saved(args)
+    tailscale, tailscale_note = _tailscale_if_on(args)
+    # This PC's own MagicDNS names, learned with the address.
+    tailscale_names = tuple(getattr(_tailscale_if_on, "names", ()) or ())
     if flamesafe_config is None and fire_ice is not None:
         # Fire & Ice: the flame link's own flamesafe config also feeds the
         # remote page's flame lamps, and (through its status_mirror_port)
@@ -1547,7 +1550,10 @@ def _cmd_serve(args):
                               flamesafe_config=flamesafe_config,
                               accounts=True, config_watch=cfg_watch,
                               network_fallback=network_fallback,
-                              network_note=network_note)
+                              network_note=network_note,
+                              tailscale=tailscale,
+                              tailscale_note=tailscale_note,
+                              tailscale_names=tailscale_names)
     except OSError as e:
         return _err(f"Could not listen on {args.bind}:{args.port}: {e}\n"
                     f"Something else may already be using that port. Try "
@@ -1581,8 +1587,8 @@ def _cmd_serve(args):
         print("  " + (sv.error or (
             "Loaded. It decides but does not act: no show is started by it "
             "in this build." if sv.dry_run else
-            "Loaded. It performs: it starts the show on schedule once Run "
-            "has been pressed.")))
+            "Loaded. It performs: it starts the show on schedule once show "
+            "control is on.")))
     if fire_ice is not None:
         print(f"Fire & Ice: {fire_ice.path or 'no ltcplay_fire_ice.json'}")
         print(f"  {fire_ice.summary()}")
@@ -1674,6 +1680,42 @@ def _network_if_saved(args, load=None):
         return False, why
     args.bind = saved
     return True, ""
+
+
+def _tailscale_if_on(args, load=None, find=None):
+    """Remote access over Tailscale (Jeff, 2026-11-12): (address, note).
+    Only for an engine that serves other machines (--network or
+    --network-if-saved), and only with "tailscale_remote": true in
+    ltcplay_remote.json (OFF unless it says so). The address is this PC's
+    own Tailscale IPv4 address, in 100.64.0.0/10, found by
+    remote.find_tailscale; (None, why) when Tailscale is not installed,
+    not running, or its address is not this PC's. Its MagicDNS names are
+    left in _tailscale_if_on.names. Never raises."""
+    _tailscale_if_on.names = ()
+    if not (getattr(args, "network_if_saved", False) or
+            getattr(args, "network", False)):
+        return None, ""
+    from . import remote as remote_mod
+    try:
+        on = (load or remote_mod.load_settings)().get("tailscale_remote")
+    except ValueError:
+        return None, ""
+    if on is not True:
+        return None, ""
+    try:
+        got = (find or remote_mod.find_tailscale)()
+    except Exception as e:                       # noqa: BLE001
+        got = {"state": "unknown", "address": None,
+               "head": f"Tailscale could not be checked "
+                       f"({type(e).__name__})", "bullets": []}
+    addr = got.get("address")
+    if got.get("state") == "found" and remote_mod.is_tailscale_address(addr):
+        _tailscale_if_on.names = tuple(got.get("names") or ())
+        return addr, ""
+    why = " ".join([str(got.get("head") or "Tailscale not found") + "."] +
+                   [str(b) for b in got.get("bullets") or []])
+    print(why, flush=True)
+    return None, why
 
 
 def _config_watch_at_start(args, schedule):
@@ -1868,6 +1910,13 @@ def _shutdown(httpd):
         try:
             lb.shutdown()
             lb.server_close()
+        except Exception:
+            pass
+    ts = getattr(httpd, "tailscale_door_server", None)
+    if ts is not None:
+        try:
+            ts.shutdown()
+            ts.server_close()
         except Exception:
             pass
     httpd.server_close()
@@ -2219,6 +2268,15 @@ def cmd_gen(args):
     return 0
 
 
+def cmd_superuser(args):
+    """users.main: the SuperUser, from this PC's command line only."""
+    from . import users as users_mod
+    argv = [args.cmd, args.name]
+    if args.folder:
+        argv += ["--folder", args.folder]
+    return users_mod.main(argv)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="ltcplay", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2486,6 +2544,20 @@ def main(argv=None):
                     help="the settings folder holding ltcplay_remote.json "
                          "(default: this machine's)")
     wx.set_defaults(func=cmd_weather)
+
+    # The SuperUser (users.py, 2026-11-13): made only here, on the show PC,
+    # by an account that can write the settings folder. On the Windows
+    # show PC: "ltcplay.exe superuser Jeff" in the LTC Player folder.
+    for name, what in (("superuser", "make an existing user the SuperUser "
+                                     "(this PC only)"),
+                       ("superuser-password", "a temporary password for a "
+                                              "SuperUser (this PC only)")):
+        su = sub.add_parser(name, help=what)
+        su.add_argument("name")
+        su.add_argument("--folder", default=None,
+                        help="the settings folder holding ltcplay_users.json "
+                             "(default: this machine's)")
+        su.set_defaults(func=cmd_superuser)
 
     args = ap.parse_args(argv)
     try:

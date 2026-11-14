@@ -11,6 +11,7 @@ const clone = o => JSON.parse(JSON.stringify(o));
 
 const PERMS = ["show", "arm", "unlock", "checklist", "show_files", "settings", "users"];
 const ROLE_MAY = {
+  superuser: Object.fromEntries(PERMS.map(p => [p, true])),
   admin: Object.fromEntries(PERMS.map(p => [p, true])),
   operator: {show: true, arm: true, unlock: true, checklist: true, show_files: false, settings: false, users: false},
   viewer: Object.fromEntries(PERMS.map(p => [p, false])),
@@ -56,6 +57,8 @@ function baseStatus(){
             {id: "cancellation", name: "Cancellation", available: true, missing: false, reason: null, length_s: 9.0},
             {id: "cannot_continue", name: "Cannot continue", available: true, missing: false, reason: null, length_s: 14.0}],
     playing: null};
+  // Pre-show audio (preshow_audio.py): off, a file chosen (fx/preshow_audio).
+  s.preshow_audio = (({choices, ...v}) => v)(FX("preshow_audio"));
   s.morning = {locked_machines: [], locked_lasers: [], flamesafe_confirmed: true, lock_error: "",
     flamesafe_extra: [], purge: false, laser_tests_on: [], open: false, config_error: "", purge_enabled: true,
     laser_arm: {armed: [], total: 4, output_permitted: false, output_fault: ""},
@@ -73,6 +76,10 @@ function baseStatus(){
   s.hazers = {available: true, down: "", last_off: null, agree: true, show: "idle", levels_fault: "",
     hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, haze_slot: 78 + 2 * n, fan_slot: 79 + 2 * n, armed: false,
       label: "Hazer " + n + " DISARMED", state: "disarmed", haze: 102, fan: 153, haze_pct: 40, fan_pct: 60, why: null}))};
+  // The Purge page's hazers (hazertest.py, 2026-11-13): each off, ready.
+  s.hazer_test = {available: true, names: ["Hazer 1", "Hazer 2", "Hazer 3"], on: false, names_on: [], state: "off", left_s: null,
+    max_s: 60, beat_s: 2, refusal: "", last_off: null,
+    hazers: [1, 2, 3].map(n => ({name: "Hazer " + n, on: false, state: "off", left_s: null, haze_pct: 40, fan_pct: 60}))};
   return s;
 }
 
@@ -89,16 +96,19 @@ const SCENARIOS = {
   // announcements and a hazer's arm are refused there, so they say why.
   ipad: s => { s.me.local = false; s.me.device = "iPad"; s.arming = Object.assign({}, s.arming || {}, {enabled: false}); },
   admin: s => { s.me = me("Jeff", "admin"); },
-  show_pending: s => { s.show = Object.assign({}, s.show, {running: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
+  // The SuperUser (users.py, 2026-11-13): the only view with the nightly
+  // upload's card (fx/real_users_superuser.json); an admin's has none.
+  superuser: s => { s.me = me("Jeff", "superuser"); },
+  show_pending: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true});  s.schedule.next = {show: 4, start: "19:30", in_s: 45, in_s_exact: 45}; s.countdown = {kind: "next", label: "Next show", s: 45, running: true};
     s.flames.groups.forEach(g => g.armed = "armed"); s.subsystems[3].word = "armed"; },
   running: s => { Object.assign(s.schedule, {state: "SHOW", running: 4, next: {show: 5, start: "19:50", in_s: 1500, in_s_exact: 1500}});
-    s.show = {running: true, starting: false, show: "Fire and Ice", timeline: "fireice_timeline.json", timecode: "01:03:12:08", state: "playing", rate_note: ""};
+    s.show = {running: true, show_control_on: true, starting: false, show: "Fire and Ice", timeline: "fireice_timeline.json", timecode: "01:03:12:08", state: "playing", rate_note: ""};
     s.countdown = {kind: "left", label: "Time left", s: 312, running: true};
     s.flames.groups.forEach(g => g.armed = "armed");
     s.laser_arm.lasers.forEach(l => l.armed = true); s.subsystems[3].word = "armed"; },
   held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "PAUSED", held: true}); s.countdown.running = false; },
   stop_held: s => { SCENARIOS.running(s); Object.assign(s.schedule, {state: "HOLD", running: null, held: true, stop_held: true});
-    s.show.running = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
+    s.show.running = false; s.show.show_control_on = false; s.flames.groups.forEach(g => { g.armed = "held"; g.reason = "Disarmed by the show's Stop. Cycle the arm to re-arm."; });
     s.laser_arm.lasers.forEach(l => l.armed = false); s.countdown = {kind: "next", label: "Next show", s: 1500, running: true}; },
   alerts_open: s => { const p = FX("status_pico"); s.alerts = p.alerts; s.flames.cues_fault = p.flames.cues_fault;
     s.deck = p.deck; s.morning.locked_machines = ["wave flamer 3"]; s.disk = p.disk;
@@ -111,19 +121,19 @@ const SCENARIOS = {
     s.morning.group_machines["wave flamer"].locked = 1; s.morning.group_machines["cat-walk"].locked = 1;
     s.laser_arm.lasers[2].locked = true; },
   programming: s => { s.me = me("Jeff", "admin"); s.transport = {programming: true, why: "", freerun: false, paused: false, loop: ["01:00:30:00", "01:01:10:00"], marks: {a: "01:00:30:00", b: "01:01:10:00"}, playhead: "show_audio", playing: true};
-    s.show = {running: true, starting: false, show: "Fire and Ice", timeline: "fireice_timeline.json", timecode: "01:00:44:12", state: "playing", rate_note: ""}; },
-  announcing: s => { s.show = Object.assign({}, s.show, {running: true});  s.schedule.held = true; s.schedule.state = "STANDBY";
+    s.show = {running: true, show_control_on: true, starting: false, show: "Fire and Ice", timeline: "fireice_timeline.json", timecode: "01:00:44:12", state: "playing", rate_note: ""}; },
+  announcing: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true});  s.schedule.held = true; s.schedule.state = "STANDBY";
     s.announce.playing = {id: "delayed", name: "Delayed", elapsed_s: 4, length_s: 12, held_schedule: true}; },
-  alert_hold: s => { s.show = Object.assign({}, s.show, {running: true});  s.alert_hold = {held: true, text: "Held at showtime: an alert is open. Acknowledge it, then press Resume (or Start now)."};
+  alert_hold: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true});  s.alert_hold = {held: true, text: "Held at showtime: an alert is open. Acknowledge it, then press Resume (or Start now)."};
     const p = FX("status_pico"); s.alerts = [p.alerts[0]]; s.schedule.next = {show: 4, start: "19:30", in_s: 0, in_s_exact: 0}; },
   live_flame: s => { const p = FX("status_live_flame"); s.me = me("Jeff", "admin"); s.live_flame = p.live_flame; s.artnet_note = p.artnet_note; s.flames.groups[0].armed = "armed"; },
   getting_started: s => { const p = FX("status_nofile"); Object.assign(s, {setup: p.setup || s.setup}); s.selected_show = null; s.schedule = Object.assign(s.schedule, p.schedule || {}); },
-  ready: s => { s.show = Object.assign({}, s.show, {running: true}); },
+  ready: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true}); },
   weather_alert: s => { s.flames.groups[0].armed = "armed"; },
   stale: s => s,
-  rig_checking: s => { s.show = Object.assign({}, s.show, {running: true}); s.schedule.next = {show: 4, start: "19:30", in_s: 50, in_s_exact: 50};
+  rig_checking: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true}); s.schedule.next = {show: 4, start: "19:30", in_s: 50, in_s_exact: 50};
     s.countdown = {kind: "next", label: "Next show", s: 50, running: true}; s.preroll = {state: "checking", label: "show 4", items: [], text: ""}; },
-  rig_failed: s => { s.show = Object.assign({}, s.show, {running: true}); s.schedule.next = {show: 4, start: "19:30", in_s: 0, in_s_exact: 0};
+  rig_failed: s => { s.show = Object.assign({}, s.show, {running: true, show_control_on: true}); s.schedule.next = {show: 4, start: "19:30", in_s: 0, in_s_exact: 0};
     s.countdown = {kind: "next", label: "Next show", s: 0, running: true};
     s.preroll = {state: "failed", label: "show 4", age_s: 20, manual: false, continue_hold_s: 1.0, items: [], text: "",
       show_check: {label: "show 4", off: ["video"], items: [{name: "Video", ok: false, required: true, text: "MadMapper did not move"}]}};
@@ -134,7 +144,7 @@ const SCENARIOS = {
     s.live_flame = {available: true, on: true, who: "Jeff"}; },
   hazers_on: s => { SCENARIOS.running(s); s.hazers.show = "playing"; s.hazers.hazers.forEach((h, i) => { h.armed = i !== 1; h.state = h.armed ? "running" : "disarmed"; }); },
   hazers_held: s => { SCENARIOS.held(s); s.hazers.show = "held"; s.hazers.hazers.forEach(h => { h.armed = true; h.state = "held"; }); },
-  flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true}); },
+  flames_unknown: s => { s.flames.connected = false; s.flames.why = "flamesafe is not connected."; s.show = Object.assign({}, s.show, {running: true, show_control_on: true}); },
   rehearsal: s => { SCENARIOS.programming(s); },
   cleaning: s => { s.cleaning = {available: true, state: "phase1", text: "Phase 1 of 2: firing the wave flamers"}; },
   // The systems badge: one to check, several, and only things not set up.
@@ -145,6 +155,9 @@ const SCENARIOS = {
   day_shut: s => { s.schedule.next = null; s.countdown = null; },
   day_shut_jeff: s => { s.schedule.next = null; s.countdown = null; s.me = me("Jeff", "admin"); },
   day_jeff: s => { s.me = me("Jeff", "admin"); },
+  // The machine rows (morning.Arrangement): 16 machines of 3 types in
+  // saved rows, one new and one gone (fx/rows.json).
+  day_rows: s => { s.me = me("Jeff", "admin"); },
   day_firing: s => s,
   day_locked: s => s,
   day_clean_paused: s => { s.schedule.next = null; s.countdown = null; s.cleaning = {available: true, state: "paused", text: "Waiting: hold for the purge bursts"}; },
@@ -171,8 +184,14 @@ function dayState(name, st){
   sh.total = 3; sh.done = 0;
   if(/^day_shut|^day_clean/.test(name)){ const su = lists.find(l => l.id !== "shutdown"); su.steps.forEach(x => { x.done = true; }); su.done = su.total; }
   const fu = FX("fuel");
+  if(name === "day_rows"){
+    const rw = FX("rows");
+    Object.assign(mo, {machines: rw.machines, groups: rw.groups, arrangement: rw.arrangement});
+    Object.assign(fu, {units: rw.units, unit_ids: rw.units.map(u => u.id)});
+  }
   if(!st.me.user){ fu.may_refill = false; fu.may_undo = false; fu.refill_why = "Sign in as an operator or admin to log a refill (the user chip at the top)."; }
-  else if(st.me.role !== "admin") fu.may_undo = false;
+  else if(st.me.role !== "admin" && st.me.role !== "superuser") fu.may_undo = false;
+  if(!st.me.user || (st.me.role !== "admin" && st.me.role !== "superuser")) fu.may_set_shows = false;
   const wc = {available: true, problem: "", state: "idle", running: false, holder: null, mine: false, run: null, armed: "disarmed",
     settings: {armed_s: 2, disarmed_s: 3, cycles: 5, burst_on_s: 0.5, burst_off_s: 1.5, max_burst_min: 5}, progress: null};
   if(name === "day_clean_paused") Object.assign(wc, {state: "paused", running: true, progress: {phase: 1, text: "waiting for the go-ahead hold", left_s: null, elapsed_s: 42}});
@@ -195,6 +214,8 @@ function routesFor(name, st){
   if(tm){ mo.purge_state = Object.assign({}, mo.purge_state, {timed: true, firing: true, selected: ["m1", "m2", "m3", "m4"]}); }
   r["/api/remote/morning"] = mo;
   r["/api/remote/fireball"] = FX("fireball");
+  // Pre-show audio's card and its list (GET preshow-audio).
+  r["/api/remote/preshow-audio"] = Object.assign(FX("preshow_audio"), st.preshow_audio || {});
   // Fireball practice's card (GET fireball-practice), as the engine answers it.
   const fp = st.fireball_practice || {state: "closed", mode: "live", ended_why: ""};
   r["/api/remote/fireball-practice"] = {state: fp.state, mode: fp.mode, yours: fp.state !== "closed", who: "Dallen", screen: "iPad",
@@ -210,7 +231,7 @@ function routesFor(name, st){
     served_at: Date.now()};
   const wx = FX("weather");
   r["/api/remote/weather"] = wx;
-  const users = FX("real_users");
+  const users = FX(st.me.role === "superuser" ? "real_users_superuser" : "real_users");
   users.me = {name: st.me.user, role: st.me.role};
   users.users.forEach(u => u.password_set = true);
   r["/api/remote/users"] = users;
@@ -269,8 +290,8 @@ class FakeEngine {
       case "/api/remote/resume": sch.held = false; sch.stop_held = false; if(sch.state === "PAUSED") sch.state = "SHOW"; else if(sch.state === "HOLD") sch.state = "STANDBY"; s.alert_hold = {held: false};
         if(s.announce) s.announce.playing = null; return ok("Resumed.");
       case "/api/remote/start-now": sch.state = "SHOW"; sch.running = (sch.next || {}).show || 1; sch.held = false;
-        s.show = {running: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
-      case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});
+        s.show = {running: true, show_control_on: true, show: "Fire and Ice", timecode: "01:00:01:00", state: "playing"}; s.countdown = {kind: "left", label: "Time left", s: 440, running: true}; return ok("Started.");
+      case "/api/start": s.show = Object.assign({}, s.show || {}, {running: true, show_control_on: true, starting: false, show: "Fire and Ice", timeline: body.timeline, state: "idle"});
         if(sch.start_blocked) sch.start_blocked = null; return {code: 200, body: {ok: true, banner: "Running " + body.timeline + "."}};
       case "/api/remote/stop": this.dropHolds(); sch.state = "STANDBY"; sch.running = null; s.show = {running: false};
         s.flames.groups.forEach(g => g.armed = "disarmed"); return ok("Stopped.");
@@ -278,6 +299,21 @@ class FakeEngine {
       case "/api/remote/hazer": { const h = s.hazers.hazers.find(x => x.name === body.hazer);
         if(h){ h.armed = body.on === true; h.state = h.armed ? "standby" : "disarmed"; } return ok((body.hazer || "Hazer") + (body.on === true ? " is ARMED." : " is DISARMED.")); }
       case "/api/remote/hazers-off": s.hazers.hazers.forEach(h => { h.armed = false; h.state = "disarmed"; }); return ok("Every hazer is DISARMED.");
+      case "/api/remote/hazers-arm-all": s.hazers.hazers.forEach(h => { h.armed = true; h.state = "standby"; }); return ok("All hazers armed.");
+      case "/api/remote/hazer-test": {
+        const t = s.hazer_test;
+        const sync = () => { t.names_on = t.hazers.filter(h => h.on).map(h => h.name); t.on = t.names_on.length > 0;
+          t.state = t.on ? "on" : "off"; t.left_s = t.on ? t.max_s : null; };
+        if(body.on === true){ if(t.refusal) return {code: 409, body: {error: "Hazer test not started: " + t.refusal}};
+          const want = body.hazers === "all" ? t.names : (body.hazers || []);
+          if(!want.length || want.some(n => !t.names.includes(n))) return {code: 409, body: {error: "Hazer test not started: select one hazer or more."}};
+          t.hazers.forEach(h => { if(want.includes(h.name) && !h.on) Object.assign(h, {on: true, state: "on", left_s: t.max_s}); });
+          sync(); return ok("Hazer test ON: " + want.join(", ") + ", " + t.max_s + " s."); }
+        if(typeof body.beat === "string") return t.on ? ok("Hazer test on.") : {code: 409, body: {error: "The hazer test is off."}};
+        const off = Array.isArray(body.hazers) && body.hazers.every(n => t.names.includes(n)) ? body.hazers : t.names;
+        t.hazers.forEach(h => { if(off.includes(h.name)) Object.assign(h, {on: false, state: "off", left_s: null}); });
+        sync(); return ok(off.length === t.names.length ? "Every hazer OFF." : "Hazer test OFF: " + off.join(", ") + ".");
+      }
       case "/api/remote/hazer-level": s.hazers.hazers.forEach(h => { if(body.hazer === "all" || h.name === body.hazer){
         if(typeof body.haze === "number") h.haze_pct = body.haze; if(typeof body.fan === "number") h.fan_pct = body.fan; } }); return ok("Set.");
       case "/api/remote/group-disarm": return this.groupDisarm(body.group);
@@ -307,6 +343,11 @@ class FakeEngine {
       case "/api/remote/announce-play": { const it = s.announce.items.find(i => i.id === body.id);
         s.announce.playing = {id: body.id, name: it ? it.name : body.id, elapsed_s: 0, length_s: it ? it.length_s : 10, held_schedule: sch.state !== "SHOW"};
         if(sch.state !== "SHOW") sch.held = true; return ok("Playing."); }
+      case "/api/remote/preshow-audio": {
+        const c = FX("preshow_audio").choices.find(x => x.path === body.file);
+        if(body.on === true && !c) return {code: 409, body: {error: "Choose the audio file first. Nothing was changed."}};
+        s.preshow_audio = Object.assign({}, s.preshow_audio, {on: body.on === true, file: c ? c.path : s.preshow_audio.file, name: c ? c.name : s.preshow_audio.name});
+        return {code: 200, body: {ok: true, text: "Pre-show audio is " + (body.on === true ? "on" : "off") + ": " + s.preshow_audio.name + ".", preshow_audio: s.preshow_audio}}; }
       case "/api/remote/preroll-continue": if(body.phase === "done"){ s.preroll.continued = {by: s.me.user, off: ["video"], failed: "Video"}; delete s.preroll.show_check; s.alert_hold = {held: false}; s.alerts = []; } return ok("Continuing.");
       case "/api/remote/cleaning-stop": s.cleaning = {available: true, state: "idle", text: ""}; return ok("Stopped.");
       case "/api/remote/morning-open": return ok();
@@ -326,7 +367,21 @@ class FakeEngine {
       case "/api/remote/checklist-tick": { const l = this.mo.checklists.checklists.find(x => x.id === body.checklist); const st2 = l && l.steps.find(x => x.id === body.step);
         if(st2){ st2.done = !!body.done; st2.who = body.who; st2.at = "18:00"; l.done = l.steps.filter(x => x.done).length; } return ok("Ticked."); }
       case "/api/remote/checklist-note": return ok("Noted.");
+      case "/api/remote/arrangement":
+        if(body.beat === true) return {code: 200, body: {ok: true, arranging: body.arranging === true}};
+        this.mo.arrangement = body.reset === true ? {rows: [], saved: false, problem: ""} :
+          {rows: (body.rows || []).map(r => ({kind: r.kind, machines: r.machines})), saved: true, problem: ""};
+        return {code: 200, body: {ok: true, text: body.reset === true ? "Rows back to one per type." : "Rows saved.", arrangement: this.mo.arrangement}};
       case "/api/remote/fuel-refill": (this.fu.units || []).forEach(u => { if(body.all || u.id === body.unit){ u.refill_soon = false; u.shows_left = 12; u.percent = 100; } }); return ok("Refill logged.");
+      // Shows per refill (fuelshows.py): +1 round to 0 after N, Fill
+      // selected to N, a type's N.
+      case "/api/remote/fuel-shows": { const per = this.fu.shows_per_refill || {};
+        const put = (u, x) => { const n = (per[u.kind] || {}).n; u.countdown = Object.assign(u.countdown || {}, {left: x, n: n, refuel_now: x === 0, words: x === 0 ? "Refuel now" : "Shows left: " + x}); };
+        if(body.action === "set"){ (per[body.kind] || {}).n = body.shows_per_refill; return ok("Shows per refill set."); }
+        if(body.action === "fill"){ (this.fu.units || []).forEach(u => { if((body.units || []).includes(u.id)){ u.refill_soon = false; if(u.countdown) put(u, u.countdown.n); } });
+          const k = (body.units || []).length + (body.hazers || []).length; return ok(k + (k === 1 ? " unit filled." : " units filled.")); }
+        const u = (this.fu.units || []).find(x => x.id === body.unit && x.countdown); if(!u) return {code: 400, body: {error: "No such flame unit."}};
+        const c = u.countdown; put(u, c.left >= c.n ? 0 : c.left + 1); return {code: 200, body: {text: u.name + ": " + u.countdown.left + " shows left.", left: u.countdown.left, n: c.n}}; }
       case "/api/remote/cleaning-beat": { const w = this.wc; this.wcBeats = (this.wcBeats || 0) + 1;
         if(body.hold && this.wcBeats >= 8){ w.state = w.state === "paused" ? "phase2" : "phase1"; w.running = true; w.progress = {phase: w.state === "phase2" ? 2 : 1, text: "running", left_s: 20, elapsed_s: 1}; this.wcBeats = 0; }
         else if(body.hold){ w.state = w.state === "paused" ? "acking" : "starting"; w.mine = true; }

@@ -62,15 +62,18 @@ import threading
 import time
 
 FOLDER = os.path.join("logs", "audit")
-STREAMS = ("engine", "deck", "supervisor")
-SURFACES = ("web", "deck", "engine", "supervisor")
+# "cli": the local command line's SuperUser commands (users.main), which
+# write their own line before they return (review of #251, B1d).
+STREAMS = ("engine", "deck", "supervisor", "cli")
+SURFACES = ("web", "deck", "engine", "supervisor", "cli")
 RESULTS = ("accepted", "refused", "error")
 UNSIGNED = "unsigned"
 SYSTEM = "system"
 QUEUE_MAX = 2000
 FIELD_MAX = 200
 ANCHOR_TAG = "LTC Player audit"
-NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor)\.jsonl$")
+NAME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})\.(engine|deck|supervisor|cli)\.jsonl$")
 # A field whose name says it may hold a secret is never written, and a value
 # that looks like one is replaced. Belt and braces: callers already pass
 # only named, harmless fields.
@@ -269,7 +272,8 @@ def verify_folder(folder, sent=None, today=None):
             want = older[-1][1] if older else ""
             if want and r["start_link"] != want:
                 problems.append(f"{name}: does not follow on from "
-                                f"{older[-1][0]}, as sent to the server")
+                                f"{older[-1][0]}, as recorded before that day was "
+                                f"removed here")
         elif before[1] is not None and r["start_link"] != before[1]:
             problems.append(f"{name}: does not follow on from {before[0]}: "
                             f"a day file was removed, replaced or edited")

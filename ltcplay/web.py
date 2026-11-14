@@ -173,6 +173,10 @@ LIVE_SHOW_REFUSAL = ("A scheduled show is live. Only Stop, Hold and Resume "
 
 
 HOST_REFUSAL = "This page has to be opened by the show machine's address."
+# The Tailscale door (remote.py, "remote access over Tailscale"): only a
+# peer in 100.64.0.0/10 is answered on it.
+TAILSCALE_PEER_REFUSAL = ("Only a device on Tailscale may use this address. "
+                          "Nothing was done.")
 
 
 def wrong_host_page(bind, port, local):
@@ -883,8 +887,23 @@ class Handler(BaseHTTPRequestHandler):
     def _local(self):
         """The request came from this machine itself. The one thing a proxy
         or tunnel on the show machine would fake, which is why _refusal()
-        turns away anything that looks forwarded, loopback included."""
+        turns away anything that looks forwarded, loopback included. Never
+        on the Tailscale door, whatever address the request names."""
+        if getattr(self.server, "tailscale_door", False):
+            return False
         return self.client_address[0] in LOOPBACK
+
+    def _tailscale(self):
+        """The request came in over Tailscale: on the Tailscale door, or
+        from a peer in 100.64.0.0/10 on any other door but this machine's
+        own (a Tailscale subnet route to the show network address). Its
+        Tailscale login must then be on the allow list (_refusal), and a
+        press that needs a role needs a sign-in (_tailscale_refused)."""
+        if getattr(self.server, "tailscale_door", False):
+            return True
+        from . import remote as remote_mod
+        return not self._local() and \
+            remote_mod.is_tailscale_address(self.client_address[0])
 
     def _ctx(self):
         """Where this request came from (ltcplay/remote.py Ctx): the
@@ -896,7 +915,9 @@ class Handler(BaseHTTPRequestHandler):
         ctx = getattr(self, "_ctx_cache", None)
         if ctx is None:
             from . import remote as remote_mod
-            ctx = remote_mod.Ctx(self._local(), self.client_address[0])
+            ctx = remote_mod.Ctx(self._local(), self.client_address[0],
+                                 tailscale=self._tailscale(),
+                                 login=getattr(self, "_ts_login", ""))
             # Who is signed in on this page, if anyone (users.py). Nobody
             # has to be; a cookie that names no live session is nobody.
             users = getattr(getattr(self.server, "remote", None), "users",
@@ -911,8 +932,39 @@ class Handler(BaseHTTPRequestHandler):
                     ctx.session = users.session(tok) if tok else None
                 except Exception:                # noqa: BLE001
                     ctx.session = None
+                if ctx.session is not None:
+                    self._tailscale_session_check(ctx, users)
             self._ctx_cache = ctx
         return ctx
+
+    def _tailscale_session_check(self, ctx, users):
+        """A session made over Tailscale is that login's, from that
+        address, only; one presented by any other login, address or
+        surface is ended and audited. A session made anywhere else is
+        never taken over Tailscale (the page there is signed out). Never
+        raises."""
+        try:
+            bound = (ctx.session or {}).get("tailscale")
+            if bound:
+                if ctx.tailscale and bound.get("login") == ctx.login and \
+                        bound.get("ip") == ctx.ip:
+                    return
+                users.sign_out(ctx.token, ctx.source)
+                why = "a Tailscale sign-in presented by another device"
+            elif ctx.tailscale:
+                why = "a sign-in from another screen presented over Tailscale"
+            else:
+                return
+            name = (ctx.session or {}).get("name") or "unsigned"
+            ctx.session = None
+            log = getattr(getattr(self.server, "remote", None), "audit",
+                          None)
+            if log is not None:
+                log.event(user=name, surface="web", action="session",
+                          target="", result="refused", reason=why,
+                          source=ctx.source)
+        except Exception:                        # noqa: BLE001
+            ctx.session = None
 
     def _halt_asked(self):
         """The Stream Deck's Stop (Jeff, 2026-10-26): a complete halt of
@@ -1108,6 +1160,13 @@ class Handler(BaseHTTPRequestHandler):
                 fn(reason, who, screen)
             except Exception:                    # noqa: BLE001
                 pass
+        # The hazer test OFF (hazertest.py, 2026-11-11), the same way.
+        fn = getattr(rm, "hazer_test_cut", None)
+        if fn is not None:
+            try:
+                fn(reason, who, screen)
+            except Exception:                    # noqa: BLE001
+                pass
         # The wave flamer cleaning (cleaning.py): Stop ends it, from the
         # rack screen, an iPad or the Stream Deck.
         cl = getattr(rm, "cleaning", None)
@@ -1165,6 +1224,12 @@ class Handler(BaseHTTPRequestHandler):
             perm = users_mod.classify(route, body)
             if perm == "safety" or perm is None:
                 return False
+            if perm == users_mod.UPLOAD:
+                # The nightly upload: the engine's one test answers it
+                # (remote.Remote.upload_refused, users.superuser_here),
+                # with the words of a route that is not there. This
+                # check's own words would name the setting.
+                return False
         except Exception:                        # noqa: BLE001
             return False
         try:
@@ -1215,6 +1280,30 @@ class Handler(BaseHTTPRequestHandler):
                          "ended": bool(ended)})
         return True
 
+    def _tailscale_refused(self, route):
+        """Send a 403 and return True when a press from Tailscale needs a
+        role (users.classify: not a safety press) and nobody is signed in
+        on that page (remote.tailscale_sign_in_refusal), users set up or
+        not. Past that, the role matrix and every iPad rule apply. Fails
+        closed: a check that cannot be made refuses."""
+        from . import remote as remote_mod
+        try:
+            ts = self._tailscale()
+        except Exception:                        # noqa: BLE001
+            ts = self.client_address[0] not in LOOPBACK
+        if not ts:
+            return False
+        try:
+            why = remote_mod.tailscale_sign_in_refusal(route, self._body(),
+                                                       self._ctx())
+        except Exception:                        # noqa: BLE001
+            why = remote_mod.TAILSCALE_SIGN_IN_WORDS
+        if not why:
+            return False
+        self._send(403, {"error": why, "tailscale_refused": "sign in",
+                         "role_refused": True})
+        return True
+
     # Presses repeated many times a second while a finger is down (or a
     # page is open): only the first, and any that is not taken, are logged.
     AUDIT_BEATS = ("/api/remote/morning-open", "/api/schedule/deck-event",
@@ -1253,11 +1342,19 @@ class Handler(BaseHTTPRequestHandler):
                     (short == "fireball-beat" and
                      body.get("run") is not None and
                      body.get("change") is not True) or
+                    # Refueled +1 (fuel.py, fuelshows.py): the presses
+                    # of one batch are ONE audit line, written by the
+                    # fuel tracker once shows left has sat COMMIT_S.
+                    (short == "fuel-shows" and
+                     body.get("action") == "step") or
                     # The wave flamer cleaning: a beat while held.
                     (short == "cleaning-beat" and
                      body.get("run") is not None and
                      body.get("hold") is True and
                      body.get("change") is not True))
+            # A refusal for the Tailscale limits is always written.
+            if isinstance(out, dict) and out.get("tailscale_refused"):
+                beat = False
             if beat and (ok or route in ("/api/remote/signin",
                                          "/api/remote/signout",
                                          "/api/remote/morning-open",
@@ -1311,9 +1408,38 @@ class Handler(BaseHTTPRequestHandler):
                     f"machine.")
         bind = getattr(self.server, "bind_address", "127.0.0.1")
         port = self.server.server_address[1]
+        if getattr(self.server, "tailscale_closed", False):
+            # Turned off: a request already on its way is not answered.
+            return TAILSCALE_PEER_REFUSAL
+        if getattr(self.server, "tailscale_door", False):
+            # The Tailscale door: a peer in 100.64.0.0/10 only, naming
+            # exactly this address and port. The checks below still run.
+            if not remote_mod.is_tailscale_address(self.client_address[0]):
+                return TAILSCALE_PEER_REFUSAL
+            if not remote_mod.tailscale_host_ok(
+                    self.headers.get("Host"), bind, port,
+                    getattr(self.server, "tailscale_names", ())):
+                return HOST_REFUSAL
+            # Its address or one of its own names: the plain Host check
+            # below then reads the name that was used.
+            bind = str(self.headers.get("Host")).strip().lower() \
+                .rsplit(":", 1)[0]
         if not remote_mod.host_ok(self.headers.get("Host"), self._local(),
                                   bind, port):
             return HOST_REFUSAL
+        self._ts_login = ""
+        if self._tailscale():
+            # Who it is (Jeff, 2026-11-13: "specify who gets in"): this PC's
+            # own Tailscale names the peer's login, and only a login on the
+            # allow list gets in. Fails closed.
+            try:
+                login, why, seen = self.server.remote.tailscale_login(
+                    self.client_address[0])
+            except Exception:                    # noqa: BLE001
+                login, why, seen = None, remote_mod.TAILSCALE_LOGIN_WORDS, ""
+            self._ts_login = login or seen or ""
+            if not login:
+                return why or remote_mod.TAILSCALE_LOGIN_WORDS
         if post:
             # Fix round 1 of #39, F2: a sandboxed iframe or a data: page on
             # this machine sends Origin "null", and a text/plain or bodiless
@@ -1631,6 +1757,18 @@ class Handler(BaseHTTPRequestHandler):
         why = self._refusal(post=True)
         if why:
             return self._send(403, {"error": why})
+        # Remote access over Tailscale: a press that needs a role needs a
+        # sign-in there, users set up or not (Jeff, 2026-11-13). Every
+        # press or beat keeps a Tailscale sign-in from its idle sign-out;
+        # the page's status polls never do.
+        try:
+            _c = self._ctx()
+            if _c.tailscale and _c.session and _c.token:
+                self.server.remote.users.touch(_c.token)
+        except Exception:                        # noqa: BLE001
+            pass
+        if self._tailscale_refused(route):
+            return None
         # The role matrix (users.py): never in front of a safety press.
         if self._role_refused(route):
             return None
@@ -1705,7 +1843,7 @@ class Handler(BaseHTTPRequestHandler):
                 # not: it only takes risk away.
                 _rm0 = getattr(self.server, "remote", None)
                 if _rm0 is not None and hasattr(_rm0, "timed_purge_cut"):
-                    _rm0.timed_purge_cut("Run was pressed on the " +
+                    _rm0.timed_purge_cut("Show control was turned on at the " +
                                          str(self._ctx().screen),
                                          self._ctx().user or "unsigned",
                                          self._ctx().screen)
@@ -1715,7 +1853,7 @@ class Handler(BaseHTTPRequestHandler):
                 _svc = getattr(self.server, "schedule", None)
                 if getattr(_svc, "halting", lambda: False)() is True:
                     return self._send(409, {"error": (
-                        "Run was refused: " + _svc.HALTING + ". Nothing was "
+                        "Show control on was refused: " + _svc.HALTING + ". Nothing was "
                         "started.")})
                 # Never over Programming playback (playhead.py): the same
                 # sentence as Start now's.
@@ -1729,7 +1867,7 @@ class Handler(BaseHTTPRequestHandler):
                 # source of fire values.
                 _rm = getattr(self.server, "remote", None)
                 if _rm is not None and hasattr(_rm, "live_flame_end"):
-                    _rm.live_flame_end("Run was pressed",
+                    _rm.live_flame_end("Show control was turned on",
                                        self._ctx().user or "unsigned",
                                        self._ctx().screen)
                 s = c.start(body.get("timeline", ""),
@@ -1932,6 +2070,8 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
                       target=target, result=result, reason=reason,
                       source=source)
         r.users = users_mod.Users(r.folder, audit=_note)
+        # The SuperUsers changed outside this program: an alert.
+        r.users.on_alert = r.superuser_alert
         # Sign everyone out after the night's last show (Jeff, 2026-10-26).
         r.users.last_show = r.last_show_over
         r.users.start()
@@ -1941,6 +2081,17 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
             log.folder, r.folder, transport=transport,
             note=lambda **kw: log.event(user=audit_mod.SYSTEM,
                                         surface="engine", **kw)).start()
+        sched = getattr(httpd, "schedule", None)
+        book = getattr(sched, "logbook", None)
+        if book is not None:
+            # The night journal goes to the same server with the same
+            # settings (Jeff, 2026-11-12), only on an engine that keeps one
+            # (Fire & Ice), and only each closed night.
+            r.journal_uploader = auditsend.JournalUploader(
+                book.folder, r.folder, night=sched._night,
+                transport=transport, checker=book.check_night,
+                note=lambda **kw: log.event(user=audit_mod.SYSTEM,
+                                            surface="engine", **kw)).start()
         r.audit_watch = auditwatch.EngineWatch(r, log).start()
         log.event(user=audit_mod.SYSTEM, surface="engine",
                   action="engine-start", target=r.folder)
@@ -1951,6 +2102,8 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
                 r.audit_watch.stop()
                 r.users.stop()
                 r.uploader.stop()
+                if r.journal_uploader is not None:
+                    r.journal_uploader.stop()
                 log.event(user=audit_mod.SYSTEM, surface="engine",
                           action="engine-stop")
                 log.flush(1.0)
@@ -2356,6 +2509,42 @@ def _attach_hazers(httpd):
               f"while a show plays.", action="flame_link", outcome="hazers")
 
 
+def _attach_hazer_test(httpd):
+    """The hazer test (hazertest.py, Jeff 2026-11-11): built with the
+    hazers. OFF at start; the engine shutting down turns it off (and
+    flamesafe zeroes every hazer slot once frames stop). A failure leaves
+    it unavailable and is said once."""
+    from . import hazertest as hazertest_mod
+    remote = httpd.remote
+    if getattr(remote, "hazers", None) is None:
+        return
+    try:
+        def _journal(who, screen, outcome, text, fault=False):
+            remote._journal(who or "system", screen or "engine",
+                            "hazer-test", outcome, text, fault=fault)
+        remote.hazer_test = hazertest_mod.HazerTest(
+            hazers=lambda: remote.hazers,
+            show_busy=remote.hazer_test_show_busy,
+            gate=remote.hazer_test_gate,
+            signed_out=remote.hazer_test_signed_out,
+            journal=_journal, audit=getattr(remote, "audit", None))
+    except Exception as e:                       # noqa: BLE001
+        print(f"The hazer test could not be set up: {type(e).__name__}: {e}")
+        return
+    # Hazers off (any path: a screen, the Stream Deck, the watch) ends it.
+    remote.hazers.test_stop = lambda why, who, screen, system: \
+        remote.hazer_test.stop(why, who=who, screen=screen, system=system)
+    before = httpd.server_close
+
+    def _close_hazer_test():
+        try:
+            remote.hazer_test.stop("the engine is shutting down")
+        except Exception:                        # noqa: BLE001
+            pass
+        before()
+    httpd.server_close = _close_hazer_test
+
+
 def _attach_pump(httpd):
     """The fireball's fuel pump (fuelpump.py, Jeff 2026-10-30): built for
     the Fire & Ice engine with a flame link whose flamesafe config lists
@@ -2418,6 +2607,42 @@ def _attach_fuel(httpd):
         finally:
             remote.fuel.close()
     httpd.server_close = _close_fuel
+
+
+def _attach_haze(httpd):
+    """Haze fluid (fuelhaze.py, the Fuel page's Hazers section): the flame
+    link's hazers, watched on the bytes each frame sent. It only observes
+    and is closed last, like the fuel record; a failure to build it leaves
+    the section unavailable and is said once."""
+    from . import fuelhaze
+    remote = httpd.remote
+    link = getattr(getattr(httpd, "fire_ice", None), "flame_link", None)
+    try:
+        if link is None or not link.hazer_names():
+            return
+    except Exception:                            # noqa: BLE001
+        return
+    try:
+        def _journal(text, fault=False):
+            remote._journal("system", "engine", "haze",
+                            "fault" if fault else "done", text, fault=fault)
+        remote.haze = fuelhaze.build(remote, link,
+                                     fuel=getattr(remote, "fuel", None),
+                                     journal=_journal)
+    except Exception as e:                       # noqa: BLE001
+        print(f"Haze fluid tracking could not be set up: "
+              f"{type(e).__name__}: {e}")
+        return
+    _close_before = httpd.server_close
+
+    def _close_haze():
+        # Last, as the fuel record: the flame link goes first, and the
+        # save never waits more than fuelhaze.CLOSE_TIMEOUT_S.
+        try:
+            _close_before()
+        finally:
+            remote.haze.close()
+    httpd.server_close = _close_haze
 
 
 def _attach_fireball(httpd):
@@ -2661,7 +2886,8 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
           madmapper=None, beyond=None, fire_ice=None,
           remote_folder=None, flamesafe_config=None, flame_disarm=None,
           accounts=False, config_watch=None, network_fallback=False,
-          network_note=""):
+          network_note="", tailscale=None, tailscale_note="",
+          tailscale_names=()):
     """`schedule` is the path of a schedule rule file, or a ready-made
     scheduler service. Without it the scheduler is not even imported: the
     GPL show runs exactly the program it ran before the scheduler existed.
@@ -2718,7 +2944,15 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     links above (unless the caller passed its own), and the conductor is
     attached to the scheduler BEFORE the scheduler's first tick. Without
     it, nothing below changes in any way, and fire_ice.py and conductor.py
-    are never imported."""
+    are never imported.
+
+    `tailscale` (remote access over Tailscale, off unless ltcplay_remote.
+    json turns it on; cli.py finds the address): this PC's own Tailscale
+    IPv4 address, in 100.64.0.0/10. The engine then ALSO listens there, a
+    second door beside the show network's (tailscale_door), never on any
+    other address. An address that is not one is refused (ValueError); one
+    that cannot be bound is said on the card and nothing listens there.
+    `tailscale_note`: why it is not listening, said on the card."""
     if fire_ice is not None and schedule is None:
         raise ValueError("The Fire & Ice show conductor needs the scheduler: "
                          "serve it with a schedule.")
@@ -2763,6 +2997,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                                        action="show length check",
                                        outcome="warning")
         httpd_schedule = schedule
+    if tailscale:
+        # Checked before anything is bound or started.
+        tailscale = tailscale_bind(tailscale)
     # Fix round 1 of #39, F4: "0", "0.0" and "000.000.000.000" are all
     # 0.0.0.0 to the operating system. Resolve the address the way bind()
     # will, and refuse it if ANY form of it means every interface.
@@ -2911,8 +3148,20 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         threading.Thread(target=lb.serve_forever,
                          kwargs={"poll_interval": 0.2}, daemon=True,
                          name="ltcplay-web-loopback").start()
-    _say_listening(httpd, on_network, network_why)
+    httpd.tailscale_door_server = None
+    ts_why = str(tailscale_note or "")
+    if tailscale:
+        door, ts_why = _tailscale_door(httpd, tailscale, control, port)
+        httpd.tailscale_door_server = door
+        if door is not None:
+            # This PC's own MagicDNS names, learned with the address: the
+            # door answers to them too (tailscale_host_ok), nothing else.
+            door.tailscale_names = tuple(tailscale_names or ())
+    # Turning the setting off closes the door now (remote.set_tailscale).
+    httpd.remote.tailscale_close = lambda: close_tailscale_door(httpd)
+    _say_listening(httpd, on_network, network_why, ts_why)
     httpd.announce = None
+    httpd.preshow_audio = None
     if announce is not None:
         if isinstance(announce, str):
             from . import announce as announce_mod
@@ -2945,6 +3194,9 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # announcement service finding out on its own next status() poll.
         # See announce.py's module docstring and on_show_started.
         sched.on_show_started = httpd.announce.on_show_started
+        # A Hold (or a pause) stops pre-show audio at once.
+        sched.on_schedule_held = getattr(httpd.announce,
+                                         "on_schedule_held", None)
         # The third direction: every announcement Holds the scheduler
         # first, through the same path an operator's own Hold uses. See
         # Service.hold_for_announcement and announce.py's play().
@@ -2957,6 +3209,20 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         # 2026-09-26: audit15_resume_race.py). See Service.hold_still_claimed
         # and announce.py's _check_still_held.
         httpd.announce.hold_still_claimed = sched.hold_still_claimed
+        # Pre-show audio (preshow_audio.py, Jeff 2026-11-12): off unless an
+        # admin turns it on; its settings beside ltcplay_announce.json. It
+        # plays through this same announcement player and nothing else.
+        try:
+            from . import preshow_audio as preshow_mod
+            httpd.preshow_audio = preshow_mod.PreShowAudio(
+                os.path.dirname(os.path.abspath(
+                    httpd.announce.config_path)),
+                httpd.announce, journal=sched.preshow_journal,
+                audit=getattr(httpd.remote, "audit", None))
+            sched.preshow_audio = httpd.preshow_audio
+        except Exception as e:                   # noqa: BLE001
+            httpd.preshow_audio = None
+            print(f"Pre-show audio is off: {type(e).__name__}: {e}")
     httpd.fire_ice_config = fire_ice
     if fire_ice is not None:
         if madmapper is None:
@@ -3048,12 +3314,14 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             finally:
                 _close_before_fire_ice()
         httpd.server_close = _close_fire_ice
-    if httpd.loopback is not None:
-        httpd.loopback.announce = httpd.announce
+    for _door in (httpd.loopback, httpd.tailscale_door_server):
+        if _door is not None:
+            _door.announce = httpd.announce
     if getattr(httpd, "remote", None) is not None:
         # The rack screen's and the Stream Deck's announcement presses go
         # through the remote routes (remote.announce_post).
         httpd.remote.announce = httpd.announce
+        httpd.remote.preshow_audio = httpd.preshow_audio
     httpd.morning = None
     if fire_ice is not None:
         # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py,
@@ -3125,9 +3393,11 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
             getattr(httpd.fire_ice, "flame_link", None) is not None:
         _attach_fireball_timeline(httpd)
         _attach_hazers(httpd)
+        _attach_hazer_test(httpd)
         _attach_pump(httpd)
     if httpd.morning is not None:
         _attach_fuel(httpd)
+        _attach_haze(httpd)
         if fire_ice is not None and \
                 getattr(httpd.fire_ice, "flame_link", None) is not None:
             _attach_fireball(httpd)
@@ -3225,6 +3495,13 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
                       "morning"):
             if hasattr(httpd, _name):
                 setattr(httpd.loopback, _name, getattr(httpd, _name))
+    if httpd.tailscale_door_server is not None:
+        # So does the Tailscale door.
+        for _name in ("conductor", "fire_ice", "madmapper", "beyond",
+                      "morning", "fire_ice_config"):
+            if hasattr(httpd, _name):
+                setattr(httpd.tailscale_door_server, _name,
+                        getattr(httpd, _name))
     if config_watch is not None:
         _attach_config_watch(httpd, config_watch)
     if on_ready:
@@ -3232,18 +3509,134 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
     return httpd
 
 
-def _say_listening(httpd, on_network, why=""):
+def tailscale_bind(address):
+    """The address the Tailscale door binds, written plainly, or
+    ValueError: one Tailscale IPv4 address (100.64.0.0/10) and nothing
+    else. Never 0.0.0.0 or any other every-interface spelling, never
+    loopback, a show network or a public address."""
+    from . import remote as remote_mod
+    ts = normalize_bind(address)
+    if ts in WILDCARD or not remote_mod.is_tailscale_address(ts):
+        raise ValueError(f"{address!r} is not a Tailscale address "
+                         f"(100.64.0.0/10), so the engine does not listen "
+                         f"on it.")
+    return ts
+
+
+def _tailscale_door(httpd, address, control, port):
+    """(server, why) for the Tailscale door: a second listener on this
+    PC's own Tailscale IPv4 address, never 0.0.0.0 and never any address
+    outside 100.64.0.0/10 (ValueError, nothing bound). (None, sentence)
+    when it cannot be bound: the engine carries on without it."""
+    ts = tailscale_bind(address)
+    port = port or httpd.server_address[1]
+    try:
+        door = ThreadingHTTPServer((ts, port), Handler)
+    except OSError as e:
+        why = (f"Tailscale's address {ts} could not be used ({e}), so "
+               f"nothing listens for Tailscale.")
+        print(why, flush=True)
+        return None, why
+    door.control, door.token, door.bind_address = control, None, ts
+    door.tailscale_door = True
+    door.tailscale_closed = False
+    door.daemon_threads = True
+    # Every connection open on the door, so turning the setting off can
+    # drop them at once (cold review of #244, M1).
+    door.open_requests = set()
+    _pr, _sr = door.process_request, door.shutdown_request
+
+    def _process(request, client_address):
+        if door.tailscale_closed:
+            _sr(request)
+            return
+        door.open_requests.add(request)
+        _pr(request, client_address)
+
+    def _shutdown(request):
+        door.open_requests.discard(request)
+        _sr(request)
+    door.process_request, door.shutdown_request = _process, _shutdown
+    # A connection dropped by close_tailscale_door is expected: no trace.
+    door.handle_error = lambda request, client_address: None
+    door.schedule, door.remote = httpd.schedule, httpd.remote
+    door.fire_ice_config = getattr(httpd, "fire_ice_config", None)
+    threading.Thread(target=door.serve_forever,
+                     kwargs={"poll_interval": 0.2}, daemon=True,
+                     name="ltcplay-web-tailscale").start()
+    return door, ""
+
+
+def close_tailscale_door(httpd, why="Remote access over Tailscale was "
+                                       "turned off."):
+    """Close the Tailscale door now: no new connection is answered, every
+    open one is dropped, and the card no longer says it listens. During a
+    show too: it only takes access away. True when there was a door to
+    close. Never raises."""
+    import socket as _socket
+    door = getattr(httpd, "tailscale_door_server", None)
+    if door is None:
+        return False
+    door.tailscale_closed = True
+    httpd.tailscale_door_server = None
+    for req in list(getattr(door, "open_requests", ())):
+        try:
+            req.shutdown(_socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            req.close()
+        except OSError:
+            pass
+    try:
+        # serve_forever's loop ends within its poll interval; shutdown()
+        # waits for it, on its own thread so no caller ever waits on it.
+        threading.Thread(target=lambda: (door.shutdown(),
+                                         door.server_close()),
+                         daemon=True, name="ltcplay-tailscale-close").start()
+    except Exception:                            # noqa: BLE001
+        try:
+            door.server_close()
+        except Exception:                        # noqa: BLE001
+            pass
+    try:
+        lst = httpd.remote.listen
+        lst["addresses"] = [a for a in lst.get("addresses") or []
+                            if a != door.bind_address]
+        lst["tailscale"] = None
+        lst["tailscale_why"] = why
+    except Exception:                            # noqa: BLE001
+        pass
+    print(f"{why} The Tailscale door at {door.bind_address} is closed.",
+          flush=True)
+    return True
+
+
+def _say_listening(httpd, on_network, why="", ts_why=""):
     """Where the engine's page really listens: kept for the Show network
     card (remote.Remote.listen), printed for the log and one journal line
     at start. Never raises."""
     try:
         port = httpd.server_address[1]
         addrs = ["127.0.0.1"] + ([httpd.bind_address] if on_network else [])
-        httpd.remote.listen = {"addresses": addrs, "port": port, "why": why}
+        door = getattr(httpd, "tailscale_door_server", None)
+        ts = door.bind_address if door is not None else None
+        if ts:
+            addrs.append(ts)
+        httpd.remote.listen = {"addresses": addrs, "port": port, "why": why,
+                               "tailscale": ts, "tailscale_why": ts_why,
+                               "tailscale_names": list(getattr(
+                                   door, "tailscale_names", ()) or ())}
         line = ("The engine's page listens on " +
                 " and ".join(f"{a}:{port}" for a in addrs) +
                 ("." if on_network else
+                 ", Tailscale included; no show network address is in "
+                 "use." if ts else
                  ", this PC only: no show network address is in use."))
+        if ts:
+            line += f" {ts} is this PC's Tailscale address."
+        elif ts_why:
+            line += f" {ts_why}"
         print(line, flush=True)
         if getattr(httpd.remote, "schedule", None) is not None:
             # The show journal (without a scheduler there is none, and

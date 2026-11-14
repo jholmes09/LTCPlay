@@ -5,12 +5,19 @@
 ## Proof
 
 - [ ] `python3 selftest.py`: every check passes. Last line:
-- [ ] CI's `ci` check is green: the suite on ubuntu and windows, and every
-      mutate shard this change needed (TESTING.md says which run and why).
+- [ ] A PR into bench-build: selftest (ubuntu and windows), `changes` and
+      (for packaging) `installer` are green. `ci` is red on such a PR by
+      design; it judges only PRs into main.
+- [ ] A PR into main (a release): CI's `ci` check is green: the suite on
+      ubuntu and windows, and every mutate shard this change needed plus
+      the safety core (TESTING.md says which run and why).
 - [ ] Touches a safety file (`flamesafe/`, the conductor, the flame link,
-      the deck, the scheduler, `trigger.py`, `output.py`, `player.py`,
-      `session.py`, `clock.py`...)? The shards ran every flamesafe,
-      conductor and flame link mutation against the expected-miss list.
+      the deck, the scheduler, users, fuel, `trigger.py`, `output.py`,
+      `player.py`, `session.py`, `clock.py`...)? On bench-build,
+      `mutate-safety` ran that file's mutations against the expected-miss
+      list (not required: read it before asking for the merge); on main,
+      the shards ran them with every flamesafe, conductor and flame link
+      mutation.
 
       `mutate.py --expected mutate_expected_misses.txt` is what CI runs: it
       fails if any mutation not on the list is missed, and it fails if any

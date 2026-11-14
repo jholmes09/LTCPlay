@@ -6,8 +6,10 @@ The release workflow (.github/workflows/windows-app.yml) publishes every
 build as a release with two assets: "LTC Player Setup <version>.exe" and
 its ".sha256". This asks GitHub for the releases, picks the newest one that
 carries both, and compares its tag with the version this install was
-stamped with (ltcwin.release()). A show PC running a release (a gpl-*
-tag, stamped like 2026.10.30.1) is only ever offered full releases, the
+stamped with (ltcwin.release()). A show PC running a release (an ltc-*
+tag such as ltc-2026.11.14.1, stamped 2026.11.14.1; before 2026-11-14 the
+tags were named gpl-*, like gpl-2026.10.30.1, and those installs are still
+read the same way) is only ever offered full releases, the
 one GitHub marks Latest: the bench-build branch's "bench-..." builds are
 pre-releases and never reach it. A bench or test build (bench-..., dev-...,
 unstamped) is offered the newest of everything, so it moves on to a
@@ -37,6 +39,12 @@ API = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 # number of bench pre-releases published after it.
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASE_RE = re.compile(r"^\d+(\.\d+){1,3}$")
+# The tag names a release has had: ltc-YYYY.MM.DD.N from 2026-11-14,
+# gpl-YYYY.MM.DD.N before (the first show was GPL 2026 at Dollywood). Only
+# the dated number after it is the version; a stamp or a name that still
+# carries either prefix is read as that number, so an old install compares
+# with a new release by the date digits.
+RELEASE_PREFIXES = ("ltc-", "gpl-")
 RELEASES_PAGE = f"https://github.com/{REPO}/releases"
 INSTALLER_RE = re.compile(r"^LTC[ .]Player[ .]Setup[ .](.+)\.exe$")
 TIMEOUT_S = 20
@@ -50,10 +58,22 @@ def _asset_version(name):
     return m.group(1) if m else None
 
 
+def release_number(version):
+    """The version with a release tag's prefix taken off: "ltc-2026.11.14.1"
+    and "gpl-2026.10.30.1" read as "2026.11.14.1" and "2026.10.30.1";
+    anything else is returned stripped, as it was."""
+    v = str(version or "").strip()
+    for p in RELEASE_PREFIXES:
+        if v.lower().startswith(p):
+            return v[len(p):]
+    return v
+
+
 def is_release(version):
-    """True for a release's version (from a gpl-YYYY.MM.DD.N tag:
-    2026.10.30.1), False for bench-..., dev-..., or nothing."""
-    return bool(RELEASE_RE.match(str(version or "").strip()))
+    """True for a release's version (from an ltc-YYYY.MM.DD.N tag, or an
+    older gpl-YYYY.MM.DD.N one: 2026.11.14.1, ltc-2026.11.14.1,
+    gpl-2026.10.30.1), False for bench-..., dev-..., or nothing."""
+    return bool(RELEASE_RE.match(release_number(version)))
 
 
 def pick(releases, prereleases=True):
@@ -98,7 +118,7 @@ def is_newer(candidate, installed):
     An unstamped install (no VERSION) counts as older than anything."""
     if not installed:
         return True
-    c, i = str(candidate).strip(), str(installed).strip()
+    c, i = release_number(candidate), release_number(installed)
     if is_release(c) and is_release(i):
         return tuple(map(int, c.split("."))) > tuple(map(int, i.split(".")))
     return c != i
@@ -296,9 +316,53 @@ def self_test():
     code, text, _ = check("2026.10.30.1", get=no_latest)
     if code != NO_RELEASES:
         raise RuntimeError(f"check (no full release yet): {code} {text}")
+    # The tag name changed from gpl-* to ltc-* (2026-11-14); the version
+    # is still the dated number. A PC on an old release, stamped with the
+    # number alone or with the old prefix, is offered the new one by its
+    # date digits; never the other way round.
+    ltc = {"tag_name": "ltc-2026.11.14.1", "published_at":
+           "2026-11-14T20:00:00Z", "prerelease": False, "assets": [
+               {"name": "LTC.Player.Setup.2026.11.14.1.exe",
+                "browser_download_url": "u6", "size": 90 * 1024 ** 2},
+               {"name": "LTC.Player.Setup.2026.11.14.1.exe.sha256",
+                "browser_download_url": "s6", "size": 100}]}
+    if release_number("ltc-2026.11.14.1") != "2026.11.14.1" or \
+            release_number("gpl-2026.10.30.1") != "2026.10.30.1" or \
+            release_number("bench-2026.10.15-abc1234") != \
+            "bench-2026.10.15-abc1234" or \
+            not is_release("ltc-2026.11.14.1") or \
+            not is_release("gpl-2026.09.15.10") or \
+            is_release("ltc-bench-2026.11.14"):
+        raise RuntimeError("an ltc- or gpl- release name is read wrongly")
+    if not is_newer("2026.11.14.1", "2026.10.30.1") or \
+            not is_newer("2026.11.14.1", "gpl-2026.10.30.1") or \
+            not is_newer("ltc-2026.11.14.1", "gpl-2026.09.15.10") or \
+            is_newer("2026.10.30.1", "ltc-2026.11.14.1") or \
+            is_newer("ltc-2026.11.14.1", "2026.11.14.1") or \
+            is_newer("2026.11.14.1", "ltc-2026.11.14.1"):
+        raise RuntimeError("an ltc- release and an older gpl- one are not "
+                           "compared by their date digits")
+    if pick(rels + [full, ltc, later_bench], prereleases=False)[
+            "version"] != "2026.11.14.1":
+        raise RuntimeError("the ltc- release is not the one picked")
+
+    def ltc_latest(url, timeout=0):
+        if url == API_LATEST:
+            return json.dumps(ltc).encode()
+        raise urllib.error.URLError("a release install read the whole list")
+    for old in ("2026.10.30.1", "gpl-2026.10.30.1", "2026.09.15.10"):
+        code, text, got6 = check(old, get=ltc_latest)
+        if code != NEWER_AVAILABLE or "2026.11.14.1" not in text or \
+                got6["tag"] != "ltc-2026.11.14.1":
+            raise RuntimeError(f"check ({old} against the ltc- release): "
+                               f"{code} {text}")
+    code, text, _ = check("2026.11.14.1", get=ltc_latest)
+    if code != UP_TO_DATE:
+        raise RuntimeError(f"check (ltc- release, up to date): {code} {text}")
     yield "a release install is offered only full releases (GitHub's " \
           "Latest), never a bench pre-release, and never an older number; " \
-          "a bench install is offered the release"
+          "a bench install is offered the release; an ltc- release is " \
+          "newer than a gpl- one by its date digits"
     work = tempfile.mkdtemp(prefix="ltcplay-updater-")
     try:
         p = os.path.join(work, "x.exe")

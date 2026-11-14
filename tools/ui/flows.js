@@ -57,7 +57,7 @@ const TASKS = [
     await o.typeNoTap("#si-pw", "secret1", "password"); await o.shot("1_signin");
     await o.tap('#sh-row [data-i="1"]', "Sign in"); }],
   ["2 Start the night (Run)", "idle_operator", async o => {
-    await o.shot("2_before"); await o.tap("#b-go", "Run show"); await o.yes("run"); await o.shot("2_after"); }],
+    await o.shot("2_before"); await o.tap("#b-go", "Show control on"); await o.yes("run"); await o.shot("2_after"); }],
   ["3 Startup checklist incl. purge", "day_jeff", async o => {
     await o.tap('.tab[data-tab="day"]', "Day"); await o.shot("3_day");
     await o.tap("#d-next", "Next step (to the startup list)");
@@ -98,6 +98,46 @@ const TASKS = [
     await o.tap("#d-next", "Next step (sign out)");
     await o.tap("#d-signout", "Sign out"); await o.tap('#sh-row [data-i="2"]', "Sign out (sheet)");
     await o.shot("10_done"); }],
+  // The hazer test and Arm all hazers (2026-11-11), on the Purge step
+  // with the other purges: a tap on, a tap off.
+  ["12 Purge page hazers: one on and off, all on, all off", "day_jeff", async o => {
+    await o.tap('.tab[data-tab="day"]', "Day");
+    await o.tap("#d-next", "Next step (startup list)"); for(let i = 0; i < 3; i++) await o.tap("#d-tick", "Tick");
+    await o.tap("#d-next", "Next step (fuel)"); await o.tap("#d-next", "Next step (purge)");
+    await o.tap('#hzt-list input[data-n="Hazer 1"]', "select Hazer 1");
+    await o.tap("#hzt-btn", "Turn on"); await o.page.waitForTimeout(1200); await o.shot("12_hazer1_on");
+    const st = await o.page.$eval("#hzt-st", e => e.textContent).catch(() => "");
+    if(!/^1 on/.test(st)) o.notes.push("HAZER 1 NOT SHOWN ON: '" + st + "'");
+    await o.tap("#hzt-btn", "Turn off"); await o.page.waitForTimeout(1200);
+    const st2 = await o.page.$eval("#hzt-st", e => e.textContent).catch(() => "");
+    if(st2 !== "Off") o.notes.push("HAZERS NOT SHOWN OFF: '" + st2 + "'");
+    await o.tap("#hzt-allon", "All on"); await o.page.waitForTimeout(1200);
+    const st3 = await o.page.$eval("#hzt-st", e => e.textContent).catch(() => "");
+    if(!/^3 on/.test(st3)) o.notes.push("ALL ON NOT SHOWN: '" + st3 + "'");
+    await o.tap("#hzt-alloff", "All off"); await o.shot("12_all_off"); }],
+  // Arm all hazers on the SHOW tab's Hazers row (2026-11-13), beside
+  // Hazers off: hazers only, never a flame group.
+  ["13 Arm all hazers on the show screen", "idle_operator", async o => {
+    await o.tap("#hz-all", "Arm all hazers"); await o.page.waitForTimeout(1200); await o.shot("13_hazers_armed");
+    const w = await o.page.$eval("#hz-all .hw", e => e.textContent).catch(() => "");
+    if(w !== "All armed") o.notes.push("ARM ALL HAZERS NOT SHOWN ALL ARMED: '" + w + "'");
+    await o.tap("#hz-off", "Hazers off"); }],
+  // Shows per refill (2026-11-13), on the Fuel step: Refueled +1 taps,
+  // one too many fixed by tapping round, then select and Fill selected.
+  ["14 Refueled +1 and Fill selected", "day_jeff", async o => {
+    await o.tap('.tab[data-tab="day"]', "Day");
+    await o.tap("#d-next", "Next step (startup list)"); for(let i = 0; i < 3; i++) await o.tap("#d-tick", "Tick");
+    await o.tap("#d-next", "Next step (fuel)");
+    const words = async () => o.page.$eval('#d-fuel [data-step-unit="w1"]', e => e.innerText.replace(/\s+/g, " ").trim()).catch(() => "");
+    for(let i = 0; i < 3; i++) await o.tap('#d-fuel [data-step-unit="w1"]', "Refueled +1");
+    await o.page.waitForTimeout(2500);
+    const w3 = await words(); if(!/Refuel now/.test(w3)) o.notes.push("NOT ROUND TO 0: '" + w3 + "'");
+    for(let i = 0; i < 4; i++) await o.tap('#d-fuel [data-step-unit="w1"]', "Refueled +1 (round the loop)");
+    await o.page.waitForTimeout(2500);
+    const w4 = await words(); if(!/Shows left: 4/.test(w4)) o.notes.push("NOT AT THE TOP: '" + w4 + "'");
+    await o.shot("14_refueled");
+    await o.tap("#fu-fill", "Select to fill"); await o.tap('#fs-kinds [data-fs-kind="gflame"]', "Select all G-Flames");
+    await o.shot("14_selected"); await o.yes("fill selected"); await o.yes("fill these"); await o.shot("14_filled"); }],
   // A group's Disarm the Stream Deck does not act on (2026-10-29): the
   // engine forces the Stop's disarm and the page says so in amber.
   ["11 Disarm a group the deck does not answer", "deck_not_answering", async o => {
@@ -105,6 +145,13 @@ const TASKS = [
     const said = await o.page.$eval("#msg-t", e => e.textContent).catch(() => "");
     const cls = await o.page.$eval("#msg", e => e.className).catch(() => "");
     if(!/^Not confirmed: ALL groups disarm sent\./.test(said) || cls !== "warn") o.notes.push("FORCED DISARM NOT SAID: '" + said + "' " + cls); }],
+  // Pre-show audio (preshow_audio.py, Jeff 2026-11-12): an admin turns it
+  // on for the chosen file on the Schedule tab.
+  ["12 Turn on pre-show audio", "day_jeff", async o => {
+    await o.tap('.tab[data-tab="schedule"]', "Schedule"); await o.page.waitForTimeout(600); await o.shot("12_card");
+    await o.tap("#psa-on", "Turn on"); await o.shot("12_on");
+    const now = await o.page.$eval("#psa-now", e => e.textContent).catch(() => "");
+    if(now !== "ON: welcome.wav") o.notes.push("PRE-SHOW AUDIO NOT SHOWN ON: '" + now + "'"); }],
 ];
 
 (async () => {
