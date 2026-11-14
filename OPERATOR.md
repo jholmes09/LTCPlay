@@ -600,8 +600,10 @@ again, as for any test on Hold (Jeff, 2026-11-14); Resume, Start now,
 Start at a cue and Continue anyway clear the purge selection first and
 wait (at most 1.5 s) for flamesafe to report every group the purge armed
 off; if it cannot, they are refused with "A purge group is still armed:
-press Clear, then try again." and the show stays held. After the start
-only a fresh tap arms. One slow read by the Stream Deck no
+press Clear, then try again." and the show stays held. If flamesafe is
+not answering they say so; Clear forgets the purge's groups, so the next
+try goes. A Stop or Hold pressed during that wait always wins: nothing
+starts. After the start only a fresh tap arms. One slow read by the Stream Deck no
 longer disarms a purge (it keeps the groups for 1 s); if the engine is
 quiet for longer the groups are disarmed and stay selected, and the next
 tap arms them. If Space or FIRE answers but nothing is armed, the page

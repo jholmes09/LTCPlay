@@ -2838,10 +2838,12 @@ class Remote:
             return 409, {"error": "Continue anyway needs the button held "
                                   "until it fills; a tap does nothing. "
                                   "Nothing was changed."}
+        seq0 = getattr(self, "_halt_seq", 0)
         self._start_begin()
         try:
             said = self.tests_off_for_show("Continue anyway", who, screen)
-            why = self.purge_off_before_start("Continue anyway", who, screen)
+            why = self.purge_off_before_start("Continue anyway", who, screen,
+                                              seq0=seq0)
             if why:
                 return 409, {"ok": False, "error": why, "text": why,
                              "tests_off": said}
@@ -4523,11 +4525,13 @@ class Remote:
             # away, so a press refused below still ends them.
             _what = {"resume": "Resume", "start-now": "Start now",
                      "start-at-cue": "Start at a cue"}[name]
+            # A Stop or Hold after this press wins (purge_off_before_start).
+            seq0 = getattr(self, "_halt_seq", 0)
             tests_said = self.tests_off_for_show(
                 _what, who, screen)
             # The groups the purge armed, confirmed off by flamesafe before
             # the scheduler is asked; else refused, the show left held.
-            why = self.purge_off_before_start(_what, who, screen)
+            why = self.purge_off_before_start(_what, who, screen, seq0=seq0)
             if why:
                 return 409, {"ok": False, "error": why, "text": why,
                              "tests_off": tests_said}
@@ -4563,6 +4567,9 @@ class Remote:
             # thread; the blank and BEYOND's DisableLaserOutput go on the
             # arm's own sender, so nothing here waits on BEYOND.
             self._lasers_disarm_now(who, screen, name)
+            # A start waiting for the purge's groups never outlives a Hold
+            # pressed meanwhile (purge_off_before_start): Hold wins.
+            self._halt_seq = getattr(self, "_halt_seq", 0) + 1
             # The hazer test ends at a Hold press too (Jeff, 2026-11-14): a
             # Hold no longer refuses it, so the press itself takes it off,
             # as it does the timed purge. Only the link's cut here.
@@ -7193,23 +7200,52 @@ class Remote:
         said = self.tests_off_for_show(
             label, "", "engine",
             why=f"the show is starting ({label}): every test off first")
+        m = getattr(self, "morning", None)
+        try:
+            names = sorted(m.purge.purge_groups()) if m is not None else []
+        except Exception:                        # noqa: BLE001
+            names = []
         why = self.purge_off_before_start(label, "", "engine")
         if why:
             try:
-                self.alerts.raise_("flames", f"Before {label}: {why}")
+                self.alerts.raise_(
+                    "flames", f"{label}: flamesafe did not confirm the "
+                              f"purge's groups ({', '.join(names)}) off "
+                              f"before the show started; it started "
+                              f"anyway. Check those flame groups now.")
             except Exception:                    # noqa: BLE001
                 pass
         return said
 
-    def purge_off_before_start(self, what, who="", screen=""):
-        """"" once flamesafe has confirmed every group the purge asked to
-        arm (morning.Purge.purge_groups) disarmed and not wanted, in a
-        fresh status received GROUP_DISARM_SETTLE_S or more after this
-        call, within PURGE_START_CONFIRM_S; or the sentence that refuses
-        the start (PURGE_STILL_ARMED and the groups). Called after
-        tests_off_for_show has cleared the purge, so the Stream Deck is
-        disarming them (#266 with #269, Jeff 2026-11-14: no test outlives
-        the Hold into the show). Nothing to wait for: "" at once."""
+    def purge_off_before_start(self, what, who="", screen="", seq0=None):
+        """"" once every group the purge asked to arm (morning.Purge.
+        purge_groups) is confirmed off, within PURGE_START_CONFIRM_S: by
+        flamesafe (disarmed and not wanted, in a fresh status received
+        GROUP_DISARM_SETTLE_S or more after this call), or, while
+        flamesafe's status is not reaching this engine, by the Stream Deck
+        reading the cleared purge twice (it disarms a purge group the
+        moment the purge stops wanting it; journaled as a fault). Else the
+        sentence that refuses the start, naming the cause and the way out.
+        Called after tests_off_for_show has cleared the purge (#266 with
+        #269, Jeff 2026-11-14: no test outlives the Hold into the show).
+        `seq0`: the Stop and Hold count when the start was pressed; a Stop
+        or Hold since ends the wait and refuses the start (Stop and Hold
+        always win). Nothing to wait for: "" at once."""
+        def halted():
+            return seq0 is not None and getattr(self, "_halt_seq", 0) != seq0
+
+        def refuse(why):
+            try:
+                self._journal(who or "system", screen or "engine", "purge",
+                              "refused", f"{what}: {why}", fault=True)
+            except Exception:                    # noqa: BLE001
+                pass
+            return why
+        stopped = (f"Stop or Hold was pressed while {what} waited for the "
+                   f"purge's groups, so nothing was started. Stop and Hold "
+                   f"always win.")
+        if halted():
+            return refuse(stopped)
         m = getattr(self, "morning", None)
         purge = getattr(m, "purge", None) if m is not None else None
         try:
@@ -7223,21 +7259,39 @@ class Remote:
             at0 = fs.clock()
         except Exception:                        # noqa: BLE001
             at0 = None
+        reads0 = getattr(self, "_deck_reads", 0)
+        stale = False
         end = time.monotonic() + PURGE_START_CONFIRM_S
         for _step in range(int(PURGE_START_CONFIRM_S /
                                GROUP_DISARM_STEP_S) + 1):
+            if halted():
+                return refuse(stopped)
             try:
+                v = fs.view()
+                stale = not v or bool(v.get("stale"))
                 got = fs.last_at
-                if at0 is not None and got is not None and \
+                if not stale and at0 is not None and got is not None and \
                         got - at0 >= GROUP_DISARM_SETTLE_S:
-                    v = fs.view()
                     by = {g.get("name"): g for g in v.get("groups") or []}
-                    if not v.get("stale") and all(
-                            (by.get(n) or {}).get("armed") == "disarmed" and
-                            not (by.get(n) or {}).get("wanted")
-                            for n in groups):
+                    if all((by.get(n) or {}).get("armed") == "disarmed" and
+                           not (by.get(n) or {}).get("wanted")
+                           for n in groups):
                         purge.purge_groups_forget(groups)
                         return ""
+                if stale and getattr(self, "_deck_reads", 0) - reads0 >= 2:
+                    purge.purge_groups_forget(groups)
+                    try:
+                        self._journal(
+                            who or "system", screen or "engine", "purge",
+                            "deck", f"{what}: flamesafe is not answering, "
+                            f"so it could not confirm the purge's groups "
+                            f"({', '.join(sorted(groups))}) off. The Stream "
+                            f"Deck has read the cleared purge, and lets a "
+                            f"purge group go the moment it is not wanted.",
+                            fault=True)
+                    except Exception:            # noqa: BLE001
+                        pass
+                    return ""
             except Exception:                    # noqa: BLE001
                 pass
             if time.monotonic() >= end:
@@ -7246,14 +7300,17 @@ class Remote:
                 self._pause(GROUP_DISARM_STEP_S)
             except Exception:                    # noqa: BLE001
                 break
-        why = (f"{PURGE_STILL_ARMED} flamesafe has not confirmed "
-               f"{', '.join(sorted(groups))} off. The show stays held.")
-        try:
-            self._journal(who or "system", screen or "engine", "purge",
-                          "refused", f"{what}: {why}", fault=True)
-        except Exception:                        # noqa: BLE001
-            pass
-        return why
+        if halted():
+            return refuse(stopped)
+        names = ", ".join(sorted(groups))
+        if stale:
+            return refuse(f"flamesafe is not answering and the Stream Deck "
+                          f"is not reading this engine, so nothing can "
+                          f"confirm the purge's groups ({names}) off. Press "
+                          f"Clear on the Purge step, then try again. The "
+                          f"show stays held.")
+        return refuse(f"{PURGE_STILL_ARMED} flamesafe has not reported "
+                      f"{names} off. The show stays held.")
 
     def tests_off_for_show(self, what, who="", screen="", why=None):
         """Every operator test off before a show may drive the rig again
@@ -8134,6 +8191,9 @@ class Remote:
         (None when there is nothing of it in this engine) and the names of
         the steps that failed."""
         label = who or "An unnamed operator"
+        # A start waiting for the purge's groups never outlives a Stop
+        # (purge_off_before_start): Stop wins.
+        self._halt_seq = getattr(self, "_halt_seq", 0) + 1
         out = {"flames": None, "lasers": None, "lasers_blank": None,
                "show": None, "show_ended": False, "hold": None,
                "programming": None, "failed": []}

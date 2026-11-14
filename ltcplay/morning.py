@@ -1987,6 +1987,28 @@ class Purge:
                 now = self._clock()
                 for mid in had:
                     self._taps[(device, mid)] = now
+            # The operator's Clear also forgets every group the purge
+            # armed (#266 with #269): a start after it never waits on
+            # them, even with flamesafe silent. The deck was told (no group
+            # wanted), and lets each go on its next read.
+            forgot = sorted(self._purge_groups) if device is not None \
+                else []
+            if device is not None:
+                self._purge_groups.clear()
+        if forgot:
+            try:
+                fl = self._flames() or {}
+                silent = not fl or bool(fl.get("stale"))
+            except Exception:                            # noqa: BLE001
+                silent = True
+            self._note(f"{device}'s Clear forgot the purge's groups "
+                       f"({', '.join(forgot)})"
+                       + (": flamesafe is not answering, so it could not "
+                          "confirm them off. The Stream Deck was told no "
+                          "group is wanted and lets them go on its next "
+                          "read." if silent else
+                          "; the Stream Deck lets them go on its next read."),
+                       action="purge", outcome="forgot", screen=device)
         if had:
             self._note(f"Purge selection cleared ({why}): "
                        f"{', '.join(had)}.", action="purge",

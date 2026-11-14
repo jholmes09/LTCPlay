@@ -59063,13 +59063,19 @@ class _PurgePressRig:
         # The engine's own waits (a start confirming the purge's groups
         # off, purge_off_before_start) run the deck and flamesafe on.
         self.pause_runs_deck = True
+        # flamesafe's status feed stopped (True): step() feeds nothing, so
+        # its status goes stale after FLAME_STALE_S.
+        self.fs_silent = False
 
         def pause(seconds):
             if rig.pause_runs_deck:
                 rig.step(seconds)
             else:
+                # The deck not running; flamesafe still reporting.
                 R.mono[0] += seconds
                 R.wall[0] += seconds
+                if not rig.fs_silent:
+                    R.feed()
         R.remote._pause = pause
 
     def step(self, dt=0.05, n=1):
@@ -59084,7 +59090,8 @@ class _PurgePressRig:
             for i, w in enumerate(self.arm.wanted):
                 R.groups[i]["armed"] = "armed" if w else "disarmed"
                 R.groups[i]["wanted"] = bool(w)
-            R.feed()
+            if not self.fs_silent:
+                R.feed()
             R.m.tick()
 
     def post(self, route, body):
@@ -59925,6 +59932,140 @@ def test_purge_on_a_mid_show_hold_ends_at_resume_and_never_rearms():
         P.R.svc.operator_press = real_press
         P.R.svc.machine = old
         P.close()
+    print("  ok")
+
+
+def _purge_start_rig(S, state):
+    """A _PurgePressRig with the schedule in `state`, group front row
+    armed for the purge by a tap, and the scheduler's operator_press
+    recorded (a Resume answered by a stand-in, as the rig's machine is
+    one): (P, calls, undo)."""
+    import dataclasses as _dc
+    P = _PurgePressRig(S)
+    old = P.R.svc.machine
+    calls = []
+    real = P.R.svc.operator_press
+
+    def press(name, *a, **kw):
+        calls.append(name)
+        if name == "resume":
+            return {"ok": True, "text": "Resumed."}
+        return real(name, *a, **kw)
+    P.step()
+    P.R.svc.machine = _dc.replace(old, state=state)
+    P.step(n=3)
+    P.tap("g1")
+    P.step(n=3)
+    check(P.arm.wanted[0] is True, f"setup: front row armed for the purge "
+                                   f"on {state}: {P.arm.wanted}")
+    P.R.svc.operator_press = press
+
+    def undo():
+        P.R.svc.operator_press = real
+        P.R.svc.machine = old
+        P.close()
+    return P, calls, undo
+
+
+def _resume(P):
+    st, _h, out = P.R.ask("POST", "/api/remote/resume",
+                          {"seen": P.R.seen()}, client=P.LOOP)
+    return st, out
+
+
+def test_purge_start_with_flamesafe_silent_clear_frees_it():
+    section("Purge, flamesafe not answering at a Resume (re-review of "
+            "#273): with nothing able to confirm the purge's groups off "
+            "the Resume is refused naming the real cause (flamesafe not "
+            "answering) and the way out; the operator's Clear forgets the "
+            "purge's groups, so the next Resume goes, journaled; with the "
+            "Stream Deck reading, its read of the cleared purge confirms "
+            "them, journaled as flamesafe silent")
+    S = _sched()
+    if S is None:
+        return
+    P, calls, undo = _purge_start_rig(S, "PAUSED")
+    try:
+        P.fs_silent = True
+        P.step(n=30)
+        check(P.R.remote.flame_status.view().get("stale"),
+              "setup: flamesafe's status is stale")
+        P.pause_runs_deck = False
+        for _ in range(2):
+            st, out = _resume(P)
+            err = out.get("error") or ""
+            check(st == 409 and "flamesafe is not answering" in err and
+                  "Press Clear" in err and "resume" not in calls,
+                  f"refused, the real cause and the way out said: {st} "
+                  f"{out}")
+        st, out = P.post("purge-clear", {})
+        check(st == 200, f"Clear: {st} {out}")
+        st, out = _resume(P)
+        check(st == 200 and calls.count("resume") == 1,
+              f"after Clear the Resume goes, flamesafe still silent: {st} "
+              f"{out}")
+        said = " ".join(str(r) for r in P.R.svc.journal)
+        check("forgot the purge's groups (front row)" in said and
+              "could not confirm them off" in said,
+              "the journal says Clear forgot them without flamesafe's word")
+        # The Stream Deck reading the cleared purge: confirmation enough
+        # while flamesafe is silent.
+        P.fs_silent = False
+        P.pause_runs_deck = True
+        _tap_gap(P.R)
+        P.step(n=3)
+        P.tap("g1")
+        P.step(n=3)
+        check(P.arm.wanted[0] is True, "setup: armed again")
+        P.fs_silent = True
+        P.step(n=30)
+        st, out = _resume(P)
+        said = " ".join(str(r) for r in P.R.svc.journal)
+        check(st == 200 and calls.count("resume") == 2 and
+              P.arm.wanted[0] is False and
+              "The Stream Deck has read the cleared purge" in said,
+              f"flamesafe silent, the deck reading: it lets the group go "
+              f"and the Resume goes, journaled: {st} {out} {P.arm.wanted}")
+    finally:
+        undo()
+    print("  ok")
+
+
+def test_purge_start_wait_loses_to_stop_and_hold():
+    section("Purge (re-review of #273): Stop and Hold always win. A Stop or "
+            "a Hold pressed while a Resume waits for the purge's groups "
+            "ends the wait and refuses the Resume: the scheduler is never "
+            "asked to resume, the Stop's Hold stands")
+    S = _sched()
+    if S is None:
+        return
+    for which in ("stop", "hold"):
+        P, calls, undo = _purge_start_rig(S, "HOLD")
+        try:
+            rp, fired = P.R.remote._pause, []
+
+            def pause(seconds):
+                if not fired:
+                    fired.append(which)
+                    if which == "stop":
+                        P.R.remote.stop_press("Bob", "iPad")
+                    else:
+                        P.R.ask("POST", "/api/remote/hold",
+                                {"seen": P.R.seen(), "confirmed": True},
+                                client=P.LOOP)
+                rp(seconds)
+            P.R.remote._pause = pause
+            st, out = _resume(P)
+            check(fired == [which] and st == 409 and
+                  "Stop or Hold was pressed" in (out.get("error") or "") and
+                  "resume" not in calls,
+                  f"{which} during the wait: the Resume refused, the "
+                  f"scheduler never asked: {st} {out} {calls}")
+            check(P.R.svc.machine.state != "STANDBY",
+                  f"{which} during the wait: the schedule stays held: "
+                  f"{P.R.svc.machine.state}")
+        finally:
+            undo()
     print("  ok")
 
 
@@ -127834,6 +127975,8 @@ if __name__ == "__main__":
         test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule,
         test_purge_stop_cancels_and_nothing_rearms_after_it,
         test_purge_on_a_mid_show_hold_ends_at_resume_and_never_rearms,
+        test_purge_start_with_flamesafe_silent_clear_frees_it,
+        test_purge_start_wait_loses_to_stop_and_hold,
         test_purge_page_says_selected_vs_armed_and_not_firing,
         test_rack_window_fits_the_work_area_above_the_taskbar,
         test_deck_chip_shows_live_truth,

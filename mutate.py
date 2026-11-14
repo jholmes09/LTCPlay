@@ -25176,7 +25176,7 @@ def build():
 
  ('purge: Resume and Start now go on with the purge groups still armed',
   'ltcplay/remote.py',
-  '            why = self.purge_off_before_start(_what, who, screen)\n',
+  '            why = self.purge_off_before_start(_what, who, screen, seq0=seq0)\n',
   '            why = ""\n'),
 
  ('purge: a start never waits for flamesafe to confirm the purge groups off',
@@ -25193,6 +25193,21 @@ def build():
   'ltcplay/web/remote2.html',
   '  if(part !== "shut" && (hzOk || (st.hazer_test && st.hazer_test.available))){\n',
   '  if(part !== "shut" && hzOk){\n'),
+
+ ('purge: a Stop during a start\'s wait for the purge groups loses to the start',
+  'ltcplay/remote.py',
+  '        self._halt_seq = getattr(self, "_halt_seq", 0) + 1\n        out = {"flames": None,',
+  '        out = {"flames": None,'),
+
+ ('purge: a Hold during a start\'s wait for the purge groups loses to the start',
+  'ltcplay/remote.py',
+  '            self._lasers_disarm_now(who, screen, name)\n            # A start waiting for the purge\'s groups never outlives a Hold\n            # pressed meanwhile (purge_off_before_start): Hold wins.\n            self._halt_seq = getattr(self, "_halt_seq", 0) + 1\n',
+  '            self._lasers_disarm_now(who, screen, name)\n'),
+
+ ('purge: the operator\'s Clear does not forget the purge groups',
+  'ltcplay/morning.py',
+  '            if device is not None:\n                self._purge_groups.clear()\n',
+  '            if False:\n                self._purge_groups.clear()\n'),
 
  ('purge: a Hold press leaves the purge selection armed',
   'ltcplay/remote.py',
