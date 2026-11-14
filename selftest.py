@@ -79226,6 +79226,22 @@ def test_timed_purge_every_end_cause():
             finally:
                 R.svc.machine = was
             check_end(m)
+        # Held mid show with show control on, as in a real show (Jeff,
+        # 2026-11-14): a timed purge starts and runs.
+        was, sess = R.svc.machine, R.remote.control.session
+        R.svc.machine = _dc.replace(was, state="PAUSED")
+        R.remote.control.session = type("Sess", (), {"running": True})()
+        try:
+            if start():
+                _tp_step(R, 0.1)
+                check(R.m.purge.timed_running(),
+                      "held mid show, show control on: the timed purge "
+                      "starts and runs on")
+                m = ended("Stop purge held mid show", "pressed Stop purge")
+                R.ask("POST", "/api/remote/purge-stop", {}, client=loop)
+                check_end(m)
+        finally:
+            R.svc.machine, R.remote.control.session = was, sess
         # flamesafe stale: no status for 1.1 s.
         if start():
             m = ended("flamesafe stale", "flamesafe has not reported")
@@ -106829,7 +106845,8 @@ def test_show_control_refusals_say_turn_it_off():
             ("the engine's state starting",
              types.SimpleNamespace(session=None,
                                    state=lambda: {"starting": True}))):
-        fake = types.SimpleNamespace(schedule=None, control=ctl)
+        fake = types.SimpleNamespace(schedule=None, control=ctl,
+                                     _held_mid_show=lambda: False)
         why = RM.Remote.timed_purge_blockers(fake, None)
         check(why.startswith("Show control is on") and want in why and
               "press Stop" not in why,
@@ -106852,6 +106869,7 @@ def test_show_control_refusals_say_turn_it_off():
                                    state=lambda: {"starting": True}))):
         fake = types.SimpleNamespace(schedule=None, control=ctl,
                                      _ht_state=lambda: "idle",
+                                     _held_mid_show=lambda: False,
                                      show_control_on=lambda cs: False)
         why = RM.Remote.hazer_test_show_busy(fake)
         check(why == "show control is on; turn show control off first "
@@ -106889,7 +106907,8 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
                live_flame=None,
                show_control_on=lambda c: bool(c.get("running")))
         for name in ("_ht_state", "laser_arm_blockers",
-                     "show_live_refusal", "morning_live_refusal"):
+                     "show_live_refusal", "morning_live_refusal",
+                     "_held_mid_show"):
             setattr(f, name, getattr(RM.Remote, name).__get__(f))
         return f
     # ALLOWED: the schedule's Hold, between shows and after a Stop, and no
@@ -106965,6 +106984,51 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
             check("show control" in RM.Remote.hazer_test_show_busy(f),
                   f"show control on ({label}): the hazer test refused: "
                   f"{RM.Remote.hazer_test_show_busy(f)!r}")
+    # Held mid show (PAUSED), show control on as it is in a real show
+    # (Jeff, 2026-11-14): the timed purge and the hazer test are allowed;
+    # not while the show clock plays, not on a Hold between shows or after
+    # a Stop with show control on, not while Stop is under way, and a show
+    # file STARTING still refuses.
+    for label, kw in (("the session running", {"session_running": True}),
+                      ("the engine's state running",
+                       {"cs": {"running": True}})):
+        f = fake("PAUSED", look="HELD", **kw)
+        check(f._held_mid_show() is True and
+              RM.Remote.timed_purge_blockers(f, None) == "" and
+              RM.Remote.hazer_test_show_busy(f) == "" and
+              RM.Remote.hazer_test_gate(f) is True,
+              f"held mid show, show control on ({label}): the timed purge "
+              f"and the hazer test are allowed: "
+              f"{RM.Remote.timed_purge_blockers(f, None)!r} "
+              f"{RM.Remote.hazer_test_show_busy(f)!r}")
+        f = fake("PAUSED", look="HELD", playing=True, **kw)
+        check(f._held_mid_show() is False and
+              "show control is on" in
+              RM.Remote.timed_purge_blockers(f, None).lower() and
+              "show control" in RM.Remote.hazer_test_show_busy(f) and
+              (RM.Remote.hazer_test_gate(f) is False or
+               "session_running" not in kw),
+              f"held mid show with the show clock playing ({label}): "
+              f"refused")
+        for st_ in ("HOLD", "SHOW"):
+            f = fake(st_, look="HELD", **kw)
+            check(f._held_mid_show() is False and
+                  RM.Remote.timed_purge_blockers(f, None) != "" and
+                  RM.Remote.hazer_test_show_busy(f) != "" and
+                  (RM.Remote.hazer_test_gate(f) is False or
+                   "session_running" not in kw),
+                  f"{st_} with show control on ({label}): still refused")
+    f = fake("PAUSED", look="HELD", session_running=True, halting=True)
+    check(RM.Remote.timed_purge_blockers(f, None) == "Stop is under way.",
+          "held mid show, Stop under way: the timed purge refused")
+    f = fake("PAUSED", look="HELD", cs={"starting": True})
+    check("show control is on" in
+          RM.Remote.timed_purge_blockers(f, None).lower(),
+          "held mid show, a show file starting: the timed purge refused")
+    f = fake("PAUSED")
+    f.schedule = NS(machine=NS())
+    check(f._held_mid_show() is False, "a state that cannot be read is "
+                                       "not a Hold")
     # Stop under way, and the night closing.
     f = fake("HOLD", halting=True)
     check(RM.Remote.timed_purge_blockers(f, None) == "Stop is under way.",

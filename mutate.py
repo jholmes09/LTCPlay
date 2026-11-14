@@ -24862,6 +24862,36 @@ def build():
   '        if clk is not None and getattr(clk, "playing", False):\n            return ("the show clock is playing a cue; nothing fires from "\n',
   '        if False:\n            return ("the show clock is playing a cue; nothing fires from "\n'),
 
+ ('mid-show Hold: show control on refuses the timed purge',
+  'ltcplay/remote.py',
+  '            held = self._held_mid_show()\n',
+  '            held = False\n'),
+
+ ('mid-show Hold: show control on refuses the hazer test',
+  'ltcplay/remote.py',
+  '            if self._held_mid_show():\n                # Held mid show (Jeff, 2026-11-14): show control stays on\n',
+  '            if False:\n                # Held mid show (Jeff, 2026-11-14): show control stays on\n'),
+
+ ("mid-show Hold: the hazer test's per-frame gate shuts with show control on",
+  'ltcplay/remote.py',
+  '            if self._held_mid_show():\n                return True\n',
+  ''),
+
+ ('mid-show Hold: show control on does not refuse while the show clock plays',
+  'ltcplay/remote.py',
+  '            return not (clk is not None and getattr(clk, "playing", False))\n',
+  '            return True\n'),
+
+ ('mid-show Hold: show control on does not refuse on a Hold between shows',
+  'ltcplay/remote.py',
+  '            if getattr(m, "state", None) != "PAUSED":\n                return False\n',
+  '            if getattr(m, "state", None) not in ("PAUSED", "HOLD"):\n                return False\n'),
+
+ ('mid-show Hold: a show file starting lets the timed purge through',
+  'ltcplay/remote.py',
+  '            if cs.get("starting") or (cs.get("running") and not held):\n',
+  '            if cs.get("running") and not held:\n'),
+
  ('mid-show Hold: live flame programming does not stop the tests',
   'ltcplay/remote.py',
   '        if lf is not None and getattr(lf, "on", False) is not False:\n',
