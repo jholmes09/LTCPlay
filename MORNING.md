@@ -256,15 +256,20 @@ unreachable (1.3 s: one slow or failed read keeps the last fresh answer's
 groups for `PURGE_STALE_GRACE_S`, 1 s, after it), a show goes live, a Stop
 lands.
 
-A group is armed by the deck only on an operator's tap (Jeff, 2026-11-14):
-when it enters the engine's list (a machine selected), or when the engine
-numbers a new tap for it (`purge.presses`, `[group, tap number, age ms]`,
-acted on once and only while under `PURGE_PRESS_FRESH_S`, 2 s, old). A tap
-on a machine already selected whose group is not armed is such a tap: the
-page sends `on: true` for it, the engine keeps the selection and numbers
-the tap. A tap that would arm within `TAP_IGNORE_S` (2 s) of the same
-operator's last tap on that machine is ignored as a double tap; a tap that
-takes a machine off never is. Nothing re-arms on its own: a group the deck
+A group is armed by the deck ONLY on an operator's tap (Jeff, 2026-11-14,
+and the cold review of #269): the engine numbers every arm tap it takes
+(`purge.presses`, `[group, tap number, age ms]`), and the deck arms on a
+number it has not seen, once, only while under `PURGE_PRESS_FRESH_S` (2 s)
+old. A group merely being in `wanted_groups` arms nothing: after any
+answer that listed no groups (purge arming read as off, the view raising,
+the page closed) it stays disarmed until the next tap. A tap on a machine
+already selected whose group is not armed is such a tap: the page sends
+`on: true` for it (only while the refusal is one a tap can clear: none,
+`refractory`, `dropped`; otherwise the tap takes it off), the engine keeps
+the selection and numbers the tap. An arm tap within `TAP_IGNORE_S` (2 s)
+of the same screen's last arm tap taken on that machine is ignored as a
+double tap (Clear and an off tap end the window); a
+tap that takes a machine off is never ignored and starts no window. Nothing re-arms on its own: a group the deck
 let go (a quiet engine past the grace, reported as `dropped`), refused or
 an operator disarmed on the deck stays selected and unarmed until the next
 tap. A disarm the deck does by itself (purge_pass: the list changed, the

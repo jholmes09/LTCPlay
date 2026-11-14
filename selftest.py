@@ -58406,8 +58406,14 @@ def test_streamdeck_reports_rearm_wait_and_purge_refusal():
     c._disarmed_at[0] = 0.0        # the operator's own disarm, at 0
     t[0] = 0.5
     c.purge_pass(t[0])
+    check(arm.wanted == [False, False, False] and
+          c.rearm_report() == ({0: 1500}, {}),
+          "a group merely in the purge list arms nothing: no tap, no "
+          "attempt (Jeff, 2026-11-14: no auto-arming)")
+    view["purge"] = {"wanted_groups": [0], "presses": [[0, 6, 30]]}
+    c.purge_pass(t[0])
     check(arm.wanted == [False, False, False],
-          "a purge arm inside the refractory window of the operator's own "
+          "a tap inside the refractory window of the operator's own "
           "disarm is refused, as before")
     check(c.rearm_report() == ({0: 1500}, {0: "refractory"}),
           f"and reported: the wait left and the refusal: {c.rearm_report()}")
@@ -58593,7 +58599,7 @@ def test_purge_a_deliberate_press_arms_a_selected_unit():
         (st, out), lit = P.fire()
         check(st == 200 and lit == [411, 412],
               f"and Space fires again: {out} {lit}")
-        # A double tap: off, then on 0.3 s later: the second is ignored.
+        # Taking a unit off is never ignored and starts no 2 s window.
         P.step(n=45)
         st, out = P.tap("g1", on=False)
         check(st == 200 and P.R.m.purge.view()["selected"] == ["g2"],
@@ -58601,19 +58607,17 @@ def test_purge_a_deliberate_press_arms_a_selected_unit():
         P.step(0.3)
         st, out = P.tap("g1")
         P.step(n=3)
-        check(st == 200 and out.get("ignored") is True and
-              P.R.m.purge.view()["selected"] == ["g2"] and
-              "double tap" in out["text"],
-              f"a tap within 2 s of the operator's own tap is ignored: "
-              f"{out}")
-        P.step(n=34)                       # 1.7 + 0.3 + 0.15: past 2 s
-        st, out = P.tap("g1")
-        P.step(n=3)
         check(st == 200 and not out.get("ignored") and
               P.R.m.purge.view()["selected"] == ["g2", "g1"] and
               P.arm.wanted[0] is True,
-              f"past 2 s of the last tap: taken and armed: {out} "
-              f"{P.arm.wanted}")
+              f"an off tap starts no window: the tap 0.3 s later is taken "
+              f"and arms: {out} {P.arm.wanted}")
+        # A second ARM tap within 2 s of the last arm tap taken: ignored.
+        P.step(0.3)
+        st, out = P.tap("g1")
+        check(st == 200 and out.get("ignored") is True and
+              "double tap" in out["text"],
+              f"a second arm tap within 2 s is ignored: {out}")
         # A tap within 2 s of the operator's own tap on a selected,
         # unarmed unit: ignored (not a re-arm, not a toggle off).
         P.arm.set_group(0, False)
@@ -58646,6 +58650,182 @@ def test_purge_a_deliberate_press_arms_a_selected_unit():
         P.step(n=3)
         check(P.arm.wanted[0] is True,
               f"a tap on a selected unit of that group arms it: {out}")
+    finally:
+        P.close()
+    print("  ok")
+
+
+def test_purge_nothing_arms_without_a_tap_after_a_glitch():
+    section("Purge (cold safety review of #269, BLOCKER): a group is armed "
+            "ONLY by an operator's tap; an answer that briefly lists no "
+            "groups (purge arming read as off once, the Morning view "
+            "raising, purge arming turned off and on, the page closed) "
+            "disarms it, and nothing re-arms it until the next tap; Clear "
+            "empties the selection at once and nothing can fire after it; "
+            "a unit can always be taken off, flamesafe stale or not")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import streamdeck as sd
+
+    def pe_off(P):
+        orig = P.R.remote.purge_enabled
+        P.R.remote.purge_enabled = lambda local: False
+        return lambda: setattr(P.R.remote, "purge_enabled", orig)
+
+    def dv_raise(P):
+        orig = P.R.m.deck_view
+
+        def bad():
+            raise OSError("boom")
+        P.R.m.deck_view = bad
+        return lambda: setattr(P.R.m, "deck_view", orig)
+
+    for what, glitch, passes in (
+            ("purge arming read as off once", pe_off, 1),
+            ("the Morning view raising once", dv_raise, 1),
+            ("purge arming off for 3 s, then on", pe_off, 60)):
+        P = _PurgePressRig(S)
+        try:
+            P.step()
+            P.tap("g1")
+            P.step(n=4)
+            check(P.arm.wanted[0] is True, f"{what}: setup: armed")
+            undo = glitch(P)
+            P.step(n=passes)
+            undo()
+            check(P.arm.wanted[0] is False,
+                  f"{what}: the glitched answer disarms")
+            hist = []
+            for _ in range(60):
+                P.step()
+                hist.append(P.arm.wanted[0])
+            check(not any(hist) and
+                  P.R.m.purge.view()["selected"] == ["g1"],
+                  f"{what}: 3 s later, still selected and NOT re-armed "
+                  f"without a tap: {''.join('A' if h else '.' for h in hist)}")
+            st, out = P.tap("g1")
+            P.step(n=3)
+            check(out.get("rearm") is True and P.arm.wanted[0] is True,
+                  f"{what}: the next tap arms it: {out}")
+        finally:
+            P.close()
+    # Clear while the deck cannot read the engine: the selection is empty
+    # at once and nothing fires; the deck disarms on its first good read.
+    P = _PurgePressRig(S)
+    try:
+        P.step()
+        P.tap("g1")
+        P.step(n=4)
+        P.blip = True
+        P.step(n=3)
+        st, out = P.post("purge-clear", {})
+        check(st == 200 and P.R.m.purge.view()["selected"] == [],
+              f"Clear empties the selection at once: {st} {out}")
+        st, out = P.post("purge-fire", {"on": True})
+        check(st == 409 and not any(any(f) for f in P.R.link.frames),
+              f"and nothing can fire after it: {st} {out}")
+        P.blip = False
+        P.step()
+        check(P.arm.wanted[0] is False,
+              "the deck's first good read after Clear disarms at once")
+        P.step(n=60)
+        check(P.arm.wanted[0] is False, "and nothing re-arms")
+        # A unit can always be taken off: flamesafe quiet for 1.1 s.
+        P.tap("s1")
+        P.step(n=3)
+        P.R.mono[0] += 1.1
+        st, out = P.tap("s1", on=False)
+        check(st == 200 and P.R.m.purge.view()["selected"] == [],
+              f"with flamesafe stale a tap still takes a unit off: {st} "
+              f"{out}")
+    finally:
+        P.close()
+    print("  ok")
+
+
+def test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule():
+    section("Purge (second review of #269): a tap on a unit ALREADY "
+            "selected, asking for its arm again, goes through every rule a "
+            "first tap has: a live show or Hold, a lock, a press already "
+            "firing (a group never joins a live press) each refuse it and "
+            "number no tap; Clear ends every double tap window")
+    S = _sched()
+    if S is None:
+        return
+    import dataclasses as _dc
+    P = _PurgePressRig(S)
+    try:
+        P.step()
+        P.tap("g1")
+        P.step(n=4)
+        check(P.arm.wanted[0] is True, "setup: armed")
+
+        def drop():
+            P.arm.set_group(0, False)
+            P.step(n=45)              # past 2 s of the last arm tap
+            check(P.arm.wanted[0] is False and
+                  "g1" in P.R.m.purge.view()["selected"],
+                  f"setup: selected, not armed: {P.arm.wanted} "
+                  f"{P.R.m.purge.view()['selected']}")
+        # A press already firing: the tap is refused, nothing numbered.
+        P.tap("s1")
+        P.step(n=45)
+        drop()
+        st, out = P.post("purge-fire", {"on": True})
+        check(st == 200, f"setup: a press going: {st} {out}")
+        before = dict(P.R.m.purge._presses)
+        st, out = P.tap("g1")
+        check(st == 409 and "firing right now" in out["error"] and
+              P.R.m.purge._presses == before,
+              f"a tap during a press is refused and asks for nothing: "
+              f"{st} {out}")
+        P.step()
+        check(P.arm.wanted[0] is False,
+              "and the group never joins the live press")
+        P.post("purge-stop", {})
+        P.step(n=45)
+        # Locked out (the lock table only, the selection kept): refused.
+        cfg = P.R.m.cfg
+        P.R.m.lockout.set(cfg, "machine", "g1", True, "Andy", "Rack screen",
+                          reason="test")
+        P.R.fs_lockout = {"slots": [411], "state": "read"}
+        P.R.feed()
+        P.R.m.tick()
+        before = dict(P.R.m.purge._presses)
+        st, out = P.tap("g1")
+        check(st == 409 and "locked out" in out["error"] and
+              P.R.m.purge._presses == before,
+              f"a tap on a locked unit is refused: {st} {out}")
+        P.R.m.lockout.set(cfg, "machine", "g1", False, "Andy", "Rack screen",
+                          confirmed=True)
+        P.R.fs_lockout = {"slots": [], "state": "read"}
+        P.R.feed()
+        # A show on Hold: refused before anything is numbered.
+        old = P.R.svc.machine
+        try:
+            P.R.svc.machine = _dc.replace(old, state="PAUSED")
+            before = dict(P.R.m.purge._presses)
+            st, out = P.tap("g1")
+            check(st == 409 and P.R.m.purge._presses == before,
+                  f"a tap during a Hold is refused: {st} {out}")
+        finally:
+            P.R.svc.machine = old
+        P.step(n=60)
+        check(P.arm.wanted[0] is False, "nothing armed by any of them")
+        # Clear ends the double tap window: a tap right after it is taken.
+        P.tap("g2")
+        P.step(n=45)
+        P.tap("w1")
+        st, out = P.post("purge-clear", {})
+        check(st == 200 and P.R.m.purge._presses == {} and
+              P.R.m.purge._taps == {},
+              f"Clear empties the selection, the taps and the windows: "
+              f"{P.R.m.purge._taps}")
+        P.step(0.3)
+        st, out = P.tap("w1")
+        check(st == 200 and not out.get("ignored"),
+              f"a tap 0.3 s after Clear is taken, never a double tap: {out}")
     finally:
         P.close()
     print("  ok")
@@ -58742,9 +58922,12 @@ def test_purge_page_says_selected_vs_armed_and_not_firing():
               op.index("**The timed purge (Startup page")]
     flat = " ".join(part.split())
     for need in ("Selected, not armed: tap the unit again",
-                 "Selected, not armed: arms it again",
+                 "a reason another tap cannot change",
+                 "A unit can always be taken off with a tap.",
                  "a tap that would arm is ignored as a double tap",
-                 "never from a disarm nobody pressed",
+                 "tap that takes a unit off and Clear end the window",
+                 "a refused tap, another screen's tap and a disarm nobody "
+                 "pressed",
                  "Nothing arms on its own", "says NOT FIRING and why"):
         check(need in flat, f"OPERATOR.md's purge section says {need!r}")
     check("\u2014" not in part and "\u2013" not in part,
@@ -58754,6 +58937,19 @@ def test_purge_page_says_selected_vs_armed_and_not_firing():
           "0.3 s after the engine stops answering" not in mo_doc,
           "MORNING.md says the grace and the double tap rule")
     for need in ("purgeTap(m.id);", "await purgeTap(b.dataset.m);",
+                 # the fire key's own words (dayUpdate): FIRING only when
+                 # something is lit, Deck FIRE only when something is armed
+                 'purge.firing ? ((purge.firing_now || []).length ? '
+                 '"FIRING" : "NOT FIRING")',
+                 'anyArmed ? "Deck FIRE, or hold Space" : anySel ? '
+                 '"Selected, not armed"',
+                 # the map tile's not armed words
+                 'if(look.cls === "sel" && !purgeArmed(m, fl) && (wait === '
+                 'REARM_REFUSED_PURGE || !wait || purgeStuckFor(m, fl))) '
+                 'wait = purgeNotArmedText(m, fl);',
+                 # a group button with nothing armed never says Armed
+                 'notArmed.length ? purgeNotArmedText(notArmed[0], flg) : '
+                 'any ? "Selected and armed. Tap: off"',
                  'const PURGE_SEL_NOT_ARMED = "Selected, not armed: tap the '
                  'unit again";'):
         check(need in page, f"the page has {need!r}")
@@ -58795,6 +58991,7 @@ const t = (c, m) => { if(!c) out.push(m); };
   await fireBeat(FIRE);
   const msg = els["mo-msg"].textContent;
   t(msg.startsWith("NOT FIRING: Ground 1: group front row is not armed; Ground 2"), "a 200 firing nothing says NOT FIRING and why: " + msg);
+  t(msg.endsWith("Release the key first, then tap a unit that is not armed to arm it."), "and to release the key before a tap (a tap during a press is refused): " + msg);
   t(!/(^|[^T ])FIRING /.test(msg.replace("NOT FIRING", "")), "and never FIRING: " + msg);
   t(els["mo-key"].textContent === "NOT FIRING" && !/firing/.test(els["mo-key"].className), "the key says NOT FIRING, not lit: " + JSON.stringify(els["mo-key"]));
   ANSWER = {fire_id:1, firing:["Ground 1"], waiting:[]};
@@ -58814,11 +59011,18 @@ const t = (c, m) => { if(!c) out.push(m); };
   t(purgeTapOn(m, mo, fl({armed:"armed"})) === false, "selected and armed: a tap takes it off");
   t(purgeTapOn(m, mo, fl({})) === true, "selected, not armed: a tap asks for the arm again");
   t(purgeTapOn(m, mo, fl({purge_refused:"screenonly"})) === false, "no deck key: a tap takes it off");
-  t(purgeTapOn(m, mo, {stale:true, groups:[{name:"front row", armed:"armed"}]}) === true, "flamesafe stale: not known armed");
+  for(const c of ["operator", "role", "latched", "neverpurged"]) t(purgeTapOn(m, mo, fl({purge_refused:c})) === false, "a lasting refusal (" + c + "): a tap takes it off");
+  for(const c of ["refractory", "dropped"]) t(purgeTapOn(m, mo, fl({purge_refused:c})) === true, "a refusal another tap clears (" + c + "): a tap arms again");
+  t(purgeTapOn(m, mo, fl({reason:"pump not ready"})) === false, "flamesafe's own reason: a tap takes it off");
+  t(purgeTapOn(m, mo, {stale:true, groups:[{name:"front row", armed:"armed"}]}) === false, "flamesafe stale: a tap takes it off");
+  t(purgeTapOn(m, mo, {connected:false, groups:[{name:"front row", armed:"disarmed"}]}) === false, "flamesafe not connected: a tap takes it off");
+  t(purgeNotArmedText(m, fl({purge_refused:"operator"})).endsWith(": a tap takes it off"), "and the words say so");
+  const so = purgeNotArmedText(m, fl({purge_refused:"screenonly"}));
+  t(/on screen only/.test(so) && so.endsWith(": a tap takes it off") && !so.includes("tap the unit again"), "a screen-only unit never says 'tap the unit again': " + so);
   const w = purgeNotArmedText(m, fl({purge_refused:"dropped"}));
   t(w === "Selected, not armed: tap the unit again (the Stream Deck could not read the engine for over a second and disarmed it)", "the deck's word: " + w);
   t(purgeNotArmedText(m, fl({purge_refused:"refractory"})).startsWith(PURGE_SEL_NOT_ARMED + " (the Stream Deck's 2 s wait"), "the 2 s wait said");
-  t(purgeNotArmedText(m, fl({reason:"pump not ready"})) === PURGE_SEL_NOT_ARMED + " (pump not ready)", "flamesafe's own reason");
+  t(purgeNotArmedText(m, fl({reason:"pump not ready"})) === "Selected, not armed (pump not ready): a tap takes it off", "flamesafe's own reason");
   PURGE_TAP_AT.g1 = Date.now();
   t(purgeNotArmedText(m, fl({})) === "Arming...", "for 2 s after this page's own tap: Arming...");
   delete PURGE_TAP_AT.g1;
@@ -63109,7 +63313,11 @@ def test_stream_deck_review_of_120():
     # never purges: only the front row arms on the click.
     scr.mo = {"open": True, "purge_enabled": True,
               "purge": {"wanted_groups": [4, 0, 3, 1], "selected": 4,
-                        "firing": False, "never_groups": [1]},
+                        "firing": False, "never_groups": [1],
+                        # each just tapped (Jeff, 2026-11-14: a group arms
+                        # only on an operator's tap)
+                        "presses": [[4, 1, 20], [0, 2, 20], [3, 3, 20],
+                                    [1, 4, 20]]},
               "locks": {"groups_fully_locked": []}}
     step()
     step()
@@ -63129,7 +63337,9 @@ def test_stream_deck_review_of_120():
     from ltcplay import remote as RM
     check(RM.deck_rearm("prefused=2.screenonly,3.neverpurged")[1] ==
           {2: "screenonly", 3: "neverpurged"}, "the engine takes the codes")
-    scr.mo = None
+    # The page closed (a fresh answer; a missing one is the stale read
+    # grace's, PURGE_STALE_GRACE_S, tested on its own).
+    scr.mo = dict(scr.mo, open=False)
     step()
     check(arm.wanted == [False] * 5, "the page closed: the purge arm is gone")
     step(sd.REARM_REFRACTORY_S + 0.1)
@@ -66102,7 +66312,7 @@ def test_stop_halt_second_review_of_130():
     check(len(pf.calls) == n_pf and c._stop_hold._down_at is not None,
           "a group armed other than for the purge: Stop, never FIRE")
     c.run_once(up)
-    scr.mo = None
+    scr.mo = dict(scr.mo, open=False)      # the page closed
     c.screen_pass()
     c.tick()
     # 6. Nothing running, no alert, a group armed: the hold is Stop, and
@@ -76195,12 +76405,36 @@ def test_purge_rules_at_the_engine():
 
 
 class _FakeMorningScreen(_FakeScreen):
+    """The engine's deck-input "morning", as a test sets it in `mo`. A view
+    with no "presses" is given them as the engine would (Jeff, 2026-11-14:
+    the engine numbers every select tap, and the deck arms a purge group
+    only on such a tap): a group newly in wanted_groups since the last
+    view read is one just tapped. A view that says "presses" is passed on
+    as it is."""
+
     def __init__(self):
         super().__init__()
         self.mo = None
+        self._taps = {}
+        self._last = set()
+        self._n = 0
 
     def morning(self):
-        return self.mo
+        mo = self.mo
+        if not isinstance(mo, dict) or not isinstance(mo.get("purge"), dict) \
+                or "presses" in mo["purge"]:
+            return mo
+        wanted = set(mo["purge"].get("wanted_groups") or []) \
+            if mo.get("open") is True else set()
+        for g in wanted - self._last:
+            self._n += 1
+            self._taps[g] = self._n
+        self._last = wanted
+        out = dict(mo)
+        out["purge"] = dict(mo["purge"], presses=[
+            [g, n, 20] for g, n in sorted(self._taps.items())
+            if g in wanted])
+        return out
 
 
 class _FakePurgeFire:
@@ -76243,10 +76477,22 @@ def test_morning_deck_remap_and_purge_arming():
     pf = _FakePurgeFire()
     c.purge_fire = pf
 
-    def mo(open_=True, wanted=(), enabled=True, locked=()):
+    # The engine numbers an operator's tap (morning.purge.presses, Jeff
+    # 2026-11-14): here a group newly in the list is one just tapped, as a
+    # click on an unselected machine is; tap=False lists it with no tap.
+    taps = {"n": 0, "last": set(), "presses": {}}
+
+    def mo(open_=True, wanted=(), enabled=True, locked=(), tap=True):
+        for g in set(wanted) - taps["last"] if tap else ():
+            taps["n"] += 1
+            taps["presses"][g] = taps["n"]
+        taps["last"] = set(wanted)
         scr.mo = {"open": open_, "purge_enabled": enabled,
                   "purge": {"wanted_groups": list(wanted), "selected":
-                            len(wanted), "firing": False},
+                            len(wanted), "firing": False,
+                            "presses": [[g, n, 20] for g, n in
+                                        taps["presses"].items()
+                                        if g in wanted]},
                   "locks": {"groups_fully_locked": list(locked)}}
 
     def step(dt=0.05):
@@ -76339,7 +76585,7 @@ def test_morning_deck_remap_and_purge_arming():
           f"disarmed, and said why: {arm.wanted} {c._purge_refused}")
     check(c._in_rearm_refractory(1, t[0]) == 0,
           "a disarm the deck did on its own starts no re-arm wait")
-    mo(True, [1])
+    mo(True, [1], tap=False)
     step()
     step()
     check(arm.wanted == [False, False, False],
@@ -77817,6 +78063,13 @@ t(renders > 0, "the page was redrawn");
         lc = (_js_function(page, "lockClick") or "") + "\n"
         check(lc.startswith("async function lockClick("),
               "the page has lockClick")
+        # A machine tap goes through the page's purge tap (Jeff,
+        # 2026-11-14: selected vs armed), outside the ARRANGE block.
+        lc += "let ST = null;\nconst PURGE_TAP_AT = {};\n" + "\n".join(
+            _js_function(page, n) or "" for n in (
+                "purgeGroupOf", "purgeArmed", "purgeStuckFor",
+                "purgeSelected", "purgeTapOn", "purgeMachine",
+                "purgeTap")) + "\n"
         r = _node_js(node, prelude + lc + block + body, capture_output=True,
                     text=True, timeout=60)
         try:
@@ -78233,7 +78486,7 @@ def test_morning_group_button_skips_locked_and_always_disarms():
                                      "on": True, "seen": R.seen()},
                                     client=loop)
                 check(st == 409 and R.m.purge.selected == [] and
-                      out["error"].startswith(f"{grp}: nothing was armed.")
+                      out["error"].startswith(f"{grp}: nothing was selected.")
                       and "until they agree" in out["error"] and
                       out["error"].count("until they agree") == 1,
                       f"a rule that refuses every member: nothing armed, "
@@ -78246,7 +78499,7 @@ def test_morning_group_button_skips_locked_and_always_disarms():
     gblock = "\n".join(_js_function(page, n) or "" for n in (
         "groupAnySelected", "groupButtonDisabled", "purgeGroupOf",
         "purgeArmed", "purgeStuckFor", "purgeSelected", "purgeMachine",
-        "groupUnarmed", "groupClick")) + "\n"
+        "purgeTapOn", "groupUnarmed", "groupClick")) + "\n"
     check("function groupClick(" in gblock and
           "function groupButtonDisabled(" in gblock,
           "the page has its group click")
@@ -78288,7 +78541,7 @@ groupClick("Ground G-Flames");
 t(posts[3][1].on === true && posts[3][1].machines.length === 6, "selected, not armed: the click arms again: " + JSON.stringify(posts[3]));
 ST.flames.stale = true; ST.flames.groups[0].armed = "armed";
 groupClick("Ground G-Flames");
-t(posts[4][1].on === true, "flamesafe stale: not known armed, so the click asks for the arm");
+t(posts[4][1].on === false, "flamesafe stale: the click takes the group off (always possible)");
 ST.flames.stale = false; ST.flames.groups[0].armed = "disarmed"; ST.flames.groups[0].purge_refused = "screenonly";
 groupClick("Ground G-Flames");
 t(posts[5][1].on === false, "a screen-only group (no deck key) is taken off");
@@ -78748,6 +79001,12 @@ def test_purge_release_can_never_start_a_fire():
             R.m.purge.clear("test reset")
             arrange(False)
             RM.save_settings(R.work, purge_arming=True)
+            # Each case is a fresh click, not a double tap of the last
+            # case's (the 2 s double tap rule, Jeff 2026-11-14).
+            R.mono[0] += 2.1
+            R.wall[0] += 2.1
+            R.feed()
+            R.remote._deck_seen = R.mono[0]
             R.m.open_beat("Rack screen")
             st_, _h_, out_ = post("purge-select", {"machine": "g1"}, "Ollie")
             check(st_ == 200 and R.m.purge.selected == ["g1"],
@@ -87485,7 +87744,8 @@ def test_deck_wedged_deck_never_keeps_a_purge_firing():
 
         def morning(self):
             return {"open": True, "purge_enabled": True,
-                    "purge": {"wanted_groups": [0]}, "locks": {}}
+                    "purge": {"wanted_groups": [0],
+                              "presses": [[0, 1, 20]]}, "locks": {}}
 
         def alerts(self):
             return ()
@@ -118040,7 +118300,8 @@ def test_ui2_arrange_and_switches_are_1_0s():
                ('  if(ab){ ab.disabled = ARRANGE; ab.textContent = '
                 '"Arrange"; }', '  if(ab){ ab.disabled = ARRANGE; }'))
     check("moPress(" not in d2 and "dragStart(e, m)" in d2 and
-          'moPress("purge-select", {machine:m.id, on: !sel});' in u2 and
+          'purgeTap(m.id);' in u2 and
+          'return moPress("purge-select", {machine:id, on:on});' in two and
           "MACH_TAP_PX" in u2 and "MACH_TAP_MS" in u2 and
           'el.addEventListener("pointerup", e => machUp(e, m));' in w2 and
           "const MACH_TAP_PX = 8, MACH_TAP_MS = 600;" in two,
@@ -118064,6 +118325,25 @@ def test_ui2_arrange_and_switches_are_1_0s():
             check(blk.count(d) == 1, f"1.0's {what} has the dropped part "
                                      f"{d[:40]!r}")
             blk = blk.replace(d, "")
+        if what == "the machine map":
+            # The one named difference (Jeff, 2026-11-14): a selected tile
+            # flamesafe has not armed says "Selected, not armed" and what
+            # a tap does, never 1.0's "Press Clear, then click it again".
+            o1 = blk.find("    const wait = machineWait(m, fl, purge,")
+            o2 = blk.find("refusedNow = true;", o1) + len("refusedNow = true;")
+            n1 = two.find("    // Jeff, 2026-11-14: a selected unit flamesafe has "
+                          "not armed says so,")
+            n2 = two.find("refusedNow = wait;", n1) + len("refusedNow = wait;")
+            p1 = blk.find("  if(refusedNow && $(\"mo-msg\")")
+            p2 = blk.find("}", blk.find("$(\"mo-msg\").title", p1)) + 1
+            q1 = two.find("  if(refusedNow && !FIRE && refusedNow !== PURGE_SAID)")
+            q2 = two.find("PURGE_SAID = refusedNow || \"\";", q1) + len(
+                "PURGE_SAID = refusedNow || \"\";")
+            ok = min(o1, n1, p1, q1) >= 0 and o1 < o2 and p1 < p2
+            check(ok, "1.0's and 2.0's tile words are found")
+            if ok:
+                blk = (blk[:o1] + two[n1:n2] + blk[o2:p1] + two[q1:q2] +
+                       blk[p2:])
         if what == "Arming from a screen and Live flame programming":
             # The one named difference (Jeff, 2026-11-11: less prose): the
             # switch's words are shorter; remote.py says the same (checked
@@ -125415,6 +125695,8 @@ if __name__ == "__main__":
         test_rack_screen_flame_group_machine_count,
         test_streamdeck_reports_rearm_wait_and_purge_refusal,
         test_purge_a_deliberate_press_arms_a_selected_unit,
+        test_purge_nothing_arms_without_a_tap_after_a_glitch,
+        test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule,
         test_purge_stop_cancels_and_nothing_rearms_after_it,
         test_purge_page_says_selected_vs_armed_and_not_firing,
         test_rack_window_fits_the_work_area_above_the_taskbar,

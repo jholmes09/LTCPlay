@@ -562,14 +562,20 @@ not read the engine for over a second and disarmed it; flamesafe's own
 reason). What a tap does:
 - Not selected: selects it, and the Stream Deck arms its group.
 - Selected and armed: takes it off (never ignored).
-- Selected, not armed: arms it again (it stays selected). This is the
-  deliberate press: it always works, unless it is within 2 s of your own
-  last tap on that machine.
-- Within 2 s of your own last tap on the same machine, a tap that would
+- Selected, not armed because it simply is not armed yet, the Stream
+  Deck's 2 s wait refused it, or the deck let it go: arms it again (it
+  stays selected). This is the deliberate press: it always works, unless
+  it is within 2 s of this screen's last arm tap on that machine.
+- Selected, not armed for a reason another tap cannot change (no Stream
+  Deck operator chosen, your role, no Stream Deck key, flamesafe's own
+  reason, flamesafe not reporting): takes it off. The words end "a tap
+  takes it off". A unit can always be taken off with a tap.
+- Within 2 s of this screen's last arm tap taken on the same machine, a tap that would
   arm is ignored as a double tap ("a second tap within 2 s was ignored").
-  Tap again after 2 s. The 2 s count from your taps only, never from a
-  disarm nobody pressed (the page changing step, Clear, the Stream Deck
-  losing the engine).
+  Tap again after 2 s. The 2 s count from this screen's arm taps only: a
+  tap that takes a unit off and Clear end the window; a refused tap,
+  another screen's tap and a disarm nobody pressed (the page changing
+  step, the Stream Deck losing the engine) start nothing.
 
 Nothing arms on its own: no retry, no re-arm after a Stop, a Hold, a lost
 connection or a disarm on the deck. One slow read by the Stream Deck no
@@ -577,8 +583,10 @@ longer disarms a purge (it keeps the groups for 1 s); if the engine is
 quiet for longer the groups are disarmed and stay selected, and the next
 tap arms them. If Space or FIRE answers but nothing is armed, the page
 says NOT FIRING and why (for example "group front row is not armed"),
-never FIRING. A machine you cannot arm by tapping (no Stream Deck key)
-is taken off by a tap; Clear always takes everything off.
+never FIRING; release the key before you tap (a tap during a press is
+refused). Clear takes everything off at once and nothing can fire after
+it; if the Stream Deck cannot read the engine at that moment, it disarms
+the group on its next good read (at most about 1 s).
 
 **The timed purge (Startup page, Jeff, 2026-10-29).** For a longer test,
 say to check a DMX problem, without holding Space. Select the machines

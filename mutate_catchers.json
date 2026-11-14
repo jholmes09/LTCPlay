@@ -4099,7 +4099,7 @@
 "superuser: Send now needs no password": "test_superuser_session_limit_and_password_again",
 "deck: one slow read's grace never ends, a quiet engine leaves the purge armed (T4)": "test_purge_a_deliberate_press_arms_a_selected_unit",
 "deck: one slow read disarms the purge again (no grace, the field bug of 2026-11-14)": "test_purge_a_deliberate_press_arms_a_selected_unit",
-"deck: the purge re-arms on its own when the engine answers again (no tap)": "test_purge_a_deliberate_press_arms_a_selected_unit",
+"deck: a group merely back in the purge list re-arms with no tap (review of #269, BLOCKER)": "test_streamdeck_reports_rearm_wait_and_purge_refusal",
 "deck: an old purge tap arms (a deck restart acts on a tap long gone)": "test_streamdeck_reports_rearm_wait_and_purge_refusal",
 "deck: a purge tap arms a group the engine does not list": "test_streamdeck_reports_rearm_wait_and_purge_refusal",
 "deck: the operator's tap on a selected, unarmed unit arms nothing (the stuck purge)": "test_streamdeck_reports_rearm_wait_and_purge_refusal",
@@ -4110,5 +4110,18 @@
 "morning: the deck is never told of a purge tap": "test_purge_a_deliberate_press_arms_a_selected_unit",
 "purge page: Space answered with nothing firing says FIRING": "test_purge_page_says_selected_vs_armed_and_not_firing",
 "purge page: a tap on a selected, unarmed unit takes it off instead of arming it": "test_purge_page_says_selected_vs_armed_and_not_firing",
-"purge page: selected reads as armed on the step": "test_purge_page_says_selected_vs_armed_and_not_firing"
+"purge page: selected reads as armed on the step": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"purge page: a lasting refusal (no operator, role) makes a tap arm again, so the unit cannot be taken off": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"purge page: with flamesafe stale no unit can be taken off by a tap": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"purge page: NOT FIRING asks for a tap while the key is held (the tap is refused)": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"morning: a tap that takes a unit off starts the double tap window": "test_purge_a_deliberate_press_arms_a_selected_unit",
+"morning: a tap on a selected unit skips the purge's refusals (a live show, a Hold)": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
+"morning: a tap on a selected unit skips the lockout check": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
+"morning: a tap on a selected unit joins a purge already firing (HIGH)": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
+"morning: Clear leaves the double tap windows, so a tap after Clear is ignored": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
+"morning: Clear leaves the purge taps standing": "test_purge_a_tap_on_a_selected_unit_keeps_every_engine_rule",
+"purge page: the fire key reads FIRING with nothing lit": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"purge page: the fire key says Deck FIRE with nothing armed": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"purge page: a map tile drops its 'not armed' words": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"purge page: a group button with nothing armed says Armed": "test_purge_page_says_selected_vs_armed_and_not_firing"
 }

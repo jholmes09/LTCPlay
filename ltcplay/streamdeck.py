@@ -3106,11 +3106,10 @@ class Controller:
         self._vheld = {}
         # The Morning and Shutdown page's purge (Jeff, 2026-10-17): the
         # groups THIS deck armed for it (disarmed again the moment the
-        # engine stops listing them), the groups the engine listed last
-        # pass (a group is armed only when it ENTERS the list, so a deck
-        # tap that disarms it is never undone), and the FIRE key's press.
+        # engine stops listing them; a group is armed only on an operator's
+        # tap, _purge_press_seen, so a deck tap that disarms it is never
+        # undone), and the FIRE key's press.
         self._purge_armed = set()
-        self._purge_seen = set()
         self._purge_refused_said = set()
         # Groups whose purge arm this deck refused because the re-arm
         # refractory window was still running: group index -> code, while
@@ -3735,30 +3734,27 @@ class Controller:
         return max(0.0, float(v))
 
     def purge_pass(self, now):
-        """Once per main-loop pass. A group ENTERING the engine's purge
-        list is armed (Jeff's exception to hold-to-arm: a click on the
-        page), with the refractory window and the latch still checked; a
-        group LEAVING it that this deck armed for the purge is disarmed at
-        once, as is every one when the page closes, the engine goes quiet
-        or the rig latches. A group the operator armed themselves is left
-        alone, and a group they tap off is not re-armed (it is only armed
-        when it enters the list, or on the operator's next tap for it).
-
-        Jeff, 2026-11-14: one slow or failed read keeps the last fresh
-        answer's groups for PURGE_STALE_GRACE_S (_purge_read); past it they
-        are disarmed, and when the engine answers again they are NOT taken
-        as entering the list (nothing re-arms on its own): the page says
-        "selected, not armed", and the operator's next tap (a new number
-        in morning.purge.presses) arms it. Such a disarm, like every
-        disarm this pass does by itself, does not start the re-arm
-        refractory window (_do_disarm's `system`)."""
+        """Once per main-loop pass. A group is armed for a purge ONLY on an
+        operator's tap for it (Jeff, 2026-11-14: "no auto-arming"): a new
+        tap number in the engine's morning.purge.presses, fresh, for a
+        group the engine lists (Jeff's exception to hold-to-arm: a click on
+        the page), with the refractory window, the latch and the operator
+        gate still checked. A group merely being in the list arms nothing:
+        a group back in the list after any disarm (a glitched answer, purge
+        arming off and on, the page closed, the engine quiet, the
+        operator's own tap on the deck) stays disarmed until the next tap.
+        A group LEAVING the list that this deck armed for the purge is
+        disarmed at once, as is every one when the page closes, purge
+        arming goes off or the rig latches; one slow or failed read keeps
+        the last fresh answer's groups for PURGE_STALE_GRACE_S
+        (_purge_read), then they are disarmed too. A group the operator
+        armed themselves is left alone. A disarm this pass does by itself
+        does not start the re-arm refractory window (_do_disarm's
+        `system`)."""
         wanted, view = self._purge_read()
         fresh = view is not None
-        entered = wanted - self._purge_seen
         pressed = self._purge_presses(view, wanted) if fresh else set()
-        if fresh:
-            self._purge_seen = wanted
-        for i in sorted(entered | pressed):
+        for i in sorted(pressed):
             if self.arm.wanted[i]:
                 self._purge_refused.pop(i, None)
                 continue             # already armed
