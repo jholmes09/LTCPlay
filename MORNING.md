@@ -467,10 +467,16 @@ every engine start and restart is DISARMED, and BEYOND's
   test still on: the purge, the timed purge, the hazer test and every
   laser calibration test (`remote.tests_off_for_show`). The answer starts
   with one plain line ("Tests turned off for Resume: the hazer test, the
-  laser tests.") and the journal says it. A show starting by itself
-  (the schedule's own start) ends them through the watchers as before,
-  within 0.1 s of the show going live. Armed lasers and flame groups are
-  left armed.
+  laser tests.") and the journal says it. From the press until it is
+  answered (a Start now can wait up to 20 s for the show audio and the
+  rig check while the schedule is still on Hold) no new test starts: "a
+  show is starting". And right before any show start or Resume is sent
+  to the show conductor, whatever started it (a press, or the schedule's
+  own start), every test still on is turned off again
+  (`Service.before_rig_up`, journaled the same way). No test starts while
+  a Stop is under way. Armed lasers and flame groups are left armed. A
+  Programming Pause refuses a new laser arm whatever the schedule's
+  state.
 - **Announcements** disarm every laser the way a Hold does (blank,
   DisableLaserOutput, arm again by hand afterwards). Jeff has not ruled on
   this; it is the safe default and can be reverted.

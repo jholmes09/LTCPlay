@@ -1892,7 +1892,10 @@ stop:
   no fresh arm when the show plays again (at once after a Hold during a
   show, else at the next show start). Armed is not safe: disarm it
   before Resume if it should stay dark. Resume (and Start now) turns
-  every test still on off first and says so in one line. The line under the
+  every test still on off first and says so in one line; no new test
+  starts until the press is answered, and every test is turned off again
+  right before the show starts or resumes, also when the schedule starts
+  a show by itself. No test starts while a Stop is under way. The line under the
   buttons says what happened ("Stopped. The show ended and the rig is
   fading to dark. ... The schedule is on Hold: no show starts until you
   press Resume.") or, if any part did not work, which part, and what to
