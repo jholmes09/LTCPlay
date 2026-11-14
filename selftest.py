@@ -117974,6 +117974,115 @@ ME.local = true;
     print("  ok")
 
 
+
+# ---------------------------------------------------------------------------
+# The Purge step's Map with the whole fleet (Jeff, 2026-11-14): on the 2K
+# touch monitor at 150% the Ground row's tiles overlapped by about 51 px.
+# mapFit() sizes the field and the tiles around the saved places.
+# ---------------------------------------------------------------------------
+
+# (CSS width, height, device pixel ratio): the 2K monitor at 100 to 200%,
+# 1920x1080 and it at 125% browser zoom, 1366x768, 1280x720, 1024x768, the
+# iPads both ways and 1366x1024.
+UI2_MAP_SIZES = ((2560, 1440, 1), (2048, 1152, 1.25), (1707, 960, 1.5),
+                 (1463, 823, 1.75), (1280, 720, 2), (1920, 1080, 1),
+                 (1536, 864, 1.25), (1366, 768, 1), (1280, 720, 1),
+                 (1024, 768, 1), (820, 1180, 2), (1180, 820, 2),
+                 (1366, 1024, 2))
+# Machines per bank (Ground, Scaffold G-Flames, Scaffold Wavers,
+# Fireball): the 29 of the 2K report at every size, and a worst case of 40
+# at the sizes that pinch it most (each draw is a browser start).
+UI2_MAP_FLEETS = {29: (12, 8, 8, 1), 40: (16, 11, 12, 1)}
+UI2_MAP_40_SIZES = ((2560, 1440, 1), (1707, 960, 1.5), (1280, 720, 2),
+                    (1024, 768, 1), (820, 1180, 2))
+
+
+def _ui2_map_fleet_view(n):
+    """/api/remote/morning with `n` machines in the engine's four banks, at
+    morning.default_layout's places."""
+    from ltcplay import morning as _mo
+    view = _morning_view_pico()
+    banks, machines = {}, []
+    for bank, kind, name, k in zip(
+            ("Ground G-Flames", "Scaffold G-Flames", "Scaffold Wavers",
+             "Fireball"), ("gflame", "gflame", "waver", "fireball"),
+            ("Ground", "Scaffold G-Flame", "Wave Flamer", "Fireball"),
+            UI2_MAP_FLEETS[n]):
+        for i in range(k):
+            mid = f"{kind}-{len(machines) + 1}"
+            machines.append({"id": mid, "name": f"{name} {i + 1}",
+                             "kind": kind, "group": bank})
+            banks.setdefault(bank, []).append(mid)
+    view.update(machines=machines, groups=banks,
+                layout=_mo.default_layout(types.SimpleNamespace(banks=banks)))
+    view["purge_state"] = {"selected": [], "owner": None, "firing": False}
+    return view
+
+
+_UI2_MAP_FIT_JS = r"""
+await h.sleep(900);
+out.vw = [innerWidth, innerHeight, devicePixelRatio];
+const b = document.querySelector('#d-steps [data-step="purge"]'); if(b) b.click();
+await h.sleep(600);
+document.getElementById("d-map").click();
+await h.sleep(1200);
+const field = document.getElementById("mo-field"), F = field.getBoundingClientRect();
+const ts = [...field.querySelectorAll(".mach")].map(e => { const r = e.getBoundingClientRect(); return {id:e.dataset.id, l:r.left, t:r.top, r:r.right, b:r.bottom}; });
+const over = [];
+for(let i = 0; i < ts.length; i++) for(let j = i + 1; j < ts.length; j++){
+  const a = ts[i], c = ts[j], ix = Math.min(a.r, c.r) - Math.max(a.l, c.l), iy = Math.min(a.b, c.b) - Math.max(a.t, c.t);
+  if(ix > 1 && iy > 1) over.push(a.id + "/" + c.id + " " + Math.round(Math.min(ix, iy)));
+}
+const sc = field.parentElement;
+out.map = {n:ts.length, shown:!document.getElementById("d-mapsec").hidden, over:over.length, worst:over.slice(0, 6),
+  cut:ts.filter(t => t.l < F.left + 1 || t.r > F.right - 1 || t.t < F.top + 1 || t.b > F.bottom - 1).map(t => t.id).slice(0, 6),
+  minw:Math.round(Math.min(...ts.map(t => t.r - t.l))), minh:Math.round(Math.min(...ts.map(t => t.b - t.t))),
+  side:sc.scrollWidth - sc.clientWidth, page:document.documentElement.scrollWidth - document.documentElement.clientWidth};
+"""
+
+
+def test_ui2_map_tiles_never_overlap():
+    section("the Purge step's Map drawn in a real browser with 29 and 40 "
+            "machines at their default places (Jeff, 2026-11-14: the Ground "
+            "row overlapped on the 2K screen at 150%), at the 2K monitor's "
+            "100 to 200%, 1920x1080 and at 125% zoom, 1366x768, 1280x720, "
+            "1024x768, the iPads both ways and 1366x1024: no two machine "
+            "tiles overlap, none is cut off by the field's edge, each is at "
+            "least 88 px wide and 44 px high, and the page never scrolls "
+            "sideways")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    base = list(chrome) if isinstance(chrome, (list, tuple)) else [chrome]
+    for n in sorted(UI2_MAP_FLEETS):
+        view = _ui2_map_fleet_view(n)
+        for w, h, dpr in (UI2_MAP_SIZES if n == 29 else UI2_MAP_40_SIZES):
+            where = f"Map, {n} machines, {w}x{h} at {dpr}x"
+            m = _ui2_drive(base + [f"--force-device-scale-factor={dpr}"],
+                           page, _ui2_status_day(), _UI2_MAP_FIT_JS,
+                           size=(w, h), frag="?tour=0#day",
+                           routes={"/api/remote/morning": view},
+                           budget_ms=20000)
+            if not check(isinstance(m, dict) and
+                         isinstance(m.get("map"), dict) and
+                         not m.get("problems"),
+                         f"{where}: drawn and measured: {m!r}"[:1500]):
+                continue
+            r = m["map"]
+            check(r["shown"] and r["n"] == n,
+                  f"{where}: the map shows every machine: {r}")
+            check(r["over"] == 0 and not r["cut"],
+                  f"{where} (CSS {m.get('vw')}): no two tiles overlap and "
+                  f"none is cut off: {r}")
+            check(r["minw"] >= 88 and r["minh"] >= 44 and r["page"] <= 1,
+                  f"{where}: every tile at least 88 x 44 px, the page never "
+                  f"sideways: {r}")
+    print("  ok")
+
 def test_ui2_show_machine_switches_driven():
     section("2.0's show machine switches pressed in a real browser (1.0's "
             "code): Arming from a screen asks first and posts on true, "
@@ -125254,6 +125363,7 @@ if __name__ == "__main__":
 
         test_ui2_arrange_and_switches_are_1_0s,
         test_ui2_map_and_arrange_driven,
+        test_ui2_map_tiles_never_overlap,
         test_ui2_show_machine_switches_driven,
         test_ui2_preshow_audio_card_driven,
         test_ui2_fireball_timeline_editor,

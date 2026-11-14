@@ -23921,6 +23921,26 @@ def build():
   "  cursor:pointer;touch-action:pan-y;",
   "  cursor:pointer;touch-action:none;"),
 
+ ("ui 2.0 map: the fleet's tiles keep one size whatever the fleet",
+  "ltcplay/web/remote2.html",
+  "  mapFit();\n  renderArrange();",
+  "  renderArrange();"),
+
+ ("ui 2.0 map: a row too tight for its tiles is never drawn zig-zag",
+  "ltcplay/web/remote2.html",
+  "    r.zig = tw < MAP_TILE_MIN && r.length > 2 && d > 0.5;",
+  "    r.zig = false;"),
+
+ ("ui 2.0 map: the field never grows taller for its rows",
+  "ltcplay/web/remote2.html",
+  "  field.style.minHeight = h > base ? h + \"px\" : \"\";",
+  "  field.style.minHeight = \"\";"),
+
+ ("ui 2.0 map: the field never grows wider than the panel",
+  "ltcplay/web/remote2.html",
+  "  field.style.minWidth = w > avail ? (w + field.offsetWidth - field.clientWidth) + \"px\" : \"\";",
+  "  field.style.minWidth = \"\";"),
+
  ("ui 2.0 Arrange: started on a window too short for its bar",
   "ltcplay/web/remote2.html",
   "function arrangeRoom(){ return $(\"d-panel\").clientHeight >= ARRANGE_MIN_PX; }",
