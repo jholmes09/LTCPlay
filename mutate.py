@@ -11552,6 +11552,10 @@ def build():
   "ltcplay/web/remote2.html",
   '        if(FU_ARR) return `<button class="b mv ',
   '        if(false) return `<button class="b mv '),
+ ("ui 2.0: an arranging tank says the older fuel estimate, not its Shows left",
+  "ltcplay/web/remote2.html",
+  '<small>${esc(u.countdown ? (u.countdown.words || "") : big)}</small>',
+  '<small>${esc(big)}</small>'),
 
  ("ui 2.0: Select to fill (Refill all's place) stays on while arranging",
   "ltcplay/web/remote2.html",

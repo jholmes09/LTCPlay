@@ -6132,7 +6132,7 @@ function dayUpdate(k){
       box.dataset.sig = sig;
       box.innerHTML = rows.map(r => `<div class="mrow" data-ri="${r.ri}"><div class="mrow-l">${esc(r.label)}</div><div class="mrow-c">` + r.items.map(u => {
         const big = u.shows_left != null ? `${u.shows_left} show${u.shows_left === 1 ? "" : "s"} left` : u.percent != null ? `${u.percent}% left` : u.status === "never" ? "No refill logged" : "Learning";
-        if(FU_ARR) return `<button class="b mv ${FU_ARR.sel === u.id ? "sel" : ""}" data-mid="${esc(u.id)}" aria-pressed="${FU_ARR.sel === u.id}" title="${esc(u.name)}">${icon("list")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(big)}</small></span></button>`;
+        if(FU_ARR) return `<button class="b mv ${FU_ARR.sel === u.id ? "sel" : ""}" data-mid="${esc(u.id)}" aria-pressed="${FU_ARR.sel === u.id}" title="${esc(u.name)}">${icon("list")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(u.countdown ? (u.countdown.words || "") : big)}</small></span></button>`;
         if(u.countdown) return fsTile(u, f);
         return `<button class="b ${u.refill_soon ? "part" : ""}" data-refill="${esc(u.id)}" ${f.may_refill ? "" : "disabled"} title="${esc(u.name)}: ${esc(big)}">${icon(u.locked ? "lock" : "flame")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(big)}</small></span></button>`;
       }).join("") + `</div></div>`).join("");
