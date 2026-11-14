@@ -178,6 +178,10 @@ body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mo
 #pins{display:flex;gap:var(--gap);flex:0 0 auto}
 #pins .b{min-height:56px;font-size:var(--fs)}
 #pins:empty{display:none}
+/* End of night (Jeff, 2026-11-14): there only while the idle look is held
+   after the last show; two lines, as Stop show's. */
+#b-eon{min-height:56px;font-size:var(--fs);gap:6px;padding:0 10px;flex:0 0 auto}
+#b-eon .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
 /* Two or three live modes on a narrow screen: their Stops are the words. */
 @media (max-width:1300px) and (min-width:601px){ #next.many .t{display:none} #next.many #pins{flex:1 1 auto} #next.many #pins .b{flex:1 1 0;min-width:0;padding:0 8px} }
 #mini{display:flex;flex-wrap:wrap;gap:var(--gap);min-width:0}
@@ -421,9 +425,15 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #d-mapsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
 #d-mapsec[hidden]{display:none}
 #mo-field{height:clamp(300px,50vh,620px);position:relative;border:2px solid var(--line);border-radius:12px;background:#0e0b08;overflow:hidden;flex:0 0 auto}
+/* mapFit() sizes the field and the tiles for the fleet: a tile is 88 to
+   176 px wide, a row too tight for its tiles is drawn zig-zag, the field
+   grows tall enough that no two tiles overlap, and wider than the panel
+   (scrolled sideways here) only when even that cannot fit. The saved
+   places (percent) are never changed. */
+#mo-scroll{overflow-x:auto;overflow-y:hidden;min-width:0;flex:0 0 auto}
 #mo-field .edge{position:absolute;left:8px;right:8px;color:var(--muted);pointer-events:none;font-size:calc(var(--fs) - 4px)}
 #mo-field .edge.top{top:6px} #mo-field .edge.bot{bottom:6px;text-align:right}
-.mach{position:absolute;transform:translate(-50%,-50%);width:clamp(132px,11vw,176px);min-height:56px;border-radius:10px;
+.mach{position:absolute;transform:translate(-50%,calc(-50% + var(--mo-dy,0px)));width:var(--mo-tw,clamp(132px,11vw,176px));min-height:56px;border-radius:10px;
   border:2px solid var(--line);background:var(--panel2);color:var(--cream);padding:5px 6px 4px;text-align:center;
   cursor:pointer;touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 /* Only while arranging does a press on a tile hold the pointer (a drag). */
@@ -431,6 +441,7 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .mach b,.mach .w,.mach .k{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mach .w{font-weight:800;text-transform:uppercase}
 .mach .k,.mach .wait{color:var(--muted);font-size:calc(var(--fs) - 6px)}
+.mach[data-fit="tight"] .k{font-size:calc(var(--fs) - 9px)}
 .mach .wait:empty{display:none}
 .mach .lk{display:none}
 .mach.sel{border-color:var(--amber);background:#3A2606}
@@ -438,7 +449,7 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .mach.firing{border-color:var(--red);background:var(--red-deep);color:#fff}
 .mach.locked{border-style:dashed;color:var(--muted)}
 .mach.drag{border-color:var(--cream);cursor:grab}
-.mach.lift{cursor:grabbing;z-index:5;box-shadow:0 0 0 3px var(--cream),0 10px 28px rgba(0,0,0,.7)}
+.mach.lift{transform:translate(-50%,-50%);cursor:grabbing;z-index:5;box-shadow:0 0 0 3px var(--cream),0 10px 28px rgba(0,0,0,.7)}
 #mo-arrange-bar{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);border:2px solid var(--amber);background:rgba(245,160,30,.16);border-radius:12px;padding:6px 10px}
 #mo-arrange-bar[hidden]{display:none}
 #mo-arrange-bar b{flex:1 1 auto;color:var(--amber)}
@@ -570,8 +581,9 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 #t-day{flex:1 1 0}
 .dpanel{overflow-y:auto}
 .dsec{display:flex;flex-direction:column;gap:var(--gap);min-width:0;flex:0 0 auto}
-/* The Purge step's hazers (2026-11-13): turn the ticked ones on or off
-   now; no arming here. Compact: the buttons first, then the hazers. */
+/* The Hazers step's Turn on or off (2026-11-13; on the Purge step until
+   Jeff moved it, 2026-11-14): turn the ticked ones on or off now; no
+   arming here. Compact: the buttons first, then the hazers. */
 .hzt-st{font-weight:800;padding:2px 10px;border-radius:999px;border:2px solid var(--line)}
 .hzt-st.on{color:#06210f;background:var(--green);border-color:var(--green);animation:hztpulse 1.2s ease-in-out infinite}
 .hzt-st.unk{border-style:dashed;color:var(--grey)}
@@ -717,6 +729,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #t-show{grid-template-rows:none;height:auto}
   #app{grid-template-rows:auto auto minmax(0,1fr) auto}
   #next{min-height:64px;padding:8px 12px;flex-wrap:wrap}
+  #next-t .tm{display:none}
   #mini .b{flex:1 1 40%}
   #pins{flex:1 1 100%;flex-wrap:wrap}
   #pins .b{flex:1 1 40%;min-height:56px}
@@ -785,7 +798,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
      flames in rehearsal) pinned here with its own Stop, never paged. -->
-<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span id="next-b" data-brand hidden></span><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
+<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span id="next-b" data-brand hidden></span><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button data-safe class="b red" id="b-eon" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="eon-l">End of night</span><small id="eon-s">tap twice</small></span></button><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
 <main>
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
@@ -868,7 +881,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <button class="b green" id="mo-arr-save"><svg class="i"><use href="#i-check"/></svg>Save layout</button><button class="b" id="mo-arr-reset"><svg class="i"><use href="#i-reset"/></svg>Reset layout</button><button data-safe class="b" id="mo-arr-cancel"><svg class="i"><use href="#i-x"/></svg>Cancel</button>
             <span class="pline">Press a machine and move it where it stands; let go to drop it. Escape puts it back. No click, key or touch arms anything until Save layout or Cancel.</span></div>
           <div class="drow"><button class="b" id="mo-arrange" hidden><svg class="i"><use href="#i-list"/></svg>Arrange</button><span class="pline">Tap a machine to arm it for the purge, as a group button does.</span></div>
-          <div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div>
+          <div id="mo-scroll"><div id="mo-field"><div class="edge top">Back of the field</div><div class="edge bot">Front: the audience</div></div></div>
         </div>
         <!-- P8, P9, P10 (docs/REMOVE_1_0_PLAN.md): 1.0's Fireball page,
              its fuel warning and recent refills, and its timed purge, with
@@ -900,9 +913,11 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <div class="pline" id="tp-st" aria-live="polite"></div>
           </div>
         </div>
-        <!-- The Purge step's hazers (hazertest.py, Jeff and Andy
-             2026-11-13): tick hazers, then Turn on or Turn off; All on,
-             All off. They run now, 60 s each; no arming here. -->
+        <!-- The Hazers step's Turn on or off (hazertest.py, Jeff and
+             Andy 2026-11-13; on the Purge step until Jeff moved it to the
+             Hazers step, 2026-11-14): tick hazers, then Turn on or Turn
+             off; All on, All off. They run now, 60 s each; no arming
+             here. Shown under the step's Levels and Hazers off. -->
         <div id="d-hz" class="dsec" hidden>
           <div id="hzt" aria-label="Hazers: turn on or off">
             <div class="drow"><b>Hazers: turn on or off</b><span class="hzt-st" id="hzt-st" role="status">Off</span>
@@ -968,6 +983,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <label class="fl"><span>Show length, seconds</span><input class="f" id="se-len" type="number" min="1"></label>
           <label class="fl"><span>Gap before a show, seconds</span><input class="f" id="se-guard" type="number" min="0"></label>
           <label class="fl"><span>Late start allowed, seconds</span><input class="f" id="se-grace" type="number" min="0" max="300" title="A show more than this many seconds late is missed. Default 120, most 300."></label>
+          <label class="fl"><span>After the last show</span><select class="f" id="se-after" title="Go dark: the night closes and the pixels go black, as always. Keep the idle look: the pixels stay on the idle look, with flames, lasers, hazers and MadMapper off, until someone presses End of night."><option value="close">Go dark</option><option value="idle">Keep the idle look until End of night</option></select></label>
         </div>
         <div class="pbar"><button class="b green" id="se-save"><svg class="i"><use href="#i-check"/></svg>Save the schedule</button><button class="b" id="se-reload"><svg class="i"><use href="#i-reset"/></svg>Reload from the file</button></div>
         <div class="pline" id="se-msg" role="status"></div>
@@ -1722,7 +1738,7 @@ function pinItems(st){
   // The hazer test (2026-11-11): the engine's word and its countdown.
   const ht = s.hazer_test;
   if(ht && ht.on === true) out.push({key:"hzt", text:"Hazers on: " + timedLeft(ht.left_s) + " left.", pill:"HAZE ON " + timedLeft(ht.left_s),
-    btn:"Hazers all off", full:"Hazers running now from the Purge page, at their levels. Each turns off by itself."});
+    btn:"Hazers all off", full:"Hazers running now from the Hazers step, at their levels. Each turns off by itself."});
   const wc = s.cleaning;
   if(wc && wc.state && wc.state !== "idle") out.push({key:"wc", text:wc.state === "unknown" ? "Cleaning state not known. Stop it." : "Cleaning running. Stop when done.",
     pill:"CLEANING", btn:"Stop cleaning", full:String(wc.text || "") + (wc.state === "paused" ? " (on the Startup page, Shutdown)." : ".")});
@@ -1772,6 +1788,32 @@ function goLook(st, isStaleNow, local, waiting){
   if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = signWhy(st, "show"); }
   return L;
 }
+// Time elapsed and time left in this show (Jeff, 2026-11-14: both, not
+// time left twice). Both come from the one countdown `c` (countdownRead),
+// so a Hold freezes both: elapsed is the show's length `len` (the
+// engine's countdown.length) less the time left, in the whole seconds
+// clockText shows, so the two always add up to the length. null between
+// shows; a part not known is "-", never a guess.
+function showTimes(c, len){
+  if(!c || c.kind !== "left" || typeof c.s !== "number" || !isFinite(c.s)) return null;
+  const left = Math.max(0, Math.floor(c.s));
+  const n = (typeof len === "number" && isFinite(len) && len > 0) ? Math.floor(len) : null;
+  return {elapsed:n === null ? "-" : clockText(Math.max(0, n - left)), left:clockText(left)};
+}
+function cdLength(st){
+  const c = st && st.countdown;
+  return c && c.kind === "left" ? c.length : null;
+}
+// The top line's words; a show's times in a span of their own (.tm).
+function drawNextText(ns){
+  const nt = $("next-t");
+  if(!ns.times){ if(nt.children.length || nt.textContent !== ns.text) nt.textContent = ns.text; return; }
+  if(nt.textContent === ns.text && nt.children.length) return;
+  nt.textContent = ns.base;
+  const sp = document.createElement("span");
+  sp.className = "tm"; sp.textContent = " " + ns.times;
+  nt.appendChild(sp);
+}
 // The line at the top: what to do next, in eight words or fewer.
 function nextStep(st, isStaleNow, local, items){
   if(!st) return {tone:"warn", icon:"clock", text:"Connecting to the show PC"};
@@ -1797,7 +1839,13 @@ function nextStep(st, isStaleNow, local, items){
   if(isRehearsal(st) && !isLive(st)) return {tone:"warn", icon:"info", text:"Rehearsal: the schedule starts no show."};
   if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Show control is off." : "Show control off: turn on at show PC."};
   const c = countdownRead(CD, monoNow());
-  if(sch.state === "SHOW") return {tone:"ok", icon:"play", text:"Show " + (sch.running || "") + " running." + (c && c.kind === "left" ? " " + clockText(c.s) + " left." : "")};
+  const tm = showTimes(c, cdLength(st));
+  // The times are drawn in their own span (.tm), left out on a phone,
+  // where the state strip just below shows both and room is short.
+  if(sch.state === "SHOW"){
+    const base = "Show " + (sch.running || "") + " running.", times = tm ? "Elapsed " + tm.elapsed + ", left " + tm.left + "." : "";
+    return {tone:"ok", icon:"play", text:base + (times ? " " + times : ""), base:base, times:times};
+  }
   if(sch.start_waiting) return {tone:"ok", icon:"clock", text:"Starting when the show audio loads."};
   const nx = sch.next;
   if(nx){
@@ -2188,10 +2236,11 @@ function renderStale(){
   const local = !!(ME && ME.local);
   // the next step and the state
   const ns = nextStep(ST, isSt, local, ALERTS);
-  $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : ""); setIcon($("next").querySelector("svg"), ns.icon); setText($("next-t"), ns.text);
+  $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
   const pl = pillLook(ST, isSt, ALERTS);
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
+  try{ drawEon(); }catch(e){}
   try{ renderAnnounce(); }catch(e){}
   try{ renderTools(isSt); }catch(e){}
   try{ if(TAB === "schedule"){ if($("fbt").hidden) fbtOpen(true); fbtGate(isSt); } }catch(e){}
@@ -2215,7 +2264,9 @@ function renderStale(){
   } else {
     const c = countdownRead(CD, monoNow());
     const sch = s.schedule || {};
-    if(c && c.kind === "left"){ setText($("cd-l"), "Time left"); setText($("cd-v"), clockText(c.s)); }
+    const tm = showTimes(c, cdLength(ST));
+    if(tm){ setText($("cd-l"), "Elapsed | Left"); setText($("cd-v"), tm.elapsed + " | " + tm.left); }
+    else if(isLive(ST) && !(c && c.kind === "next")){ setText($("cd-l"), "Elapsed | Left"); setText($("cd-v"), "- | -"); }
     else if(isRehearsal(ST) && !isLive(ST)){ setText($("cd-l"), "Rehearsal"); setText($("cd-v"), "No shows start"); }
     else if(sch.next){ setText($("cd-l"), "Show " + sch.next.show + " at " + sch.next.start); setText($("cd-v"), c && c.kind === "next" ? "in " + clockText(c.s) : ""); }
     else if(sch.delayed){ setText($("cd-l"), "Show " + sch.delayed.show); setText($("cd-v"), "delayed"); }
@@ -2967,9 +3018,60 @@ function renderFuelUndo(){
   $("fu-undo").hidden = !f.may_undo || !rec.length;
   $("fu-recent").innerHTML = rec.map(b => `<div class="fu-rec"><span>${esc(fuWhen(b.at_ms))}: ${esc(b.who)} refilled ${esc((b.units || []).join(", "))}${b.undone ? ". Undone by " + esc(b.undone.who) : ""}</span>${b.undone ? "" : `<button class="ghost" data-undo="${b.id}">Undo</button>`}</div>`).join("");
 }
+// End of night (Jeff, 2026-11-14): the idle look the schedule holds
+// after the last show (the schedule's after_last_show "idle") ends, to
+// black, the night closed as Close for the night closes it. In the
+// next-step bar, on every tab, and only while the engine says the look
+// is held (schedule.held_look). Anyone may press it, signed in or not,
+// like Stop show, and like Stop show it takes two taps within
+// STOP_TAP_MS (stopTapStep): a lone tap sends nothing. The engine takes
+// it only with confirmed true, and journals who pressed it, or "signed
+// out". The button's words live here, not in remote_rules.js.
+const EON_WORDS = {label:"End of night", sub:"tap twice", again:"Tap again", left:"to go dark", busy:"Ending",
+  first:"Tap End of night again to end the idle look.", missed:"End of night not sent: tap twice."};
+let EON_TAP = null, EON_TIMER = null, EON_TICK = null, EON_BUSY = false;
+function eonShown(st){ return !!(st && st.schedule && st.schedule.attached && st.schedule.held_look === true); }
+function drawEon(){
+  const b = $("b-eon"); if(!b) return;
+  const on = EON_BUSY || eonShown(ST);
+  if(!on && EON_TAP) eonTapDone();
+  if(b.hidden !== !on) b.hidden = !on;
+  b.classList.toggle("tap1", !!EON_TAP);
+  setText($("eon-l"), EON_BUSY ? EON_WORDS.busy : EON_TAP ? EON_WORDS.again : EON_WORDS.label);
+  setText($("eon-s"), EON_BUSY ? "" : EON_TAP ? EON_WORDS.left + " (" + stopLeftS(EON_TAP.at + STOP_TAP_MS - monoNow()) + ")" : EON_WORDS.sub);
+  b.disabled = EON_BUSY;
+}
+function eonTapDone(){
+  if(EON_TIMER) clearTimeout(EON_TIMER);
+  if(EON_TICK) clearInterval(EON_TICK);
+  EON_TAP = null; EON_TIMER = null; EON_TICK = null;
+}
+async function eonTap(e){
+  const kind = stopTapKind(e);
+  if(kind !== "key") $("b-eon").blur();
+  if(EON_BUSY) return;
+  // The time between the taps decides, as Stop show's.
+  const step = stopTapStep(EON_TAP, monoNow(), kind, false);
+  if(!step.fire){
+    eonTapDone();
+    EON_TAP = step.next;
+    EON_TIMER = setTimeout(() => { eonTapDone(); say(EON_WORDS.missed, "One tap is not End of night: tap it twice within " + (STOP_TAP_MS / 1000) + " s to end the idle look and go dark.", "warn"); drawEon(); }, STOP_TAP_MS);
+    EON_TICK = setInterval(drawEon, 250);
+    say(EON_WORDS.first, "Tap End of night again within " + (STOP_TAP_MS / 1000) + " s: the pixels go dark and the night is closed.", "warn");
+    drawEon();
+    return;
+  }
+  eonTapDone();
+  EON_BUSY = true; drawEon();
+  try{ await press("end-of-night", {confirmed:true}); }
+  finally{ EON_BUSY = false; drawEon(); }
+}
+$("b-eon").addEventListener("click", e => eonTap(e));
+$("b-eon").addEventListener("keydown", e => { if(e.repeat && (e.key === "Enter" || e.key === " ")) e.preventDefault(); });
 // A press: 1.0's press(), the answer in a few words.
 const PRESS_SAID = {"hold":"Held.", "resume":"Resumed.", "start-now":"Starting.",
-  "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed."};
+  "disarm-all":"Every flame group disarmed.", "group-disarm":"Disarmed.",
+  "end-of-night":"End of night: going dark."};
 async function press(route, extra){
   if(route === "hold") HALT_SEQ++;
   let j = null;
@@ -3346,7 +3448,24 @@ $("se-save").addEventListener("click", async () => {
 let SE_READ = false, SE_BASE = null, SE_BASE_DOC = null;
 // Unsaved edits (review of #210): the form against what it showed when
 // the file was last drawn into it (1.0's drawSchedule sets SCHED_DOC).
+// After the last show (Jeff, 2026-11-14): the schedule's after_last_show,
+// drawn from the file the form shows and written back into it, so 1.0's
+// readSchedule (a copy of SCHED_DOC) saves it. "close" is the default and
+// is left out of the file.
+let SE_AFTER_DOC = null;
+function seAfterSync(){
+  const sel = $("se-after");
+  if(!sel || !SCHED_DOC || SCHED_DOC === SE_AFTER_DOC) return;
+  SE_AFTER_DOC = SCHED_DOC;
+  sel.value = SCHED_DOC.after_last_show === "idle" ? "idle" : "close";
+}
+$("se-after").addEventListener("change", () => {
+  if(!SCHED_DOC) return;
+  if($("se-after").value === "idle") SCHED_DOC.after_last_show = "idle";
+  else delete SCHED_DOC.after_last_show;
+});
 function seBaseline(){
+  seAfterSync();
   if(SCHED_DOC && SCHED_DOC !== SE_BASE_DOC){ SE_BASE_DOC = SCHED_DOC; SE_BASE = JSON.stringify(readSchedule()); }
 }
 function seDirty(){
@@ -4381,8 +4500,8 @@ $("pm-off").addEventListener("click", async () => {
   try{ const j = await post("/api/remote/fuel-pump", actor({on: false})); say(j.text || "The fuel pump is OFF.", "", "ok"); }
   catch(e){ say(armShort(e.message), e.message, "bad"); }
 });
-// The Purge page's hazers (hazertest.py, Jeff 2026-11-11, per hazer
-// 2026-11-13): select hazers, then Turn on (each runs NOW at its levels,
+// The Hazers step's Turn on or off (hazertest.py, Jeff 2026-11-11, per
+// hazer 2026-11-13; on the Purge step until 2026-11-14): select hazers, then Turn on (each runs NOW at its levels,
 // 60 s from its own press) or Turn off; All on and All off. No arming
 // here. The state shown is only ever the engine's: no contact is "Not
 // known", never On, and the toggle then turns the selection off. While
@@ -4462,7 +4581,7 @@ function renderHazerTest(s){
   const v = s && s.hazer_test;
   const sec = $("d-hz");
   if(!v || !v.available){ if(sec) sec.hidden = true; hztBeatStop(); return; }
-  if(sec) sec.hidden = DAY_K !== "purge";
+  if(sec) sec.hidden = DAY_K !== "hazers";
   const known = hztKnown(v);
   const on = known && v.on === true;
   setText($("hzt-max"), "Each turns off after " + (Number(v.max_s) || 60) + " s.");
@@ -5200,7 +5319,7 @@ async function quickCard(){
 // ---- first-run coach marks: eight, never in front of a control's press
 const COACH = [
   ["next", "What to do next. Live modes, with Stop."],
-  ["pill", "Show state, timecode and time left."],
+  ["pill", "Show state, timecode, time elapsed and time left."],
   ["b-go", "The big button is the next step."],
   ["b-hold", "Hold pauses the schedule. Resume carries on."],
   ["b-runoff", "Show ctrl off: turns show control off. Stop leaves it on. Asks first."],
@@ -5261,10 +5380,92 @@ function groupAnySelected(ids, purge){
 function groupButtonDisabled(ids, any, mo, arrange, st){
   return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));
 }
+// Purge: selected is not armed (Jeff, 2026-11-14). A unit is armed only
+// when flamesafe reports its group ARMED; until then the page says
+// "selected, not armed" and why, in the group's own words: the Stream
+// Deck's refusal, else flamesafe's reason. A tap on a selected unit that
+// is not armed asks for its arm again (the engine ignores it within 2 s of
+// this operator's own last tap: a double tap); a tap on an armed one takes
+// it off. Words and the tap's on/off only: the engine and the deck decide.
+const PURGE_SEL_NOT_ARMED = "Selected, not armed: tap the unit again";
+const PURGE_REFUSAL_WORDS = {refractory:"the Stream Deck's 2 s wait after a disarm was not over",
+  dropped:"the Stream Deck could not read the engine for over a second and disarmed it",
+  operator:"no Stream Deck operator is chosen", role:"the person signed in may not arm",
+  screenonly:"on screen only: it has no Stream Deck key, a purge tap never arms it",
+  neverpurged:"it is never purged", latched:"the rig is latched"};
+const PURGE_TAP_AT = {};
+let PURGE_SAID = "";   // the not armed words the message line last got (said once, never over another message)
+function purgeGroupOf(m, fl){ return ((fl && fl.groups) || []).find(x => x.name === m.group) || null; }
+function purgeArmed(m, fl){ const g = purgeGroupOf(m, fl); return !!(g && g.armed === "armed" && fl && !fl.stale); }
+// The Stream Deck program not reading the engine (its status, ST.deck):
+// nothing can be armed until it does.
+function purgeDeckDown(){ return typeof ST !== "undefined" && !!ST && !!ST.deck && ST.deck.heard === false; }
+function purgeWhyNot(m, fl){
+  if(purgeDeckDown()) return "the Stream Deck program is not reading the engine";
+  if(!fl || fl.stale) return "flamesafe has not reported";
+  const g = purgeGroupOf(m, fl);
+  if(!g) return "flamesafe does not list group " + m.group;
+  if(g.purge_refused && PURGE_REFUSAL_WORDS[g.purge_refused]) return PURGE_REFUSAL_WORDS[g.purge_refused];
+  return g.reason || "";
+}
+// Whether another tap can arm this unit's group: only when it is simply
+// not armed, the Stream Deck's 2 s wait refused it, or the deck let it go
+// (dropped). Anything lasting (no deck key, never purged, no operator
+// chosen, the role, latched, a flamesafe reason, flamesafe stale or not
+// connected, the group unknown): the tap takes the unit OFF instead, so a
+// unit can always be deselected by a tap (Jeff, 2026-11-14).
+// A reason that clears by itself in a moment (third review of #269): this
+// page's own status late, or flamesafe's late but under 3 s old. The engine
+// then refuses an arming tap and keeps the unit (try again in a moment);
+// longer, it counts as lasting and the tap takes the unit off.
+function purgeBrief(fl){
+  if(typeof LAST_OK !== "undefined" && LAST_OK !== null && Date.now() - LAST_OK > 1000) return "this page's status is late";
+  if(fl && fl.stale && typeof fl.age_ms === "number" && fl.age_ms <= 3000) return "flamesafe's status is late";
+  return "";
+}
+function purgeStuckFor(m, fl){
+  if(purgeDeckDown()) return true;
+  if(purgeBrief(fl)) return false;
+  if(!fl || fl.stale || fl.connected === false) return true;
+  const g = purgeGroupOf(m, fl);
+  if(!g || g.reason) return true;
+  return !!g.purge_refused && g.purge_refused !== "refractory" && g.purge_refused !== "dropped";
+}
+function purgeSelected(id, mo){ return (((mo || {}).purge_state || {}).selected || []).includes(id); }
+// Words for a selected unit that is not armed: "Arming..." for 2 s after
+// this page's own tap on it, then PURGE_SEL_NOT_ARMED and why.
+function purgeNotArmedText(m, fl){
+  const brief = purgeDeckDown() ? "" : purgeBrief(fl);
+  if(brief) return "Selected, not armed (" + brief + "): try again in a moment";
+  const why = purgeWhyNot(m, fl);
+  if(purgeStuckFor(m, fl)) return "Selected, not armed" + (why ? " (" + why + ")" : "") + ": a tap takes it off";
+  if(Date.now() - (PURGE_TAP_AT[m.id] || 0) < 2000) return "Arming...";
+  return PURGE_SEL_NOT_ARMED + (why ? " (" + why + ")" : "");
+}
+// What a tap on unit `m` sends: true selects it or asks for its arm again,
+// false takes it off.
+function purgeTapOn(m, mo, fl){
+  if(!purgeSelected(m.id, mo)) return true;
+  return !(purgeArmed(m, fl) || purgeStuckFor(m, fl));
+}
+function purgeMachine(id){ return ((MO && MO.machines) || []).find(x => x.id === id) || {id:id, group:""}; }
+function purgeTap(id){
+  const m = purgeMachine(id), on = purgeTapOn(m, MO, (ST && ST.flames) || {});
+  if(on) PURGE_TAP_AT[id] = Date.now();
+  return moPress("purge-select", {machine:id, on:on});
+}
+// A group button: selected members a tap would arm again (purgeTapOn)
+// make the tap ask for their arm again; otherwise any selected member
+// makes it take the group off.
+function groupUnarmed(ids, mo, fl){
+  return ids.map(purgeMachine).filter(m => purgeSelected(m.id, mo) && purgeTapOn(m, mo, fl));
+}
 function groupClick(g){
   const ids = (MO.groups || {})[g] || [];
   const any = groupAnySelected(ids, MO.purge_state || {});
-  moPress("purge-select", {machines: ids, group: g, on: !any});
+  const on = !any || groupUnarmed(ids, MO, (ST && ST.flames) || {}).length > 0;
+  if(on) ids.forEach(id => { PURGE_TAP_AT[id] = Date.now(); });
+  moPress("purge-select", {machines: ids, group: g, on: on});
 }
 // P11 (docs/REMOVE_1_0_PLAN.md): 1.0's Arrange mode and its open beat,
 // the whole ARRANGE block word for word (selftest.py checks): while it is
@@ -5331,8 +5532,7 @@ function machUp(e, m){
   const t = MACH_TAP; MACH_TAP = null;
   if(ARRANGE || !t || t.id !== m.id || t.pointerId !== e.pointerId) return;
   if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;
-  const sel = ((MO.purge_state || {}).selected || []).includes(m.id);
-  moPress("purge-select", {machine:m.id, on: !sel});
+  purgeTap(m.id);
 }
 function dragStart(e, m){
   if(DRAG) dragEnd("another machine was pressed");
@@ -5457,12 +5657,16 @@ function renderField(mo, fl, purge){
     el.title = m.notes || "";
     // The re-arm wait or a refused purge arm, said on the tile (Jeff,
     // 2026-10-26: it sat on "Arming..." with no word why).
-    const wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK);
+    // Jeff, 2026-11-14: a selected unit flamesafe has not armed says so,
+    // and that a tap arms it (never "Press Clear": a tap does it now).
+    let wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK);
+    if(look.cls === "sel" && !purgeArmed(m, fl) && (wait === REARM_REFUSED_PURGE || !wait || purgeStuckFor(m, fl))) wait = purgeNotArmedText(m, fl);
     el.querySelector(".wait").textContent = wait;
-    if(wait === REARM_REFUSED_PURGE) refusedNow = true;
+    if(wait.startsWith(PURGE_SEL_NOT_ARMED)) refusedNow = wait;
     el.querySelector(".lk").textContent = "L";
   });
-  if(refusedNow && $("mo-msg").textContent !== REARM_REFUSED_PURGE){ $("mo-msg").textContent = REARM_REFUSED_PURGE; $("mo-msg").title = REARM_REFUSED_PURGE; }
+  if(refusedNow && !FIRE && refusedNow !== PURGE_SAID){ $("mo-msg").textContent = refusedNow; $("mo-msg").title = refusedNow; }
+  PURGE_SAID = refusedNow || "";
 }
 async function moPress(route, extra, msgEl){
   const el = $(msgEl || "mo-msg");
@@ -5550,8 +5754,11 @@ async function fireBeat(f){
     const j = await post("/api/remote/purge-fire", moActor({fire_id:f.id, on:true}));   // on:true or the engine only stops
     if(FIRE !== f) return;
     f.id = j.fire_id;
-    $("mo-msg").textContent = "FIRING " + (j.firing || []).join(", ") + ((j.waiting || []).length ? ". Waiting: " + j.waiting.join("; ") : "");
-    $("mo-key").className = "key firing"; $("mo-key").textContent = "FIRING";
+    // Jeff, 2026-11-14: a 200 with nothing firing is NOT FIRING, and why.
+    const lit = (j.firing || []).length > 0;
+    $("mo-msg").textContent = lit ? "FIRING " + j.firing.join(", ") + ((j.waiting || []).length ? ". Waiting: " + j.waiting.join("; ") : "")
+      : "NOT FIRING: " + ((j.waiting || []).length ? j.waiting.join("; ") : "nothing selected is armed") + ". Release the key first, then tap a unit that is not armed to arm it.";
+    $("mo-key").className = "key" + (lit ? " firing" : ""); $("mo-key").textContent = lit ? "FIRING" : "NOT FIRING";
     f.timer = setTimeout(() => fireBeat(f), 100);
   }catch(e){ if(FIRE === f) fireStop(e.message); }
 }
@@ -5684,8 +5891,14 @@ function daySteps(part, s){
   }
   if(part !== "shut" && mo && Object.keys(mo.groups || {}).length){
     const p = mo.purge_state || {}, n = (p.selected || []).length;
+    // Selected and armed are two words (Jeff, 2026-11-14): armed only when
+    // flamesafe reports the unit's group ARMED.
+    const fl = st.flames || {};
+    const armedG = new Set(fl.stale ? [] : (fl.groups || []).filter(g => g.armed === "armed").map(g => g.name));
+    const na = (p.selected || []).filter(id => { const m = (mo.machines || []).find(x => x.id === id); return !!(m && armedG.has(m.group)); }).length;
+    const lit = (p.firing_now || []).length > 0;
     out.push({key:"purge", title:"Purge", icon:"flame", state: p.firing || p.timed ? "live" : n ? "todo" : (seen("purge") ? "done" : "todo"),
-      why: p.timed ? "Timed purge: " + timedLeft((mo.timed || {}).left_s) + " left. Stop purge ends it." : p.firing ? "FIRING." : !mo.purge_enabled ? "Purge is off for this screen." : mo.live_refusal ? "Not now: " + short8(mo.live_refusal, "a show is live.") : n ? n + " armed. Deck FIRE or hold Space." : "Pick a group, then fire."});
+      why: p.timed ? "Timed purge: " + timedLeft((mo.timed || {}).left_s) + " left. Stop purge ends it." : p.firing ? (lit ? "FIRING." : "NOT FIRING: nothing armed.") : !mo.purge_enabled ? "Purge is off for this screen." : mo.live_refusal ? "Not now: " + short8(mo.live_refusal, "a show is live.") : n ? (na === n ? n + " armed. Deck FIRE or hold Space." : n + " selected, " + na + " armed. Tap a unit to arm it.") : "Pick a group, then fire."});
   }
   // The Fireball page (P8): manual control of each Fireball channel, when
   // the engine has a fireball group. Nothing on it arms.
@@ -5699,11 +5912,13 @@ function daySteps(part, s){
       why: on ? on + " test grid on." : "Test grid on, check, then off."});
   }
   // Hazers (#168): their levels and arming are the SHOW tab's own sheet.
-  const hz = st.hazers;
-  if(part !== "shut" && hz && hz.available && (hz.hazers || []).length){
-    const n = hz.hazers.filter(h => h.armed).length;
+  // Turn on or off (hazertest.py) is here too (Jeff, 2026-11-14), so the
+  // step is there while either is.
+  const hz = st.hazers, hzOk = !!(hz && hz.available && (hz.hazers || []).length);
+  if(part !== "shut" && (hzOk || (st.hazer_test && st.hazer_test.available))){
+    const n = hzOk ? hz.hazers.filter(h => h.armed).length : 0;
     out.push({key:"hazers", title:"Hazers", icon:"wind", state: seen("hazers") ? "done" : "todo",
-      why: n ? n + " of " + hz.hazers.length + " armed." : "Set levels, then arm for the show."});
+      why: n ? n + " of " + hz.hazers.length + " armed." : hzOk ? "Set levels, then arm for the show." : "Turn hazers on or off to test."});
   }
   if(part === "shut" && wc && typeof wc.available === "boolean"){
     const run = wc.state && wc.state !== "idle";
@@ -5810,7 +6025,7 @@ const DAY_HELP = {
   fuel:"Tap a tank you filled. Or select units, then fill.",
   purge:"Pick a group. Fire with the Deck's FIRE key or hold Space. Let go to stop.",
   lasers:"Test grid on, check the aim, then off.",
-  hazers:"Levels sets each hazer's haze and fan, and arms it.",
+  hazers:"Levels sets each hazer's haze and fan, and arms it. Turn on runs the ticked hazers now, to check them.",
   locks:"Tap a machine to lock it out for tonight, or unlock it.", "locks-shut":"Tap a machine to lock it out, or unlock it.",
   fireball:"Each pad drives one Fireball channel by hand. Arm the Fireball first; nothing here arms.",
   clean:"Hold until phase 1 starts. Later hold again for the bursts. Stop ends it.",
@@ -5921,7 +6136,7 @@ function daySections(k){
   $("d-fb").hidden = k !== "fireball";
   $("d-fu").hidden = k !== "fuel" || !DAY_FU_REC;
   $("d-tp").hidden = k !== "purge";
-  $("d-hz").hidden = k !== "purge" || !(ST && ST.hazer_test && ST.hazer_test.available);
+  $("d-hz").hidden = k !== "hazers" || !(ST && ST.hazer_test && ST.hazer_test.available);
   fireballView(k === "fireball");
   fbFit();
   if(k === "fuel") renderFuelUndo();
@@ -5941,8 +6156,95 @@ function dayMap(k){
   $("mo-arrange").hidden = !(ME && ME.local);
   if(!on) return;
   renderField(MO, (ST && ST.flames) || {}, MO.purge_state || {});
+  mapFit();
   renderArrange();
 }
+// The map's fit (Jeff, 2026-11-14: tiles overlapped on the 2K screen with
+// the whole fleet). Each tile stays at its saved place, in percent of the
+// field; this sizes the field and the tiles around those places so no two
+// tiles overlap and none is cut off, whatever the fleet: tiles of a row
+// (the same height, within MAP_ROW_PCT) narrow from MAP_TILE_MAX to
+// MAP_TILE_MIN; a row still too tight is drawn zig-zag (every other tile
+// half a row up or down, never saved); the field grows taller until rows
+// clear each other, and wider than the panel, scrolled sideways, only when
+// even a zig-zag row of the narrowest tiles cannot fit.
+const MAP_TILE_MIN = 88, MAP_TILE_MAX = 176, MAP_TILE_TIGHT = 132, MAP_GAP = 6, MAP_ROW_PCT = 3, MAP_EDGE_PCT = 2;
+function mapFit(){
+  const field = $("mo-field"), sc = $("mo-scroll");
+  if(!field || !sc || !MO || $("d-mapsec").hidden || (DRAG && DRAG.field)) return;
+  const tiles = [...field.querySelectorAll(".mach")].map(el => {
+    const p = (ARRANGE && ARRANGE_POS[el.dataset.id]) || (MO.layout || {})[el.dataset.id] || {x:50, y:50};
+    return {el:el, x:+p.x || 0, y:+p.y || 0};
+  });
+  if(!tiles.length) return;
+  // Rows: tiles sorted by height on the field, a row while within MAP_ROW_PCT.
+  const rows = [];
+  tiles.slice().sort((a, b) => a.y - b.y || a.x - b.x).forEach(t => {
+    const r = rows[rows.length - 1];
+    if(r && t.y - r[0].y <= MAP_ROW_PCT) r.push(t); else rows.push([t]);
+  });
+  rows.forEach(r => r.sort((a, b) => a.x - b.x));
+  const avail = sc.clientWidth - (field.offsetWidth - field.clientWidth);
+  const want = Math.min(MAP_TILE_MAX, Math.max(MAP_TILE_TIGHT, 0.11 * innerWidth));
+  // The narrowest gap (percent) between tiles `k` apart in a row.
+  const step = (r, k) => { let d = Infinity; for(let i = 0; i + k < r.length; i++) d = Math.min(d, r[i + k].x - r[i].x); return d; };
+  const edge = t => Math.min(t.x, 100 - t.x);
+  // The field's width: wide enough for every row's tiles at MAP_TILE_MIN.
+  let w = avail;
+  rows.forEach(r => {
+    const d = step(r, 1), d2 = step(r, 2);
+    const one = d > 0.5 ? 100 * (MAP_TILE_MIN + MAP_GAP) / d : Infinity;
+    const two = d2 > 0.5 ? 100 * (MAP_TILE_MIN + MAP_GAP) / d2 : Infinity;
+    if(one > avail) w = Math.max(w, Math.min(two, 6000));
+    r.forEach(t => { if(edge(t) >= MAP_EDGE_PCT) w = Math.max(w, 100 * (MAP_TILE_MIN / 2 + 2) / edge(t)); });
+  });
+  w = Math.ceil(w);
+  // Each row's tile width and whether it zig-zags, at that width.
+  rows.forEach(r => {
+    const d = step(r, 1), d2 = step(r, 2);
+    let tw = Math.min(want, d * w / 100 - MAP_GAP);
+    r.zig = tw < MAP_TILE_MIN && r.length > 2 && d > 0.5;
+    if(r.zig) tw = Math.min(want, d2 * w / 100 - MAP_GAP);
+    else if(r.length === 2 && tw < MAP_TILE_MIN) r.zig = true, tw = want;
+    r.forEach(t => { if(edge(t) >= MAP_EDGE_PCT) tw = Math.min(tw, 2 * (edge(t) * w / 100 - 2)); });
+    r.tw = Math.max(MAP_TILE_MIN, Math.floor(tw));
+    r.forEach(t => {
+      t.w = r.tw;
+      const v = r.tw + "px";
+      if(t.el.style.getPropertyValue("--mo-tw") !== v) t.el.style.setProperty("--mo-tw", v);
+      const fit = r.tw < MAP_TILE_TIGHT ? "tight" : "";
+      if((t.el.dataset.fit || "") !== fit) t.el.dataset.fit = fit;
+    });
+  });
+  field.style.minWidth = w > avail ? (w + field.offsetWidth - field.clientWidth) + "px" : "";
+  // Heights, at those widths; a zig-zag row's tiles half a row up and down.
+  rows.forEach(r => {
+    r.forEach(t => { t.h = t.el.offsetHeight; });
+    const hr = Math.max(...r.map(t => t.h));
+    r.forEach((t, i) => {
+      t.dy = r.zig ? (i % 2 ? 1 : -1) * (hr + MAP_GAP) / 2 : 0;
+      const v = t.dy + "px";
+      if(t.el.style.getPropertyValue("--mo-dy") !== v) t.el.style.setProperty("--mo-dy", v);
+    });
+  });
+  // The field's height: every two tiles that would touch sideways clear
+  // each other up and down, and no tile passes the top or the bottom.
+  const base = Math.min(620, Math.max(300, 0.5 * innerHeight));
+  let h = 0;
+  for(let i = 0; i < tiles.length; i++){
+    const a = tiles[i];
+    if(a.y >= MAP_EDGE_PCT) h = Math.max(h, 100 * (a.h / 2 - a.dy + 2) / a.y);
+    if(100 - a.y >= MAP_EDGE_PCT) h = Math.max(h, 100 * (a.h / 2 + a.dy + 2) / (100 - a.y));
+    for(let j = 0; j < tiles.length; j++){
+      const b = tiles[j];
+      if(b.y - a.y <= 0 || Math.abs(b.x - a.x) * w / 100 >= (a.w + b.w) / 2 + MAP_GAP) continue;
+      h = Math.max(h, 100 * ((a.h + b.h) / 2 + MAP_GAP - (b.dy - a.dy)) / (b.y - a.y));
+    }
+  }
+  h = Math.min(Math.ceil(h + field.offsetHeight - field.clientHeight), 6000);
+  field.style.minHeight = h > base ? h + "px" : "";
+}
+window.addEventListener("resize", mapFit);
 // Arrange needs room for its bar, with Save layout and Cancel, and some
 // of the field (review of #212, 5): on a window too short, it is not
 // started, and a window turning too short leaves it (unsaved moves are
@@ -5977,7 +6279,7 @@ function dayBuild(k){
   else if(k === "purge") box.innerHTML = `<div class="dgrid" id="mo-groups"></div><div class="drow"><button class="b" id="mo-clear">${icon("x")}Clear</button><button class="b" id="d-mach">${icon("list")}Machines</button><button class="b" id="d-map">${icon("list")}<span id="d-map-l">Map</span></button><span class="key" id="mo-key"></span></div>`;
   else if(k === "lasers") box.innerHTML = `<div class="dgrid" id="mo-lasers"></div><div class="drow"><button class="b green" id="mo-cal-on">${icon("laser")}Test grid on</button><button class="b" id="mo-cal-off">${icon("x")}Test grid off</button><button class="b" id="mo-beyond" hidden>${icon("open")}Open BEYOND</button></div>`;
   else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
-  else if(k === "hazers") box.innerHTML = `<div class="drow"><button class="b green" id="d-hz-open">${icon("wind")}Levels</button><button data-safe class="b safe" id="d-hz-off">${icon("shield")}Hazers off</button></div>`;
+  else if(k === "hazers") box.innerHTML = `<div class="drow"><button class="b green" id="d-hz-open"${ST && ST.hazers && ST.hazers.available ? "" : " hidden"}>${icon("wind")}Levels</button><button data-safe class="b safe" id="d-hz-off">${icon("shield")}Hazers off</button></div>`;
   else if(k === "clean") box.innerHTML = `<div class="drow"><span class="dbig" id="wc-armed"></span></div>` +
     `<div class="drow"><button class="b green hold" id="wc-hold">${icon("ring")}<span id="wc-hold-l">Hold to start</span></button><button data-safe class="b red" id="wc-stop">${icon("stop")}Stop</button></div>` +
     `<div id="wc-prog" class="dbig"></div><div id="wc-block" class="dim"></div>`;
@@ -6132,7 +6434,7 @@ function dayUpdate(k){
       box.dataset.sig = sig;
       box.innerHTML = rows.map(r => `<div class="mrow" data-ri="${r.ri}"><div class="mrow-l">${esc(r.label)}</div><div class="mrow-c">` + r.items.map(u => {
         const big = u.shows_left != null ? `${u.shows_left} show${u.shows_left === 1 ? "" : "s"} left` : u.percent != null ? `${u.percent}% left` : u.status === "never" ? "No refill logged" : "Learning";
-        if(FU_ARR) return `<button class="b mv ${FU_ARR.sel === u.id ? "sel" : ""}" data-mid="${esc(u.id)}" aria-pressed="${FU_ARR.sel === u.id}" title="${esc(u.name)}">${icon("list")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(big)}</small></span></button>`;
+        if(FU_ARR) return `<button class="b mv ${FU_ARR.sel === u.id ? "sel" : ""}" data-mid="${esc(u.id)}" aria-pressed="${FU_ARR.sel === u.id}" title="${esc(u.name)}">${icon("list")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(u.countdown ? (u.countdown.words || "") : big)}</small></span></button>`;
         if(u.countdown) return fsTile(u, f);
         return `<button class="b ${u.refill_soon ? "part" : ""}" data-refill="${esc(u.id)}" ${f.may_refill ? "" : "disabled"} title="${esc(u.name)}: ${esc(big)}">${icon(u.locked ? "lock" : "flame")}<span class="tt"><span>${esc(u.name)}</span><small>${esc(big)}</small></span></button>`;
       }).join("") + `</div></div>`).join("");
@@ -6167,13 +6469,17 @@ function dayUpdate(k){
       b.classList.toggle("on", gs.state === "on");
       b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));
       b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);
-      setText(b.querySelector(".gd"), any ? "Tap: off" : short8(gs.text, "Tap: arm for purge"));
+      const flg = (ST && ST.flames) || {};
+      const un = groupUnarmed(ids, mo, flg), notArmed = ids.map(purgeMachine).filter(m => purgeSelected(m.id, mo) && !purgeArmed(m, flg));
+      setText(b.querySelector(".gd"), un.length ? purgeNotArmedText(un[0], flg) : notArmed.length ? purgeNotArmedText(notArmed[0], flg) : any ? "Selected and armed. Tap: off" : short8(gs.text, "Tap: arm for purge"));
     });
     // 1.0's fire key words, shorter: what fires the purge now.
     if(!FIRE){
       const kk = $("mo-key"), anySel = (purge.selected || []).length > 0;
       kk.className = "key" + (purge.firing || purge.timed ? " firing" : anySel ? " ready" : "");
-      kk.textContent = purge.timed ? "TIMED PURGE: " + timedLeft((mo.timed || {}).left_s) + " left" : purge.firing ? "FIRING" : !mo.purge_enabled ? "Purge off here" : mo.live_refusal ? "Not now" : anySel ? "Deck FIRE, or hold Space" : "Pick a group first";
+      const flk = (ST && ST.flames) || {};
+      const anyArmed = (purge.selected || []).some(id => purgeArmed(purgeMachine(id), flk));
+      kk.textContent = purge.timed ? "TIMED PURGE: " + timedLeft((mo.timed || {}).left_s) + " left" : purge.firing ? ((purge.firing_now || []).length ? "FIRING" : "NOT FIRING") : !mo.purge_enabled ? "Purge off here" : mo.live_refusal ? "Not now" : anyArmed ? "Deck FIRE, or hold Space" : anySel ? "Selected, not armed" : "Pick a group first";
       // 1.0's: while arranging, the key says so and nothing fires.
       if(ARRANGE){ kk.className = "key"; kk.textContent = ARRANGE_BANNER; }
       kk.title = ARRANGE ? "Save layout or Cancel first" : "";
@@ -6212,13 +6518,16 @@ function dayMachines(){
   const fl = (ST && ST.flames) || {};
   // The same rows as the Fuel step (rowsFor, ltcplay_arrangement.json).
   const html = `<div class="mrows" id="d-mach-rows">` + rowsFor(mo.arrangement, mo.machines || []).map(r => `<div class="mrow" data-ri="${r.ri}"><div class="mrow-l">${esc(r.label)}</div><div class="mrow-c">` + r.items.map(m => { const look = machineLook(m, mo, fl, mo.purge_state || {});
-    return `<button class="b ${sel.includes(m.id) ? "on" : ""}" data-m="${esc(m.id)}" title="${esc(m.name)}">${icon("flame")}<span class="tt"><span>${esc(m.name)}</span><small>${esc(look.word)}</small></span></button>`; }).join("") + `</div></div>`).join("") + `</div>`;
+    const word = look.cls === "sel" && !purgeArmed(m, fl) ? purgeNotArmedText(m, fl) : look.word;
+    return `<button class="b ${sel.includes(m.id) ? "on" : ""}" data-m="${esc(m.id)}" title="${esc(m.name)}">${icon("flame")}<span class="tt"><span>${esc(m.name)}</span><small>${esc(word)}</small></span></button>`; }).join("") + `</div></div>`).join("") + `</div>`;
   sheet("Machines", html, [{label:"Done", cls:"blue"}]);
   $("sh-body").querySelectorAll("[data-m]").forEach(b => b.addEventListener("click", async () => {
-    const s2 = (((MO || {}).purge_state || {}).selected) || [];
-    await moPress("purge-select", {machine:b.dataset.m, on: !s2.includes(b.dataset.m)});
+    await purgeTap(b.dataset.m);
     const now = (((MO || {}).purge_state || {}).selected) || [];
     b.classList.toggle("on", now.includes(b.dataset.m));
+    const m = purgeMachine(b.dataset.m), fl2 = (ST && ST.flames) || {};
+    const sm = b.querySelector("small");
+    if(sm) sm.textContent = !now.includes(m.id) ? "Off" : purgeArmed(m, fl2) ? "Purge armed" : purgeNotArmedText(m, fl2);
   }));
 }
 // 1.0's fuPress: the same route and body (no actor), then a fresh read.

@@ -1,5 +1,5 @@
 {
- "notes": "The machine rows (morning.Arrangement): 16 machines of 3 types, ground-6 not in the saved rows (a new machine: the end of the G-Flames row), gone-9 in the rows but not a machine (left out). selftest.py's machine rows tests and fake_engine.js's day_rows scenario read it.",
+ "notes": "The machine rows (morning.Arrangement): 16 machines of 3 types, ground-6 not in the saved rows (a new machine: the end of the G-Flames row), gone-9 in the rows but not a machine (left out). selftest.py's machine rows tests and fake_engine.js's day_rows scenario read it. ground-2 and scaffold-2 have a shows-per-refill countdown (its words differ from shows_left on purpose).",
  "machines": [
   {
    "id": "ground-1",
@@ -186,7 +186,19 @@
    "refill_soon": true,
    "color": "",
    "locked": false,
-   "status": "ok"
+   "status": "ok",
+   "countdown": {
+    "left": 7,
+    "x": 5.1,
+    "n": 8,
+    "refuel_now": false,
+    "estimating": false,
+    "mode": "learned",
+    "not_sure": false,
+    "pending": false,
+    "refills": [],
+    "words": "Shows left: 7"
+   }
   },
   {
    "id": "ground-3",
@@ -252,7 +264,19 @@
    "refill_soon": false,
    "color": "",
    "locked": false,
-   "status": "ok"
+   "status": "ok",
+   "countdown": {
+    "left": 3,
+    "x": 4.6,
+    "n": 8,
+    "refuel_now": false,
+    "estimating": true,
+    "mode": "start",
+    "not_sure": false,
+    "pending": false,
+    "refills": [],
+    "words": "Shows left: 3, estimating"
+   }
   },
   {
    "id": "scaffold-3",

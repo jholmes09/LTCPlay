@@ -126,6 +126,10 @@ STOP_CONDUCTOR = "STOP_CONDUCTOR"    # MadMapper conductor stop
 FADE_PIXELS = "FADE_PIXELS"          # pixels to black over `seconds`
 ZERO_FLAME_CUES = "ZERO_FLAME_CUES"  # zero on every flame cue channel, now
 BLACKOUT = "BLACKOUT"                # everything dark
+# The night closed with the idle look held (after_last_show "idle", Jeff,
+# 2026-11-14): the pixels stay on the idle look, everything else is off,
+# until someone presses End of night.
+IDLE_LOOK_HELD = "IDLE_LOOK_HELD"
 # Hold during a show pauses it in place (Jeff, 2026-09-23).
 FREEZE_SHOW = "FREEZE_SHOW"          # pixels, video and timecode hold the
                                      # current frame; timecode keeps sending
@@ -140,7 +144,7 @@ EFFECTS = (PRESHOW_LOOK, INTERMISSION, START_SHOW, STOP_CONDUCTOR,
            FREEZE_SHOW, FADE_MUSIC_OUT, FADE_VIDEO_OUT, BLANK_LASERS,
            RESUME_SHOW,
            FADE_MUSIC_IN, UNBLANK_LASERS,
-           FADE_PIXELS, ZERO_FLAME_CUES, BLACKOUT)
+           FADE_PIXELS, ZERO_FLAME_CUES, BLACKOUT, IDLE_LOOK_HELD)
 
 # Abort fades the whole show to black (Jeff, 2026-09-24: "On an abort, the
 # whole show should fade to black"). Flame cues to zero and lasers blanked
@@ -273,6 +277,36 @@ MAX_LATE_GRACE_S = 300
 # Who may press things, until the operators file says otherwise.
 DEFAULT_OPERATORS = ("Andy", "Jeff")
 
+# What the night does when its last scheduled show is over (Jeff,
+# 2026-11-14): "close" (the default, as before) fades the pixels to black
+# at once; "idle" keeps the pixels on the idle look, with the flame cues
+# zero, the lasers disarmed, the hazers off and MadMapper dark, until
+# someone presses End of night (or the night hands over). The rule file's
+# after_last_show; a file that leaves it out closes.
+AFTER_CLOSE, AFTER_IDLE = "close", "idle"
+AFTER_LAST_SHOW = (AFTER_CLOSE, AFTER_IDLE)
+# Close for the night's detail when it is the End of night button (an
+# operator's press while the idle look is held): no sign in, no role.
+END_OF_NIGHT_DETAIL = "End of night"
+# Who End of night names when nobody was signed in (users.UNSIGNED).
+SIGNED_OUT_WHO = ("", "unsigned", "signed out")
+# A Stop that ends the held idle look (schedule_service.halt_schedule): the
+# same close as End of night, journaled as the Stop it was.
+HELD_LOOK_STOP_DETAIL = "Stop"
+
+
+def signed_out_who(who):
+    """(True, the device or "") when `who` names nobody signed in: "", the
+    users' "unsigned", "signed out", or Tailscale's "unsigned, <device>"
+    (remote._actor); else (False, who). Pure."""
+    who = str(who or "").strip()
+    head, _, rest = who.partition(", ")
+    if who.lower() in SIGNED_OUT_WHO:
+        return True, ""
+    if rest and head.lower() in SIGNED_OUT_WHO:
+        return True, rest.strip()
+    return False, who
+
 
 # -------------------------------------------------------------- the rule --
 
@@ -293,7 +327,7 @@ class RuleError(ValueError):
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 RULE_KEYS = frozenset(("timezone", "season", "weekly", "exceptions",
                        "show_len_s", "guard_s", "late_grace_s", "version",
-                       "soak_only"))
+                       "soak_only", "after_last_show"))
 SEASON_KEYS = frozenset(("first_date", "last_date"))
 NIGHT_KEYS = frozenset(("first_start", "interval_min", "last_end"))
 
@@ -319,6 +353,8 @@ class Rule:
     late_grace_s: int = DEFAULT_LATE_GRACE_S
     version: int = 0
     tz: object = field(default=None, compare=False, repr=False)
+    # AFTER_CLOSE or AFTER_IDLE (Jeff, 2026-11-14).
+    after_last_show: str = AFTER_CLOSE
     # What parse_rule had to change to use the file at all (a value capped,
     # a weekday written twice), said first by rule_warnings.
     notes: tuple = field(default=(), compare=False, repr=False)
@@ -500,6 +536,12 @@ def parse_rule(doc, where=""):
         if why:
             problems.append(why)
             version = 0
+    after = doc.get("after_last_show", AFTER_CLOSE)
+    if after not in AFTER_LAST_SHOW:
+        problems.append(f"after_last_show has to be \"close\" (go dark when "
+                        f"the last show is over) or \"idle\" (keep the idle "
+                        f"look until End of night), not {after!r}.")
+        after = AFTER_CLOSE
 
     first_date = last_date = None
     season = doc.get("season")
@@ -577,7 +619,8 @@ def parse_rule(doc, where=""):
     return Rule(timezone=doc["timezone"], first_date=first_date,
                 last_date=last_date, weekly=weekly, exceptions=exceptions,
                 show_len_s=show_len_s, guard_s=guard_s, late_grace_s=grace,
-                version=version, tz=tz, notes=tuple(notes))
+                version=version, tz=tz, notes=tuple(notes),
+                after_last_show=after)
 
 
 def rule_to_doc(rule):
@@ -588,7 +631,7 @@ def rule_to_doc(rule):
         return {"first_start": _hms(n.first_start),
                 "interval_min": n.interval_min,
                 "last_end": _hms(n.last_end)}
-    return {
+    doc = {
         "timezone": rule.timezone,
         "season": {"first_date": rule.first_date.isoformat(),
                    "last_date": rule.last_date.isoformat()},
@@ -601,6 +644,12 @@ def rule_to_doc(rule):
         "late_grace_s": rule.late_grace_s,
         "version": rule.version,
     }
+    if rule.after_last_show != AFTER_CLOSE:
+        # Only when it is not the default, so every rule that leaves it
+        # out keeps its fingerprint (rule_fingerprint): an update never
+        # rebuilds tonight's list for a setting nobody made.
+        doc["after_last_show"] = rule.after_last_show
+    return doc
 
 
 # ------------------------------------------------------------- expansion --
@@ -1066,6 +1115,16 @@ class Machine:
     # over the nightly reset. Kept in tonight's file. True only while state
     # is HOLD: _enter clears it on leaving HOLD.
     stop_hold: bool = False
+    # The rule's after_last_show (AFTER_CLOSE or AFTER_IDLE), from the rule
+    # this night was built from. Not kept in tonight's file.
+    after_last_show: str = AFTER_CLOSE
+    # The night closed with the idle look held (after_last_show "idle"):
+    # the pixels stay on the idle look until someone presses End of night
+    # (Close for the night, accepted in OFF only while this is set), a
+    # Stop, or the night hands over. Set and cleared only by _enter: True
+    # only in CLOSING and OFF. Kept in tonight's file (written only when
+    # true), so a restart holds it again only if it stood before.
+    held_look: bool = False
 
     @property
     def fault(self):
@@ -1144,6 +1203,7 @@ def new_night(rule, d):
     return Machine(date=d, tz=tz, show_len_s=rule.show_len_s,
                    guard_s=rule.guard_s, late_grace_s=rule.late_grace_s,
                    slots=slots, night_end=end, rule_id=rule_fingerprint(rule),
+                   after_last_show=rule.after_last_show,
                    next_first=_next_night_first(rule, d))
 
 
@@ -1321,7 +1381,8 @@ def _verb(ev):
         HOLD_ON: "Hold", RESUME: "Resume", SKIP_NEXT: "Skip next",
         DELAY_NEXT: f"Delay next +{ev.minutes}",
         DELAY_REST: f"Delay the rest of the night +{ev.minutes}",
-        END_NIGHT: "Close for the night",
+        END_NIGHT: (END_OF_NIGHT_DETAIL if ev.detail == END_OF_NIGHT_DETAIL
+                    else "Close for the night"),
         STOP_SHOW: "Stop",
         EDIT_MOVE: "move of a show", EDIT_ADD: "added show",
         EDIT_REMOVE: "removal of a show",
@@ -1371,9 +1432,29 @@ def _in_preshow_lead(m, now):
         now >= nxt.start - timedelta(seconds=PRESHOW_LEAD_S)
 
 
-def _closing_effects():
+def _closing_effects(held=False):
+    if held:
+        # after_last_show "idle": flames zero and MadMapper faded and
+        # stopped as at any closing, the pixels kept on the idle look.
+        return [Effect(ZERO_FLAME_CUES), Effect(STOP_CONDUCTOR),
+                Effect(FADE_VIDEO_OUT, seconds=CLOSING_FADE_S),
+                Effect(IDLE_LOOK_HELD)]
     return [Effect(ZERO_FLAME_CUES), Effect(STOP_CONDUCTOR),
             Effect(FADE_PIXELS, seconds=CLOSING_FADE_S), Effect(BLACKOUT)]
+
+
+def _holds_idle(m, dark):
+    """Does a closing that starts now keep the idle look (after_last_show
+    "idle")? Never after a Stop, a failed start or a cut show left the rig
+    dark (`dark`, the night's flag before the closing), and never once an
+    operator pressed Close for the night or End of night. A restart in
+    CLOSING or OFF holds it again only if it was held before (Jeff: a
+    restart must never light what was dark)."""
+    if m.after_last_show != AFTER_IDLE or dark or closed_by_operator(m):
+        return False
+    if m.resumed_from in (CLOSING, OFF):
+        return m.held_look
+    return True
 
 
 def _abort_effects(n):
@@ -1398,7 +1479,8 @@ def _stays_dark(state, after_stop):
 # IDLE is the preshow look; STANDBY is the intermission timeline running; HOLD
 # keeps the intermission running; SHOW starts the show; CLOSING fades out,
 # stops MadMapper, blacks out and zeroes the flame cues; OFF asks for nothing.
-def entry_effects(state, show=0, after_stop=False, resume=False):
+def entry_effects(state, show=0, after_stop=False, resume=False,
+                  held=False):
     if state == IDLE:
         return [Effect(PRESHOW_LOOK)]
     if state == PAUSED:
@@ -1418,18 +1500,29 @@ def entry_effects(state, show=0, after_stop=False, resume=False):
     if state == SHOW:
         return [Effect(START_SHOW, show=show)]
     if state == CLOSING:
-        return _closing_effects()
+        return _closing_effects(held)
     return []
 
 
-def _enter(tx, state, show=0, after_stop=False, resume=False):
+def _enter(tx, state, show=0, after_stop=False, resume=False, held=None):
     """Change state and add the effects that belong to arriving there.
     Also the one place `dark` is decided: true only while the state was
-    entered after a stopped show and so asked for no look of its own."""
+    entered after a stopped show and so asked for no look of its own. And
+    the one place `held_look` is: decided on entering CLOSING (_holds_idle,
+    or `held` when the caller already knows), kept in OFF, cleared in
+    every other state."""
+    if state == CLOSING:
+        if held is None:
+            held = _holds_idle(tx.m, tx.m.dark)
+        held = bool(held)
+    else:
+        held = state == OFF and tx.m.held_look
     tx._set_state(state)
     if state != OFF and tx.m.never_opened:
         tx.m = replace(tx.m, never_opened=False)
-    tx.effects.extend(entry_effects(state, show, after_stop, resume))
+    if tx.m.held_look != held:
+        tx.m = replace(tx.m, held_look=held)
+    tx.effects.extend(entry_effects(state, show, after_stop, resume, held))
     dark = _stays_dark(state, after_stop)
     if tx.m.dark != dark:
         tx.m = replace(tx.m, dark=dark)
@@ -1453,7 +1546,9 @@ def _after_show(tx, abort=False, stopped=False, hold=False):
         # closes the night if so.
         _enter(tx, STANDBY, after_stop=stopped)
     else:
-        _enter(tx, CLOSING)
+        # A show stopped short (a failed last start) never leaves the idle
+        # look held: the night closes dark, as before.
+        _enter(tx, CLOSING, held=False if stopped else None)
 
 
 # Start now's two reasons. Jeff, 2026-10-02: Start now runs an EXTRA show;
@@ -1688,7 +1783,10 @@ def _boot_done(m, ev, now):
     dark = cut or m.dark
     stayed = ""
     if not tx.m.waiting():
-        _enter(tx, CLOSING)
+        # The idle look is held again only as _holds_idle says: with the
+        # night's own flags, from before this start.
+        _enter(tx, CLOSING, held=_holds_idle(
+            replace(tx.m, resumed_from=was, held_look=m.held_look), dark))
         why = "every show tonight has already passed"
     elif was == HOLD:
         tx.m = replace(tx.m, held_from=STANDBY)
@@ -1714,6 +1812,8 @@ def _boot_done(m, ev, now):
         stayed = (" The rig stays dark, as it was before the restart: the "
                   "last show was stopped early and nobody has acted since. "
                   "The next show, or an operator, brings it back.")
+    if tx.m.held_look:
+        stayed += (" " + HELD_LOOK_WORDS)
     nxt = tx.m.next_slot()
     head = ("The scheduler restarted and picked up tonight's list as it was"
             if was else "Tonight started from the schedule just saved"
@@ -1740,8 +1840,10 @@ def _tick(m, ev, now):
     if st in (IDLE, STANDBY) and not tx.m.waiting():
         _enter(tx, CLOSING)
         tx.note("close", "done", "no more shows tonight",
-                "The last show of the night has gone by. Closing: flame cues "
-                "to zero, MadMapper stopped, pixels faded, blackout.",
+                "The last show of the night has gone by. " + (
+                    HELD_CLOSING_WORDS if tx.m.held_look else
+                    "Closing: flame cues to zero, MadMapper stopped, pixels "
+                    "faded, blackout."),
                 actor="scheduler")
     elif before == IDLE and st == IDLE and \
             any(s.status == MISSED and s.reason not in PAST_REASONS
@@ -1905,6 +2007,11 @@ def _clear_fault(m, ev, now):
 def _closing_done(m, ev, now):
     tx = _Tx(m, ev, now)
     _enter(tx, OFF)
+    if tx.m.held_look:
+        tx.note(CLOSING_DONE, "done", "the idle look is held",
+                "Closing finished. The scheduler is off until tomorrow. "
+                + HELD_LOOK_WORDS)
+        return tx.done()
     tx.note(CLOSING_DONE, "done", "the rig is dark",
             "Closing finished. The scheduler is off until tomorrow.")
     return tx.done()
@@ -2255,6 +2362,8 @@ def _stop_show(m, ev, now):
 
 
 def _end_night(m, ev, now):
+    if m.state == OFF:
+        return _end_held_look(m, ev, now)
     tx = _Tx(m, ev, now)
     skipped = []
     for s in m.pending() + ([m.delayed()] if m.delayed() else []):
@@ -2271,6 +2380,45 @@ def _end_night(m, ev, now):
             f"{len(skipped)} show(s) skipped. Closing: flame cues to zero, "
             f"MadMapper stopped, pixels faded, blackout.")
     return tx.done()
+
+
+def _end_held_look(m, ev, now):
+    """End of night (Jeff, 2026-11-14): the idle look held after the last
+    show ends. The night closes again as Close for the night closes it:
+    flame cues zero, MadMapper stopped, the pixels faded to black, then
+    OFF until the hand over. Marked closed by the operator, so a restart
+    or a saved schedule never holds or opens it again. Only in OFF while
+    the look is held (step refuses it otherwise)."""
+    tx = _Tx(m, ev, now)
+    tx.m = replace(tx.m, closed_by_operator=True, held_from="")
+    _enter(tx, CLOSING, held=False)
+    # Anyone may press it (Jeff, 2026-11-14), signed in or not: the
+    # journal names who, or says nobody was signed in. A Stop that ends
+    # the look is journaled as the Stop it was.
+    what = ("Stop" if ev.detail == HELD_LOOK_STOP_DETAIL else
+            END_OF_NIGHT_DETAIL)
+    anon, who = signed_out_who(ev.who)
+    by = (f"{what} was pressed{_screen(ev)}, signed out (nobody was signed "
+          f"in{', from ' + who if who else ''})" if anon else
+          f"{who} pressed {what}{_screen(ev)}")
+    tx.note(END_NIGHT, "done", "the held idle look ended",
+            f"{by}. The idle look held since the last show ends: flame cues "
+            f"to zero, MadMapper stopped, pixels faded, blackout. The "
+            f"scheduler is off until the next night.")
+    return tx.done()
+
+
+# The held idle look in words, for the journal (after_last_show "idle").
+HELD_CLOSING_WORDS = ("Closing with the idle look held (after_last_show is "
+                      "idle): flame cues to zero, lasers disarmed, hazers "
+                      "off, MadMapper faded and stopped; the pixels stay on "
+                      "the idle look.")
+HELD_LOOK_WORDS = ("The pixels stay on the idle look until someone presses "
+                   "End of night on the SHOW tab (anyone, no sign in, tap "
+                   "twice), or a Stop, or the night hands over to the next "
+                   "one. Flame cues, lasers, hazers and MadMapper were "
+                   "switched off at the closing; nothing here turns them "
+                   "on again.")
 
 
 RESET_MISSED = f"MISSED (still waiting at the {reset_words()} nightly reset)"
@@ -2778,7 +2926,8 @@ ALLOWED = {
     SKIP_NEXT: _LIVE,
     DELAY_NEXT: _LIVE,
     DELAY_REST: _LIVE,
-    END_NIGHT: frozenset((IDLE, STANDBY, HOLD)),
+    # OFF: End of night, only while the idle look is held (step).
+    END_NIGHT: frozenset((IDLE, STANDBY, HOLD, OFF)),
     STOP_SHOW: frozenset((SHOW, PAUSED)),
     EDIT_MOVE: _LIVE,
     EDIT_ADD: _LIVE,
@@ -2872,8 +3021,16 @@ def step(m, ev, now):
                        f"{ev.who.strip()!r} is not on the operator list "
                        f"({', '.join(m.operators) or 'empty'}). Pick a name "
                        f"from the list. Nothing was changed.")
-    if m.state not in ALLOWED[ev.kind]:
+    if m.state not in ALLOWED[ev.kind] or (
+            ev.kind == END_NIGHT and m.state == OFF and not m.held_look):
         return _refuse(m, ev, now, _why_not(m, ev))
+    if ev.kind == END_NIGHT and ev.detail == END_OF_NIGHT_DETAIL and \
+            not m.held_look:
+        # The End of night button never closes a night still running
+        # (that is Close for the night's, with its own question).
+        return _refuse(m, ev, now, "The idle look is not being held, so "
+                                   "there is nothing for End of night to "
+                                   "end. Nothing was changed.")
     if ev.kind in (END_NIGHT, STOP_SHOW) and not ev.confirmed:
         return _refuse(m, ev, now, f"{_verb(ev)} has to be confirmed first. "
                                    f"Nothing was changed.")
@@ -2913,6 +3070,7 @@ TONIGHT_KEYS = frozenset((
 # refuses the file and sets it aside rather than reading a closed night as
 # open, or a Stop's Hold as a plain one.
 TONIGHT_OPTIONAL = frozenset(("dark", "abort_latched", "closed_by_operator",
+                              "held_look",
                               "stop_hold", "stop_held"))
 # `stop_held` (simulation review B of #199, M3) is the service's own
 # record that a Stop's Hold stands, whatever the state (HOLD, CLOSING,
@@ -2937,7 +3095,7 @@ def machine_to_doc(m):
     tonight is kept: the slots, their statuses and edits, when the last show
     ended, hold and faults. show_len_s, guard_s, late_grace_s and the zone
     always come from the rule file, never from here. Pure."""
-    marked = m.dark or m.closed_by_operator or m.stop_hold
+    marked = m.dark or m.closed_by_operator or m.stop_hold or m.held_look
     next_day = any(t is not None and t.astimezone(m.tz).date() != m.date
                    for s in m.slots for t in (s.start, s.planned))
     doc = {
@@ -2961,6 +3119,8 @@ def machine_to_doc(m):
         doc["closed_by_operator"] = True
     if m.stop_hold:
         doc["stop_hold"] = True
+    if m.held_look:
+        doc["held_look"] = True
     return doc
 
 
@@ -3146,7 +3306,12 @@ def machine_from_doc(doc, rule, d, now, notes=None):
         dark=doc.get("dark", False) or abort_latch_in(doc),
         closed_by_operator=doc.get("closed_by_operator", False),
         stop_hold=(doc.get("stop_hold", False) or abort_latch_in(doc))
-        and state == HOLD)
+        and state == HOLD,
+        # The held idle look (after_last_show "idle"): read only for a
+        # night saved closing or over; BOOT_DONE decides it again
+        # (_holds_idle).
+        held_look=doc.get("held_look", False) is True and
+        state in (CLOSING, OFF))
 
 
 def abort_latch_in(doc):
@@ -3220,6 +3385,10 @@ def _carried(fresh, saved, slots, running):
                    faults=saved.faults, shows_started=saved.shows_started,
                    resumed_from=saved.resumed_from, dark=saved.dark,
                    closed_by_operator=saved.closed_by_operator,
+                   # A save keeps the held look only while the new rule
+                   # still says "idle"; otherwise the look ends (black).
+                   held_look=saved.held_look and
+                   fresh.after_last_show == AFTER_IDLE,
                    never_opened=saved.never_opened,
                    stop_hold=saved.stop_hold)
 
@@ -3580,6 +3749,8 @@ def actions_for(m):
         # Start now inside the guard is time dependent: the button stays
         # live and the press itself says how long is left.
         ok = m.state in ALLOWED[a["event"]]
+        if a["event"] == END_NIGHT and m.state == OFF and not m.held_look:
+            ok = False
         if a["event"] in (SKIP_NEXT, DELAY_NEXT, DELAY_REST) and \
                 m.next_slot() is None:
             ok = False
@@ -3637,6 +3808,10 @@ def machine_view(m, now=None):
                  if nxt else None),
         "guard_left_s": (int(-(-_guard_left(m, now) // 1))
                          if now is not None else None),
+        # The idle look held after the last show (after_last_show "idle"):
+        # the screens show End of night while this is true.
+        "held_look": m.held_look,
+        "after_last_show": m.after_last_show,
         "actions": actions_for(m),
     }
 
