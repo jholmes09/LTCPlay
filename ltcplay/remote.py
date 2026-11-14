@@ -1837,7 +1837,9 @@ def countdown_view(sched, show, cue_now):
     """What the page's countdown shows (Jeff, 2026-10-07). During a show,
     running or held, the time left in THAT show: its length minus where
     the engine's own show clock is in it (session.snapshot()'s "now", so a
-    Hold, which freezes the clock, freezes this too). A show whose length
+    Hold, which freezes the clock, freezes this too), and the show's length
+    (Jeff, 2026-11-14: the page shows time elapsed too, as the length less
+    the time left, so the two always add up). A show whose length
     is not known shows no countdown at all, never a guess. Between shows,
     the countdown to the next one, as before. None means show nothing.
     Display only: nothing here starts or stops anything."""
@@ -1856,6 +1858,7 @@ def countdown_view(sched, show, cue_now):
             return None
         return {"kind": "left", "label": "Left in this show",
                 "s": round(max(0.0, dur - max(0.0, el)), 1),
+                "length": round(dur, 1),
                 "running": not held}
     nx = sched.get("next") if sched.get("attached") else None
     if isinstance(nx, dict):

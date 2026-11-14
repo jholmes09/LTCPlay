@@ -54216,7 +54216,7 @@ def test_remote_countdown_left_in_this_show():
            "next": {"show": 2, "start": "19:00", "in_s": 3600}}
     c = cv(run, {"running": True}, {"duration": 440.0, "elapsed": 100.25})
     check(c == {"kind": "left", "label": "Left in this show", "s": 339.8,
-                "running": True},
+                "length": 440.0, "running": True},
           f"running: length minus the show clock's place, not the next "
           f"show: {c}")
     c = cv(dict(run, state="PAUSED"), {"running": True},
@@ -54239,6 +54239,21 @@ def test_remote_countdown_left_in_this_show():
               f"the next show's: {now}")
     c = cv(run, {"running": True}, {"duration": 300.0, "elapsed": 320.0})
     check(c["s"] == 0.0, "past its end: zero, never negative")
+    # Time elapsed too (Jeff, 2026-11-14): the show's length goes with the
+    # time left, so the page's elapsed (length less left) adds up. Played
+    # from a cue at 2:00, elapsed starts there; held, it stays still.
+    c = cv(run, {"running": True}, {"duration": 440.0, "elapsed": 120.0})
+    check(c["s"] == 320.0 and c["length"] == 440.0 and
+          c["length"] - c["s"] == 120.0,
+          f"played from a cue at 2:00: elapsed starts at the cue: {c}")
+    c = cv(dict(run, state="PAUSED"), {"running": True},
+           {"duration": 440.04, "elapsed": 0.0})
+    check(c["length"] == 440.0 and c["s"] <= c["length"] and
+          c["running"] is False,
+          f"the length is rounded as the time left is, never under it: {c}")
+    check("length" not in cv(dict(run, state="WAITING"), {"running": False},
+                             None),
+          "between shows: no length, the next show only")
     # Soak 2026-10-21: the page counted down from whole seconds rounded
     # down, so its last digit flickered. The exact figure goes out when
     # the engine has one.
@@ -54278,7 +54293,8 @@ def test_remote_countdown_left_in_this_show():
         st, _h, out = R.ask("GET", "/api/remote/status")
         check(st == 200 and out["countdown"] == {
             "kind": "left", "label": "Left in this show", "s": 400.0,
-            "running": True}, f"the status carries it: {out.get('countdown')}")
+            "length": 444.0, "running": True},
+            f"the status carries it: {out.get('countdown')}")
         R.svc.operator_press("hold", "Jeff", "Rack screen")
         R.settle()
         st, _h, out = R.ask("GET", "/api/remote/status")
@@ -107838,7 +107854,7 @@ def test_ui2_page_makes_only_1_0_presses():
     fns = "\n".join(_js_function(two, n) or "" for n in (
         "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "signWhy",
         "goLook", "nextStep", "pillLook", "runWarnWords", "runHereShown",
-        "alertItems"))
+        "alertItems", "showTimes", "cdLength"))
     # alertItems' words and the page's own state it reads.
     for c in ("ALERT_WHAT", "ALERT_DO"):
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
@@ -108137,6 +108153,113 @@ console.log(JSON.stringify(r));
     check(r.returncode == 0 and got == want,
           f"the big button's second line is state or a reason only: {got} "
           f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
+def test_ui2_time_elapsed_and_left():
+    section("2.0's SHOW tab shows time elapsed as well as time left (Jeff, "
+            "2026-11-14), in the top line and the state strip: both from the "
+            "one countdown, so they always add up to the show's length, stand "
+            "still through a Hold, start at the cue played from, and read "
+            "\"-\" when not known")
+    one, two = _ui2_pages()
+    lo = one[one.find("// LOGIC BEGIN"):one.find("// LOGIC END")]
+    fns = "\n".join(_js_function(two, n) or "" for n in (
+        "showTimes", "cdLength", "isHeld", "isLive", "runIsOn",
+        "isRehearsal", "pinItems", "signWhy", "goLook", "nextStep",
+        "alertItems", "short8"))
+    check("function showTimes(" in fns and "function cdLength(" in fns,
+          "showTimes and cdLength are found")
+    for c in ("ALERT_WHAT", "ALERT_DO"):
+        m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
+        fns += "\n" + (m.group(0) if m else "")
+    fns += ("\nlet STOP_SAID = null, DISARM_FAIL = null;"
+            "\nlet STALE_NOW = false, START_WAITING = false;"
+            "\nconst stale = () => STALE_NOW;")
+    # The state strip draws exactly these: one label, both numbers.
+    check('setText($("cd-l"), "Elapsed | Left"); setText($("cd-v"), '
+          'tm.elapsed + " | " + tm.left);' in two and
+          'setText($("cd-v"), "- | -")' in two,
+          "the state strip shows Elapsed | Left, and - | - when not known")
+    check(two.count("showTimes(c, cdLength(") == 2,
+          "the top line and the state strip use the same showTimes")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = lo + "\nlet CD = null; let MONO = 0; const monoNow = () => MONO;\n" + fns + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const secs = x => x === "-" ? null : x.split(":").reduce((a, v) => a * 60 + Number(v), 0);
+const cd = (s, running, len) => ({kind:"left", label:"Left in this show", s:s, running:running, length:len});
+// A whole show played, the status every 250 ms arriving late, the screen
+// every 20 ms: elapsed + left is the length every time, elapsed only goes up.
+{ let a = null, lastE = -1, bad = [];
+  const len = 440.0;
+  for(let now = 0; now <= 445000; now += 20){
+    if(now % 250 === 0){
+      const left = Math.round(Math.max(0, len - Math.max(0, now - 40) / 1000) * 10) / 10;
+      a = countdownAnchor(a, cd(left, true, len), now);
+    }
+    const tm = showTimes(countdownRead(a, now), len);
+    const e = secs(tm.elapsed), l = secs(tm.left);
+    if(e + l !== 440 || e < lastE) bad.push(now + ": " + tm.elapsed + " + " + tm.left);
+    lastE = e;
+  }
+  t(bad.length === 0, "a whole show: elapsed + left is the length, elapsed never goes back: " + bad.slice(0, 4));
+  t(lastE === 440, "the end: elapsed is the whole length"); }
+// Hold freezes both, and Resume carries on from there.
+{ let a = countdownAnchor(null, cd(300, true, 440), 0);
+  const run = showTimes(countdownRead(a, 5000), 440);
+  t(run.elapsed === "2:25" && run.left === "4:55", "running: " + JSON.stringify(run));
+  a = countdownAnchor(a, cd(295, false, 440), 5000);
+  const h1 = showTimes(countdownRead(a, 5000), 440), h2 = showTimes(countdownRead(a, 65000), 440);
+  t(h1.elapsed === "2:25" && h2.elapsed === "2:25" && h2.left === "4:55", "held a minute: elapsed does not run: " + JSON.stringify(h2));
+  a = countdownAnchor(a, cd(295, true, 440), 65000);
+  const r1 = showTimes(countdownRead(a, 66000), 440);
+  t(r1.elapsed === "2:26" && r1.left === "4:54", "resumed: carries on from the Hold: " + JSON.stringify(r1)); }
+// Played from a cue at 12:00 of a 53:00 show: elapsed starts at the cue.
+{ const a = countdownAnchor(null, cd(2460, true, 3180), 0);
+  const tm = showTimes(countdownRead(a, 0), 3180);
+  t(tm.elapsed === "12:00" && tm.left === "41:00", "played from a cue at 12:00: " + JSON.stringify(tm));
+  const h = showTimes(countdownRead(countdownAnchor(null, cd(3725, true, 7325), 0), 0), 7325);
+  t(h.elapsed === "1:00:00" && h.left === "1:02:05", "over an hour: " + JSON.stringify(h)); }
+// Not known: nothing made up.
+t(showTimes(null, 440) === null, "no countdown: nothing");
+t(showTimes({kind:"next", s:60}, null) === null, "between shows: no elapsed");
+{ const tm = showTimes({kind:"left", s:300}, undefined);
+  t(tm.elapsed === "-" && tm.left === "5:00", "an engine with no length: elapsed is -: " + JSON.stringify(tm)); }
+for(const bad of [0, -3, NaN, Infinity, "440", null, true])
+  t(showTimes({kind:"left", s:300}, bad).elapsed === "-", "a length that is not one: -: " + bad);
+t(cdLength({countdown:cd(1, true, 440)}) === 440 && cdLength({countdown:{kind:"next", s:3, length:9}}) === null && cdLength(null) === null,
+  "the length is read only from a show's countdown");
+// The top line: both numbers, 8 words or fewer; held, the Hold's words.
+const base = () => ({schedule:{attached:true, state:"SHOW", running:4, next:{show:5, start:"19:50", in_s:900}},
+  countdown:cd(320, true, 440), show:{running:true, show_control_on:true}, flames:{connected:true, groups:[{name:"a", armed:"disarmed"}]}, arming:{enabled:true}, me:{may:{show:true, arm:true}}});
+let s = base(); CD = countdownAnchor(null, s.countdown, 0); MONO = 0;
+let n = nextStep(s, false, true, alertItems(s)).text;
+t(n === "Show 4 running. Elapsed 2:00, left 5:20." && n.split(/\s+/).length <= 8, "the top line: " + n);
+s = base(); s.countdown = {kind:"left", s:320, running:true}; CD = countdownAnchor(null, s.countdown, 0);
+n = nextStep(s, false, true, alertItems(s)).text;
+t(n === "Show 4 running. Elapsed -, left 5:20.", "the top line, length not known: " + n);
+s = base(); s.countdown = null; CD = null;
+n = nextStep(s, false, true, alertItems(s)).text;
+t(n === "Show 4 running.", "the top line, no countdown: no numbers: " + n);
+s = base(); s.schedule.state = "PAUSED"; s.schedule.held = true; CD = countdownAnchor(null, cd(320, false, 440), 0);
+n = nextStep(s, false, true, alertItems(s)).text;
+t(n === "Held. Press Resume to carry on.", "held: the top line says Resume: " + n);
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        bad = None
+    check(r.returncode == 0 and bad == [],
+          f"time elapsed and time left, in node: {bad!r} "
+          f"{r.stderr.strip()[-600:]!r}")
     print("  ok")
 
 
@@ -108671,7 +108794,7 @@ def _ui2_status_running():
                                     "in_s": 1500}})
     st["show"] = {"running": True, "show_control_on": True, "timecode": "01:03:12:08"}
     st["countdown"] = {"kind": "left", "label": "Time left", "s": 312,
-                       "running": True}
+                       "length": 2712.0, "running": True}
     st["laser_arm"]["lasers"][0]["armed"] = True
     st["announce"] = {"configured": True, "ok": True, "device": "MOTU M4",
                       "device_set": True, "device_available": True,
@@ -125215,6 +125338,7 @@ if __name__ == "__main__":
         test_ui2_systems_rows_say_each_word_once,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_big_button_second_line_is_state_only,
+        test_ui2_time_elapsed_and_left,
         test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
         test_ui2_day_makes_only_1_0_presses,

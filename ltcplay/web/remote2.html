@@ -1772,6 +1772,22 @@ function goLook(st, isStaleNow, local, waiting){
   if(!["live", "loading", "none", "checking"].includes(L.mode) && !mayRow(st, "show")){ L.off = true; L.why = signWhy(st, "show"); }
   return L;
 }
+// Time elapsed and time left in this show (Jeff, 2026-11-14: both, not
+// time left twice). Both come from the one countdown `c` (countdownRead),
+// so a Hold freezes both: elapsed is the show's length `len` (the
+// engine's countdown.length) less the time left, in the whole seconds
+// clockText shows, so the two always add up to the length. null between
+// shows; a part not known is "-", never a guess.
+function showTimes(c, len){
+  if(!c || c.kind !== "left" || typeof c.s !== "number" || !isFinite(c.s)) return null;
+  const left = Math.max(0, Math.floor(c.s));
+  const n = (typeof len === "number" && isFinite(len) && len > 0) ? Math.floor(len) : null;
+  return {elapsed:n === null ? "-" : clockText(Math.max(0, n - left)), left:clockText(left)};
+}
+function cdLength(st){
+  const c = st && st.countdown;
+  return c && c.kind === "left" ? c.length : null;
+}
 // The line at the top: what to do next, in eight words or fewer.
 function nextStep(st, isStaleNow, local, items){
   if(!st) return {tone:"warn", icon:"clock", text:"Connecting to the show PC"};
@@ -1797,7 +1813,8 @@ function nextStep(st, isStaleNow, local, items){
   if(isRehearsal(st) && !isLive(st)) return {tone:"warn", icon:"info", text:"Rehearsal: the schedule starts no show."};
   if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Show control is off." : "Show control off: turn on at show PC."};
   const c = countdownRead(CD, monoNow());
-  if(sch.state === "SHOW") return {tone:"ok", icon:"play", text:"Show " + (sch.running || "") + " running." + (c && c.kind === "left" ? " " + clockText(c.s) + " left." : "")};
+  const tm = showTimes(c, cdLength(st));
+  if(sch.state === "SHOW") return {tone:"ok", icon:"play", text:"Show " + (sch.running || "") + " running." + (tm ? " Elapsed " + tm.elapsed + ", left " + tm.left + "." : "")};
   if(sch.start_waiting) return {tone:"ok", icon:"clock", text:"Starting when the show audio loads."};
   const nx = sch.next;
   if(nx){
@@ -2215,7 +2232,9 @@ function renderStale(){
   } else {
     const c = countdownRead(CD, monoNow());
     const sch = s.schedule || {};
-    if(c && c.kind === "left"){ setText($("cd-l"), "Time left"); setText($("cd-v"), clockText(c.s)); }
+    const tm = showTimes(c, cdLength(ST));
+    if(tm){ setText($("cd-l"), "Elapsed | Left"); setText($("cd-v"), tm.elapsed + " | " + tm.left); }
+    else if(isLive(ST) && !(c && c.kind === "next")){ setText($("cd-l"), "Elapsed | Left"); setText($("cd-v"), "- | -"); }
     else if(isRehearsal(ST) && !isLive(ST)){ setText($("cd-l"), "Rehearsal"); setText($("cd-v"), "No shows start"); }
     else if(sch.next){ setText($("cd-l"), "Show " + sch.next.show + " at " + sch.next.start); setText($("cd-v"), c && c.kind === "next" ? "in " + clockText(c.s) : ""); }
     else if(sch.delayed){ setText($("cd-l"), "Show " + sch.delayed.show); setText($("cd-v"), "delayed"); }
@@ -5200,7 +5219,7 @@ async function quickCard(){
 // ---- first-run coach marks: eight, never in front of a control's press
 const COACH = [
   ["next", "What to do next. Live modes, with Stop."],
-  ["pill", "Show state, timecode and time left."],
+  ["pill", "Show state, timecode, time elapsed and time left."],
   ["b-go", "The big button is the next step."],
   ["b-hold", "Hold pauses the schedule. Resume carries on."],
   ["b-runoff", "Show ctrl off: turns show control off. Stop leaves it on. Asks first."],
