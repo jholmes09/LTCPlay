@@ -16843,6 +16843,15 @@ def test_remote_schedule_save_says_what_tonight_holds():
               out["text"] and "\nMore: saved to " in out["text"],
               f"shows closer than a show and its guard are saved, with a "
               f"warning: {st} {out.get('text') or out}")
+        # The save's journal line keeps the warnings too: since the answer
+        # became bullets (e563111) this sentence is all that carries them
+        # into the record of the save ("after midnight: the save answer
+        # leaves out the warnings").
+        rows = R.lines_for("schedule file")
+        check(rows and "Warnings, saved anyway: weekly sat: shows overlap "
+              "and can run late." in rows[-1]["text"],
+              f"and the save's journal line says what was saved anyway: "
+              f"{rows[-1:]}")
         doc["weekly"] = {"sat": {"first_start": "23:30", "interval_min": 30,
                                  "last_end": "01:40"}}
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/schedule-file",
