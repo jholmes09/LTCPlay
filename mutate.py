@@ -24960,8 +24960,8 @@ def build():
 
  ('tests: the starts-under-way count changes without its lock',
   'ltcplay/remote.py',
-  '        with _STARTS_LOCK:\n            self._starts = getattr(self, "_starts", 0) + 1\n',
-  '        if True:\n            self._starts = getattr(self, "_starts", 0) + 1\n'),
+  '        with _STARTS_LOCK:\n            self._starts = getattr(self, "_starts", 0) + 1\n\n    def _start_end(self):\n        with _STARTS_LOCK:\n',
+  '        if True:\n            self._starts = getattr(self, "_starts", 0) + 1\n\n    def _start_end(self):\n        if True:\n'),
 
  ('lasers: a Programming Pause with no schedule lets a new arm through',
   'ltcplay/remote.py',
