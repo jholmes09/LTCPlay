@@ -58838,7 +58838,11 @@ def test_purge_nothing_arms_without_a_tap_after_a_glitch():
         st, out = P.post("purge-select", {"machine": "g1", "on": True,
                                           "seen": P.R.seen() - 1500})
         check(st == 409 and out.get("brief"), f"setup: brief: {out}")
-        P.step(n=64)                       # 3.2 s, the refusal repeating
+        P.step(n=40)                       # 2 s, the refusal repeating
+        st, out = P.post("purge-select", {"machine": "g1", "on": True,
+                                          "seen": P.R.seen() - 1500})
+        check(st == 409 and out.get("brief"), f"setup: still brief: {out}")
+        P.step(n=30)                       # 3.5 s since the first
         P.arm.set_group(0, False)
         st, out = P.post("purge-select", {"machine": "g1", "on": True,
                                           "seen": P.R.seen() - 1500})
@@ -58851,19 +58855,65 @@ def test_purge_nothing_arms_without_a_tap_after_a_glitch():
         P.step(n=4)
         P.arm.set_group(0, False)
         P.step(n=45)
+        # Brief refusal episodes are per screen, unit and cause, and a gap
+        # of over TRANSIENT_S starts a new one (final review of #269).
+        def late(mid):
+            return P.post("purge-select", {"machine": mid, "on": True,
+                                           "seen": P.R.seen() - 1500})
+        st, out = late("g1")
+        check(st == 409 and out.get("brief"), f"setup: brief on g1: {out}")
+        P.step(n=1200)                     # 60 s, nobody taps
+        st, out = late("g1")
+        check(st == 409 and out.get("brief") and
+              "g1" in P.R.m.purge.view()["selected"],
+              f"a new lag 60 s after the last one is a new episode: refused, "
+              f"kept, never taken off: {st} {out}")
+        P.step(n=45)
+        P.tap("s1")
+        P.step(n=45)
+        P.arm.set_group(1, False)
+        P.step()
+        st, out = late("g1")
+        P.step(n=50)                       # 2.5 s
+        st, out = late("g1")
+        check(st == 409 and out.get("brief"), f"setup: g1 refused again: {out}")
+        P.step(n=20)                       # 3.5 s after g1's first
+        st, out = late("s1")
+        check(st == 409 and out.get("brief") and
+              "s1" in P.R.m.purge.view()["selected"],
+              f"another unit's first brief refusal 3.5 s into g1's episode: "
+              f"its own episode, kept: {st} {out}")
+        P.step(n=70)
+        st, out = late("g1")
+        check(st == 409 and out.get("brief"), f"repeating: 1st: {out}")
+        P.step(n=58)                       # 2.9 s
+        st, out = late("g1")
+        check(st == 409 and out.get("brief"), f"repeating: 2nd at 2.9 s: {out}")
+        P.step(n=58)
+        st, out = late("g1")
+        check(st == 200 and out.get("off") is True and
+              "g1" not in P.R.m.purge.view()["selected"],
+              f"a brief refusal repeating every 2.9 s turns lasting: the "
+              f"third tap at 5.8 s takes it off: {st} {out}")
+        P.R.feed()
+        P.step(n=45)
+        P.tap("g1")
+        P.step(n=4)
+        P.arm.set_group(0, False)
+        P.step(n=45)
         P.R.mono[0] += 1.5                 # flamesafe 1.5 s late
         P.R.wall[0] += 1.5
         P.R.remote._deck_seen = P.R.mono[0]
         st, out = P.tap("g1")
         check(st == 409 and out.get("brief") is True and
-              P.R.m.purge.view()["selected"] == ["g1"],
+              "g1" in P.R.m.purge.view()["selected"],
               f"flamesafe 1.5 s late: refused, kept: {st} {out}")
         P.R.mono[0] += MO.TRANSIENT_S
         P.R.wall[0] += MO.TRANSIENT_S
         P.R.remote._deck_seen = P.R.mono[0]
         st, out = P.tap("g1")
         check(st == 200 and out.get("off") is True and
-              P.R.m.purge.view()["selected"] == [],
+              "g1" not in P.R.m.purge.view()["selected"],
               f"still refused past TRANSIENT_S: the tap takes it off: {st} "
               f"{out}")
         P.R.feed()

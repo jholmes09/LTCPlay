@@ -13933,9 +13933,20 @@ def build():
  ("morning: a brief refusal takes the unit off at once (a glitch costs the selection)",
   "ltcplay/morning.py",
   '''        if why and brief:
-            t0 = self._transient_at''',
+            ep = self._transient.get(cause)''',
   '''        if False:
-            t0 = self._transient_at'''),
+            ep = self._transient.get(cause)'''),
+
+ ("morning: a brief refusal episode never ends (an old glitch takes a unit off at its first new refusal)",
+  "ltcplay/morning.py",
+  '''            t0 = ep[0] if ep is not None and 0 <= now - ep[1] <= \\
+                TRANSIENT_S else now     # a gap: a new episode''',
+  '''            t0 = ep[0] if ep is not None else now'''),
+
+ ("morning: one brief refusal clock for every unit and screen",
+  "ltcplay/morning.py",
+  '''        cause = (device, machine_id, why.split(" (")[0][:60] if why else "")''',
+  '''        cause = ("", "", why.split(" (")[0][:60] if why else "")'''),
 
  ("morning: a brief refusal never counts as lasting (the unit can never be taken off)",
   "ltcplay/morning.py",

@@ -1301,7 +1301,11 @@ class Purge:
         self._taps = {}
         self._presses = {}
         self._press_n = 0
-        self._transient_at = None    # clock of the first brief refusal
+        # Brief refusal episodes: (device, machine id, cause) -> (clock of
+        # the episode's first refused tap, clock of its last). A gap of over
+        # TRANSIENT_S between refused taps starts a new episode; a tap that
+        # is not refused for that cause ends it.
+        self._transient = {}
         # The last fire heartbeat's machines: firing and waiting (why not),
         # for the page's "NOT FIRING" words.
         self.last_firing = []
@@ -1449,12 +1453,15 @@ class Purge:
                                  f"{TAP_IGNORE_S:g} s was ignored (a double "
                                  f"tap). Tap again in a moment.",
                          "selected": list(self.selected)}
-        if not why or not brief:
-            self._transient_at = None
+        cause = (device, machine_id, why.split(" (")[0][:60] if why else "")
+        for k in [k for k in self._transient
+                  if k[:2] == cause[:2] and (k != cause or not brief)]:
+            del self._transient[k]       # that refusal stopped
         if why and brief:
-            t0 = self._transient_at if self._transient_at is not None \
-                else now
-            self._transient_at = t0
+            ep = self._transient.get(cause)
+            t0 = ep[0] if ep is not None and 0 <= now - ep[1] <= \
+                TRANSIENT_S else now     # a gap: a new episode
+            self._transient[cause] = (t0, now)
             if 0 <= now - t0 <= TRANSIENT_S:
                 # A refusal that clears by itself: the unit is kept, no
                 # window starts; the operator tries again in a moment.

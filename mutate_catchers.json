@@ -4135,5 +4135,7 @@
 "morning: a brief refusal starts the double tap window": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
 "morning: flamesafe late for any time counts as brief": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
 "remote: a brief quiet of the Stream Deck program takes the unit off": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
-"purge page: a brief glitch tells the operator a tap takes the unit off": "test_purge_page_says_selected_vs_armed_and_not_firing"
+"purge page: a brief glitch tells the operator a tap takes the unit off": "test_purge_page_says_selected_vs_armed_and_not_firing",
+"morning: a brief refusal episode never ends (an old glitch takes a unit off at its first new refusal)": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"morning: one brief refusal clock for every unit and screen": "test_purge_nothing_arms_without_a_tap_after_a_glitch"
 }
