@@ -252,7 +252,38 @@ applied. flamesafe then runs every consent rule it has. This is the
 Jeff-approved exception: no hold-to-arm for a purge, a click instead. The
 deck disarms a group the moment the engine stops listing it: the machine is
 deselected, the page stops saying it is open (2 s), the engine is
-unreachable (0.3 s), a show goes live, a Stop lands.
+unreachable (1.3 s: one slow or failed read keeps the last fresh answer's
+groups for `PURGE_STALE_GRACE_S`, 1 s, after it), a show goes live, a Stop
+lands.
+
+A group is armed by the deck ONLY on an operator's tap (Jeff, 2026-11-14,
+and the cold review of #269): the engine numbers every arm tap it takes
+(`purge.presses`, `[group, tap number, age ms]`), and the deck arms on a
+number it has not seen, once, only while under `PURGE_PRESS_FRESH_S` (2 s)
+old. A group merely being in `wanted_groups` arms nothing: after any
+answer that listed no groups (purge arming read as off, the view raising,
+the page closed) it stays disarmed until the next tap. A tap on a machine
+already selected whose group is not armed is such a tap: the page sends
+`on: true` for it (only while the refusal is one a tap can clear: none,
+`refractory`, `dropped`; otherwise the tap takes it off), the engine keeps
+the selection and numbers the tap; one that cannot be armed now for any
+reason (deck program not reading, purge arming off, a refusal, a lock,
+another screen's selection) takes the machine off instead; one refused
+for a moment only (`TRANSIENT_S`, 3 s: the page's status late, flamesafe
+late under 3 s, a state read failing once, the deck quiet under 5 s) is
+refused with the machine kept and no double tap window started, and
+counts as lasting once it has repeated for over 3 s. The double tap check
+comes before any take off. Every tap a
+screen makes on a machine (on or off) and its Clear start a `TAP_IGNORE_S`
+(2 s) window for that screen and machine; an arming tap inside it is
+ignored as a double tap, an off tap and Clear never are. Tap numbers are
+wall clock based, so a deck that outlives an engine restart never skips a
+new tap. Nothing re-arms on its own: a group the deck
+let go (a quiet engine past the grace, reported as `dropped`), refused or
+an operator disarmed on the deck stays selected and unarmed until the next
+tap. A disarm the deck does by itself (purge_pass: the list changed, the
+page closed, the engine went quiet) does not start the deck's 2 s re-arm
+refractory window; an operator's disarm and a Stop still do.
 
 ### Firing: the flame link carries a purge frame, the same way it carries cues
 
@@ -756,7 +787,7 @@ them as burn ("other", like scrubbing), once, and never as a Showven purge.
 | T1 | A purge frame goes out while a show cue is playing (two sources of fire values) | `FlameLink.values_now`: purge is read only when `live is not True`; the engine refuses `purge-select` and `purge-fire` while the scheduler is in SHOW or PAUSED, or while the show clock plays a cue; the watcher clears the selection when a show goes live |
 | T2 | The page dies with Space down (crash, sleep, cable) | the heartbeat stops; `FlameLink` drops the purge frame 0.25 s after the last `purge_set` on its own clock; flamesafe zeroes `fire_hold_ms` after ltcplay's last frame if the engine dies too |
 | T3 | Key repeat, a lost keyup, a second tab or device | the page sends heartbeats on its own 100 ms timer from one keydown and stops on keyup, blur, visibilitychange and pagehide; the heartbeats are not the key: the browser's key repeat events are the evidence the key is still down, and a press older than 2.5 s with no repeat event for 1 s ends (`fireKeyLapsed`; so the OS key repeat has to be on; the page says so). A physically stuck key still repeats, so the PAGE is not a dead-man switch; the Stream Deck's FIRE key is (its heartbeats stop the instant the key reads up). The engine binds a fire press to a `fire_id` and the device that owns the selection; a heartbeat from another device, or for an old `fire_id`, is refused and does not end the owner's press; the deck process is known by its `screen` over loopback, never by an operator name; a machine never joins a press that is already firing |
-| T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the OWNER device's `morning-open` beat (every 500 ms) is under 2 s old (another device's open page does not keep it); leaving the page posts `purge-clear` at once; the deck disarms every purge group it armed the moment the engine stops listing it, and 0.3 s after the engine stops answering |
+| T4 | A machine selected for purge is left armed after the page is gone | the selection lives only while the OWNER device's `morning-open` beat (every 500 ms) is under 2 s old (another device's open page does not keep it); leaving the page posts `purge-clear` at once; the deck disarms every purge group it armed the moment the engine stops listing it, and 1.3 s after the engine stops answering (0.3 s of staleness plus the 1 s grace for one slow read, Jeff 2026-11-14) |
 | T5 | A locked machine fires from a show cue or a purge | flamesafe zeroes locked slots on every packet (the only writer); the flame link zeroes them too; `purge-select` refuses a locked machine and a lock drops it from a live selection; while this engine has any machine locked, NO purge goes until flamesafe's status reports exactly the slots this engine asked for (an old flamesafe, one without a lockout file, or a stale status all refuse) |
 | T6 | The lockout file is deleted, corrupted or half-written; the lock table and the config disagree | atomic replace by one writer; flamesafe keeps the last set on an unreadable file, and on a file that held locks and disappeared (the engine never deletes it), and journals both; `lockout_file` defaults to the file beside flamesafe's own config, so the show PC enforces it with nothing set up; on the engine's side a lockout file that could not be read, or one naming a machine `ltcplay_morning.json` no longer has, is never written over (every lock and unlock is refused, the purge and the laser tests too) and is said on every screen until fixed; the engine's view and flamesafe's `lockout` field are compared both ways on the page and in the journal: slots flamesafe holds that this engine cannot account for (the file deleted and kept by flamesafe, an engine restarted without it), a config edited under a lock, flamesafe with no lockout file, or one reading a different path than the engine writes (said at start, both paths named) all refuse every lock, unlock, purge and laser test; the one way out is a confirmed "Rewrite the lockout file" on the show machine itself, journaled as a fault, which writes exactly this engine's table |
 | T7 | Stop during a purge | the engine's Stop clears the purge and sends `disarm_all` before anything else (Abort, which did the same, was removed 2026-10-30); `disarm_all()` and `zero()` clear the purge frame; a Stop (the deck's or the Rack screen's) sends every group false on the arm link and the flame link's `disarm_all`; the laser tests are turned off |

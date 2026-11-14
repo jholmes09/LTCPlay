@@ -63,6 +63,23 @@ FRESH_S = 1.0
 # A fire press with no heartbeat for this long is over; the flame link
 # drops the frame on its own clock after the same time (PURGE_HOLD_S).
 BEAT_STALE_S = 0.25
+# A purge tap (a machine or a group button on the Purge step) that would
+# arm, within this long of the operator's own last tap on that machine, is
+# ignored as a double tap (Jeff, 2026-11-14: "The two second rule was to
+# prevent fat-fingering or double taps. That is all."). Counted from the
+# operator's taps only, never from a disarm the engine or the deck did on
+# its own. A tap that takes a machine off is never ignored. Equal to the
+# Stream Deck's REARM_REFRACTORY_S (selftest pins it).
+TAP_IGNORE_S = 2.0
+# A refusal that clears by itself in a moment (this page's status late,
+# flamesafe's status under this old, a lock or Fireball state read failing
+# once): a tap on a selected unit meant to arm it is refused, the unit kept,
+# no double tap window started, "try again in a moment". Lasting longer
+# than this (counted from the first such refusal), it counts as lasting and
+# the tap takes the unit off, as for every lasting refusal (third review of
+# #269: deselecting is always possible, a brief glitch never costs the
+# selection).
+TRANSIENT_S = 3.0
 # The timed purge (Jeff, 2026-10-29: "In addition to momentary purges, we
 # would like a designated time length purge option. This is to allow for
 # longer spurts of testing in case there is a DMX issue."). The page offers
@@ -1275,6 +1292,24 @@ class Purge:
         self.timed_hold = None
         self._timed_ended = collections.OrderedDict()
         self.timed_last = ""
+        # Operator taps (Jeff, 2026-11-14): (device, machine id) -> clock of
+        # that screen's last tap taken on it, on, off or Clear (the double
+        # tap rule, TAP_IGNORE_S), and flamesafe
+        # group name -> (tap number, clock) of the last tap asking for its
+        # arm, which the deck reads (deck-input morning.purge.presses) and
+        # acts on once. Only a tap writes either.
+        self._taps = {}
+        self._presses = {}
+        self._press_n = 0
+        # Brief refusal episodes: (device, machine id, cause) -> (clock of
+        # the episode's first refused tap, clock of its last). A gap of over
+        # TRANSIENT_S between refused taps starts a new episode; a tap that
+        # is not refused for that cause ends it.
+        self._transient = {}
+        # The last fire heartbeat's machines: firing and waiting (why not),
+        # for the page's "NOT FIRING" words.
+        self.last_firing = []
+        self.last_waiting = []
 
     def _note(self, text, **f):
         if self._journal is None:
@@ -1287,33 +1322,46 @@ class Purge:
     # -- rules ---------------------------------------------------------------
     def _refusal(self, device, seen_ok, need_flames=True):
         """Why nothing may be selected or fired right now, or ""."""
+        return self._refusal_kind(device, seen_ok, need_flames)[0]
+
+    def _refusal_kind(self, device, seen_ok, need_flames=True):
+        """(why, brief): _refusal's sentence, and whether it is one that
+        clears by itself in a moment (TRANSIENT_S): this page's status
+        late, flamesafe's status late but under TRANSIENT_S old, a lock or
+        Fireball state that could not be read."""
         why = self._live()
         if why:
-            return why
+            return why, False
         if not seen_ok:
             return ("The page's status is more than 1 s old. Wait for it "
-                    "to be live, then try again.")
+                    "to be live, then try again."), True
         if need_flames:
             fl = self._flames()
             if not fl or fl.get("stale") or fl.get("age_ms") is None or \
                     fl["age_ms"] > FRESH_S * 1000:
+                age = (fl or {}).get("age_ms")
+                brief = isinstance(age, (int, float)) and \
+                    not isinstance(age, bool) and \
+                    0 <= age <= TRANSIENT_S * 1000
                 return ("flamesafe has not reported in the last second, so "
                         "its real armed state is not known. Nothing can be "
-                        "purged until it does.")
+                        "purged until it does."), brief
         if self._link() is None:
             return ("No flame link is connected in this engine, so a purge "
-                    "could reach nothing.")
+                    "could reach nothing."), False
         try:
             why = self._locks_ok() or ""
         except Exception as e:                           # noqa: BLE001
-            why = f"the lock state could not be read ({type(e).__name__})."
+            return (f"the lock state could not be read "
+                    f"({type(e).__name__})."), True
         if why:
-            return why
+            return why, False
         try:
             why = self._other() or ""
         except Exception as e:                           # noqa: BLE001
-            why = f"the Fireball page could not be read ({type(e).__name__})."
-        return why
+            return (f"the Fireball page could not be read "
+                    f"({type(e).__name__})."), True
+        return why, False
 
     def press_live(self, now=None):
         """True while a fire press is going (a heartbeat within
@@ -1323,16 +1371,36 @@ class Purge:
             f = self.fire
             return f is not None and now - f["beat"] <= BEAT_STALE_S
 
-    def select(self, machine_id, on, device, seen_ok):
+    def select(self, machine_id, on, device, seen_ok, tap=False):
         """A click on a machine (or a group button's click on each). (code,
         body). The first click of a session owns it; another device's click
-        is refused while this one is live."""
+        is refused while this one is live.
+
+        `tap`: an operator's tap on the Purge step (Jeff, 2026-11-14). On a
+        machine already selected, on=True is a deliberate press asking for
+        its group's arm again (the page sends it while the group is selected
+        but not armed): it is taken, and the deck arms the group. If it
+        cannot be armed now for any reason (a rule, a lock, another screen
+        owning the selection), the tap takes it OFF instead: deselecting is
+        always possible (only a press already firing refuses it: let go
+        first). Double taps (Jeff's 2 s rule): every tap this screen makes
+        on a machine (on, off) and its Clear start a TAP_IGNORE_S window
+        for that screen and machine; an ARMING tap inside it is ignored, a
+        tap that takes a machine off never is. A refused tap, another
+        screen's tap and a disarm nobody pressed start nothing. Not a tap
+        (a lock taking a machine out): nothing is counted."""
         cfg = self._cfg()
         m = cfg.by_id.get(machine_id)
         if m is None:
             return 400, {"error": f"There is no machine called "
                                   f"{machine_id!r}."}
         if not on:
+            # A tap that takes a machine off is never ignored, from any
+            # screen (no owner rule), and like every operator tap it starts
+            # this screen's double tap window on it (Jeff's rule: the 2 s
+            # are against a double tap, off then on again included).
+            if tap:
+                self._taps[(device, machine_id)] = self._clock()
             if self.timed_running() and machine_id in self.selected:
                 # A machine taken out of a timed purge's selection (by hand,
                 # or by a lock) ends the whole timed purge at once.
@@ -1349,16 +1417,22 @@ class Purge:
             return 200, {"ok": True, "text": f"{m.name} off the purge.",
                          "selected": list(self.selected)}
         never = cfg.purge_refusal(m)
+        brief = False
         if never in NEVER_SELECTED:
-            # Never armed for a purge at all: its group is not asked for.
-            return 409, {"error": f"{m.name} is never purged: {never}. "
-                                  f"Nothing was armed."}
-        why = self._refusal(device, seen_ok)
-        if why:
-            return 409, {"error": why}
-        if self._lockout.is_locked("machine", machine_id):
-            return 409, {"error": f"{m.name} is locked out, so it cannot "
-                                  f"be armed for a purge. Unlock it first."}
+            why = f"{m.name} is never purged: {never}"
+        else:
+            why, brief = self._refusal_kind(device, seen_ok)
+        if not why and self._lockout.is_locked("machine", machine_id):
+            why = (f"{m.name} is locked out, so it cannot be armed for a "
+                   f"purge. Unlock it first.")
+        if not why and self.owner is not None and self.owner != device \
+                and self.selected:
+            why = (f"{self.owner} has the purge selection. One device at a "
+                   f"time.")
+        selected = machine_id in self.selected
+        if why and not (tap and selected):
+            return 409, {"error": why if never not in NEVER_SELECTED else
+                         why + ". Nothing was armed."}
         if self.press_live():
             # A machine never joins a press that is already firing (review
             # of PR #68, P1-1): a Waver's head-up time is counted from the
@@ -1367,24 +1441,97 @@ class Purge:
             # for it. Let go, click, press again.
             return 409, {"error": f"A purge is firing right now. Let go of "
                                   f"the key, then click {m.name}."}
+        now = self._clock()
+        last = self._taps.get((device, machine_id)) if tap else None
+        if last is not None and 0 <= now - last < TAP_IGNORE_S:
+            # An arming tap within 2 s of this screen's last tap on it (on,
+            # off or Clear): a double tap or a fat finger. Nothing changes,
+            # and the window is not restarted. Before any take off below:
+            # a fat finger never costs the selection (third review of #269).
+            return 200, {"ok": True, "ignored": True,
+                         "text": f"{m.name}: a second tap within "
+                                 f"{TAP_IGNORE_S:g} s was ignored (a double "
+                                 f"tap). Tap again in a moment.",
+                         "selected": list(self.selected)}
+        cause = (device, machine_id, why.split(" (")[0][:60] if why else "")
+        for k in [k for k in self._transient
+                  if k[:2] == cause[:2] and (k != cause or not brief)]:
+            del self._transient[k]       # that refusal stopped
+        if why and brief:
+            ep = self._transient.get(cause)
+            t0 = ep[0] if ep is not None and 0 <= now - ep[1] <= \
+                TRANSIENT_S else now     # a gap: a new episode
+            self._transient[cause] = (t0, now)
+            if 0 <= now - t0 <= TRANSIENT_S:
+                # A refusal that clears by itself: the unit is kept, no
+                # window starts; the operator tries again in a moment.
+                return 409, {"error": f"{why} {m.name} stays selected; try "
+                                      f"again in a moment.", "brief": True,
+                             "selected": list(self.selected)}
+        if why:
+            # A tap on a selected unit that cannot be armed now (a lasting
+            # reason, or a brief one for over TRANSIENT_S) takes it off
+            # (Jeff: deselecting is always possible).
+            code, out = self.select(machine_id, False, device, seen_ok,
+                                    tap=True)
+            out = dict(out, off=True, text=f"{m.name} off the purge: it "
+                                           f"cannot be armed now. {why}")
+            return code, out
         with self._lock:
             if self.owner is not None and self.owner != device and \
                     self.selected:
                 return 409, {"error": f"{self.owner} has the purge "
                                       f"selection. One device at a time."}
-            if machine_id not in self.selected:
+            again = machine_id in self.selected
+            if not again:
                 self.selected.append(machine_id)
             self.owner = device
-        self._note(f"{device} armed {m.name} for a purge (group {m.group}). "
-                   f"The Stream Deck process asks flamesafe to arm the "
-                   f"group; it fires only while Space or FIRE is held.",
-                   action="purge", outcome="selected", screen=device)
-        return 200, {"ok": True, "text": f"{m.name} armed for the purge. "
-                                         f"Hold Space (or the deck's FIRE "
-                                         f"key) to fire.",
+            if tap:
+                self._taps[(device, machine_id)] = now
+            # A number no earlier engine run used (wall clock ms, never
+            # going back within a run): a deck that keeps running across an
+            # engine restart never takes a new tap for one it has seen.
+            self._press_n = max(self._press_n + 1, int(time.time() * 1000))
+            self._presses[m.group] = (self._press_n, now)
+        if again:
+            self._note(f"{device} tapped {m.name} again: the Stream Deck is "
+                       f"asked to arm group {m.group} again (it was selected "
+                       f"but not armed). It fires only while Space or FIRE "
+                       f"is held.", action="purge", outcome="rearm",
+                       screen=device)
+            return 200, {"ok": True, "rearm": True,
+                         "text": f"{m.name}: asked the Stream Deck to arm "
+                                 f"group {m.group} again. It fires only once "
+                                 f"flamesafe says armed and Space (or the "
+                                 f"deck's FIRE key) is held.",
+                         "selected": list(self.selected)}
+        self._note(f"{device} selected {m.name} for a purge (group "
+                   f"{m.group}). The Stream Deck process asks flamesafe to "
+                   f"arm the group; it fires only while Space or FIRE is "
+                   f"held.", action="purge", outcome="selected",
+                   screen=device)
+        return 200, {"ok": True, "text": f"{m.name} selected for the purge: "
+                                         f"the Stream Deck asks flamesafe to "
+                                         f"arm group {m.group}. Once it is "
+                                         f"armed, hold Space (or the deck's "
+                                         f"FIRE key) to fire.",
                      "selected": list(self.selected)}
 
-    def select_many(self, ids, on, device, seen_ok, group=""):
+    def presses_view(self, names, wanted):
+        """[[group index, tap number, age in ms]] for each wanted group an
+        operator tapped for (deck-input morning.purge.presses): the deck
+        arms a group on a tap number it has not seen, while fresh."""
+        now = self._clock()
+        out = []
+        with self._lock:
+            items = list(self._presses.items())
+        for g, (n, at) in items:
+            if g in names and names.index(g) in wanted:
+                out.append([names.index(g), n,
+                            max(0, int(round((now - at) * 1000)))])
+        return sorted(out)
+
+    def select_many(self, ids, on, device, seen_ok, group="", tap=False):
         """A group button's click (code, body): select() for EVERY member,
         each under every rule select() has, never stopping at the first
         refusal (Jeff, 2026-10-28: with front-row-4 locked out the group
@@ -1398,29 +1545,48 @@ class Purge:
             off = []
             for mid in ids:
                 was = mid in self.selected
-                if self.select(mid, False, device, seen_ok)[0] == 200 and was:
+                if self.select(mid, False, device, seen_ok,
+                               tap=tap)[0] == 200 and was:
                     m = cfg.by_id.get(mid)
                     off.append(m.name if m is not None else mid)
             text = (f"{what} off the purge: {', '.join(off)}." if off else
-                    f"{what}: nothing of it was armed for the purge.")
+                    f"{what}: nothing of it was selected for the purge.")
             return 200, {"ok": True, "text": text,
                          "selected": list(self.selected)}
-        armed, refused = [], []
+        armed, refused, ignored, offs = [], [], [], []
         for mid in ids:
-            code, out = self.select(mid, True, device, seen_ok)
-            if code == 200:
-                m = cfg.by_id.get(mid)
+            code, out = self.select(mid, True, device, seen_ok, tap=tap)
+            m = cfg.by_id.get(mid)
+            if code == 200 and out.get("ignored"):
+                ignored.append(m.name if m is not None else mid)
+            elif code == 200 and out.get("off"):
+                offs.append(m.name if m is not None else mid)
+                if out["text"] not in refused:
+                    refused.append(out["text"])
+            elif code == 200:
                 armed.append(m.name if m is not None else mid)
             elif out.get("error") not in refused:
                 refused.append(out.get("error"))
+        if not armed and offs:
+            return 200, {"ok": True, "off": True,
+                         "text": f"{what}: taken off, it cannot be armed now. "
+                                 + " ".join(refused),
+                         "refused": refused, "selected": list(self.selected)}
+        if not armed and ignored and not refused:
+            return 200, {"ok": True, "ignored": True,
+                         "text": f"{what}: a second tap within "
+                                 f"{TAP_IGNORE_S:g} s was ignored (a double "
+                                 f"tap). Tap it again to arm it.",
+                         "refused": [], "selected": list(self.selected)}
         if not armed:
-            return 409, {"error": f"{what}: nothing was armed. " +
+            return 409, {"error": f"{what}: nothing was selected. " +
                                   " ".join(refused), "refused": refused,
                          "selected": list(self.selected)}
-        text = (f"{what}: {len(armed)} of {len(ids)} armed for the purge "
-                f"({', '.join(armed)}).")
+        text = (f"{what}: {len(armed)} of {len(ids)} selected for the purge "
+                f"({', '.join(armed)}); the Stream Deck asks flamesafe to "
+                f"arm them.")
         if refused:
-            text += " Not armed: " + " ".join(refused)
+            text += " Not selected: " + " ".join(refused)
         else:
             text += " Hold Space (or the deck's FIRE key) to fire."
         return 200, {"ok": True, "text": text, "refused": refused,
@@ -1685,6 +1851,7 @@ class Purge:
                                  "start": now, "beat": now, "heads": {}}
                 self.fires += 1
         vals, firing, waiting = self.frame(now)
+        self.last_firing, self.last_waiting = list(firing), list(waiting)
         with self._lock:
             if self.fire is not f:
                 # A stop (the key came up, a watcher pass, an Abort) landed
@@ -1746,15 +1913,23 @@ class Purge:
                            outcome="fire_end", screen=device or f["device"])
         return f is not None
 
-    def clear(self, why):
+    def clear(self, why, device=None):
         """Everything off: the selection and any fire. The deck sees no
-        groups wanted on its next read and disarms them."""
+        groups wanted on its next read and disarms them. `device`: an
+        operator's Clear on that screen, which starts its double tap window
+        on every machine it took off (a system clear starts none)."""
         self.stop(why)
         self._timed_hold_end(why)
         with self._lock:
             had = list(self.selected)
             self.selected = []
             self.owner = None
+            self._presses.clear()
+            if device is not None:
+                # Clear is an operator's tap on every machine it takes off.
+                now = self._clock()
+                for mid in had:
+                    self._taps[(device, mid)] = now
         if had:
             self._note(f"Purge selection cleared ({why}): "
                        f"{', '.join(had)}.", action="purge",
@@ -1802,6 +1977,12 @@ class Purge:
                     "firing": f is not None, "fire_device":
                         f["device"] if f else None,
                     "timed": f is not None and f.get("timed") is not None,
+                    # What the last heartbeat of the press going actually
+                    # fired, and why the rest did not (the page's "NOT
+                    # FIRING", Jeff 2026-11-14). Display only.
+                    "firing_now": list(self.last_firing) if f is not None
+                    else [], "waiting_now": list(self.last_waiting)
+                    if f is not None else [],
                     "groups_wanted": wanted, "fires": self.fires}
 
     # -- the timed purge (Jeff, 2026-10-29; MORNING.md "The timed purge") ---
@@ -2963,7 +3144,11 @@ class Morning:
         view = {"open": open_,
                 "purge": {"wanted_groups": pv["groups_wanted"] if open_
                           else [], "selected": len(pv["selected"]),
-                          "firing": pv["firing"], "never_groups": never},
+                          "firing": pv["firing"], "never_groups": never,
+                          # The operator's taps asking for an arm (Jeff,
+                          # 2026-11-14): the deck arms on a new one.
+                          "presses": self.purge.presses_view(
+                              names, pv["groups_wanted"]) if open_ else []},
                 "locks": {"groups_fully_locked": fully,
                           "machines": len(self.lockout.machines),
                           "lasers": len(self.lockout.lasers)}}
@@ -3088,9 +3273,9 @@ class Morning:
                 return self.purge.select_many(
                     body["machines"], on, device, seen_ok,
                     group=grp if isinstance(grp, str) and grp in
-                    self.cfg.banks else "")
+                    self.cfg.banks else "", tap=True)
             return self.purge.select(str(body.get("machine")), on, device,
-                                     seen_ok)
+                                     seen_ok, tap=True)
         if name == "purge-timed":
             # The timed purge's start hold (Purge.timed_beat): the screen
             # and window it comes from, the request's sign-in, and this
@@ -3131,7 +3316,8 @@ class Morning:
                                  "everything it fired is back to zero."}
                 self.purge.stop(f"{device} let go", device=device)
                 return 200, {"ok": True}
-            self.purge.clear(f"{device} cleared the selection")
+            self.purge.clear(f"{device} cleared the selection",
+                             device=device)
             return 200, {"ok": True, "text": "Purge selection cleared."}
         if name == "laser-test":
             on = body.get("on") is True

@@ -5380,10 +5380,92 @@ function groupAnySelected(ids, purge){
 function groupButtonDisabled(ids, any, mo, arrange, st){
   return !ids.length || (!any && (!mo.purge_enabled || arrange || !mayRow(st, "arm")));
 }
+// Purge: selected is not armed (Jeff, 2026-11-14). A unit is armed only
+// when flamesafe reports its group ARMED; until then the page says
+// "selected, not armed" and why, in the group's own words: the Stream
+// Deck's refusal, else flamesafe's reason. A tap on a selected unit that
+// is not armed asks for its arm again (the engine ignores it within 2 s of
+// this operator's own last tap: a double tap); a tap on an armed one takes
+// it off. Words and the tap's on/off only: the engine and the deck decide.
+const PURGE_SEL_NOT_ARMED = "Selected, not armed: tap the unit again";
+const PURGE_REFUSAL_WORDS = {refractory:"the Stream Deck's 2 s wait after a disarm was not over",
+  dropped:"the Stream Deck could not read the engine for over a second and disarmed it",
+  operator:"no Stream Deck operator is chosen", role:"the person signed in may not arm",
+  screenonly:"on screen only: it has no Stream Deck key, a purge tap never arms it",
+  neverpurged:"it is never purged", latched:"the rig is latched"};
+const PURGE_TAP_AT = {};
+let PURGE_SAID = "";   // the not armed words the message line last got (said once, never over another message)
+function purgeGroupOf(m, fl){ return ((fl && fl.groups) || []).find(x => x.name === m.group) || null; }
+function purgeArmed(m, fl){ const g = purgeGroupOf(m, fl); return !!(g && g.armed === "armed" && fl && !fl.stale); }
+// The Stream Deck program not reading the engine (its status, ST.deck):
+// nothing can be armed until it does.
+function purgeDeckDown(){ return typeof ST !== "undefined" && !!ST && !!ST.deck && ST.deck.heard === false; }
+function purgeWhyNot(m, fl){
+  if(purgeDeckDown()) return "the Stream Deck program is not reading the engine";
+  if(!fl || fl.stale) return "flamesafe has not reported";
+  const g = purgeGroupOf(m, fl);
+  if(!g) return "flamesafe does not list group " + m.group;
+  if(g.purge_refused && PURGE_REFUSAL_WORDS[g.purge_refused]) return PURGE_REFUSAL_WORDS[g.purge_refused];
+  return g.reason || "";
+}
+// Whether another tap can arm this unit's group: only when it is simply
+// not armed, the Stream Deck's 2 s wait refused it, or the deck let it go
+// (dropped). Anything lasting (no deck key, never purged, no operator
+// chosen, the role, latched, a flamesafe reason, flamesafe stale or not
+// connected, the group unknown): the tap takes the unit OFF instead, so a
+// unit can always be deselected by a tap (Jeff, 2026-11-14).
+// A reason that clears by itself in a moment (third review of #269): this
+// page's own status late, or flamesafe's late but under 3 s old. The engine
+// then refuses an arming tap and keeps the unit (try again in a moment);
+// longer, it counts as lasting and the tap takes the unit off.
+function purgeBrief(fl){
+  if(typeof LAST_OK !== "undefined" && LAST_OK !== null && Date.now() - LAST_OK > 1000) return "this page's status is late";
+  if(fl && fl.stale && typeof fl.age_ms === "number" && fl.age_ms <= 3000) return "flamesafe's status is late";
+  return "";
+}
+function purgeStuckFor(m, fl){
+  if(purgeDeckDown()) return true;
+  if(purgeBrief(fl)) return false;
+  if(!fl || fl.stale || fl.connected === false) return true;
+  const g = purgeGroupOf(m, fl);
+  if(!g || g.reason) return true;
+  return !!g.purge_refused && g.purge_refused !== "refractory" && g.purge_refused !== "dropped";
+}
+function purgeSelected(id, mo){ return (((mo || {}).purge_state || {}).selected || []).includes(id); }
+// Words for a selected unit that is not armed: "Arming..." for 2 s after
+// this page's own tap on it, then PURGE_SEL_NOT_ARMED and why.
+function purgeNotArmedText(m, fl){
+  const brief = purgeDeckDown() ? "" : purgeBrief(fl);
+  if(brief) return "Selected, not armed (" + brief + "): try again in a moment";
+  const why = purgeWhyNot(m, fl);
+  if(purgeStuckFor(m, fl)) return "Selected, not armed" + (why ? " (" + why + ")" : "") + ": a tap takes it off";
+  if(Date.now() - (PURGE_TAP_AT[m.id] || 0) < 2000) return "Arming...";
+  return PURGE_SEL_NOT_ARMED + (why ? " (" + why + ")" : "");
+}
+// What a tap on unit `m` sends: true selects it or asks for its arm again,
+// false takes it off.
+function purgeTapOn(m, mo, fl){
+  if(!purgeSelected(m.id, mo)) return true;
+  return !(purgeArmed(m, fl) || purgeStuckFor(m, fl));
+}
+function purgeMachine(id){ return ((MO && MO.machines) || []).find(x => x.id === id) || {id:id, group:""}; }
+function purgeTap(id){
+  const m = purgeMachine(id), on = purgeTapOn(m, MO, (ST && ST.flames) || {});
+  if(on) PURGE_TAP_AT[id] = Date.now();
+  return moPress("purge-select", {machine:id, on:on});
+}
+// A group button: selected members a tap would arm again (purgeTapOn)
+// make the tap ask for their arm again; otherwise any selected member
+// makes it take the group off.
+function groupUnarmed(ids, mo, fl){
+  return ids.map(purgeMachine).filter(m => purgeSelected(m.id, mo) && purgeTapOn(m, mo, fl));
+}
 function groupClick(g){
   const ids = (MO.groups || {})[g] || [];
   const any = groupAnySelected(ids, MO.purge_state || {});
-  moPress("purge-select", {machines: ids, group: g, on: !any});
+  const on = !any || groupUnarmed(ids, MO, (ST && ST.flames) || {}).length > 0;
+  if(on) ids.forEach(id => { PURGE_TAP_AT[id] = Date.now(); });
+  moPress("purge-select", {machines: ids, group: g, on: on});
 }
 // P11 (docs/REMOVE_1_0_PLAN.md): 1.0's Arrange mode and its open beat,
 // the whole ARRANGE block word for word (selftest.py checks): while it is
@@ -5450,8 +5532,7 @@ function machUp(e, m){
   const t = MACH_TAP; MACH_TAP = null;
   if(ARRANGE || !t || t.id !== m.id || t.pointerId !== e.pointerId) return;
   if(Math.hypot(e.clientX - t.x, e.clientY - t.y) >= MACH_TAP_PX || performance.now() - t.at >= MACH_TAP_MS) return;
-  const sel = ((MO.purge_state || {}).selected || []).includes(m.id);
-  moPress("purge-select", {machine:m.id, on: !sel});
+  purgeTap(m.id);
 }
 function dragStart(e, m){
   if(DRAG) dragEnd("another machine was pressed");
@@ -5576,12 +5657,16 @@ function renderField(mo, fl, purge){
     el.title = m.notes || "";
     // The re-arm wait or a refused purge arm, said on the tile (Jeff,
     // 2026-10-26: it sat on "Arming..." with no word why).
-    const wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK);
+    // Jeff, 2026-11-14: a selected unit flamesafe has not armed says so,
+    // and that a tap arms it (never "Press Clear": a tap does it now).
+    let wait = machineWait(m, fl, purge, LAST_OK === null ? 0 : Date.now() - LAST_OK);
+    if(look.cls === "sel" && !purgeArmed(m, fl) && (wait === REARM_REFUSED_PURGE || !wait || purgeStuckFor(m, fl))) wait = purgeNotArmedText(m, fl);
     el.querySelector(".wait").textContent = wait;
-    if(wait === REARM_REFUSED_PURGE) refusedNow = true;
+    if(wait.startsWith(PURGE_SEL_NOT_ARMED)) refusedNow = wait;
     el.querySelector(".lk").textContent = "L";
   });
-  if(refusedNow && $("mo-msg").textContent !== REARM_REFUSED_PURGE){ $("mo-msg").textContent = REARM_REFUSED_PURGE; $("mo-msg").title = REARM_REFUSED_PURGE; }
+  if(refusedNow && !FIRE && refusedNow !== PURGE_SAID){ $("mo-msg").textContent = refusedNow; $("mo-msg").title = refusedNow; }
+  PURGE_SAID = refusedNow || "";
 }
 async function moPress(route, extra, msgEl){
   const el = $(msgEl || "mo-msg");
@@ -5669,8 +5754,11 @@ async function fireBeat(f){
     const j = await post("/api/remote/purge-fire", moActor({fire_id:f.id, on:true}));   // on:true or the engine only stops
     if(FIRE !== f) return;
     f.id = j.fire_id;
-    $("mo-msg").textContent = "FIRING " + (j.firing || []).join(", ") + ((j.waiting || []).length ? ". Waiting: " + j.waiting.join("; ") : "");
-    $("mo-key").className = "key firing"; $("mo-key").textContent = "FIRING";
+    // Jeff, 2026-11-14: a 200 with nothing firing is NOT FIRING, and why.
+    const lit = (j.firing || []).length > 0;
+    $("mo-msg").textContent = lit ? "FIRING " + j.firing.join(", ") + ((j.waiting || []).length ? ". Waiting: " + j.waiting.join("; ") : "")
+      : "NOT FIRING: " + ((j.waiting || []).length ? j.waiting.join("; ") : "nothing selected is armed") + ". Release the key first, then tap a unit that is not armed to arm it.";
+    $("mo-key").className = "key" + (lit ? " firing" : ""); $("mo-key").textContent = lit ? "FIRING" : "NOT FIRING";
     f.timer = setTimeout(() => fireBeat(f), 100);
   }catch(e){ if(FIRE === f) fireStop(e.message); }
 }
@@ -5803,8 +5891,14 @@ function daySteps(part, s){
   }
   if(part !== "shut" && mo && Object.keys(mo.groups || {}).length){
     const p = mo.purge_state || {}, n = (p.selected || []).length;
+    // Selected and armed are two words (Jeff, 2026-11-14): armed only when
+    // flamesafe reports the unit's group ARMED.
+    const fl = st.flames || {};
+    const armedG = new Set(fl.stale ? [] : (fl.groups || []).filter(g => g.armed === "armed").map(g => g.name));
+    const na = (p.selected || []).filter(id => { const m = (mo.machines || []).find(x => x.id === id); return !!(m && armedG.has(m.group)); }).length;
+    const lit = (p.firing_now || []).length > 0;
     out.push({key:"purge", title:"Purge", icon:"flame", state: p.firing || p.timed ? "live" : n ? "todo" : (seen("purge") ? "done" : "todo"),
-      why: p.timed ? "Timed purge: " + timedLeft((mo.timed || {}).left_s) + " left. Stop purge ends it." : p.firing ? "FIRING." : !mo.purge_enabled ? "Purge is off for this screen." : mo.live_refusal ? "Not now: " + short8(mo.live_refusal, "a show is live.") : n ? n + " armed. Deck FIRE or hold Space." : "Pick a group, then fire."});
+      why: p.timed ? "Timed purge: " + timedLeft((mo.timed || {}).left_s) + " left. Stop purge ends it." : p.firing ? (lit ? "FIRING." : "NOT FIRING: nothing armed.") : !mo.purge_enabled ? "Purge is off for this screen." : mo.live_refusal ? "Not now: " + short8(mo.live_refusal, "a show is live.") : n ? (na === n ? n + " armed. Deck FIRE or hold Space." : n + " selected, " + na + " armed. Tap a unit to arm it.") : "Pick a group, then fire."});
   }
   // The Fireball page (P8): manual control of each Fireball channel, when
   // the engine has a fireball group. Nothing on it arms.
@@ -6375,13 +6469,17 @@ function dayUpdate(k){
       b.classList.toggle("on", gs.state === "on");
       b.classList.toggle("part", gs.state === "part" || (any && gs.state !== "on"));
       b.disabled = groupButtonDisabled(ids, any, mo, ARRANGE, ST);
-      setText(b.querySelector(".gd"), any ? "Tap: off" : short8(gs.text, "Tap: arm for purge"));
+      const flg = (ST && ST.flames) || {};
+      const un = groupUnarmed(ids, mo, flg), notArmed = ids.map(purgeMachine).filter(m => purgeSelected(m.id, mo) && !purgeArmed(m, flg));
+      setText(b.querySelector(".gd"), un.length ? purgeNotArmedText(un[0], flg) : notArmed.length ? purgeNotArmedText(notArmed[0], flg) : any ? "Selected and armed. Tap: off" : short8(gs.text, "Tap: arm for purge"));
     });
     // 1.0's fire key words, shorter: what fires the purge now.
     if(!FIRE){
       const kk = $("mo-key"), anySel = (purge.selected || []).length > 0;
       kk.className = "key" + (purge.firing || purge.timed ? " firing" : anySel ? " ready" : "");
-      kk.textContent = purge.timed ? "TIMED PURGE: " + timedLeft((mo.timed || {}).left_s) + " left" : purge.firing ? "FIRING" : !mo.purge_enabled ? "Purge off here" : mo.live_refusal ? "Not now" : anySel ? "Deck FIRE, or hold Space" : "Pick a group first";
+      const flk = (ST && ST.flames) || {};
+      const anyArmed = (purge.selected || []).some(id => purgeArmed(purgeMachine(id), flk));
+      kk.textContent = purge.timed ? "TIMED PURGE: " + timedLeft((mo.timed || {}).left_s) + " left" : purge.firing ? ((purge.firing_now || []).length ? "FIRING" : "NOT FIRING") : !mo.purge_enabled ? "Purge off here" : mo.live_refusal ? "Not now" : anyArmed ? "Deck FIRE, or hold Space" : anySel ? "Selected, not armed" : "Pick a group first";
       // 1.0's: while arranging, the key says so and nothing fires.
       if(ARRANGE){ kk.className = "key"; kk.textContent = ARRANGE_BANNER; }
       kk.title = ARRANGE ? "Save layout or Cancel first" : "";
@@ -6420,13 +6518,16 @@ function dayMachines(){
   const fl = (ST && ST.flames) || {};
   // The same rows as the Fuel step (rowsFor, ltcplay_arrangement.json).
   const html = `<div class="mrows" id="d-mach-rows">` + rowsFor(mo.arrangement, mo.machines || []).map(r => `<div class="mrow" data-ri="${r.ri}"><div class="mrow-l">${esc(r.label)}</div><div class="mrow-c">` + r.items.map(m => { const look = machineLook(m, mo, fl, mo.purge_state || {});
-    return `<button class="b ${sel.includes(m.id) ? "on" : ""}" data-m="${esc(m.id)}" title="${esc(m.name)}">${icon("flame")}<span class="tt"><span>${esc(m.name)}</span><small>${esc(look.word)}</small></span></button>`; }).join("") + `</div></div>`).join("") + `</div>`;
+    const word = look.cls === "sel" && !purgeArmed(m, fl) ? purgeNotArmedText(m, fl) : look.word;
+    return `<button class="b ${sel.includes(m.id) ? "on" : ""}" data-m="${esc(m.id)}" title="${esc(m.name)}">${icon("flame")}<span class="tt"><span>${esc(m.name)}</span><small>${esc(word)}</small></span></button>`; }).join("") + `</div></div>`).join("") + `</div>`;
   sheet("Machines", html, [{label:"Done", cls:"blue"}]);
   $("sh-body").querySelectorAll("[data-m]").forEach(b => b.addEventListener("click", async () => {
-    const s2 = (((MO || {}).purge_state || {}).selected) || [];
-    await moPress("purge-select", {machine:b.dataset.m, on: !s2.includes(b.dataset.m)});
+    await purgeTap(b.dataset.m);
     const now = (((MO || {}).purge_state || {}).selected) || [];
     b.classList.toggle("on", now.includes(b.dataset.m));
+    const m = purgeMachine(b.dataset.m), fl2 = (ST && ST.flames) || {};
+    const sm = b.querySelector("small");
+    if(sm) sm.textContent = !now.includes(m.id) ? "Off" : purgeArmed(m, fl2) ? "Purge armed" : purgeNotArmedText(m, fl2);
   }));
 }
 // 1.0's fuPress: the same route and body (no actor), then a fresh read.
