@@ -205,7 +205,7 @@ SAFETY_ROWS = ("Stop, Hold, Disarm (one group or every group, "
                "locking a machine, a laser test off, live flame "
                "programming off, "
                "a hazer disarm, Hazers off, the hazer test off, "
-               "the fuel pump off, "
+               "the fuel pump off, End of night, "
                "Fireball practice's Done, Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
@@ -251,6 +251,9 @@ READ_GRACE_S = 10.0
 # "safety": never restricted. None: harmless, never restricted.
 REMOTE_ROUTES = {
     "hold": "safety", "disarm-all": "safety", "stop": "safety",
+    # End of night (Jeff, 2026-11-14): everyone, signed out included, like
+    # Stop; it only ends the idle look held after the last show, to black.
+    "end-of-night": "safety",
     "group-disarm": "safety", "arm-release": "safety", "alert": "safety",
     "purge-stop": "safety", "purge-clear": "safety",
     "signin": "safety", "signout": "safety",

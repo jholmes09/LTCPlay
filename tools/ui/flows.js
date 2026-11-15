@@ -98,12 +98,14 @@ const TASKS = [
     await o.tap("#d-next", "Next step (sign out)");
     await o.tap("#d-signout", "Sign out"); await o.tap('#sh-row [data-i="2"]', "Sign out (sheet)");
     await o.shot("10_done"); }],
-  // The hazer test and Arm all hazers (2026-11-11), on the Purge step
-  // with the other purges: a tap on, a tap off.
-  ["12 Purge page hazers: one on and off, all on, all off", "day_jeff", async o => {
+  // The hazer test (2026-11-11), on the Hazers step since Jeff moved it
+  // there from the Purge step (2026-11-14): a tap on, a tap off.
+  ["12 Hazers step: one on and off, all on, all off", "day_jeff", async o => {
     await o.tap('.tab[data-tab="day"]', "Day");
     await o.tap("#d-next", "Next step (startup list)"); for(let i = 0; i < 3; i++) await o.tap("#d-tick", "Tick");
-    await o.tap("#d-next", "Next step (fuel)"); await o.tap("#d-next", "Next step (purge)");
+    await o.tap('#d-steps [data-step="purge"]', "Purge step");
+    if(await o.page.$eval("#d-hz", e => !e.hidden).catch(() => true)) o.notes.push("HAZER CONTROLS ON THE PURGE STEP");
+    await o.tap('#d-steps [data-step="hazers"]', "Hazers step");
     await o.tap('#hzt-list input[data-n="Hazer 1"]', "select Hazer 1");
     await o.tap("#hzt-btn", "Turn on"); await o.page.waitForTimeout(1200); await o.shot("12_hazer1_on");
     const st = await o.page.$eval("#hzt-st", e => e.textContent).catch(() => "");

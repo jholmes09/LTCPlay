@@ -55,9 +55,27 @@ anything else is asked, and the blank and DisableLaserOutput go out on
 this module's own sender thread: the press never waits on a lock, a disk
 or BEYOND. Abort's existing blank on the pressing thread stays the fast
 path. A disarm is never undone by Resume or Reset: the lasers come back
-only once an operator arms them again (refused while the Abort latch
-stands or the show is on Hold). The night closing disarms them too
+only once an operator arms them again. The night closing disarms them too
 (ruling 4). Nothing here starts a show or presses Run (ruling 5).
+
+Arming on Hold and with no schedule (Jeff, 2026-11-14, replacing the
+"refused on Hold" half of ruling 3): lasers behave like flames, so on Hold
+(the schedule's HOLD between shows, a Stop's Hold, and a show held mid
+show, PAUSED) and with no schedule loaded an operator MAY arm a laser and
+run its calibration test. ARMED there is not LIT while held: the engine's
+lighting blockers (`enable_blockers`, remote.laser_enable_blockers) still
+name the Hold and the missing schedule, so may_enable() says no, no
+EnableLaserOutput is sent and the conductor is not told (on_permitted).
+Resume does NOT disarm them (Jeff's ruling, 2026-11-14): lasers armed on
+a Hold stay armed and light, without a fresh arm, as soon as the laser
+gate (fire_ice.attach: the show state gate, SHOW, PAUSED or REHEARSAL, or
+Programming playback, AND may_enable) says yes: at the Resume of a show
+held mid show, or at the next show start. Resume (and Start now, Start at
+a cue, Continue anyway) turns every laser TEST off first
+(remote.tests_off_for_show); a test has no time limit of its own. Still
+refused: a Programming Pause (Programming playback paused mid cue, whose
+Continue would light a new arm at once), the night closing, a lockout or
+settings problem, and a Stop or Hold press under way (press_begin).
 
 The sender
 ==========
@@ -143,8 +161,8 @@ class LaserArm:
                 output_fault, output_enable() and output_disable() are the
                 only way this module reaches BEYOND.
     blockers    callable() -> "" or a sentence: why nothing may be armed
-                or enabled now (an Abort latch, a Hold, the night closing,
-                a settings or lockout problem). Raises: blocked.
+                now (a Programming Pause, the night closing, a settings or
+                lockout problem). Raises: blocked.
     blank_now   callable(what) or None: the lasers' blank on the caller's
                 thread (the conductor's lasers_dark_now, which keeps its
                 record). None: output().blank().
@@ -171,10 +189,11 @@ class LaserArm:
         # What keeps the lasers from being LIT (may_enable: the laser
         # gate, the Blanking's per-packet check and the watcher's
         # disarm-on-blocker), when that differs from what refuses a new
-        # ARM (refusal). None: the same `blockers` for both. The one
-        # difference today is a Programming Pause (Jeff, 2026-11-06,
-        # remote.laser_enable_blockers): lasers already armed stay armed
-        # through it, but a new arm is still refused as in a show's Hold.
+        # ARM (refusal). None: the same `blockers` for both. The
+        # differences today (remote.laser_enable_blockers): a Programming
+        # Pause (Jeff, 2026-11-06) keeps lasers already armed armed but
+        # refuses a new arm; the schedule's Hold and no schedule loaded
+        # (Jeff, 2026-11-14) allow a new arm but never light it.
         self._enable_blockers = enable_blockers
         self.blank_now = blank_now
         self.per_laser = per_laser
@@ -357,6 +376,9 @@ class LaserArm:
                     pass
         why = self.may_enable()
         if why is None:
+            # Permitted from this arm on: a blocker appearing before the
+            # watcher's next pass still disarms (tick).
+            self._was_permitted = True
             self._queue("enable", f"every laser armed, the last by {label}",
                         who, screen)
             if self.on_permitted is not None:
@@ -384,6 +406,12 @@ class LaserArm:
                    lid in self.armed]
             for lid in ids:
                 self.armed.pop(lid, None)
+            if ids:
+                # Not every laser is armed now, so nothing is permitted:
+                # the watcher must not take a later arm on Hold, before
+                # its next pass, for lasers lit before it (Jeff,
+                # 2026-11-14: arming on Hold is allowed).
+                self._was_permitted = False
         reason = why or f"disarmed by {label}"
         names = ", ".join(self.names.get(i, i) for i in was)
         text = (f"{names} DISARMED ({reason})." if was else

@@ -506,8 +506,12 @@ on a laser group, then Arm in the confirm box; Disarm all lasers is one
 click and always works, signed in or not; BEYOND's laser output comes on
 only once EVERY laser is armed and none is locked out, because BEYOND's
 only known command is for all lasers at once; Stop, Hold and the night
-closing disarm every laser, and after Resume they stay dark until
-you arm them again; the Lasers pill at the top of the rack screen says how
+closing disarm every laser at the press. While on Hold (also during a
+show) and with no schedule loaded you may arm them again and run their
+tests: they stay dark while held, stay armed through Resume and light
+with the show without a fresh arm (Jeff, 2026-11-14); lasers you did not
+arm again stay dark. Resume, Start now, Start at a cue and Continue
+anyway turn every test off first; the Lasers pill at the top of the rack screen says how
 many are armed); one calibration test button per laser (the laser has to be
 armed first) (ON keeps the grid up at low power until pressed again;
 how BEYOND is told is not set yet, so each laser says "Calibration cue not
@@ -524,12 +528,13 @@ going on, on Hold and between shows; come back to the rack screen (click
 it, or its taskbar button) for Calibration off; it sends nothing to
 BEYOND; if Windows will not let it come
 forward, BEYOND's button on the taskbar flashes, click it); the purge (click a machine or a group
-to arm it, then hold the Space bar, or the Stream Deck's FIRE key, to fire;
-a group button arms every machine in it that can be armed and says which
+to select it; the Stream Deck then asks flamesafe to arm its group; hold
+the Space bar, or the Stream Deck's FIRE key, to fire;
+a group button selects every machine in it that can be armed and says which
 it skipped and why, such as one locked out; it is green when all of the
-group is armed, amber with the count and the reason when only part is,
-and while any of it is armed, clicking it again takes the whole group off;
-let go and it stops; nothing fires while a show is live); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
+group is armed, amber with the count and the reason when only part is;
+selected and armed are two different words (see "Selected is not armed"
+below); let go and it stops; nothing fires while a show is live); the timed purge (below); lock out of any one machine or laser (the L button on it: one tap
 locks it out, one tap on a locked one unlocks it, with no pop-up either
 way; a line under the machine map, or under the lasers, says what was
 done, with Undo for 5 seconds; a tap does what the screen showed when you
@@ -551,6 +556,63 @@ PURGE ARMED on an armed group's key; it goes back to normal when you
 leave the page. MORNING.md says how it all works and where every setting
 lives.
 
+**Selected is not armed (Purge step, Jeff, 2026-11-14).** A machine
+fires only when it is selected AND flamesafe reports its group armed. The
+step says both: "2 armed" when they are, "2 selected, 0 armed. Tap a unit
+to arm it." when they are not. A machine or group button that is selected
+but not armed says "Selected, not armed: tap the unit again" and why, in
+the group's own words (the Stream Deck's 2 s wait after a disarm; it could
+not read the engine for over a second and disarmed it; flamesafe's own
+reason). What a tap does:
+- Not selected: selects it, and the Stream Deck arms its group.
+- Selected and armed: takes it off (never ignored).
+- Selected, not armed because it simply is not armed yet, the Stream
+  Deck's 2 s wait refused it, or the deck let it go: arms it again (it
+  stays selected). This is the deliberate press: it always works, unless
+  it is a double tap (below).
+- Selected, but it cannot be armed now for any reason (the Stream Deck
+  program not reading the engine, no Stream Deck operator chosen, your
+  role, no Stream Deck key, flamesafe's own reason, flamesafe not
+  reporting, a lock, a show playing, Stop under way, another screen
+  holding the selection): takes
+  it off. The words end "a tap takes it off". A unit can always be taken
+  off with a tap, from any screen; only a press already firing refuses a
+  tap (let go of the key first).
+- Selected, not armed for a moment only (this page's status late,
+  flamesafe's status late under 3 s, a lock or Fireball state read
+  failing once, the Stream Deck program quiet under 5 s): the tap is
+  refused and the unit stays selected; the words end "try again in a
+  moment". If it lasts over 3 s, the next tap takes the unit off.
+- Double taps: every tap you make on a unit (on or off) and Clear start a
+  2 s window for that screen and unit. A tap that would arm inside it is
+  ignored ("a second tap within 2 s was ignored ... Tap again in a
+  moment"), so a double tap on an armed unit leaves it off. A tap that
+  takes a unit off is never ignored, and Clear never is. A refused tap,
+  another screen's tap and a disarm nobody pressed (the page changing
+  step, the Stream Deck losing the engine) start nothing, so the next
+  deliberate tap after one of those always works.
+
+Nothing arms on its own: no retry, no re-arm after a Stop, a Hold, a lost
+connection or a disarm on the deck. Pressing Hold or Stop clears the
+purge selection and ends a purge firing. On a Hold (between shows, after
+a Stop, or pressed during a show) a fresh tap may select and arm a unit
+again, as for any test on Hold (Jeff, 2026-11-14); Resume, Start now,
+Start at a cue and Continue anyway clear the purge selection first and
+wait (at most 1.5 s) for flamesafe to report every group the purge armed
+off; if it cannot, they are refused with "A purge group is still armed:
+press Clear, then try again." and the show stays held. If flamesafe is
+not answering they say so; Clear forgets the purge's groups, so the next
+try goes. A Stop or Hold pressed during that wait always wins: nothing
+starts. After the start only a fresh tap arms. One slow read by the Stream Deck no
+longer disarms a purge (it keeps the groups for 1 s); if the engine is
+quiet for longer the groups are disarmed and stay selected, and the next
+tap arms them. If Space or FIRE answers but nothing is armed, the page
+says NOT FIRING and why (for example "group front row is not armed"),
+never FIRING; release the key before you tap (a tap during a press is
+refused). Clear takes everything off at once and nothing can fire after
+it; if the Stream Deck cannot read the engine at that moment, it disarms
+the group on its next good read (at most about 1 s).
+
 **The timed purge (Startup page, Jeff, 2026-10-29).** For a longer test,
 say to check a DMX problem, without holding Space. Select the machines
 exactly as for the purge and wait for their groups to read armed. Pick the
@@ -564,7 +626,9 @@ stop by themselves, even if the page or the iPad is closed. The rack
 screen, the line at the top of every tab and the Stream Deck's key 0
 (PURGING and the seconds) count down. To end it early press Stop purge
 (on the Startup page or the banner, from any screen, signed in or
-not), or Stop or Hold; Start now, Show control on, a disarm of one of
+not), or Stop or Hold; on Hold (also during a show, and after a Stop,
+before Resume) you may start one (Jeff, 2026-11-14), show control on or
+off, and Resume ends it first; Start now, Show control on, a disarm of one of
 its groups, a lock, signing out and any other purge press (Space, the
 deck's FIRE, the button again) also end it at once. Only one purge at a
 time; the Fireball page, the cleaning and live flame programming wait for
@@ -981,7 +1045,9 @@ channel, and is either ARMED or DISARMED.
   each one again (wait a second after a Stop).
 - **If a tile says Waiting for flamesafe,** flamesafe has not taken the
   arm yet; if it stays that way, disarm it and arm it again.
-- **Purge page: Hazers: turn on or off (Startup page, Purge step).**
+- **Hazers: turn on or off (DAY tab, Startup, the Hazers step, under
+  Levels and Hazers off; on the Purge step until 2026-11-14).** The
+  Purge step has no hazer controls now: only the flame purge.
   This runs hazers NOW, for checking them; it never arms one. Tick the
   hazers you want (each shows its Haze and Fan level), then **Turn on**
   or **Turn off**. **All on** runs every hazer; **All off** turns every
@@ -989,7 +1055,13 @@ channel, and is either ARMED or DISARMED.
   (HAZE ON in the top bar, HAZE TEST on its tile) only when the engine
   says so; Not known with no contact, and then the button is Turn off.
   - Each turns off by itself 60 s after its press.
-  - Off on Stop, Hold, Hazers off, a show or show control starting.
+  - Off on Stop, a Hold press, Hazers off, a show or show control
+    starting.
+  - Allowed on any Hold (between shows, after a Stop, or during a show),
+    show control on or off, and with no schedule loaded with show
+    control off. Refused while a show plays, while the show clock plays,
+    while a show file is starting, and with show control on when not on
+    Hold (Jeff, 2026-11-14). Resume turns it off first.
   - Off if this screen goes quiet 10 s.
   It needs the arm row (as arming a hazer) and every check arming a
   hazer has, and a Haze level above 0 on each hazer turned on.
@@ -1872,8 +1944,20 @@ stop:
   finished. The Stop's fade never waits on a file being written or on
   the scheduler.
 - **Stop never turns show control off.** It stays on: Hold (or a Stop's Hold) is
-  how the schedule is stopped. Each flame group needs arming again, and
-  the lasers can only be armed again after Resume. The line under the
+  how the schedule is stopped. Each flame group and laser needs arming
+  again. On the Stop's Hold, before Resume, you may test anything, as on
+  any Hold, also one pressed during a show (Jeff, 2026-11-14): fire a
+  flame test, run a timed purge or the hazer test (show control may stay
+  on during any Hold), arm a laser and run its test. A laser armed on Hold stays dark
+  while held. Resume does not disarm it (Jeff's ruling): it lights with
+  no fresh arm when the show plays again (at once after a Hold during a
+  show, else at the next show start). Armed is not safe: disarm it
+  before Resume if it should stay dark. Resume, Start now, Start at a
+  cue and Continue anyway turn every test still on off first and say so
+  in one line; no new test
+  starts until the press is answered, and every test is turned off again
+  right before the show starts or resumes, also when the schedule starts
+  a show by itself. No test starts while a Stop is under way. The line under the
   buttons says what happened ("Stopped. The show ended and the rig is
   fading to dark. ... The schedule is on Hold: no show starts until you
   press Resume.") or, if any part did not work, which part, and what to
@@ -1968,7 +2052,7 @@ What each end leaves on the pixels:
 | How the show ended | The pixels after it |
 | --- | --- |
 | A scheduled show ends by itself, more shows to come | the idle look (intermission) |
-| The night's last scheduled show ends by itself | black (the closing) |
+| The night's last scheduled show ends by itself | black (the closing); with "After the last show: Keep the idle look", the idle look until End of night |
 | A Start now show ends by itself | the idle look, even with nothing else tonight |
 | Programming's Play reaches the end of the cue | the idle look |
 | Stop | black, and the schedule on Hold (show control stays on) |
@@ -2002,6 +2086,45 @@ group, blanks and disarms the lasers, turns the hazers off, lets go of
 any hold to arm and clears the purge selection and laser tests (a
 complete halt), takes whatever look is up down to dark, and puts on a
 Stop's Hold; it never turns show control off.
+
+### Keeping the idle look after the last show (End of night)
+
+Jeff, 2026-11-14. The schedule has a setting, **After the last show**, on
+the Schedule tab's editor (the schedule file's `after_last_show`):
+
+- **Go dark** (`"close"`, the default, what every night did before): when
+  the last scheduled show is over the night closes at once and the pixels
+  go black.
+- **Keep the idle look until End of night** (`"idle"`): when the last
+  scheduled show is over the night still closes (the flame cues go to
+  zero, the lasers are disarmed, every hazer is turned off, MadMapper's
+  video fades to black and its show bank stops, and the scheduler is off
+  until the hand over), but the pixels stay on the idle look. A red
+  **End of night** button then shows in the next-step bar at the top of
+  every tab. Tap it twice (like Stop show) and the pixels go black: the
+  night is closed exactly as Close for the night closes it. Anyone may
+  press it, signed in or not; the journal and the audit log say who, or
+  "signed out".
+
+| While the idle look is held | What happens |
+| --- | --- |
+| End of night, tapped twice | the pixels go black; the night is closed for good (a restart or a schedule save never holds it again) |
+| One tap only | nothing is sent; after 3 s the message line says "End of night not sent: tap twice" |
+| Stop | a complete halt as always, and the held look ends: the pixels go black, the night is closed for good |
+| Show control off | it is a Stop first, so the same: black, closed for good |
+| Hold | refused as on any closed night ("nothing to hold"); the look stays |
+| Start now | an extra show starts; when it ends by itself the idle look is held again, with End of night |
+| The hand over to the next night (2 AM, or earlier for an early next night) | the held look ends, the pixels go black, the journal says so, and the next night starts as it always does |
+| ltcplay restarts | the look is held again (and End of night shows) only if it was held before the restart; a night that was black stays black |
+| Everyone is signed out 10 minutes after the last show | the look stays; End of night still works signed out |
+| The schedule is saved with "Go dark" | the held look ends: the pixels go black |
+
+The setting only changes what the pixels do. Nothing is armed or lit
+because of it: the flame cues, lasers, hazers and MadMapper are switched
+off at the closing. They are not locked off while the look is held: arming
+for the morning (lasers, hazers, purges) works as on any closed night. The
+pixels are lit with nobody at the show PC until someone
+presses End of night, a Stop, or the hand over.
 
 **Every start clears it.** Start now, a scheduled start and Programming's
 Play from all clear the pixels for the show in the same one place,
@@ -2895,7 +3018,10 @@ tab, and the hardware e-stop always works.
   iPad also needs Arming from a screen on. With no users set up, the show
   PC reads the list but nobody can save it until an admin exists.
 - The SHOW tab, top to bottom: one line that says what to do next;
-  the show state, the timecode and the time left; the big button for the
+  the show state, the timecode and the time (during a show, Elapsed |
+  Left: both stand still while held, add up to the show's length, start
+  at the cue you played from, and read "-" when not known); the big
+  button for the
   next step (Show control on, Start now or Resume; Resume and Start now offer
   the saved play-from cues, see Start at a cue), Hold and Stop show; one
   alert at a time with Acknowledge (tap the words for the details); a tile
@@ -2984,12 +3110,15 @@ tab, and the hardware e-stop always works.
   "Hold to continue anyway" (a hold; a tap does nothing). On the show PC the
   alert's details have Check again.
 - DAY tab: the day as steps. Startup (sign in, rig checks, the startup
-  list, fuel, purge, laser test, locks) or Shutdown (the shutdown list,
+  list, fuel, purge, laser test, hazers, locks) or Shutdown (the shutdown list,
   wave flamer cleaning, locks, sign out); only the steps that apply now,
   each with its mark, and one big Next. A purge fires only with the Stream Deck's
   FIRE key or Space held, the cleaning starts only with its two holds,
   and Lock is one tap per machine with Undo. The Purge step has the
-  machine map and Arrange; the checklist steps have Verify records, the
+  flame purge only (the group buttons, Machines, the machine map and
+  Arrange, the timed purge); the Hazers step has Levels, Hazers off and
+  Hazers: turn on or off (All on, All off), which runs hazers now even
+  with no show; the checklist steps have Verify records, the
   PDF and Export all.
 - DAY tab, machine rows. The Fuel step shows the tanks one row per type
   (all Wave Flamers on one row, all G-Flames on another); a row wraps only
