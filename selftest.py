@@ -44099,7 +44099,7 @@ def test_reset_says_how_the_rig_stands():
     import types
     from ltcplay import righealth as RH
     from ltcplay import madmapper as MM, madmapperwatch as MW
-    lamps = [{"name": "Audio", "state": "ok", "word": "ok"},
+    lamps = [{"name": "Show audio", "state": "ok", "word": "ok"},
              {"name": "Pixels", "state": "ok", "word": "sending"},
              {"name": "Lasers", "state": "ok", "word": "black"},
              {"name": "Laser arm", "state": "off", "word": "disarmed"}]
@@ -44131,7 +44131,7 @@ def test_reset_says_how_the_rig_stands():
           RH.summary(lamps, clk, mm_ok, None, fl, None)[0],
           "a fresh heartbeat is said")
     # Unhealthy: each in capitals with what to do, then the list.
-    bad_lamps = [{"name": "Audio", "state": "bad", "word": "lost"},
+    bad_lamps = [{"name": "Show audio", "state": "bad", "word": "lost"},
                  {"name": "Pixels", "state": "off", "word": "stopped"},
                  {"name": "Lasers", "state": "bad", "word": "LINK LOST"}]
     text, items = RH.summary(
@@ -44258,6 +44258,63 @@ def test_reset_says_how_the_rig_stands():
               f"and the journal says it: {rows[-1:]}")
     finally:
         R.close()
+    print("  ok")
+
+
+def test_rig_health_reads_the_engines_own_lamp_names():
+    section("The audio sentence Resume says is read from the lamp the "
+            "engine really draws (remote.Remote.subsystems: 'Show audio' "
+            "since 2026-10-28; righealth looked for 'Audio' and always "
+            "said 'Audio: not known.', review 2026-11-19): ready, NOT READY "
+            "for a missing or lost interface, no show audio, not known; "
+            "and every lamp righealth reads is a name subsystems() draws")
+    import inspect
+    import re as _re
+    import tempfile
+    import types
+    from ltcplay import righealth as RH
+    from ltcplay import remote as RM
+    ctl = types.SimpleNamespace(state=lambda: {}, session=None)
+    rm = RM.Remote(ctl, None, folder=tempfile.gettempdir())
+
+    def said(cs, missing=False):
+        rm.audio_interface_view = (lambda: {"missing": True}) if missing \
+            else (lambda: None)
+        lamps = rm.subsystems(cs)
+        _t, items = RH.summary(lamps, None, None, None, None, None)
+        a = [i for i in items if i["name"] == "audio"]
+        return (a[0]["ok"], a[0]["text"]) if a else (None, ""), lamps
+    (ok, t), lamps = said({"clock": {"audio": {"connected": True}}})
+    check(ok is True and t == "Audio ready.",
+          f"the engine's ok audio lamp reads ready: {ok} {t!r} {lamps}")
+    (ok, t), _l = said({"clock": {"audio": {"connected": False}}})
+    check(ok is False and t.startswith("Audio NOT READY (lost): check the "
+                                       "show audio interface"),
+          f"a lost interface is NOT READY: {ok} {t!r}")
+    _no_dashes(t, "the audio NOT READY sentence")
+    (ok, t), _l = said({"clock": {"audio": {"connected": True}}},
+                       missing=True)
+    check(ok is False and t.startswith("Audio NOT READY (not attached)"),
+          f"a missing interface is NOT READY: {ok} {t!r}")
+    (ok, t), _l = said({"clock": {}})
+    check(ok is None and t == "Audio: no show audio is running.",
+          f"no show audio is said: {ok} {t!r}")
+    # Not known: an engine whose strip has no show audio lamp at all.
+    _t, items = RH.summary([], None, None, None, None, None)
+    a = [i for i in items if i["name"] == "audio"]
+    check(a and a[0]["ok"] is None and a[0]["text"] == "Audio: not known.",
+          f"no lamp at all is not known: {a}")
+    # A rename can never silently break it again: each name righealth
+    # reads is one subsystems() draws.
+    rh = inspect.getsource(RH)
+    names = _re.findall(r'_lamp\(lamps, "([^"]+)"\)', rh)
+    src = inspect.getsource(RM.Remote.subsystems)
+    check(set(names) >= {"Show audio", "Pixels", "Lasers", "Laser arm"},
+          f"righealth's lamp names found: {names}")
+    for n in names:
+        check(f'add("{n}"' in src or f'("{n}", ' in src,
+              f"righealth reads the lamp {n!r}, which subsystems() never "
+              f"draws")
     print("  ok")
 
 
@@ -128158,6 +128215,7 @@ if __name__ == "__main__":
         test_video_lamp_follows_the_madmapper_watch,
         test_madmapper_not_following_is_a_display_only_alert,
         test_reset_says_how_the_rig_stands,
+        test_rig_health_reads_the_engines_own_lamp_names,
         test_madmapper_heartbeat_follows_the_real_show_length,
         test_artnet_faults_only_for_the_show_in_use,
         test_show_mode_stays_show_on_the_show_audio,

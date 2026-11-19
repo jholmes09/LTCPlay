@@ -2603,6 +2603,7 @@
 "resume: a Resume in CLOSING or OFF releases the Stop's Hold without its other steps (round 2, 1)": "test_resume_with_the_night_closed_lets_go_of_everything",
 "resume: a Resume is not checked again for a Stop under the lock (round 2, 3)": "test_resume_with_the_night_closed_lets_go_of_everything",
 "resume: a Resume says nothing about the rig (it carries what Reset said)": "test_reset_says_how_the_rig_stands",
+"reset: the audio sentence reads a lamp the engine does not draw (always not known)": "test_rig_health_reads_the_engines_own_lamp_names",
 "resume: a Stop's Hold Resume never lets go of the set-aside night (F4)": "test_resume_lets_go_of_a_set_aside_night",
 "resume: every Resume from a Hold clears the fault flag, not only a Stop's Hold's (F3)": "test_resume_clears_faults_only_after_a_stops_hold",
 "review H11: a flame controller with no ActiveState attribute": "test_fire_ice_active_flame_controller_refused",

@@ -6182,6 +6182,11 @@ def build():
   '    if st == "ok":\n        return True, "Audio ready."',
   '    if st in ("ok", "bad"):\n        return True, "Audio ready."'),
 
+ ('reset: the audio sentence reads a lamp the engine does not draw (always not known)',
+  'ltcplay/righealth.py',
+  '    st, word = _lamp(lamps, "Show audio")',
+  '    st, word = _lamp(lamps, "Audio")'),
+
  ('reset: MadMapper not running is not said',
   'ltcplay/righealth.py',
   '    if link == "lost":\n        return False, ("MadMapper NOT RUNNING',
