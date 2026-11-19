@@ -17344,6 +17344,132 @@ def build():
   "        tail = \"\" if self.save() else (f\" haze.json could NOT",
   "        tail = \"\" if True else (f\" haze.json could NOT"),
 
+ # Haze fluid learning, Set level now and the Settings card (Jeff,
+ # 2026-11-19): the accounting math, the correction kept out of the
+ # learner, who may, and the levels file kept (records only).
+ ("haze fluid: a Set level now teaches the learner a tank",
+  "ltcplay/fuelhaze.py",
+  "        rs = sorted((r for r in u[\"refills\"] if not r.get(\"undone\")),\n"
+  "                    key=lambda r: r.get(\"id\", 0))",
+  "        rs = sorted([r for r in u[\"refills\"] if not r.get(\"undone\")] +\n"
+  "                    u.get(\"corrections\", []), key=lambda r: r.get(\"id\", 0))"),
+
+ ("haze fluid: an undone refill still teaches a tank",
+  "ltcplay/fuelhaze.py",
+  "        rs = sorted((r for r in u[\"refills\"] if not r.get(\"undone\")),\n",
+  "        rs = sorted((r for r in u[\"refills\"] if True),\n"),
+
+ ("haze fluid: under 3 tanks the newest is trusted, not the smallest",
+  "ltcplay/fuelhaze.py",
+  "        got, used, firm = learned_tank(cycles, LEARN_TANKS, OUTLIER_RATIO)",
+  "        got, used, firm = learned_tank(cycles if len(cycles) >= 3 else "
+  "cycles[-1:], LEARN_TANKS, OUTLIER_RATIO)"),
+
+ ("haze fluid: a double press is learned as a tiny tank",
+  "ltcplay/fuelhaze.py",
+  "            if c >= MIN_TANK_S:",
+  "            if c > 0:"),
+
+ ("haze fluid: Reset learning is ignored",
+  "ltcplay/fuelhaze.py",
+  "            if a.get(\"id\", 0) < u.get(\"learn_from\", 0):\n                continue",
+  "            if False:\n                continue"),
+
+ ("haze fluid: Reset learning drops the refill history",
+  "ltcplay/fuelhaze.py",
+  "            u[\"learn_from\"] = self.next_id\n",
+  "            u[\"learn_from\"] = self.next_id\n            u[\"refills\"] = []\n"),
+
+ ("haze fluid: not sure seconds are left out of the percent (reads fuller)",
+  "ltcplay/fuelhaze.py",
+  "                start, gone = 100.0, full_s + unsure",
+  "                start, gone = 100.0, full_s"),
+
+ ("haze fluid: percent left goes below 0",
+  "ltcplay/fuelhaze.py",
+  "            exact = min(100.0, max(0.0, start - 100.0 * gone / tank_s))",
+  "            exact = min(100.0, start - 100.0 * gone / tank_s)"),
+
+ ("haze fluid: Set level now takes a level over 100",
+  "ltcplay/fuelhaze.py",
+  "                not math.isfinite(pct) or not 0 <= pct <= 100 or \\",
+  "                not math.isfinite(pct) or not 0 <= pct <= 1000 or \\"),
+
+ ("haze fluid: Set level now is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "f\"{was} to {pct} percent (a correction, not a refill).\")\n"
+  "        if not self.save():",
+  "f\"{was} to {pct} percent (a correction, not a refill).\")\n"
+  "        if not True:"),
+
+ ("haze fluid: a stale Haze fluid card is not refused",
+  "ltcplay/fuelhaze.py",
+  "    if body.get(\"stamp\") != tracker.stamp():",
+  "    if False:"),
+
+ ("haze fluid: the card's route lets anyone signed in change it",
+  "ltcplay/fuelhaze.py",
+  "        ok = bool(users.may(role, \"settings\"))",
+  "        ok = True"),
+
+ ("haze fluid: the Haze fluid card is not the Settings row",
+  "ltcplay/users.py",
+  "    \"haze-fluid\": \"settings\",",
+  "    \"haze-fluid\": None,"),
+
+ ("haze fluid: the Haze fluid card works from the show network",
+  "ltcplay/remote.py",
+  "LOCAL_ONLY = LOCAL_ONLY | frozenset(HAZE_FLUID_POST_ROUTES)",
+  "LOCAL_ONLY = LOCAL_ONLY | frozenset()"),
+
+ ("haze fluid: a fluid save drops the hazer levels",
+  "ltcplay/hazers.py",
+  "            doc = dict(doc)\n            if value is None:",
+  "            doc = {\"hazers_format\": LEVELS_FORMAT, \"levels\": {}}\n"
+  "            if value is None:"),
+
+ ("haze fluid: a fluid save writes over a levels file it could not read",
+  "ltcplay/hazers.py",
+  "                except (OSError, ValueError) as e:\n"
+  "                    raise ValueError(f\"{LEVELS_FILE} could not be read \"\n"
+  "                                     f\"({e})\")",
+  "                except (OSError, ValueError) as e:\n"
+  "                    doc = {\"hazers_format\": LEVELS_FORMAT, \"levels\": {}}"),
+
+ # The card's saves (review of 2026-11-19): checked as written, the
+ # block's other keys kept, a gone hazer removable, one post at a time, a
+ # levels file fixed by hand used, Reset learning on disk at once.
+ ("haze fluid: a card number is checked before it is rounded (0.0004 saved as 0)",
+  "ltcplay/fuelhaze.py",
+  "            if not ok or not 0 < r <= hi:",
+  "            if not ok or not 0 < v <= hi:"),
+
+ ("haze fluid: a card save drops the notes in the fluid block",
+  "ltcplay/fuelhaze.py",
+  "            block = {n: (dict(d) if isinstance(d, dict) else d)\n"
+  "                     for n, d in self._fluid_raw.items()}",
+  "            block = {n: dict(d) for n, d in self.fluid.items()}"),
+
+ ("haze fluid: Remove takes out a hazer that is still in flamesafe",
+  "ltcplay/fuelhaze.py",
+  "        if name in names or name in FLUID_NOT_HAZERS or name not in raw:",
+  "        if name in FLUID_NOT_HAZERS or name not in raw:"),
+
+ ("haze fluid: two posts from the same card both pass at once",
+  "ltcplay/fuelhaze.py",
+  "    with tracker._card_lock:",
+  "    if True:"),
+
+ ("haze fluid: Reset learning is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "        saved = self.save()\n        tail = \"\" if saved else",
+  "        saved = True\n        tail = \"\" if saved else"),
+
+ ("haze fluid: a levels file fixed by hand still refuses a fluid save",
+  "ltcplay/hazers.py",
+  "                try:\n                    self._read()\n",
+  "                try:\n                    raise ValueError(\"still\")\n"),
+
  ("ui 2.0 haze: Undo goes with no question",
   "ltcplay/web/remote2.html",
   "  const yes = await confirmBox(\"Undo this refill?\",",

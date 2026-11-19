@@ -1074,15 +1074,25 @@ channel, and is either ARMED or DISARMED.
   always. It never arms a flame group or a laser.
 
 - **Haze fluid (Startup page, Fuel step, 2026-11-12).** Under the fuel
-  tanks, a tile per hazer: its haze time since its last refill (fan only
-  time never counts), or percent left when its flow and tank size are set
-  in ltcplay_hazers.json. Tap a hazer when its fluid tank is full and say
-  yes (**Refilled**, the same sign-in as a fuel refill). An admin can
-  undo a wrong one under **Refills and notes**, as for fuel. Not sure
+  tanks, a tile per hazer: percent left, then **Learned from N tanks**
+  or **Estimating (from the set numbers)**, and shows left once it has
+  seen 3 full shows. With nothing learned or set it shows haze time since
+  the last refill (fan only time never counts). Tap a hazer when its
+  fluid tank is full and say yes (**Refilled**, the same sign-in as a
+  fuel refill). An admin can undo a wrong one under **Refills and
+  notes**, as for fuel; the undo takes back what it taught. Not sure
   time (a restart, a stale link to flamesafe) counts as full output, on
-  top of any haze already counted, so the litres read emptier, never
+  top of any haze already counted, so the levels read emptier, never
   fuller. FUEL.md has the details; the record is haze.json in the
   settings folder.
+- **Haze fluid settings (Settings tab, the show PC, 2026-11-19).** An
+  admin sets each hazer's litres per hour at full output and tank
+  litres (a starting guess), sees what was learned, and has **Set level
+  now** (type the percent left after looking at the tank: a correction,
+  never a refill) and **Reset learning** (asks first; refills are
+  kept). It learns how long a tank lasts from refill to refill: refill
+  when a tank is really empty, run it down, refill again. After 3 tanks
+  it is firm. Nothing here changes the haze.
 
 ## The fireball's fuel pump
 
