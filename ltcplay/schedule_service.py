@@ -820,6 +820,12 @@ class Service:
         # means show control went off and on again unseen: stamped again.
         self.run_gen = None
         self._run_on_gen = None
+        # (turn-on count, stamp) that run_turned_on took at the source,
+        # kept while show control comes up (the source tells before the
+        # show file reads as running), and (stamp, count) together for a
+        # reader without the lock (run_on_refusal).
+        self._run_on_told = None
+        self._run_on_pair = (None, None)
         # alerts.Alerts.raise_(kind, text), set by remote.Remote: a failed
         # start raises a "start" alert for the rack screen and the booth
         # (Jeff, 2026-10-12: the groups are left as they are, so a person
@@ -3127,6 +3133,12 @@ class Service:
                 # the press) has taken the look down.
                 self.machine = replace(m, stop_hold=True, dark=True)
                 self._save_tonight()
+            if not hold and not self.machine.dark:
+                # Show control off on a Hold: the conductor's Stop has
+                # taken the look down, as a Stop's does (the Hold itself,
+                # and whose it is, is left as it was).
+                self.machine = replace(self.machine, dark=True)
+                self._save_tonight()
             return {"ok": True, "kind": "held", "state": st,
                     "text": "The schedule was already on Hold; it stays on "
                             "Hold until Resume."}
@@ -3162,7 +3174,12 @@ class Service:
                     "state": st, "text": later}
         elif st in self.SHOWTIME_FROM and not hold:
             # Show control off between shows: nothing is held, the night
-            # carries on (Jeff, 2026-11-19).
+            # carries on (Jeff, 2026-11-19). Dark, as after a Stop: the
+            # conductor's Stop took the look down, and a restart keeps it
+            # down until a show starts.
+            if not m.dark:
+                self.machine = replace(m, dark=True)
+                self._save_tonight()
             return {"ok": True, "kind": "not held", "state": st,
                     "text": self.RUN_OFF_NOT_HELD}
         elif st in self.SHOWTIME_FROM:
@@ -3304,16 +3321,25 @@ class Service:
             return object()
 
     def run_turned_on(self):
-        """Show control has just come on (web.Control.start, wired by
-        fire_ice.attach): the moment it did, on this service's clock, the
-        stamp the rule of Jeff, 2026-11-19 measures from, taken at the
-        source, not when a tick first notices. Never raises."""
+        """Show control is coming on (web.Control.start, wired by
+        fire_ice.attach, before the start work, so never dated later than
+        it really was): the moment, on this service's clock, the rule of
+        Jeff, 2026-11-19 measures from, kept with its turn-on count until
+        the show file reads as running (_watch_run_on). Never raises."""
         try:
             with self._locked():
-                self._run_on_since = self.clock()
-                self._run_on_gen = self._read_run_gen()
+                now = self.clock()
+                gen = self._read_run_gen()
+                self._run_on_told = (gen, now)
+                if self._run_pressed() and self.run_gate is not None:
+                    self._set_run_on(now, gen)
         except Exception:                        # noqa: BLE001
             pass
+
+    def _set_run_on(self, since, gen):
+        self._run_on_since = since
+        self._run_on_gen = gen
+        self._run_on_pair = (since, gen)
 
     def _watch_run_on(self, now):
         """The moment show control was turned on (run_turned_on), or None
@@ -3325,15 +3351,16 @@ class Service:
         ahead of the clock (the clock stepped back) is brought back to
         now. Lock held. Never raises."""
         if self.run_gate is None or not self._run_pressed():
-            self._run_on_since = None
-            self._run_on_gen = None
+            self._set_run_on(None, None)
             return None
         gen = self._read_run_gen()
         if self._run_on_since is None or gen != self._run_on_gen:
-            self._run_on_since = now
-            self._run_on_gen = gen
+            told = self._run_on_told
+            at = told[1] if told is not None and told[0] == gen and \
+                gen is not None and told[1] <= now else now
+            self._set_run_on(at, gen)
         elif self._run_on_since > now:
-            self._run_on_since = now
+            self._set_run_on(now, gen)
         return self._run_on_since
 
     def run_on_refusal(self, n):
@@ -3352,9 +3379,15 @@ class Service:
                     not self._run_pressed():
                 return ""
             s = m.slot(n)
-            on_at = self._run_on_since
-            if on_at is None or self._read_run_gen() != self._run_on_gen:
-                on_at = self.clock()
+            gen = self._read_run_gen()           # the count first
+            on_at, seen = self._run_on_pair      # stamp and count together
+            now = self.clock()
+            if on_at is None or gen != seen:
+                told = self._run_on_told
+                on_at = told[1] if told is not None and \
+                    told[0] == gen and gen is not None else now
+            if on_at > now:                      # the clock stepped back
+                on_at = now
             if sch.lateness_s(s.start, on_at) < sch.RUN_ON_LATE_S:
                 return ""
             return (f"show control was off at its start time "

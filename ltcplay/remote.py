@@ -8165,7 +8165,20 @@ class Remote:
                               f"control off on the {screen}: show control "
                               f"did NOT turn off, so the schedule was put "
                               f"on Hold as a Stop puts it. Turn show "
-                              f"control off again.", fault=True)
+                              f"control off again. "
+                              + " ".join(h.get("_said") or []),
+                              fault=True)
+            elif not hold:
+                label = who or "An unnamed operator"
+                bad = ", ".join(out["failed"])
+                self._journal(
+                    who, screen, "stop", "fault" if bad else "done",
+                    f"{label} turned show control off on the {screen}: "
+                    f"everything stopped as a Stop stops it, and the "
+                    f"schedule was not put on Hold (a Hold already on "
+                    f"stays on). " + " ".join(h.get("_said") or [])
+                    + (f" These did NOT work: {bad}." if bad else ""),
+                    fault=bool(bad))
         else:
             # Stop never turns Run off (Jeff, 2026-10-30).
             out["stopped"] = True
@@ -8251,7 +8264,7 @@ class Remote:
             cancel = getattr(self.schedule, "cancel_start_wait", None)
             if cancel is not None:
                 try:
-                    cancel(f"Stop was pressed on the {screen}")
+                    cancel(f"{what} was pressed on the {screen}")
                 except Exception:                # noqa: BLE001
                     pass
             # 1. The flames first, every time (the Abort's rule).
@@ -8319,7 +8332,8 @@ class Remote:
                     out["failed"].append("lasers")
             try:
                 b_ok, b_text = self._lasers_dark_now(
-                    f"Stop held on the {screen}")
+                    f"Stop held on the {screen}" if hold else
+                    f"Show control turned off on the {screen}")
             except Exception as e:               # noqa: BLE001
                 b_ok, b_text = False, (f"The laser blank did NOT go out "
                                        f"({type(e).__name__}: {e}).")
@@ -8341,15 +8355,19 @@ class Remote:
             # fireball and the cleaning (at once, not when their watchers
             # next see the flame link's zero), the laser tests.
             try:
-                self.cancel_holds(f"{who or 'someone'} {how} Stop on the "
+                self.cancel_holds(f"{who or 'someone'} {how} {what} on the "
                                   f"{screen}")
             except Exception:                    # noqa: BLE001
                 pass
             for obj, meth, args in (
                     (getattr(m, "purge", None), "clear",
-                     (f"Stop held by {who or screen or 'someone'}",)),
-                    (m, "stop_hooks", (who, screen)),
-                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):
+                     (f"Stop held by {who or screen or 'someone'}" if hold
+                      else f"Show control turned off by "
+                           f"{who or screen or 'someone'}",)),
+                    (m, "stop_hooks", (who, screen) if hold else
+                     (who, screen, "Show control off")),
+                    (getattr(m, "lasers", None), "all_off",
+                     ("Stop held" if hold else "Show control turned off",))):
                 fn = getattr(obj, meth, None)
                 try:
                     if fn is not None:
@@ -8369,13 +8387,15 @@ class Remote:
                     pass
         parts = [x["text"] for x in (out["flames"], out["lasers"],
                                      out["lasers_blank"]) if x is not None]
+        if not hold:
+            # Show control off: written by _stop_press once show control
+            # is off (or not), so the line says what really happened.
+            out["_said"] = parts
+            return out
         bad = ", ".join(out["failed"])
         self._journal(who, screen, "stop", "fault" if bad else "done",
-                      (f"{label} {how} Stop on the {screen}: a complete "
-                       f"halt. " if hold else
-                       f"{label} turned show control off on the {screen}: "
-                       f"everything stopped as a Stop stops it, without "
-                       f"putting the schedule on Hold. ")
+                      f"{label} {how} Stop on the {screen}: a complete "
+                      f"halt. "
                       + " ".join(parts)
                       + (f" These did NOT work: {bad}." if bad else ""),
                       fault=bool(bad))
@@ -8466,7 +8486,11 @@ class Remote:
         more. The night closing or over: nothing to hold. If the state
         moved under the press (a show started or ended as it landed), the
         step is asked once more of the state it moved to. hold False (Show
-        control off): the scheduler is asked for no Hold at all."""
+        control off): the scheduler is asked for no Hold at all. Only a
+        scheduler without halt_schedule (the fallback below, a test's
+        stand-in; the engine's scheduler always has it) still ends a live
+        show on Hold there: operator_press("stop-show") has no way to ask
+        for no Hold."""
         svc = self.schedule
         if svc is None:
             return

@@ -43769,7 +43769,7 @@ def test_show_control_off_ends_the_show_without_a_hold():
     stop_rows = [r for r in rows if r.get("action") == "stop"]
     check(stop_rows and "turned show control off on the Rack screen"
           in stop_rows[-1]["text"] and
-          "without putting the schedule on Hold" in stop_rows[-1]["text"]
+          "the schedule was not put on Hold" in stop_rows[-1]["text"]
           and "pressed Stop" not in stop_rows[-1]["text"] and
           "is on Hold" not in stop_rows[-1]["text"],
           f"the journal says show control was turned off, not Stop, and "
@@ -43994,8 +43994,11 @@ def test_show_control_off_ends_the_show_without_a_hold():
           f"{code} {svc.machine.state} {out}")
     rows = [r for r in svc.journal if r.get("action") == "stop"]
     check(rows and "show control did NOT turn off, so the schedule was "
-          "put on Hold" in rows[-1]["text"] and rows[-1].get("fault"),
-          f"and the journal says so, true to what happened: {rows[-1:]}")
+          "put on Hold" in rows[-1]["text"] and rows[-1].get("fault") and
+          not any("turned show control off on the" in r["text"]
+                  for r in rows),
+          f"and the journal says so, true to what happened, with no line "
+          f"claiming show control went off: {rows[-2:]}")
     n.c.close()
     n.link.close()
 
@@ -44020,6 +44023,63 @@ def test_show_control_off_ends_the_show_without_a_hold():
     n.c.close()
     n.link.close()
 
+    # A show PAUSED by an operator's Hold, then Show control off: the
+    # show ends onto that Hold, which stays the operator's (never a
+    # Stop's), dark; the server decides it, whatever the page showed.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    n.now[0] = _den(S, 18, 3)
+    r = svc.operator_press("hold", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] and svc.machine.state == S.PAUSED,
+          f"setup: show 1 paused by an operator's Hold: {r}")
+    n.now[0] = _den(S, 18, 4)
+    code, out = rm.run_off("Andy", "Rack screen")
+    m = svc.machine
+    check(code == 200 and m.state == S.HOLD and not m.stop_hold and
+          m.dark and m.running == 0 and svc._stop_carry is None and
+          m.slot(1).reason == "STOPPED (show control turned off)",
+          f"the paused show ends, the operator's Hold stays on, dark, and "
+          f"no Stop's Hold is made: {m.state} {m.stop_hold} {m.dark} "
+          f"{svc._stop_carry} {out}")
+    ended = [x for x in svc.journal if x.get("action") == S.STOP_SHOW]
+    check(ended and "The Hold that was on stays on" in ended[-1]["text"],
+          f"and the line says the Hold stays on: {ended[-1:]}")
+    # Resume on it with show control still off: back between shows, and
+    # nothing reaches the rig (the conductor's look is the Stop's dark,
+    # so its intermission only says the rig is already dark).
+    _fi_walk(n, 18, 10, start=(18, 5))
+    n.link._submit(lambda: None)
+    k = len(n.calls)
+    n.now[0] = _den(S, 18, 11)
+    r = svc.operator_press("resume", "Andy", "Rack screen")
+    _settle(svc, c)
+    n.link._submit(lambda: None)
+    check(r["ok"] and svc.machine.state == S.STANDBY and
+          _fi_rig_touched(n.calls, k) == [],
+          f"Resume with show control off sends nothing to the rig: {r} "
+          f"{_fi_rig_touched(n.calls, k)[:6]}")
+    n.c.close()
+    n.link.close()
+
+    # Between shows Show control off leaves the night dark, as a Stop
+    # does, and an operator's Hold dark too, still the operator's.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+    check(not svc.machine.dark, "setup: the intermission look is up")
+    rm.run_off("Andy", "Rack screen")
+    check(svc.machine.state == S.STANDBY and svc.machine.dark,
+          f"between shows: STANDBY, dark: {svc.machine.state} "
+          f"{svc.machine.dark}")
+    n.c.close()
+    n.link.close()
+
 
 def _run_on_rig():
     """_run_off_night with show control's own turn-on wired as web.Control
@@ -44040,12 +44100,16 @@ def _run_on_rig():
         n.w.runner.poll()
         _settle(svc, c)
 
-    def on(h, mi, s=0, us=0, tell=True):
+    def on(h, mi, s=0, us=0, tell=True, running_at=None):
+        # As web.Control does it: counted and told first, then the show
+        # file runs (running_at: later, the audio device slow to open).
         n.now[0] = _den(S, h, mi, s, us)
         n.control.run_gen += 1
-        n.control.session = sess
         if tell:
             n.control.on_show_control_on()
+        if running_at is not None:
+            n.now[0] = _den(S, *running_at)
+        n.control.session = sess
 
     def off():
         n.control.session = None
@@ -44152,16 +44216,43 @@ def test_show_control_on_late_never_starts_a_passed_show():
     check(s6.status == S.MISSED and not autos(6),
           f"off and on again unseen, only the turn-on count changed: "
           f"stamped at the first look, MISSED: {s6}")
-    # Under a second past its time when show control came on: not yet a
-    # second late, so it starts (the late rule counts whole seconds).
+    # The boundary: 0.999 s past is not yet a second, 1.000 s is.
     _fi_walk(n, 19, 59, start=(19, 41))
     off()
     at(19, 59, 59)
-    on(20, 0, 0, 600000)
-    at(20, 0, 0, 700000)
+    on(20, 0, 0, 999000)
+    at(20, 0, 0, 999500)
     check(svc.machine.state == S.SHOW and svc.machine.running == 7,
-          f"show control on 0.6 s after show 7's time: it starts: "
+          f"show control on 0.999 s after show 7's time: it starts: "
           f"{svc.machine.state} {svc.machine.slot(7)}")
+    n.now[0] = _den(S, 20, 8)
+    svc._apply(S.Event(S.SHOW_ENDED, "madmapper", show=7))
+    _settle(svc, c)
+    _fi_walk(n, 20, 19, start=(20, 9))
+    off()
+    at(20, 19, 59)
+    on(20, 20, 1)
+    at(20, 20, 1, 500)
+    s8 = svc.machine.slot(8)
+    check(s8.status == S.MISSED and s8.reason == S.RUN_OFF_AT_START and
+          not autos(8),
+          f"show control on 1.000 s after show 8's time: MISSED: {s8}")
+    n.c.close()
+    n.link.close()
+
+    # Dated from the press, not from when the show file opened: told at
+    # 17:59:58, the audio device slow, running only at 18:00:01.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 58)
+    n.at(17, 59, 50)
+    n.on(17, 59, 58, running_at=(18, 0, 1))
+    n.at(18, 0, 1, 500000)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+          f"show control pressed before show 1's time, its audio slow to "
+          f"open: it starts, as the 120 s rule says: {svc.machine.state} "
+          f"{svc.machine.slot(1)}")
     n.c.close()
     n.link.close()
 
@@ -44248,15 +44339,23 @@ def test_show_control_on_late_never_starts_a_passed_show():
           "a show still to come is not refused")
     r = svc.operator_press("start-now", "Andy", "Rack screen")
     check(r["ok"] is True, f"Start now is unchanged and starts it: {r}")
+    # A stamp left ahead of the clock (it stepped back) is pulled back at
+    # the start's own check too, so a show due now is not refused.
+    n.now[0] = _den(S, 18, 20)
+    svc._set_run_on(_den(S, 18, 30), svc._read_run_gen())
+    check(svc.run_on_refusal(2) == "",
+          f"the start's check pulls a stamp ahead of the clock back: "
+          f"{svc.run_on_refusal(2)!r}")
     n.c.close()
     n.link.close()
 
 
 def test_show_control_on_is_stamped_at_the_source():
     section("Show control on tells the scheduler the moment it came on "
-            "(Jeff, 2026-11-19): web.Control counts each turn-on before the "
-            "show file can read as running, and calls its hook once the "
-            "show file runs; a failed start calls nothing")
+            "(Jeff, 2026-11-19): web.Control counts each turn-on and calls "
+            "its hook before the start work (opening the show file and the "
+            "audio device), so it is never dated later than the press, and "
+            "before the show file can read as running")
     import tempfile
     from ltcplay import web as web_mod
     folder = tempfile.mkdtemp()
@@ -44286,23 +44385,34 @@ def test_show_control_on_is_stamped_at_the_source():
     try:
         c = web_mod.Control(folder, sd=object())
         c.on_show_control_on = lambda: seen.append(
-            (c.run_gen, c.session is not None and c.session.running))
+            (c.run_gen, c.session is not None and
+             bool(getattr(c.session, "running", False)), _S.made))
+        _S.made = 0
+        real_init = _S.__init__
+
+        def counted(self, path, **kw):
+            _S.made += 1
+            real_init(self, path, **kw)
+        _S.__init__ = counted
         check(c.run_gen == 0, "nothing counted before show control is on")
         c.start("x.json", auto_reload=False)
-        check(c.run_gen == 1 and seen == [(1, True)],
-              f"one turn-on counted, the hook told once the show file "
-              f"runs: {c.run_gen} {seen}")
+        check(c.run_gen == 1 and seen == [(1, False, 0)] and
+              c.session.running,
+              f"one turn-on counted and told before the show file was "
+              f"even made, so before it could read as running: "
+              f"{c.run_gen} {seen}")
         c.stop()
         _S.fail_next = True
         try:
             c.start("x.json", auto_reload=False)
         except Exception:                        # noqa: BLE001
             pass
-        check(seen == [(1, True)] and c.session is None,
-              f"a start that failed tells no one: {seen}")
+        check(seen[-1][:2] == (2, False) and c.session is None,
+              f"a start that then failed was counted too, and never read "
+              f"as running: {seen}")
         _S.fail_next = False
         c.start("x.json", auto_reload=False)
-        check(seen[-1] == (3, True),
+        check(seen[-1][:2] == (3, False) and c.session.running,
               f"the next turn-on is counted and told: {seen}")
     finally:
         web_mod.Session = real
@@ -65934,7 +66044,7 @@ def test_stop_halt_order_hooks_and_programming():
             calls.append(("lasers", why))
             return True, "Every laser disarmed."
 
-        def stop_hooks(self, who, screen):
+        def stop_hooks(self, who, screen, what="Stop"):
             calls.append(("stop hooks", who, screen))
 
     class _M:

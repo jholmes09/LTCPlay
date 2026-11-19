@@ -1970,7 +1970,9 @@ stop:
   control is off (Jeff, 2026-11-19). Every flame group and laser is
   disarmed and blanked, every test and Programming playback ends, and a
   show that is live ends and is not resumed, but the schedule is NOT put
-  on Hold: the night carries on. A Hold that was already on stays on. A
+  on Hold: the night carries on. A Hold that was already on stays on,
+  also one pressed during a show: that show ends and the Hold stays on
+  until Resume. The rig is left dark either way. A
   show whose time comes while show control is off is not started: it is
   refused in words, marked on its slot, journaled, and raises an alert
   (nothing reaches the rig). If that alert is still open at the next

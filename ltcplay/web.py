@@ -738,6 +738,17 @@ class Control:
             extra = check(path)
             if isinstance(extra, dict):
                 kw.update(extra)
+        # One more turn-on, counted and told (the scheduler's stamp, Jeff
+        # 2026-11-19) before the start work, so show control on is never
+        # dated later than the press, and before the show file can read
+        # as running.
+        self.run_gen += 1
+        tell = self.on_show_control_on
+        if tell is not None:
+            try:
+                tell()
+            except Exception:                    # noqa: BLE001
+                pass
         s = Session(path, **kw)
         s.from_web = True
         s.open()
@@ -747,9 +758,6 @@ class Control:
         # engine the page could not see and Stop could not find. Round 2
         # of the audit reproduced it: the page said idle while 1,500
         # packets a second went to the rig. Found 2026-09-13.
-        # One more turn-on, counted before the show file can read as
-        # running (the scheduler's stamp, Jeff 2026-11-19).
-        self.run_gen += 1
         with self.lock:
             self.session = s
         try:
@@ -759,12 +767,6 @@ class Control:
                 if self.session is s:
                     self.session = None
             raise
-        tell = self.on_show_control_on
-        if tell is not None:
-            try:
-                tell()
-            except Exception:                    # noqa: BLE001
-                pass
         self.last_error = ""
         # The show file last Run (2026-10-23): the Art-Net receiver check
         # judges this one when nothing is loaded (remote._active_show_files).

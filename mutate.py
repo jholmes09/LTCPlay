@@ -18094,8 +18094,8 @@ def build():
 
  ("halt: screen arm holds survive a halt",
   "ltcplay/remote.py",
-  "                self.cancel_holds(f\"{who or 'someone'} {how} Stop on the \"",
-  "                (lambda *a: 0)(f\"{who or 'someone'} {how} Stop on the \""),
+  "                self.cancel_holds(f\"{who or 'someone'} {how} {what} on the \"",
+  "                (lambda *a: 0)(f\"{who or 'someone'} {how} {what} on the \""),
 
  ("halt: the purge selection and laser tests survive a halt",
   "ltcplay/remote.py",
@@ -18157,7 +18157,7 @@ def build():
 
  ("halt: the lasers are not blanked at once (second review of #130, 7)",
   "ltcplay/remote.py",
-  "                b_ok, b_text = self._lasers_dark_now(\n                    f\"Stop held on the {screen}\")",
+  "                b_ok, b_text = self._lasers_dark_now(\n                    f\"Stop held on the {screen}\" if hold else\n                    f\"Show control turned off on the {screen}\")",
   "                b_ok, b_text = None, \"\""),
 
  ("halt: a failed laser blank is not reported (second review of #130, 3)",
@@ -18297,11 +18297,9 @@ def build():
   "        _abort_effects(n), abort=True)\n\n\ndef _end_night"),
 
  ("scheduler: a Stop's Hold brings the intermission back",
-  "ltcplay/schedule.py",
-  "        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)\n"
-  "        _enter(tx, HOLD, after_stop=stopped)",
-  "        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)\n"
-  "        _enter(tx, HOLD)"),
+  'ltcplay/schedule.py',
+  '        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=stop_hold)\n        _enter(tx, HOLD, after_stop=stopped)',
+  '        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=stop_hold)\n        _enter(tx, HOLD)'),
 
  # ('scheduler: Resume lands in the middle of a Stop')
  # is retired (2026-11-04); it could not be caught:
@@ -18391,14 +18389,14 @@ def build():
   "                           screen=screen, confirmed=True, surface=True)\n"),
 
  ("scheduler: Show control off during a show ends on a Stop's Hold",
-  "ltcplay/schedule.py",
-  "        _abort_effects(n), abort=True, hold=False)\n",
-  "        _abort_effects(n), abort=True, hold=True)\n"),
+  'ltcplay/schedule.py',
+  '        _abort_effects(n), abort=True, hold=paused, stop_hold=False)\n',
+  '        _abort_effects(n), abort=True, hold=True, stop_hold=True)\n'),
 
- ("scheduler: Show control off during a show ends it with no fade or blank",
-  "ltcplay/schedule.py",
-  "        _abort_effects(n), abort=True, hold=False)\n",
-  "        [], abort=True, hold=False)\n"),
+ ('scheduler: Show control off during a show ends it with no fade or blank',
+  'ltcplay/schedule.py',
+  '        _abort_effects(n), abort=True, hold=paused, stop_hold=False)\n',
+  '        [], abort=True, hold=paused, stop_hold=False)\n'),
 
  ("scheduler: a show already past its start when show control comes on is started",
   "ltcplay/schedule.py",
@@ -18406,36 +18404,30 @@ def build():
   "                lateness_s(s.start, on_at) >= RUN_ON_LATE_S:\n",
   "        if False:\n"),
 
- ("scheduler: the moment show control came on is never noted",
-  "ltcplay/schedule_service.py",
-  "        if self._run_on_since is None or gen != self._run_on_gen:\n"
-  "            self._run_on_since = now\n",
-  "        if False:\n"
-  "            self._run_on_since = now\n"),
+ ('scheduler: the moment show control came on is never noted',
+  'ltcplay/schedule_service.py',
+  '        if self._run_on_since is None or gen != self._run_on_gen:\n            told = self._run_on_told\n',
+  '        if False:\n            told = self._run_on_told\n'),
 
- ("scheduler: show control off does not forget when it came on",
-  "ltcplay/schedule_service.py",
-  "        if self.run_gate is None or not self._run_pressed():\n"
-  "            self._run_on_since = None\n",
-  "        if self.run_gate is None:\n"
-  "            self._run_on_since = None\n"),
+ ('scheduler: show control off does not forget when it came on',
+  'ltcplay/schedule_service.py',
+  '        if self.run_gate is None or not self._run_pressed():\n            self._set_run_on(None, None)\n',
+  '        if self.run_gate is None:\n            self._set_run_on(None, None)\n'),
 
  ("scheduler: show control's turn-on is not stamped where it happens",
-  "ltcplay/schedule_service.py",
-  "            with self._locked():\n"
-  "                self._run_on_since = self.clock()\n",
-  "            with self._locked():\n"
-  "                pass\n"),
+  'ltcplay/schedule_service.py',
+  '                self._run_on_told = (gen, now)\n',
+  '                pass\n'),
 
  ("scheduler: show control off and on again between two ticks keeps the old stamp",
   "ltcplay/schedule_service.py",
   "        if self._run_on_since is None or gen != self._run_on_gen:\n",
   "        if self._run_on_since is None:\n"),
 
- ("scheduler: a clock stepped back leaves the show control stamp ahead of it",
-  "ltcplay/schedule_service.py",
-  "        elif self._run_on_since > now:\n            self._run_on_since = now\n",
-  "        elif False:\n            self._run_on_since = now\n"),
+ ('scheduler: a clock stepped back leaves the show control stamp ahead of it',
+  'ltcplay/schedule_service.py',
+  '        elif self._run_on_since > now:\n            self._set_run_on(now, gen)\n',
+  '        elif False:\n            self._set_run_on(now, gen)\n'),
 
  ("show runner: a scheduled start past its time when show control came on is not checked at the start",
   "ltcplay/fire_ice.py",
@@ -18452,23 +18444,43 @@ def build():
   "        self.run_gen += 1\n",
   "        pass\n"),
 
+ ("scheduler: Show control off on a paused show drops the operator's Hold",
+  "ltcplay/schedule.py",
+  "    paused = m.state == PAUSED\n",
+  "    paused = False\n"),
+
+ ("scheduler: Show control off between shows leaves the night marked lit",
+  "ltcplay/schedule_service.py",
+  "            # down until a show starts.\n            if not m.dark:\n",
+  "            # down until a show starts.\n            if False:\n"),
+
+ ("scheduler: show control on is dated when the show file opened, not when it was pressed",
+  "ltcplay/schedule_service.py",
+  "                gen is not None and told[1] <= now else now\n",
+  "                gen is not None and False else now\n"),
+
+ ("show runner: the start's check keeps a show control stamp ahead of the clock",
+  "ltcplay/schedule_service.py",
+  "            if on_at > now:                      # the clock stepped back\n",
+  "            if False:\n"),
+
  ("halt: Stop leaves Programming playback running",
   "ltcplay/remote.py",
   "            self._halt_programming(out, who, screen)\n",
   ""),
 
- ("halt: Stop leaves the fireball and the cleaning to their watchers",
-  "ltcplay/remote.py",
-  '                    (m, "stop_hooks", (who, screen)),\n',
-  ""),
+ ('halt: Stop leaves the fireball and the cleaning to their watchers',
+  'ltcplay/remote.py',
+  '                    (m, "stop_hooks", (who, screen) if hold else\n                     (who, screen, "Show control off")),\n',
+  ''),
 
  ("halt: a screen's Stop tells the laser arm only inside the halt", 'ltcplay/remote.py',
   '            if name in ("hold", "stop", "run-off") else None',
   '            if name in ("hold",) else None'),
 
  ("morning: Stop's hooks run nothing",
-  "ltcplay/morning.py",
-  '                hook(who, screen, what="Stop")',
+  'ltcplay/morning.py',
+  '                hook(who, screen, what=what)',
   '                pass'),
 
  ("deck: a screen's Stop never starts the re-arm refractory",
@@ -19357,7 +19369,7 @@ def build():
 
  ("Stop does not end a Start now waiting for the show audio",
   "ltcplay/remote.py",
-  "                cancel(f\"Stop was pressed on the {screen}\")",
+  "                cancel(f\"{what} was pressed on the {screen}\")",
   "                pass"),
 
  ("Rack screen: Run never becomes Stop while Run is starting",
@@ -19593,8 +19605,9 @@ def build():
   "            why = self._other() or \"\"",
   "            why = \"\""),
 
- ('fireball: a Stop on the rack screen does not cut it at the press', 'ltcplay/morning.py',
-  '                hook(who, screen, what="Stop")',
+ ('fireball: a Stop on the rack screen does not cut it at the press',
+  'ltcplay/morning.py',
+  '                hook(who, screen, what=what)',
   '                pass'),
 
  ("fireball: a beat that turns a channel on is a safety press",
@@ -24113,14 +24126,15 @@ def build():
   '    const r = await fetch("/api/remote/status", {method:"GET", credentials:"same-origin", cache:"no-store",\n'
   '      headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}});'),
 
- ("halt: a Stop leaves a purge selection as it is (T7, the Abort's)", 'ltcplay/remote.py',
-  '                    (getattr(m, "purge", None), "clear",\n'
-  '                     (f"Stop held by {who or screen or \'someone\'}",)),\n',
-  ""),
+ ("halt: a Stop leaves a purge selection as it is (T7, the Abort's)",
+  'ltcplay/remote.py',
+  '                    (getattr(m, "purge", None), "clear",\n                     (f"Stop held by {who or screen or \'someone\'}" if hold\n                      else f"Show control turned off by "\n                           f"{who or screen or \'someone\'}",)),\n',
+  ''),
 
- ("halt: a Stop leaves the laser tests on (T7, the Abort's)", 'ltcplay/remote.py',
-  '                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):',
-  '                    (getattr(m, "lasers", None), "all_on", ("Stop held",))):'),
+ ("halt: a Stop leaves the laser tests on (T7, the Abort's)",
+  'ltcplay/remote.py',
+  '                    (getattr(m, "lasers", None), "all_off",\n',
+  '                    (getattr(m, "lasers", None), "all_on",\n'),
 
  ("fire & ice: a Stop during the hand-over lets the show start go out (as the removed Abort's latch did not)", 'ltcplay/fire_ice.py',
   '        if getattr(self.conductor, "stops", 0) != stops0:\n'

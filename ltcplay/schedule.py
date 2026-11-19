@@ -1547,7 +1547,8 @@ def _enter(tx, state, show=0, after_stop=False, resume=False, held=None):
         tx.m = replace(tx.m, stop_hold=False)
 
 
-def _after_show(tx, abort=False, stopped=False, hold=False):
+def _after_show(tx, abort=False, stopped=False, hold=False,
+                stop_hold=True):
     """Where a show that has just finished, or been stopped, leaves the
     night. `stopped` is a show cut short (Abort, a failed start). `hold`
     is an operator's Stop (Jeff, 2026-10-30): with a show still to come it
@@ -1556,7 +1557,9 @@ def _after_show(tx, abort=False, stopped=False, hold=False):
     as an Abort does (STANDBY, and the next tick closes it)."""
     m = tx.m
     if hold and m.waiting():
-        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)
+        # stop_hold False: an operator's Hold that was on (a show paused,
+        # then Show control off) stays an operator's Hold.
+        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=stop_hold)
         _enter(tx, HOLD, after_stop=stopped)
     elif abort or m.waiting():
         # Abort stays in STANDBY even when no show is left; the next tick
@@ -1913,7 +1916,7 @@ def _pause_so_far(tx):
 
 
 def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
-                  stopped=None, hold=False):
+                  stopped=None, hold=False, stop_hold=True):
     tx = _Tx(m, ev, now)
     n = m.running
     s = m.slot(n)
@@ -1926,7 +1929,7 @@ def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
     tx.effects.extend(effects)
     _after_show(tx, abort=abort,
                 stopped=bool(effects) if stopped is None else stopped,
-                hold=hold)
+                hold=hold, stop_hold=stop_hold)
     tx.note(ev.kind, status.lower(), reason, text, show=n)
     return tx.done()
 
@@ -2364,18 +2367,24 @@ def _stop_show_no_hold(m, ev, now):
     sequence, nothing latched), but the schedule is NOT put on Hold. With
     a show still to come the night waits in STANDBY, dark; with none left
     it stays STANDBY and the next tick closes it, as after an Abort. A
-    show whose time comes while show control is off is refused by the
-    show runner, which sends nothing to the rig."""
+    show that was PAUSED (an operator's Hold pressed during it) ends onto
+    that Hold, dark, still the operator's Hold (not a Stop's): a Hold that
+    was on stays on. A show whose time comes while show control is off is
+    refused by the show runner, which sends nothing to the rig."""
     n = m.running
     who = ev.who.strip() or "Someone, with no operator chosen,"
+    paused = m.state == PAUSED
     return _show_stopped(
         m, ev, now, ABORTED, "STOPPED (show control turned off)",
         f"{who} turned show control off{_screen(ev)} during show {n}. "
         f"Flame cues zeroed and lasers blanked; music, video and pixels "
         f"fading to black over {ABORT_FADE_S:g} s, then MadMapper stopped. "
-        f"Nothing is latched. The schedule is not on Hold: the night "
-        f"carries on, and no show starts while show control is off.",
-        _abort_effects(n), abort=True, hold=False)
+        f"Nothing is latched. "
+        + ("The Hold that was on stays on: no show starts by itself until "
+           "Resume." if paused and m.waiting() else
+           "The schedule is not on Hold: the night carries on, and no show "
+           "starts while show control is off."),
+        _abort_effects(n), abort=True, hold=paused, stop_hold=False)
 
 
 def _stop_show(m, ev, now):
