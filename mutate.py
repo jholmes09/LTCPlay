@@ -2905,8 +2905,8 @@ MUTATIONS = [
 
  ("hazers: a levels file with a value past 255 is read",
   "ltcplay/hazers.py",
-  "                    if isinstance(v, bool) or not isinstance(v, int) or \\\n                            not 0 <= v <= 255:",
-  "                    if isinstance(v, bool) or not isinstance(v, int):"),
+  "                if isinstance(v, bool) or not isinstance(v, int) or \\\n                        not 0 <= v <= 255:",
+  "                if isinstance(v, bool) or not isinstance(v, int):"),
 
  ("hazers: arming while live flame programming is on",
   "ltcplay/remote.py",
