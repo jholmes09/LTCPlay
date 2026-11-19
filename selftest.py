@@ -100593,7 +100593,8 @@ def test_haze_fluid_learns_the_tank_like_flame_fuel():
             "2026-11-19), the flame fuel learner's rules: the full output "
             "seconds between two refills is a tank; 0 tanks: the set numbers "
             "(estimating) or haze time only; under 3 the SMALLEST; from 3 "
-            "the median of the last 5 with one far off left out; a tank much "
+            "the median of the last 5 with every far off one left out (and "
+            "'Learned from N tanks' counts only those used); a tank much "
             "longer than the rest is said; percent left never above 100 or "
             "below 0; not sure counts at full output; an Undo takes back "
             "what its refill taught; Reset learning keeps the refills; shows "
@@ -100654,12 +100655,14 @@ def test_haze_fluid_learns_the_tank_like_flame_fuel():
             _hzl_burn(R, "Hazer 1", t)
             R.tr.refill("Hazer 1", "Andy")
         v = R.h("Hazer 1")
-        check(v["tank_s"] == 1150.0 and v["tanks_learned"] == 6 and
+        check(v["tank_s"] == 1150.0 and v["tanks_learned"] == 4 and
+              v["sub"].startswith("Learned from 4 tanks") and
               v["learn_firm"] and v["suspect"] and
               "a Refilled press was probably missed" in v["words"],
               f"6 tanks (600, 1300, 1100, 900, 1200, 5000): the last 5 "
-              f"without 5000, median 1150, and the long one said: "
-              f"{v['tank_s']} {v['suspect']}")
+              f"without 5000, median 1150, learned from the 4 used (not "
+              f"6), and the long one said: {v['tank_s']} "
+              f"{v['tanks_learned']} {v['suspect']}")
         # Percent left: 100 less the haze since the refill over the tank,
         # floored, never below 0.
         _hzl_burn(R, "Hazer 1", 575)
@@ -100683,7 +100686,7 @@ def test_haze_fluid_learns_the_tank_like_flame_fuel():
         live = [r for r in u["refills"] if not r.get("undone")]
         ok, _t = R.tr.undo(live[-2]["id"], "Jeff")
         v = R.h("Hazer 1")
-        check(ok and v["tanks_learned"] == 5 and v["tank_s"] == 1000.0,
+        check(ok and v["tanks_learned"] == 4 and v["tank_s"] == 1000.0,
               f"Undo of a refill: the two tanks it split are one again "
               f"(1200 + 5000): {v['tanks_learned']} {v['tank_s']}")
         check(all(0 <= (R.h(n)["percent"] or 0) <= 100
@@ -100693,7 +100696,7 @@ def test_haze_fluid_learns_the_tank_like_flame_fuel():
         n_ref = len(R.u("Hazer 1")["refills"])
         ok, text, had = R.tr.reset_learning("Hazer 1", "Jeff")
         v = R.h("Hazer 1")
-        check(ok and had == 5 and len(R.u("Hazer 1")["refills"]) == n_ref
+        check(ok and had == 4 and len(R.u("Hazer 1")["refills"]) == n_ref
               and v["basis"] == "estimating" and v["tank_s"] == 15000.0 and
               text == ("Hazer 1: learning starts again from the next "
                        "refill. The refills are kept."),
@@ -101095,6 +101098,259 @@ def test_haze_fluid_settings_card_route():
               "the haze record never sets a hazer level or arms one")
     finally:
         R.close()
+    print("  ok")
+
+
+def test_haze_fluid_card_saves_are_safe():
+    section("haze fluid card (review of 2026-11-19): a number is checked as "
+            "it is written, rounded (0.0004 is refused, never written as 0 "
+            "and locking every later save out); a save keeps 'notes' in the "
+            "fluid block; a hazer gone from flamesafe is said on the card "
+            "and its entry can be removed (logged); two posts from one card "
+            "never both pass, even at once; a levels file fixed by hand "
+            "takes a save without a level set first; build() saves through "
+            "the engine's own levels (its lock) and Reset learning is on "
+            "disk at once")
+    import json as _j
+    import threading as _th
+    import types
+    from ltcplay import fuelhaze as FH
+    from ltcplay import hazers as HZ
+    from ltcplay import remote as RM
+    here = RM.Ctx(True, "127.0.0.1")
+    R = _HazeRig()
+    lp = os.path.join(R.work, HZ.LEVELS_FILE)
+
+    def disk():
+        with open(lp, encoding="utf-8") as fh:
+            return _j.load(fh)
+
+    def post(body, **kw):
+        return FH.route_fluid(R.tr, dict(body, stamp=R.tr.stamp()), here,
+                              None, **kw)
+    try:
+        R.write_fluid({"notes": "pump B is the slow one",
+                       "Hazer 2": {"litres_per_hour": 1.0}})
+        # P2-1: rounded first, then checked.
+        for v in (0.0004, 50.0005):
+            ok, text, _c = R.tr.save_fluid("Hazer 1", v, None)
+            check(not ok and "Nothing was changed." in text and
+                  "Hazer 1" not in disk()["fluid"],
+                  f"{v} is refused as it would be written "
+                  f"({round(v, 3)}): {text}")
+        st, out = post({"action": "save", "hazer": "Hazer 1",
+                        "litres_per_hour": 0.0004, "tank_litres": None})
+        check(st == 400 and "Hazer 1" not in disk()["fluid"] and
+              not R.tr.config_error, f"the route refuses 0.0004: {out}")
+        for v, want in ((0.0005, 0.001), (0.001, 0.001), (50.0004, 50.0)):
+            ok, text, _c = R.tr.save_fluid("Hazer 1", v, 2.5)
+            check(ok and disk()["fluid"]["Hazer 1"] ==
+                  {"litres_per_hour": want, "tank_litres": 2.5} and
+                  not R.tr.config_error and
+                  R.tr.fluid["Hazer 1"]["litres_per_hour"] == want,
+                  f"{v} is saved as {want} and the file still reads: "
+                  f"{text} {R.tr.config_error!r}")
+        ok, text, _c = R.tr.save_fluid("Hazer 3", 0.5, None)
+        check(ok, f"and a later save of another hazer works: {text}")
+        # P3-2: 'notes' in the block is kept.
+        check(disk()["fluid"]["notes"] == "pump B is the slow one" and
+              disk()["fluid"]["Hazer 2"] == {"litres_per_hour": 1.0},
+              f"a card save keeps the notes and the other hazers: "
+              f"{disk()['fluid']}")
+        # P3-4: two posts drawn from the same card.
+        stamp = R.tr.stamp()
+        a = FH.route_fluid(R.tr, {"action": "save", "hazer": "Hazer 1",
+                                  "litres_per_hour": 0.6,
+                                  "tank_litres": 2.5, "stamp": stamp},
+                           here, None)
+        b = FH.route_fluid(R.tr, {"action": "save", "hazer": "Hazer 1",
+                                  "litres_per_hour": 0.7,
+                                  "tank_litres": 2.5, "stamp": stamp},
+                           here, None)
+        check(a[0] == 200 and b[0] == 409 and
+              b[1]["error"].endswith("Look again. Nothing was changed.") and
+              disk()["fluid"]["Hazer 1"]["litres_per_hour"] == 0.6,
+              f"one after the other: the second is refused: {a} {b}")
+        real = R.tr._write_fluid
+        lv = HZ.Levels(R.work, [n for n, _h, _f in R.hz])
+
+        def slow(block):
+            import time as _t
+            _t.sleep(0.3)
+            lv.set_other("fluid", block)
+        R.tr._fluid_writer = slow
+        stamp = R.tr.stamp()
+        go = _th.Barrier(2)
+        codes = []
+
+        def one(lph):
+            go.wait()
+            codes.append(FH.route_fluid(R.tr, {
+                "action": "save", "hazer": "Hazer 1",
+                "litres_per_hour": lph, "tank_litres": 2.5,
+                "stamp": stamp}, here, None)[0])
+        ts = [_th.Thread(target=one, args=(x,)) for x in (0.8, 0.9)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(10)
+        check(sorted(codes) == [200, 409],
+              f"at once (the write stalled 0.3 s): exactly one passes, the "
+              f"other is refused: {codes}")
+        R.tr._fluid_writer = None
+        del real
+        # P3-3: a hazer renamed or removed in flamesafe.
+        doc = disk()
+        doc["fluid"]["Hazer 9"] = {"tank_litres": 3.0}
+        with open(lp, "w", encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        R.tr._fluid_stamp = None
+        v = R.tr.view()
+        check(v["config_error"] and "Hazer 9" in v["config_error"] and
+              v["fluid_gone"] == ["Hazer 9"],
+              f"the fuel GET says why and which hazer is gone: "
+              f"{v['config_error']!r} {v.get('fluid_gone')}")
+        st, out = post({"action": "save", "hazer": "Hazer 1",
+                        "litres_per_hour": 0.6, "tank_litres": 2.5})
+        check(st == 400 and "Fix the file first" in out["error"],
+              f"a save is refused while it is there: {out}")
+        st, out = post({"action": "remove", "hazer": "Hazer 1"})
+        check(st == 400 and "Nothing was changed." in out["error"] and
+              "Hazer 1" in disk()["fluid"],
+              f"Remove never takes out a hazer that is still there: {out}")
+
+        class Users:
+            def active(self):
+                return True
+
+            def may(self, role, row):
+                return role == "admin"
+        st, out = FH.route_fluid(R.tr, {
+            "action": "remove", "hazer": "Hazer 9", "stamp": R.tr.stamp()},
+            RM.Ctx(True, "127.0.0.1",
+                   session={"name": "Ola", "role": "operator"}), Users())
+        check(st == 403 and "Hazer 9" in disk()["fluid"],
+              f"an operator may not remove it: {out}")
+        events = []
+        audit = types.SimpleNamespace(
+            event=lambda **k: events.append(k))
+        st, out = FH.route_fluid(R.tr, {
+            "action": "remove", "hazer": "Hazer 9", "stamp": R.tr.stamp()},
+            RM.Ctx(True, "127.0.0.1",
+                   session={"name": "Jeff", "role": "admin"}), Users(),
+            audit)
+        d = disk()
+        check(st == 200 and "Hazer 9" not in d["fluid"] and
+              d["fluid"]["notes"] == "pump B is the slow one" and
+              d["fluid"]["Hazer 1"]["litres_per_hour"] in (0.8, 0.9) and
+              d["levels"] == {"Hazer 1": {"haze": 140, "fan": 255}} and
+              not R.tr.config_error and R.tr.fluid_gone == [],
+              f"an admin removes it; the rest is kept and read again: "
+              f"{out} {d}")
+        check([e["action"] for e in events] == ["haze-fluid-remove"] and
+              events[0]["user"] == "Jeff" and
+              events[0]["target"] == "hazer=Hazer 9" and
+              any("Jeff removed the haze fluid settings of Hazer 9" in t
+                  for t, _f in R.lines),
+              f"audit logged and journaled with who: {events}")
+        # P3-7: a levels file that could not be read at start.
+        with open(lp, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        lv = HZ.Levels(R.work, ["Hazer 1", "Hazer 2"])
+        check(lv.fault and lv.levels["Hazer 1"] == (0, 0), "a bad file")
+        try:
+            lv.set_other("fluid", {"Hazer 1": {"tank_litres": 2.0}})
+            said = ""
+        except ValueError as e:
+            said = str(e)
+        check(said and open(lp, encoding="utf-8").read() == "{not json",
+              f"still bad: refused, never written over: {said}")
+        with open(lp, "w", encoding="utf-8") as fh:
+            _j.dump({"hazers_format": 1,
+                     "levels": {"Hazer 1": {"haze": 140, "fan": 255}}}, fh)
+        R.tr._fluid_writer = lambda b: lv.set_other("fluid", b)
+        R.tr._fluid_stamp = None
+        R.tr._reload_fluid()             # the card drawn again after the fix
+        st, out = post({"action": "save", "hazer": "Hazer 1",
+                        "litres_per_hour": 0.6, "tank_litres": 2.5})
+        d = disk()
+        check(st == 200 and d["fluid"] == {"Hazer 1": {
+            "litres_per_hour": 0.6, "tank_litres": 2.5}} and
+              d["levels"] == {"Hazer 1": {"haze": 140, "fan": 255}} and
+              lv.levels["Hazer 1"] == (0, 0),
+              f"fixed by hand: the next save works with no level set "
+              f"first, the levels on disk kept and the ones in use not "
+              f"changed: {out} {d} {lv.levels}")
+    finally:
+        R.close()
+    # P3-8: build()'s own writer, the engine's hazers.Levels.
+    work = tempfile.mkdtemp()
+    try:
+        lv = HZ.Levels(work, ["Hazer 1", "Hazer 2"])
+        lv.set("Hazer 1", haze=140, fan=255)
+        link = types.SimpleNamespace(
+            haze_observer=None, rehearse_on=False,
+            cfg=types.SimpleNamespace(hazers=(("Hazer 1", (80, 81)),
+                                              ("Hazer 2", (82, 83)))))
+        remote = types.SimpleNamespace(
+            folder=work, programming=lambda: (False, ""),
+            hazers=types.SimpleNamespace(levels=lv))
+        tr = FH.build(remote, link, threaded=False)
+        body = {"action": "save", "hazer": "Hazer 2",
+                "litres_per_hour": 1.0, "tank_litres": 2.0}
+        lv._lock.acquire()
+        res = []
+        t = _th.Thread(target=lambda: res.append(FH.route_fluid(
+            tr, dict(body, stamp=tr.stamp()), here, None)))
+        try:
+            t.start()
+            t.join(0.3)
+            waited = t.is_alive()
+        finally:
+            lv._lock.release()
+        t.join(10)
+        with open(os.path.join(work, HZ.LEVELS_FILE), encoding="utf-8") as fh:
+            d = _j.load(fh)
+        check(waited and res and res[0][0] == 200 and
+              lv.other.get("fluid") == {"Hazer 2": {"litres_per_hour": 1.0,
+                                                    "tank_litres": 2.0}} and
+              d["levels"]["Hazer 1"] == {"haze": 140, "fan": 255} and
+              lv.levels["Hazer 1"] == (140, 255) and
+              tr.fluid["Hazer 2"]["tank_litres"] == 2.0,
+              f"build() saves through the engine's own levels, under its "
+              f"lock (it waited for a level set): {waited} {res} {d}")
+        lv.set("Hazer 2", haze=64)
+        with open(os.path.join(work, HZ.LEVELS_FILE), encoding="utf-8") as fh:
+            d = _j.load(fh)
+        check(d["fluid"]["Hazer 2"]["tank_litres"] == 2.0 and
+              d["levels"]["Hazer 2"] == {"haze": 64, "fan": 0},
+              f"and a level set after it keeps it: {d}")
+        tr.refill("Hazer 2", "Andy")
+        st, out = FH.route_fluid(tr, {"action": "reset", "hazer": "Hazer 2",
+                                      "confirm": True,
+                                      "stamp": tr.stamp()}, here, None)
+        again = FH.HazeTracker(work, tr.hazers, threaded=False)
+        check(st == 200 and again.units["Hazer 2"]["learn_from"] > 0 and
+              again.units["Hazer 2"]["learn_from"] ==
+              tr.units["Hazer 2"]["learn_from"],
+              f"Reset learning is on disk at once (no save tick): {out}")
+        bare = types.SimpleNamespace(folder=work,
+                                     programming=lambda: (False, ""))
+        tr2 = FH.build(bare, link, threaded=False)
+        st, out = FH.route_fluid(tr2, {"action": "save", "hazer": "Hazer 1",
+                                       "litres_per_hour": 0.5,
+                                       "tank_litres": None,
+                                       "stamp": tr2.stamp()}, here, None)
+        with open(os.path.join(work, HZ.LEVELS_FILE), encoding="utf-8") as fh:
+            d = _j.load(fh)
+        check(st == 200 and d["fluid"]["Hazer 1"] == {"litres_per_hour": 0.5}
+              and d["fluid"]["Hazer 2"]["tank_litres"] == 2.0 and
+              d["levels"]["Hazer 2"] == {"haze": 64, "fan": 0},
+              f"an engine with no hazer levels of its own: a Levels on the "
+              f"same file, everything kept: {out} {d}")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
     print("  ok")
 
 
@@ -114289,6 +114545,38 @@ row("Hazer 2").querySelector('[data-a="reset"]').click();
 out.reset_before = since(n).length;
 await yes();
 out.reset = since(n);
+// One post at a time: every button off until it is answered.
+window.__delay["haze-fluid"] = 1500;
+n = mark();
+row("Hazer 3").querySelector('[data-k="lph"]').value = "0.7";
+row("Hazer 3").querySelector('[data-a="save"]').click();
+await h.sleep(150);
+out.busy = [...document.querySelectorAll("#hzs-rows button")].every(b => b.disabled);
+row("Hazer 3").querySelector('[data-a="save"]').click();
+row("Hazer 3").querySelector('[data-a="save"]').dispatchEvent(new MouseEvent("click", {bubbles:true}));
+await h.sleep(2200);
+out.inflight = since(n).length;
+out.after = [...document.querySelectorAll("#hzs-rows button")].every(b => !b.disabled);
+window.__delay["haze-fluid"] = 0;
+// A level moving during a show never wipes numbers being typed.
+const lph1 = row("Hazer 1").querySelector('[data-k="lph"]');
+lph1.value = "0.9"; lph1.dispatchEvent(new Event("input", {bubbles:true})); lph1.blur();
+const pct2 = row("Hazer 2").querySelector('[data-k="pct"]');
+pct2.focus(); pct2.value = "33";
+HZS.haze.hazers[0].percent = 55; HZS.haze.hazers[1].percent = 70; hzsRender();
+out.typed = [lph1.isConnected, row("Hazer 1").querySelector('[data-k="lph"]').value, row("Hazer 2").querySelector('[data-k="pct"]').value, row("Hazer 1").querySelector("b").textContent, row("Hazer 2").querySelector("b").textContent];
+pct2.blur(); delete lph1.dataset.edited;
+// The file's problem said on the card; a hazer gone from flamesafe removed.
+HZS.haze.config_error = "ltcplay_hazers.json: fluid.Hazer 9: there is no hazer called 'Hazer 9' here (the hazers are Hazer 1, Hazer 2, Hazer 3).";
+HZS.haze.fluid_gone = ["Hazer 9"]; hzsRender();
+out.err = [q("hzs-err").hidden, q("hzs-err").textContent];
+out.gone = [...document.querySelectorAll("#hzs-rows [data-gone]")].map(r => r.dataset.gone);
+n = mark();
+document.querySelector('#hzs-rows [data-gone="Hazer 9"] [data-a="remove"]').click();
+await yes();
+out.remove = since(n);
+await h.sleep(800);
+out.err_after = q("hzs-err").hidden;
 window.__patch = s => Object.assign(s, {me:{users_active:true, user:"Ola", may:{show:true, arm:true, settings:false}}});
 await h.sleep(1500);
 out.nosettings = [...document.querySelectorAll("#hzs-card .b, #hzs-card input.f")].every(e => e.disabled);
@@ -114337,7 +114625,9 @@ ME.local = true;
               f"{m['bad_pct']}")
         check(m["level_before"] == 0 and m["reset_before"] == 0 and
               m["sheets"] == ["Set Hazer 1 to 40 percent?",
-                              "Reset learning for Hazer 2?"] and
+                              "Reset learning for Hazer 2?",
+                              "Remove the haze fluid numbers of Hazer 9?"]
+              and
               m["level"] == [{"action": "level", "hazer": "Hazer 1",
                               "stamp": "abc123stamp00000", "percent": 40}]
               and m["reset"] == [{"action": "reset", "hazer": "Hazer 2",
@@ -114345,6 +114635,24 @@ ME.local = true;
                                   "confirm": True}],
               f"{size}: Set level now and Reset learning ask first: "
               f"{m['sheets']} {m['level']} {m['reset']}")
+        check(m["busy"] is True and m["inflight"] == 1 and
+              m["after"] is True,
+              f"{size}: every button is off while a post is in flight, so "
+              f"a repeated Save sends once: {m['busy']} {m['inflight']} "
+              f"{m['after']}")
+        check(m["typed"] == [True, "0.9", "33", "Hazer 1: 55% left",
+                             "Hazer 2: 70% left"],
+              f"{size}: a level that moves redraws the line, never the "
+              f"numbers typed (edited or focused): {m['typed']}")
+        check(m["err"][0] is False and "Hazer 9" in m["err"][1] and
+              "Press Remove below" in m["err"][1] and
+              m["gone"] == ["Hazer 9"] and
+              m["remove"] == [{"action": "remove", "hazer": "Hazer 9",
+                               "stamp": "abc123stamp00000"}] and
+              m["err_after"] is True,
+              f"{size}: the file's problem is said with what to do, and a "
+              f"gone hazer is removed after asking: {m['err']} {m['gone']} "
+              f"{m['remove']}")
         check(m["nosettings"] is True and m["ipad"] is False,
               f"{size}: without Settings all off; an iPad gets no card")
     print("  ok")
@@ -129076,6 +129384,7 @@ if __name__ == "__main__":
         test_haze_fluid_learns_the_tank_like_flame_fuel,
         test_haze_fluid_set_level_is_a_correction,
         test_haze_fluid_settings_card_route,
+        test_haze_fluid_card_saves_are_safe,
         test_haze_fluid_in_the_docs_and_the_page,
         test_fireball_panel_rules,
         test_fireball_at_the_engine,

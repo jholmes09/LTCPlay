@@ -17361,8 +17361,8 @@ def build():
 
  ("haze fluid: under 3 tanks the newest is trusted, not the smallest",
   "ltcplay/fuelhaze.py",
-  "        got, _n, firm = learned_tank(cycles, LEARN_TANKS, OUTLIER_RATIO)",
-  "        got, _n, firm = learned_tank(cycles if len(cycles) >= 3 else "
+  "        got, used, firm = learned_tank(cycles, LEARN_TANKS, OUTLIER_RATIO)",
+  "        got, used, firm = learned_tank(cycles if len(cycles) >= 3 else "
   "cycles[-1:], LEARN_TANKS, OUTLIER_RATIO)"),
 
  ("haze fluid: a double press is learned as a tiny tank",
@@ -17435,6 +17435,40 @@ def build():
   "                                     f\"({e})\")",
   "                except (OSError, ValueError) as e:\n"
   "                    doc = {\"hazers_format\": LEVELS_FORMAT, \"levels\": {}}"),
+
+ # The card's saves (review of 2026-11-19): checked as written, the
+ # block's other keys kept, a gone hazer removable, one post at a time, a
+ # levels file fixed by hand used, Reset learning on disk at once.
+ ("haze fluid: a card number is checked before it is rounded (0.0004 saved as 0)",
+  "ltcplay/fuelhaze.py",
+  "            if not ok or not 0 < r <= hi:",
+  "            if not ok or not 0 < v <= hi:"),
+
+ ("haze fluid: a card save drops the notes in the fluid block",
+  "ltcplay/fuelhaze.py",
+  "            block = {n: (dict(d) if isinstance(d, dict) else d)\n"
+  "                     for n, d in self._fluid_raw.items()}",
+  "            block = {n: dict(d) for n, d in self.fluid.items()}"),
+
+ ("haze fluid: Remove takes out a hazer that is still in flamesafe",
+  "ltcplay/fuelhaze.py",
+  "        if name in names or name == \"notes\" or name not in raw:",
+  "        if name == \"notes\" or name not in raw:"),
+
+ ("haze fluid: two posts from the same card both pass at once",
+  "ltcplay/fuelhaze.py",
+  "    with tracker._card_lock:",
+  "    if True:"),
+
+ ("haze fluid: Reset learning is not saved at once",
+  "ltcplay/fuelhaze.py",
+  "        saved = self.save()\n        tail = \"\" if saved else",
+  "        saved = True\n        tail = \"\" if saved else"),
+
+ ("haze fluid: a levels file fixed by hand still refuses a fluid save",
+  "ltcplay/hazers.py",
+  "                try:\n                    self._read()\n",
+  "                try:\n                    raise ValueError(\"still\")\n"),
 
  ("ui 2.0 haze: Undo goes with no question",
   "ltcplay/web/remote2.html",

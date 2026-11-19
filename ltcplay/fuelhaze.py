@@ -85,9 +85,10 @@ Learned per hazer (flamesafe's entries say only "hazer", never a model,
 so there is no kind to share a tank between), the flame fuel learner's
 rules (fuel.learned_tank): one tank is the full output seconds between
 two refills of that hazer that are not undone; under LEARN_MIN_CYCLES
-tanks the SMALLEST, from then the median of the last LEARN_TANKS with one
-far off left out; a tank much longer than the others is said (a Refilled
-press probably missed). A tank under MIN_TANK_S is a double press, never
+tanks the SMALLEST, from then the median of the last LEARN_TANKS with
+every one far off (under half or over twice that median) left out; a
+tank much longer than the others is said (a Refilled press probably
+missed). "Learned from N tanks" counts the tanks that number came from. A tank under MIN_TANK_S is a double press, never
 learned. Not sure seconds are left out of what a tank taught (it reads
 smaller: emptier) and put into what is used (emptier again).
 
@@ -405,7 +406,15 @@ class HazeTracker:
         self.gap_notes = []
         self.status_unknown = False
         self.fluid, self.config_error = {}, ""
+        # The "fluid" block as it is in the file (a card save keeps every
+        # key in it, "notes" too), and the names in it that are no hazer in
+        # flamesafe's config now (the card may remove those).
+        self._fluid_raw, self.fluid_gone = {}, []
         self._fluid_stamp = None
+        # One Haze fluid card post at a time: its stamp check and its write
+        # are one step, so two posts drawn from the same card never both
+        # pass. Card posts only: the frames and the counting never take it.
+        self._card_lock = threading.Lock()
         self.load_error = ""
         self.save_error = ""
         self.run_error = ""
@@ -476,22 +485,24 @@ class HazeTracker:
         if key == self._fluid_stamp:
             return
         self._fluid_stamp = key
-        fluid, err = {}, ""
+        fluid, err, raw = {}, "", {}
         if stamp is not None:
             try:
                 with open(self.levels_path, encoding="utf-8-sig") as fh:
                     doc = json.load(fh)
-                fluid, err = parse_fluid(
-                    doc.get("fluid") if isinstance(doc, dict) else None,
-                    names)
+                blk = doc.get("fluid") if isinstance(doc, dict) else None
+                raw = dict(blk) if isinstance(blk, dict) else {}
+                fluid, err = parse_fluid(blk, names)
             except (OSError, ValueError) as e:
                 fluid, err = {}, (f"{LEVELS_FILE} could not be read for "
                                   f"the haze fluid settings ({e}).")
+        gone = sorted(n for n in raw if n != "notes" and n not in names)
         with self._lock:
             if err and err != self.config_error:
                 self._note(f"Haze: {err} The page shows haze seconds only "
                            f"until it is fixed.", fault=True)
             self.fluid, self.config_error = fluid, err
+            self._fluid_raw, self.fluid_gone = raw, gone
 
     def _min_show_s(self):
         try:
@@ -916,7 +927,8 @@ class HazeTracker:
         """An admin's litres an hour at full output and tank litres for
         hazer `name` (None clears one), checked as the file is
         (parse_fluid), saved into the "fluid" block of LEVELS_FILE with
-        the levels and every other key kept. (ok, sentence, (old, new))."""
+        the levels and every other key kept (in the block too: "notes").
+        (ok, sentence, (old, new))."""
         names = [n for n, _h, _f in self.hazers()]
         if name not in names:
             return False, (f"There is no hazer called {name!r}. Nothing was "
@@ -928,17 +940,25 @@ class HazeTracker:
                                 "Tank litres")):
             if v is None:
                 continue
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or \
-                    not math.isfinite(v) or not 0 < v <= hi:
+            ok = not isinstance(v, bool) and isinstance(v, (int, float)) \
+                and math.isfinite(v)
+            # Checked as it is written (rounded): 0.0004 is written as 0,
+            # which the file's own check refuses, so it is refused here.
+            r = round(float(v), 3) if ok else None
+            if not ok or not 0 < r <= hi:
                 return False, (f"{what} is a number over 0 and up to "
-                               f"{hi:g}. Nothing was changed."), None
-            got[k] = round(float(v), 3)
+                               f"{hi:g} (0.001 or more). Nothing was "
+                               f"changed."), None
+            got[k] = r
         self._reload_fluid()
-        if self.config_error:
-            return False, (f"{self.config_error} Fix the file first. Nothing "
+        with self._lock:
+            err = self.config_error
+            old = dict(self.fluid.get(name) or {})
+            block = {n: (dict(d) if isinstance(d, dict) else d)
+                     for n, d in self._fluid_raw.items()}
+        if err:
+            return False, (f"{err} Fix the file first. Nothing "
                            f"was changed."), None
-        old = dict(self.fluid.get(name) or {})
-        block = {n: dict(d) for n, d in self.fluid.items()}
         if got:
             block[name] = got
         else:
@@ -951,6 +971,31 @@ class HazeTracker:
         self._fluid_stamp = None
         self._reload_fluid()
         return True, f"{name}: haze fluid settings saved.", (old, got)
+
+    def remove_gone(self, name, who):
+        """The card's Remove: the "fluid" entry of a hazer that is no
+        longer in flamesafe's config (renamed or removed), which makes the
+        whole block unreadable until it goes. Only such a name; the rest
+        of the block is kept as it is. (ok, sentence, what was removed)."""
+        self._reload_fluid()
+        names = [n for n, _h, _f in self.hazers()]
+        with self._lock:
+            raw = dict(self._fluid_raw)
+        if name in names or name == "notes" or name not in raw:
+            return False, (f"{name} is not a hazer that is gone from "
+                           f"flamesafe's config. Nothing was changed."), None
+        was = raw.pop(name)
+        try:
+            self._write_fluid(raw or None)
+        except (OSError, ValueError) as e:
+            return False, (f"The haze fluid settings could not be saved "
+                           f"({e}). Nothing was changed."), None
+        self._fluid_stamp = None
+        self._reload_fluid()
+        self._note(f"Haze: {who or 'someone'} removed the haze fluid "
+                   f"settings of {name}, a hazer no longer in flamesafe's "
+                   f"config.")
+        return True, f"{name}: its haze fluid settings were removed.", was
 
     def set_level(self, name, pct, who, role="", screen=""):
         """Set level now: an admin looked at the tank and says it is `pct`
@@ -1008,7 +1053,8 @@ class HazeTracker:
                            f"changed."), None
         with self._lock:
             u = self._unit(name)
-            had = len(self._cycles(u))
+            had = learned_tank(self._cycles(u), LEARN_TANKS,
+                               OUTLIER_RATIO)[1]
             u["learn_from"] = self.next_id
             self.next_id += 1
             self._dirty = True
@@ -1045,9 +1091,11 @@ class HazeTracker:
         "estimating" or "", tanks learned from, firm, a tank much longer
         than the others)."""
         cycles = self._cycles(u)
-        got, _n, firm = learned_tank(cycles, LEARN_TANKS, OUTLIER_RATIO)
+        got, used, firm = learned_tank(cycles, LEARN_TANKS, OUTLIER_RATIO)
         if got is not None:
-            return (got, "learned", len(cycles), firm,
+            # "Learned from N tanks": the tanks the number came from (the
+            # last LEARN_TANKS, any far off left out), not every tank.
+            return (got, "learned", used, firm,
                     bool(suspect_cycles(cycles, LEARN_TANKS)))
         fl = self.fluid.get(name) or {}
         lph, tank = fl.get("litres_per_hour"), fl.get("tank_litres")
@@ -1221,6 +1269,7 @@ class HazeTracker:
                         "notes": notes, "shows_total": self.shows_total,
                         "watching": self._link is not None,
                         "config_error": self.config_error,
+                        "fluid_gone": list(self.fluid_gone),
                         "stamp": self.stamp(),
                         "refill_soon": [h["name"] for h in hazers
                                         if h["refill_soon"]],
@@ -1285,7 +1334,7 @@ POST_ROUTES = ("haze-refill", "haze-undo")
 # The Settings tab's Haze fluid card (Jeff, 2026-11-19): the role matrix's
 # Settings row (users.py), on the show PC only (remote.LOCAL_ONLY).
 FLUID_ROUTES = ("haze-fluid",)
-FLUID_ACTIONS = ("save", "level", "reset")
+FLUID_ACTIONS = ("save", "level", "reset", "remove")
 
 
 def route_view(tracker, ctx=None, users=None):
@@ -1382,7 +1431,8 @@ def route_fluid(tracker, body, ctx, users, audit=None):
     "save", "hazer", "litres_per_hour", "tank_litres", "stamp"},
     {"action": "level", "hazer", "percent", "stamp"} (Set level now) or
     {"action": "reset", "hazer", "confirm": true, "stamp"} (Reset
-    learning). Every change is audit logged with who and the screen.
+    learning) or {"action": "remove", "hazer", "stamp"} (the settings of a
+    hazer no longer in flamesafe's config). Every change is audit logged with who and the screen.
     Refused, with "Nothing was changed.", when the stamp is not the
     settings now (a stale page). Records and words only: nothing here
     reaches a hazer or flamesafe. (code, body)."""
@@ -1398,41 +1448,51 @@ def route_fluid(tracker, body, ctx, users, audit=None):
         return 400, {"error": "Say what to do. Nothing was changed."}
     if not isinstance(name, str) or not name:
         return 400, {"error": "Say which hazer. Nothing was changed."}
-    tracker._reload_fluid()          # a hand edit since counts too
-    if body.get("stamp") != tracker.stamp():
-        return 409, {"error": "The haze fluid settings changed since this "
-                              "page drew them. Look again. Nothing was "
-                              "changed.", "stale": True}
     s = getattr(ctx, "session", None) or {}
     who = s.get("name") or getattr(ctx, "device", "") or "unsigned"
     role = s.get("role") or ""
     screen = (getattr(ctx, "screen", "") if getattr(ctx, "local", False)
               else getattr(ctx, "device", "")) or "Rack screen"
-    extra = {}
     if act == "save":
         lph, ok1 = _num_or_none(body.get("litres_per_hour"))
         tank, ok2 = _num_or_none(body.get("tank_litres"))
         if not (ok1 and ok2):
             return 400, {"error": "Litres per hour and tank litres are "
                                   "numbers. Nothing was changed."}
-        done, text, ch = tracker.save_fluid(name, lph, tank)
-        if done:
-            (old, new) = ch
-            extra = {"old": json.dumps(old, sort_keys=True),
-                     "new": json.dumps(new, sort_keys=True)}
-    elif act == "level":
-        done, text, ch = tracker.set_level(name, body.get("percent"), who,
-                                           role, screen)
-        if done:
-            extra = {"old": "not known" if ch[0] is None else ch[0],
-                     "new": ch[1], "correction": True}
-    else:
-        if body.get("confirm") is not True:
-            return 400, {"error": "Reset learning needs its confirm. Nothing "
-                                  "was changed."}
-        done, text, had = tracker.reset_learning(name, who)
-        if done:
-            extra = {"tanks_before": had}
+    if act == "reset" and body.get("confirm") is not True:
+        return 400, {"error": "Reset learning needs its confirm. Nothing "
+                              "was changed."}
+    extra = {}
+    # The stamp check and the change are one step (a second post drawn
+    # from the same card waits, then finds the stamp moved on).
+    with tracker._card_lock:
+        tracker._reload_fluid()          # a hand edit since counts too
+        if body.get("stamp") != tracker.stamp():
+            return 409, {"error": "The haze fluid settings changed since "
+                                  "this page drew them. Look again. Nothing "
+                                  "was changed.", "stale": True}
+        if act == "save":
+            done, text, ch = tracker.save_fluid(name, lph, tank)
+            if done:
+                (old, new) = ch
+                extra = {"old": json.dumps(old, sort_keys=True),
+                         "new": json.dumps(new, sort_keys=True)}
+        elif act == "level":
+            done, text, ch = tracker.set_level(name, body.get("percent"),
+                                               who, role, screen)
+            if done:
+                extra = {"old": "not known" if ch[0] is None else ch[0],
+                         "new": ch[1], "correction": True}
+        elif act == "remove":
+            done, text, was = tracker.remove_gone(name, who)
+            if done:
+                extra = {"old": json.dumps(was, sort_keys=True),
+                         "new": "removed"}
+        else:
+            done, text, had = tracker.reset_learning(name, who)
+            if done:
+                extra = {"tanks_before": had}
+        stamp = tracker.stamp()
     if not done:
         return 400, {"error": text}
     if audit is not None:
@@ -1443,7 +1503,7 @@ def route_fluid(tracker, body, ctx, users, audit=None):
                         **extra)
         except Exception:                         # noqa: BLE001
             pass
-    return 200, {"text": text, "stamp": tracker.stamp()}
+    return 200, {"text": text, "stamp": stamp}
 
 
 def build(remote, link, fuel=None, journal=None, threaded=True):

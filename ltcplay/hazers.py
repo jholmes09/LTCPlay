@@ -95,26 +95,33 @@ class Levels:
         self._lock = threading.Lock()
         self.load()
 
+    def _read(self):
+        """The file read and checked as load() reads it: (levels found,
+        the doc). Raises OSError, ValueError, AttributeError or
+        TypeError."""
+        with open(self.path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or \
+                doc.get("hazers_format") != LEVELS_FORMAT or \
+                not isinstance(doc.get("levels"), dict):
+            raise ValueError("not a hazer levels file")
+        got = {}
+        for n, lv in doc["levels"].items():
+            if n not in self.names:
+                continue
+            h, f = lv.get("haze"), lv.get("fan")
+            for v in (h, f):
+                if isinstance(v, bool) or not isinstance(v, int) or \
+                        not 0 <= v <= 255:
+                    raise ValueError(f"{n}: a level is not 0 to 255")
+            got[n] = (h, f)
+        return got, doc
+
     def load(self):
         if not self.path or not os.path.exists(self.path):
             return
         try:
-            with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
-            if not isinstance(doc, dict) or \
-                    doc.get("hazers_format") != LEVELS_FORMAT or \
-                    not isinstance(doc.get("levels"), dict):
-                raise ValueError("not a hazer levels file")
-            got = {}
-            for n, lv in doc["levels"].items():
-                if n not in self.names:
-                    continue
-                h, f = lv.get("haze"), lv.get("fan")
-                for v in (h, f):
-                    if isinstance(v, bool) or not isinstance(v, int) or \
-                            not 0 <= v <= 255:
-                        raise ValueError(f"{n}: a level is not 0 to 255")
-                got[n] = (h, f)
+            got, doc = self._read()
             self.levels.update(got)
             self.other = {k: v for k, v in doc.items()
                           if k not in ("hazers_format", "levels")}
@@ -180,7 +187,14 @@ class Levels:
             if not self.path:
                 raise ValueError("there is no settings folder")
             if self.fault:
-                raise ValueError(self.fault)
+                # Unreadable at start: read it again now (it may have been
+                # fixed by hand since); still bad, refused. The levels in
+                # use (what the hazers run at) are not changed by this.
+                try:
+                    self._read()
+                except (OSError, ValueError, AttributeError,
+                        TypeError) as e:
+                    raise ValueError(f"{self.fault} Still: {e}")
             if os.path.exists(self.path):
                 try:
                     with open(self.path, encoding="utf-8-sig") as fh:

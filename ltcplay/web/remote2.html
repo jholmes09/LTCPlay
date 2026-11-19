@@ -1244,6 +1244,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <div class="card col" id="hzs-card" hidden>
         <div class="t"><b>Haze fluid</b></div>
         <ul class="psa-say"><li>Learns each tank from refill to refill.</li><li>Set numbers are a guess until then.</li><li>Records only. Never changes the haze.</li></ul>
+        <div class="pline" id="hzs-err" role="alert" hidden></div>
         <div id="hzs-rows"></div>
         <div class="pline" id="hzs-msg" role="status"></div>
       </div>
@@ -6606,7 +6607,7 @@ async function fuPress(route, body){
 // level now (a correction, never a refill) and Reset learning. The show PC
 // only, the Settings row. It reads the fuel GET and posts haze-fluid with
 // the stamp it was drawn from, so a stale card is refused. Records only.
-var HZS = null, HZS_AT = 0;
+var HZS = null, HZS_AT = 0, HZS_BUSY = false;
 function hzsDur(s){ s = Math.max(0, Number(s) || 0); return s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h"; }
 function hzsVal(x){ return x === null || x === undefined ? "" : String(x); }
 function hzsTank(h){
@@ -6614,24 +6615,46 @@ function hzsTank(h){
   if(h.basis === "estimating") return "Not learned yet. Estimating " + hzsDur(h.tank_s) + " at full output from the set numbers.";
   return "Not learned yet. Haze time only until set or learned.";
 }
+function hzsHead(h){ return h.name + (h.percent != null ? ": " + h.percent + "% left" : ""); }
 function hzsSay(t){ setText($("hzs-msg"), t || ""); $("hzs-msg").title = t || ""; }
+// The file's problem in plain words, with what to do.
+function hzsProblem(hv){
+  if(!hv.config_error) return "";
+  const gone = hv.fluid_gone || [];
+  return "The haze fluid settings in the file cannot be used, so the page shows haze time only. " + hv.config_error + " " +
+    (gone.length ? "Press Remove below for a hazer that is gone, or fix the file by hand." : "Fix ltcplay_hazers.json in the settings folder by hand, then look again.");
+}
 function hzsRender(){
   const card = $("hzs-card"); if(!card) return;
   const hv = HZS && HZS.haze, list = (hv && hv.available && hv.hazers) || [];
   const show = !!(ME && ME.local) && list.length > 0;
   if(card.hidden !== !show) card.hidden = !show;
   if(!show) return;
-  const may = mayRow(ST, "settings"), rows = $("hzs-rows");
-  const sig = JSON.stringify([hv.stamp, list.map(h => [h.name, h.basis, h.tank_s, h.tanks_learned, h.learn_firm, h.tank_litres_learned, h.percent, h.litres_per_hour, h.tank_litres]), may]);
-  if(rows.dataset.sig === sig) return;
-  // Never redrawn under someone typing in it.
-  const a = document.activeElement;
-  if(rows.dataset.sig && a && a.tagName === "INPUT" && rows.contains(a)) return;
-  rows.dataset.sig = sig; rows.dataset.stamp = hv.stamp || "";
-  const dis = may ? "" : " disabled";
-  rows.innerHTML = list.map(h => `<div class="hzs-row" data-hz="${esc(h.name)}"><b>${esc(h.name)}${h.percent != null ? ": " + h.percent + "% left" : ""}</b><span class="dim">${esc(hzsTank(h))}</span>` +
-    `<div class="pbar"><label class="fl"><span>Litres per hour at full output</span><input class="f" data-k="lph" inputmode="decimal" autocomplete="off" value="${esc(hzsVal(h.litres_per_hour))}"${dis}></label><label class="fl"><span>Tank litres</span><input class="f" data-k="tank" inputmode="decimal" autocomplete="off" value="${esc(hzsVal(h.tank_litres))}"${dis}></label><button class="b green" data-a="save"${dis}>${icon("check")}Save</button></div>` +
-    `<div class="pbar"><label class="fl"><span>Percent left now (look at the tank)</span><input class="f" data-k="pct" inputmode="numeric" autocomplete="off"${dis}></label><button class="b" data-a="level"${dis}>${icon("check")}Set level now</button><button class="b redline" data-a="reset"${dis}>${icon("reset")}Reset learning</button></div></div>`).join("");
+  const may = mayRow(ST, "settings"), rows = $("hzs-rows"), gone = (may && hv.fluid_gone) || [];
+  const prob = $("hzs-err"), pt = hzsProblem(hv);
+  if(prob.textContent !== pt) setText(prob, pt);
+  if(prob.hidden !== !pt) prob.hidden = !pt;
+  // The boxes are drawn again only when the settings themselves changed
+  // (the stamp), never because a level moved during a show: then only the
+  // lines above the boxes are written, so numbers being typed are kept.
+  const sig = JSON.stringify([hv.stamp, list.map(h => [h.name, h.litres_per_hour, h.tank_litres]), gone, may]);
+  const a = document.activeElement, focused = !!(a && a.tagName === "INPUT" && rows.contains(a));
+  const edited = !!rows.querySelector("input[data-edited]") && rows.dataset.stamp === (hv.stamp || "");
+  if(rows.dataset.sig !== sig && !(rows.dataset.sig && (focused || edited))){
+    rows.dataset.sig = sig; rows.dataset.stamp = hv.stamp || "";
+    const dis = may ? "" : " disabled";
+    rows.innerHTML = list.map(h => `<div class="hzs-row" data-hz="${esc(h.name)}"><b class="hzs-h"></b><span class="dim hzs-t"></span>` +
+      `<div class="pbar"><label class="fl"><span>Litres per hour at full output</span><input class="f" data-k="lph" inputmode="decimal" autocomplete="off" value="${esc(hzsVal(h.litres_per_hour))}"${dis}></label><label class="fl"><span>Tank litres</span><input class="f" data-k="tank" inputmode="decimal" autocomplete="off" value="${esc(hzsVal(h.tank_litres))}"${dis}></label><button class="b green" data-a="save"${dis}>${icon("check")}Save</button></div>` +
+      `<div class="pbar"><label class="fl"><span>Percent left now (look at the tank)</span><input class="f" data-k="pct" inputmode="numeric" autocomplete="off"${dis}></label><button class="b" data-a="level"${dis}>${icon("check")}Set level now</button><button class="b redline" data-a="reset"${dis}>${icon("reset")}Reset learning</button></div></div>`).join("") +
+      gone.map(n => `<div class="hzs-row" data-gone="${esc(n)}"><b>${esc(n)}</b><span class="dim">Not a hazer in flamesafe any more. Its haze fluid numbers stop the others from being used.</span><div class="pbar"><button class="b redline" data-a="remove">${icon("reset")}Remove</button></div></div>`).join("");
+  }
+  for(const h of list){
+    const r = rows.querySelector(`[data-hz="${CSS.escape(h.name)}"]`); if(!r) continue;
+    const hd = r.querySelector(".hzs-h"), tl = r.querySelector(".hzs-t"), ht = hzsHead(h), tt = hzsTank(h);
+    if(hd.textContent !== ht) hd.textContent = ht;
+    if(tl.textContent !== tt) tl.textContent = tt;
+  }
+  for(const b of rows.querySelectorAll("button[data-a]")){ const off = !may || HZS_BUSY; if(b.disabled !== off) b.disabled = off; }
 }
 async function hzsLoad(){
   HZS_AT = Date.now();
@@ -6639,29 +6662,40 @@ async function hzsLoad(){
   hzsRender();
 }
 setInterval(() => { if(TAB === "settings" && ME && ME.local && Date.now() - HZS_AT > 5000) hzsLoad(); else hzsRender(); }, 1000);
+$("hzs-rows").addEventListener("input", ev => { if(ev.target.matches("input[data-k]")) ev.target.dataset.edited = "1"; });
 $("hzs-rows").addEventListener("click", async ev => {
-  const b = ev.target.closest("[data-a]"); if(!b || b.disabled) return;
-  const row = b.closest("[data-hz]"), name = row.dataset.hz, act = b.dataset.a;
+  const b = ev.target.closest("[data-a]"); if(!b || b.disabled || HZS_BUSY) return;
+  const gone = b.closest("[data-gone]");
+  const row = gone || b.closest("[data-hz]"), name = gone ? gone.dataset.gone : row.dataset.hz, act = b.dataset.a;
   const val = k => row.querySelector(`[data-k="${k}"]`).value.trim();
   const num = t => t === "" ? null : Number(t);
   const body = {action:act, hazer:name, stamp:$("hzs-rows").dataset.stamp || ""};
-  if(act === "save"){
-    const l = num(val("lph")), t = num(val("tank"));
-    if((l !== null && !isFinite(l)) || (t !== null && !isFinite(t))){ hzsSay("Litres per hour and tank litres are numbers. Nothing was changed."); return; }
-    body.litres_per_hour = l; body.tank_litres = t;
-  } else if(act === "level"){
-    const p = num(val("pct"));
-    if(p === null || !Number.isInteger(p) || p < 0 || p > 100){ hzsSay("Type the percent left, a whole number 0 to 100. Nothing was changed."); return; }
-    if(!(await confirmBox(`Set ${name} to ${p} percent?`, "A correction after looking at the tank. Not a refill: it never teaches how long a tank lasts.", "Yes, set it"))) return;
-    body.percent = p;
-  } else {
-    if(!(await confirmBox(`Reset learning for ${name}?`, "It learns the tank again from its next refill. Every refill is kept.", "Yes, reset"))) return;
-    body.confirm = true;
-  }
-  try{ const j = await post("/api/remote/haze-fluid", body); hzsSay(j.text || "Done."); }
-  catch(e){ hzsSay(e.message); }
-  try{ document.activeElement.blur(); }catch(e){}
-  $("hzs-rows").dataset.sig = ""; hzsLoad();
+  // One post at a time: every button is off until it is answered, so a
+  // second press never sends the same change twice.
+  HZS_BUSY = true; hzsRender();
+  try{
+    if(act === "save"){
+      const l = num(val("lph")), t = num(val("tank"));
+      if((l !== null && !isFinite(l)) || (t !== null && !isFinite(t))){ hzsSay("Litres per hour and tank litres are numbers. Nothing was changed."); return; }
+      body.litres_per_hour = l; body.tank_litres = t;
+    } else if(act === "level"){
+      const p = num(val("pct"));
+      if(p === null || !Number.isInteger(p) || p < 0 || p > 100){ hzsSay("Type the percent left, a whole number 0 to 100. Nothing was changed."); return; }
+      if(!(await confirmBox(`Set ${name} to ${p} percent?`, "A correction after looking at the tank. Not a refill: it never teaches how long a tank lasts.", "Yes, set it"))) return;
+      body.percent = p;
+    } else if(act === "remove"){
+      if(!(await confirmBox(`Remove the haze fluid numbers of ${name}?`, "It is not a hazer in flamesafe any more. The other hazers' numbers are kept.", "Yes, remove"))) return;
+    } else {
+      if(!(await confirmBox(`Reset learning for ${name}?`, "It learns the tank again from its next refill. Every refill is kept.", "Yes, reset"))) return;
+      body.confirm = true;
+    }
+    try{ const j = await post("/api/remote/haze-fluid", body); hzsSay(j.text || "Done."); }
+    catch(e){ hzsSay(e.message); }
+    try{ document.activeElement.blur(); }catch(e){}
+    $("hzs-rows").dataset.sig = "";
+    for(const i of $("hzs-rows").querySelectorAll("input[data-edited]")) delete i.dataset.edited;
+    await hzsLoad();
+  } finally { HZS_BUSY = false; hzsRender(); }
 });
 // Shows per refill (fuelshows.py, Jeff 2026-11-13). A unit whose type
 // has N says "Shows left: X" (Refuel now at 0); a tap is Refueled +1.
