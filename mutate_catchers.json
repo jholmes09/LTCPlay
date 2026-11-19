@@ -568,6 +568,7 @@
 "booth speaker: the show file's stems reserve nothing": "test_booth_speaker_card_saves_checks_and_tests",
 "booth speaker: the test note plays during cleaning": "test_booth_speaker_card_saves_checks_and_tests",
 "booth speaker: the test note plays during the hazer test": "test_booth_speaker_card_saves_checks_and_tests",
+"Restart the engine: its 5 s refresh runs on the Schedule tab, not Settings where its cards are, so a refusal is never shown": "test_ui2_settings_tab_whole_reload_and_restart_poll",
 "booth speaker: the test note plays with a flame group armed": "test_booth_speaker_card_saves_checks_and_tests",
 "booth speaker: the test note plays with the fuel pump on": "test_booth_speaker_card_saves_checks_and_tests",
 "bridge_ms accepts a nonsense value": "test_a_misspelled_setting_is_refused",

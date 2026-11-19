@@ -4612,26 +4612,60 @@ class Remote:
                              f"changed.")
         return doc.get("booth_alert"), path
 
-    def _booth_show_refusal(self):
-        """Why the booth speaker may not be changed now, or "": while a
-        show is live or running, a Hold included, or when that cannot be
-        read (fails closed)."""
+    # The engine's restart sentences (show_busy_reason, restart_refusal),
+    # said for a booth speaker press: the reason kept, the "then restart"
+    # part told as what the operator pressed (integration of #279 and #280).
+    BOOTH_RESTART_WORDS = (
+        ("Restart the engine between shows", "{Act} between shows"),
+        ("Restart the engine only after", "{Act} only after"),
+        ("a restart is known to be safe in", "this is known to be safe in"),
+        ("before you restart.", "before you {act}."),
+        ("then restart.", "then {act}."),
+        ("Whether the engine may restart could not be checked",
+         "Whether you may {act} could not be checked"),
+    )
+
+    def _booth_words(self, why, act):
+        """A restart refusal's sentence said for the booth speaker press
+        `act` ("change the booth speaker", "play the Test note"): the same
+        reason and what to do, never "restart". A sentence still about a
+        restart is left out, and the operator is told to try between
+        shows."""
+        why = str(why or "")
+        for a, b in self.BOOTH_RESTART_WORDS:
+            why = why.replace(a, b.format(act=act, Act=act[:1].upper()
+                                          + act[1:]))
+        if "restart" not in why.lower():
+            return why
+        keep = [x for x in re.split(r"(?<=\.)\s+", why)
+                if x and "restart" not in x.lower()]
+        return " ".join(keep + [f"{act[:1].upper() + act[1:]} between "
+                                f"shows, with show control off."])
+
+    def _booth_show_refusal(self, act="change the booth speaker"):
+        """Why the booth speaker may not be changed (or its Test note
+        played: `act`) now, or "": while a show is live or running, a Hold
+        included, show control on or a show file starting, or when that
+        cannot be read (fails closed). The true reason, from
+        show_busy_reason, said for this press."""
+        Act = act[:1].upper() + act[1:]
+        left = ("the booth speaker was left as it is"
+                if act == "change the booth speaker" else
+                f"you may not {act} now")
         try:
-            if self.show_busy_for_reload():
-                return ("A show is running. Change the booth speaker "
-                        "between shows.")
+            why = self.show_busy_reason()
+            if why:
+                return self._booth_words(why, act)
             if self.schedule is not None:
                 st = self._show_live_state()
                 if st is None:
-                    return ("The show's state could not be read, so the "
-                            "booth speaker was left as it is.")
+                    return f"The show's state could not be read, so {left}."
                 if st in self.BOOTH_STATES_REFUSED:
-                    return ("A show is live or on Hold. Change the booth "
-                            "speaker between shows.")
+                    return (f"A show is live or on Hold. {Act} between "
+                            f"shows.")
         except Exception as e:                   # noqa: BLE001
             return (f"The show's state could not be read "
-                    f"({type(e).__name__}), so the booth speaker was left "
-                    f"as it is.")
+                    f"({type(e).__name__}), so {left}.")
         return ""
 
     def _booth_test_refusal(self):
@@ -4639,13 +4673,15 @@ class Remote:
         refuses Reload engine (a show running, an announcement, a flame
         group armed or not known, live flame, the Fireball page, a purge, a
         laser test or arm), a Hold, the hazer test, cleaning or the fuel
-        pump. Fails closed."""
-        why = self._booth_show_refusal()
+        pump, said as a Test note's refusal, never a restart's. Fails
+        closed."""
+        act = "play the Test note"
+        why = self._booth_show_refusal(act)
         if why:
             return why
         why = self.restart_refusal()
         if why:
-            return why
+            return self._booth_words(why, act)
         try:
             ht = self.hazer_test
             if ht is not None and ht.on():

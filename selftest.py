@@ -85149,7 +85149,7 @@ def test_restart_engine_between_shows_on_hold():
         code, out = rm.run_off("Andy", "Rack screen")
         R.settle()
         check(code == 200 and R.svc.machine.state == S.HOLD and
-              not R.svc.machine.running,
+              not R.svc.machine.stop_hold and not R.svc.machine.running,
               f"setup: Show ctrl off ends on Hold: {code} "
               f"{R.svc.machine.state}")
         said("on Hold after Show ctrl off, no show running")
@@ -85309,6 +85309,119 @@ let RESTART_WAIT = false;
     for t in sum((m[k][0] for k in ("refused", "restarted", "notDone")),
                  []) + [m["why"][1], m["perm"]]:
         check(_cfg_dashes(t), f"no dashes: {t!r}")
+    print("  ok")
+
+
+def test_show_ctrl_off_mid_show_then_restart_and_booth_test_note():
+    section("Show ctrl off during a running show (#277 with #279 and #280): "
+            "the schedule is left between shows with no Hold, then Restart "
+            "the engine and the booth speaker's Test note are both allowed "
+            "(every group disarmed); with show control on, a show running "
+            "or the schedule unreadable both are refused with the true "
+            "reason, the booth's said for the booth press, never a "
+            "restart's words")
+    import types as _ty
+    n = _run_off_night()
+    if n is None:
+        return
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    rm.flame_status = _ty.SimpleNamespace(view=lambda: {
+        "stale": False, "groups": [{"name": "wave flamer",
+                                    "armed": "disarmed", "wanted": False}]})
+
+    def booth():
+        return rm._booth_show_refusal(), rm._booth_test_refusal()
+
+    def plain(t, where):
+        _no_dashes(t, where)
+        check("restart" not in t.lower(),
+              f"{where}: no restart words for a booth press: {t!r}")
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW, f"setup: show 1 is live: "
+                                       f"{svc.machine.state}")
+    # A show running: both refused, the true reason.
+    why = rm.restart_refusal()
+    save, test = booth()
+    check(why.startswith("A show is running.") and
+          save == "A show is running. Change the booth speaker between "
+                  "shows, after it ends." and
+          test == "A show is running. Play the Test note between shows, "
+                  "after it ends.",
+          f"a show running: refused, said for each press: {why!r} "
+          f"{save!r} {test!r}")
+    plain(save, "booth save, show running")
+    plain(test, "booth test, show running")
+    n.now[0] = _den(S, 18, 5)
+    code, out = rm.run_off("Andy", "Rack screen")
+    m = svc.machine
+    check(code == 200 and m.state == S.STANDBY and not m.stop_hold and
+          m.running == 0 and n.control.session is None,
+          f"Show ctrl off: between shows, no Hold, no Stop's Hold: {code} "
+          f"{m.state} {m.stop_hold}")
+    check(rm.restart_refusal() == "" and booth() == ("", ""),
+          f"between shows, show control off, all disarmed: a restart and "
+          f"the Test note may go: {rm.restart_refusal()!r} {booth()}")
+    # Show control on again (a show file playing): both refused, Show
+    # control is on, never "a show is running".
+    n.control.session = _ty.SimpleNamespace(running=True)
+    try:
+        why = rm.restart_refusal()
+        save, test = booth()
+        check(why == "Show control is on. Turn show control off first "
+                     "(Show ctrl off), then restart." and
+              save == "Show control is on. Turn show control off first "
+                      "(Show ctrl off), then change the booth speaker." and
+              test == "Show control is on. Turn show control off first "
+                      "(Show ctrl off), then play the Test note.",
+              f"show control on: the true reason for each press: {why!r} "
+              f"{save!r} {test!r}")
+        plain(save, "booth save, show control on")
+        plain(test, "booth test, show control on")
+    finally:
+        n.control.session = None
+    # The schedule unreadable: fails closed, said as it is.
+    real = svc.state_view
+    svc.state_view = lambda *a, **k: 1 / 0
+    try:
+        save, test = booth()
+        check(save.startswith("The schedule could not be read "
+                              "(ZeroDivisionError)") and
+              save == test and "show is running" in save and
+              not save.startswith("A show is running"),
+              f"the schedule unreadable: refused, and said so (not 'a "
+              f"show is running'): {save!r} {test!r}")
+    finally:
+        svc.state_view = real
+    # A flame group armed: the Test note refused in words for it.
+    rm.flame_status = _ty.SimpleNamespace(view=lambda: {
+        "stale": False, "groups": [{"name": "wave flamer",
+                                    "armed": "armed", "wanted": True}]})
+    save, test = booth()
+    check(save == "" and test == "A flame group is armed. Disarm every "
+                                 "group first.",
+          f"a group armed: the save is fine, the Test note refused: "
+          f"{save!r} {test!r}")
+    # Every restart sentence, said for each booth press.
+    for w in ("A show is held mid-run. Restart the engine only after that "
+              "show has ended.",
+              "The schedule's state (WEIRD) is not one a restart is known "
+              "to be safe in. Try again in a moment.",
+              "A show file is starting. Wait, then turn show control off "
+              "before you restart.",
+              "A show file is playing. Stop it first, then restart.",
+              "A rehearsal is on. Press End rehearsal first, then restart.",
+              "Whether the engine may restart could not be checked "
+              "(KeyError). Try again in a moment.",
+              "Something new. Restarting waits."):
+        for act in ("change the booth speaker", "play the Test note"):
+            t = rm._booth_words(w, act)
+            plain(t, f"{w[:30]} for {act}")
+            check(t.split(".")[0] == w.split(".")[0] or
+                  t.startswith("Whether you may") or
+                  t.startswith("The schedule's state"),
+                  f"the reason is kept: {w!r} -> {t!r}")
     print("  ok")
 
 
@@ -130930,6 +131043,226 @@ out.wide = [...document.querySelectorAll("#t-settings .card")].filter(e => vis(e
     print("  ok")
 
 
+def test_ui2_settings_tab_whole_reload_and_restart_poll():
+    section("the Settings tab with every card on it (integration of #278 to "
+            "#282): a reload on #settings reads the show PC's cards once "
+            "the page knows it is the show PC; Restart the engine's 5 s "
+            "refresh runs on the Settings tab, where its cards are, and "
+            "never on Schedule; every Settings card drawn together with "
+            "data (the show network, the Tailscale card, the announcement "
+            "output, the booth speaker, pre-show audio, Haze fluid with "
+            "hazers) at 360x740 and 2560x1440: nothing off the side, 56 px "
+            "targets; the Systems sheet names the Flame timing row and "
+            "says what to do")
+    _one, two = _ui2_pages()
+    tick = _js_function(two, "restartTick") or ""
+    check(tick.split("\n")[1].strip() == 'if(TAB !== "settings" || !ME || '
+          '!ME.local || RESTART_WAIT) return;' and
+          "setInterval(restartTick, 5000);" in two,
+          f"the restart refresh is the Settings tab's: {tick[:160]!r}")
+    who = _js_function(two, "whoami") or ""
+    check("afterFirstStatus(() => tabLoadsForMe(TAB));" in who and
+          who.index("ME = await") < who.index("tabLoadsForMe(TAB)"),
+          "whoami reads the open tab's show PC cards once ME is known and "
+          "the first status is in")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+    else:
+        fns = ""
+        for c in ("SYS_LABEL", "SYS_SHORT", "SYS_OFF", "SYS_SAY"):
+            m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+            fns += "\n" + (m.group(0) if m else "")
+        fns += "\n" + "\n".join(_js_function(two, n) or "" for n in (
+            "short8", "sysItem", "sysLook", "tabLoadsForMe"))
+        js = fns + r"""
+const out = {};
+const it = sysItem({name:"Flame timing", state:"warn", word:"3 frame(s) late in the last hour, worst 61 ms"});
+out.ft = [it.label, it.say, sysLook([{name:"Flame timing", state:"warn", word:"3 frame(s) late in the last hour, worst 61 ms"}], false).text];
+out.ok = sysItem({name:"Flame timing", state:"ok", word:"on time, worst 12 ms this hour"}).say;
+let CALLS = [], PSA_TRIED = false, ME = null;
+for(const f of ["loadNetwork", "loadTailscale", "loadAnnOutputs", "loadBooth", "loadPreshow", "loadDeckOp", "loadFolders"]) globalThis[f] = () => CALLS.push(f);
+tabLoadsForMe("settings"); out.none = CALLS.slice();
+ME = {local:false}; tabLoadsForMe("settings"); out.ipad = CALLS.slice();
+ME = {local:true}; tabLoadsForMe("settings"); out.settings = CALLS.slice(); out.psa = PSA_TRIED;
+CALLS = []; tabLoadsForMe("schedule"); out.schedule = CALLS.slice();
+CALLS = []; tabLoadsForMe("show"); out.show = CALLS.slice();
+console.log(JSON.stringify(out));
+"""
+        import subprocess as _sp
+        p = _sp.run([node, "-e", js], capture_output=True, text=True,
+                    timeout=60)
+        try:
+            m = json.loads(p.stdout.strip().splitlines()[-1])
+        except Exception:                        # noqa: BLE001
+            m = None
+        if check(isinstance(m, dict), f"the page's words ran: "
+                                      f"{p.stdout!r} {p.stderr!r}"[:600]):
+            check(m["ft"] == ["Flame timing", "Flame frames late. Tell Jeff "
+                              "after the show.", "Flame time: check"] and
+                  m["ok"] == "OK." and len(m["ft"][1].split()) <= 8,
+                  f"the Flame timing row: its name, what to do, the "
+                  f"badge: {m['ft']} {m['ok']}")
+            check(m["none"] == [] and m["ipad"] == [] and
+                  m["settings"] == ["loadNetwork", "loadTailscale",
+                                    "loadAnnOutputs", "loadBooth",
+                                    "loadPreshow"] and m["psa"] is True and
+                  m["schedule"] == ["loadDeckOp", "loadFolders"] and
+                  m["show"] == [],
+                  f"the open tab's show PC cards, read once ME is known, "
+                  f"on the show PC only: {m}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "ltcplay", "web", "tailscale_card.js"),
+              encoding="utf-8") as fh:
+        ts_js = fh.read()
+    page = _ui2_page_inline()
+    st = _ui2_status_day()
+    st["preshow_audio"] = {"available": True, "on": False,
+                           "name": "welcome.wav", "file_ok": True,
+                           "length_s": 30.0, "lead_s": 120}
+    hz = [{"name": "Hazer 1", "big": "62% left", "color": "green",
+           "refill_soon": False, "not_sure": False, "words": "w",
+           "sub": "Learned from 3 tanks. 4 shows left", "basis": "learned",
+           "tank_s": 15300.0, "tanks_learned": 3, "learn_firm": True,
+           "tank_litres_learned": 2.55, "percent": 62,
+           "litres_per_hour": 0.6, "tank_litres": 2.5},
+          {"name": "Hazer 2 with a much longer name", "big": "88% left",
+           "color": "green", "refill_soon": False, "not_sure": False,
+           "words": "w", "sub": "Estimating (from the set numbers)",
+           "basis": "estimating", "tank_s": 7200.0, "tanks_learned": 0,
+           "learn_firm": False, "tank_litres_learned": None, "percent": 88,
+           "litres_per_hour": 1.0, "tank_litres": 2.0}]
+    fu = {"units": [], "unit_ids": [], "may_refill": True,
+          "may_undo": True, "refill_why": "", "undo_why": "", "fault": "",
+          "config_error": "", "notes": [], "recent_refills": [],
+          "haze": {"available": True, "hazers": hz, "notes": [],
+                   "config_error": "", "fault": "", "may_undo": True,
+                   "recent_refills": [], "stamp": "abc123stamp00000"}}
+    ts_view = {"on": True, "head": "On: this PC answers on Tailscale.",
+               "problems": ["Firewall rule missing. Restart LTC Player to "
+                            "add it."],
+               "info": ["Each login acts as an iPad, signed in."],
+               "detail": "", "url": "http://100.101.102.103:7878",
+               "name_url": "http://showpc.tail1234.ts.net:7878",
+               "listening": True, "firewall": {"state": "present"},
+               "logins": ["andy.example@gmail.com"],
+               "restart": {"needed": True, "offered": True, "why": ""}}
+    routes = {"/api/remote/morning": _morning_view_pico(),
+              "/api/timelines": {"timelines": []},
+              "/api/remote/fuel": fu,
+              "/api/remote/users": {"tailscale_card": True},
+              "/api/remote/tailscale": ts_view,
+              "/api/remote/tailscale-card.js": _RawRoute(ts_js),
+              "/api/remote/restart-check": {"engine": "e1", "page": ""},
+              "/api/remote/preshow-audio": {"on": False, "file": "",
+                                            "choices": ["welcome.wav"]},
+              "/api/remote/announce-outputs": {"device": "", "outputs": [
+                  {"name": "Speakers",
+                   "label": "Speakers (WASAPI, 2 ch)"}]},
+              "/api/remote/booth-speaker": {
+                  "device": "Booth Box", "hostapi": "", "channels": [7],
+                  "rev": "r1", "locked": "",
+                  "line": {"ok": True, "text": "Booth speaker: Booth Box, "
+                           "output 7, 23 of 23 notes found."},
+                  "outputs": [
+                      {"name": "Booth Box", "hostapi": "Windows WASAPI",
+                       "channels": 8, "label": "Booth Box (Windows WASAPI, "
+                                               "8 outputs)",
+                       "same_name": False, "cannot_pick": False,
+                       "reserved": {}, "unsure": "", "picked": True}],
+                  "confirm_words": "x"},
+              "/api/remote/network": {"lines": ["Saved: 10.20.0.5."],
+                                      "url": "http://10.20.0.5:7878",
+                                      "saved": "10.20.0.5",
+                                      "candidates": ["10.20.0.5"],
+                                      "restart": {"needed": True,
+                                                  "offered": True},
+                                      "port": 7878}}
+    steps = r"""
+const g = id => document.getElementById(id);
+const vis = el => !!el && el.getClientRects().length > 0;
+let CHECK = {engine:"e1", page:""}, ASKED = 0;
+const f0 = window.fetch;
+window.fetch = (u, o) => {
+  if(String(u).indexOf("/api/remote/restart-check") >= 0){ ASKED++; return Promise.resolve(new Response(JSON.stringify(CHECK), {status:200, headers:{"Content-Type":"application/json"}})); }
+  return f0(u, o);
+};
+// Opened on #settings (a reload there): nothing clicked.
+await h.sleep(2500);
+out.reload = {tab:TAB, net:g("net-status").textContent.length > 0, ann:g("annout-pick").options.length,
+  booth:g("booth-line").textContent, ts:!!g("ts-card") && vis(g("ts-card")), psa:PSA_TRIED,
+  hz:document.querySelectorAll("#hzs-rows [data-hz]").length};
+// Every card together, with its data.
+const cards = ["admin", "ts-card", "annout-card", "booth-card", "psa-card", "hzs-card"];
+out.cards = cards.filter(id => vis(g(id)) && g(id).closest("#t-settings"));
+out.xs = document.scrollingElement.scrollWidth - innerWidth;
+out.wide = [...document.querySelectorAll("#t-settings *")].filter(e => vis(e) && e.getBoundingClientRect().right > innerWidth + 1).map(e => (e.id || e.tagName) + "." + e.className).slice(0, 6);
+out.small = [...document.querySelectorAll("#t-settings .b, #t-settings input.f, #t-settings select.f")].filter(e => vis(e) && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.className).slice(0, 6);
+// The 5 s refresh on Settings: the engine's answer changes, the buttons follow.
+out.before = [g("net-restart").hidden, g("net-restart").disabled, g("ts-restart").hidden, g("ts-restart").disabled];
+CHECK = {engine:"e1", page:"A flame group is armed. Disarm every group first."};
+ASKED = 0;
+await h.sleep(5600);
+out.after = [g("net-restart").disabled, g("net-restart-why").hidden, g("net-restart-why").textContent.trim(),
+  g("ts-restart").disabled, g("ts-restart-why").textContent.trim(), ASKED > 0];
+// On Schedule it never runs.
+document.querySelector('.tab[data-tab="schedule"]').click();
+await h.sleep(300);
+ASKED = 0;
+CHECK = {engine:"e1", page:""};
+await h.sleep(5600);
+out.onSchedule = [TAB, ASKED, g("net-restart").disabled];
+"""
+    for w, hh in ((360, 740), (2560, 1440)):
+        # Opened on #settings: the morning view is never read there, so
+        # the drive waits for the status alone (as the Users pane's test).
+        js = "<script>window.__drive = async (out, h) => {\n" + steps + \
+            "\n};</script>" + _UI2_DRIVE_JS.replace(
+                ' && typeof MO !== "undefined" && MO', '', 1)
+        got = _rack_screen_in_chromium(chrome, page, st, ((w, hh),),
+                                       measure_js=js,
+                                       frag="?tour=0#settings",
+                                       routes=routes, budget_ms=40000)
+        m = got[(w, hh)]
+        m = m[0] if isinstance(m, list) and m else str(m)
+        if not check(isinstance(m, dict) and not m.get("problems"),
+                     f"{w}x{hh}: Settings drawn: {m!r}"[:1500]):
+            continue
+        r = m["reload"]
+        check(r["tab"] == "settings" and r["net"] and r["ann"] >= 1 and
+              r["booth"] == "Booth speaker: Booth Box, output 7, 23 of 23 "
+                            "notes found." and r["ts"] and r["psa"] and
+              r["hz"] == 2,
+              f"{w}x{hh}: a reload on #settings reads every show PC card: "
+              f"{r}")
+        check(m["cards"] == ["admin", "ts-card", "annout-card", "booth-card",
+                             "psa-card", "hzs-card"],
+              f"{w}x{hh}: every card drawn on the Settings tab: "
+              f"{m['cards']}")
+        check(m["xs"] <= 0 and not m["wide"] and not m["small"],
+              f"{w}x{hh}: nothing off the side, 56 px targets: {m['xs']} "
+              f"{m['wide']} {m['small']}")
+        check(m["before"] == [False, False, False, False] and
+              m["after"] == [True, False, "Not now: A flame group is "
+                             "armed. Disarm every group first.", True,
+                             "Not now: A flame group is armed. Disarm "
+                             "every group first.", True],
+              f"{w}x{hh}: on Settings the 5 s refresh follows the engine's "
+              f"answer, both buttons, the reason in words: {m['before']} "
+              f"{m['after']}")
+        check(m["onSchedule"] == ["schedule", 0, True],
+              f"{w}x{hh}: on Schedule the refresh does not run: "
+              f"{m['onSchedule']}")
+    print("  ok")
+
+
 if __name__ == "__main__":
     t0 = time.time()
     sys.excepthook = _ci_crash_hook(t0)
@@ -131836,6 +132169,7 @@ if __name__ == "__main__":
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
         test_restart_engine_between_shows_on_hold,
+        test_show_ctrl_off_mid_show_then_restart_and_booth_test_note,
         test_ui2_screen_served,
         test_ui2_is_the_default_screen,
         test_remote_rules_file,
@@ -131931,6 +132265,7 @@ if __name__ == "__main__":
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
         test_ui2_set_once_cards_are_on_settings_not_schedule,
+        test_ui2_settings_tab_whole_reload_and_restart_poll,
         test_ui2_op_text_shapes_text_with_dom_nodes_only,
     ]
     _stopped = _run_tests(TESTS)

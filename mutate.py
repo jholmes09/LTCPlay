@@ -7691,9 +7691,15 @@ def build():
   "                    not player.retire():",
   "                    False:"),
 
+ ("Restart the engine: its 5 s refresh runs on the Schedule tab, not "
+  "Settings where its cards are, so a refusal is never shown",
+  "ltcplay/web/remote2.html",
+  '  if(TAB !== "settings" || !ME || !ME.local || RESTART_WAIT) return;',
+  '  if(TAB !== "schedule" || !ME || !ME.local || RESTART_WAIT) return;'),
+
  ("booth speaker: the test note plays with a flame group armed",
   "ltcplay/remote.py",
-  "        why = self.restart_refusal()\n        if why:\n            return why\n",
+  "        why = self.restart_refusal()\n        if why:\n            return self._booth_words(why, act)\n",
   "        why = \"\"\n"),
 
  ("booth speaker: a channel the show audio uses is saved",
