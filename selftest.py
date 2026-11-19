@@ -125059,7 +125059,7 @@ def test_start_at_cue_fireball_stages_run_whole_or_not_at_all():
                 encoding="utf-8").read()
     body = rsrc[rsrc.find("    def halt(self, who, screen"):]
     body = body[:body.find("\n    def ", 10)]
-    i_fl = body.find("self._disarm_now(who, screen, \"Stop\")")
+    i_fl = body.find("self._disarm_now(who, screen, what)")
     i_no = body.find('"note_stop"')
     i_lf = body.find("self.timed_purge_cut(")
     check(0 <= i_fl < i_no < i_lf,
