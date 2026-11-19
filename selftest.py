@@ -44008,6 +44008,72 @@ def test_show_control_off_ends_the_show_without_a_hold():
     n.c.close()
     n.link.close()
 
+    # The fail-safe's line, true to what the Stop's Hold step answered.
+    def _failsafe(when, stop, broken_hold=False):
+        n = _run_off_night()
+        S, svc, c, rm = n.S, n.svc, n.c, n.rm
+        n.now[0] = _den(S, *when)
+        svc.tick()
+        _settle(svc, c)
+        svc.tick()
+        _settle(svc, c)
+        n.control.stop = stop
+        if broken_hold:
+            def broken(*a, **kw):
+                raise RuntimeError("the schedule file is locked")
+            svc.halt_schedule = broken
+        code, out = rm.run_off("Andy", "Rack screen")
+        if broken_hold:
+            del svc.halt_schedule
+        last = [r for r in svc.journal if r.get("action") == "stop"][-1]
+        st = svc.machine.state
+        n.c.close()
+        n.link.close()
+        return code, out, last, st, S
+
+    # stop() answers False without letting the show file go: show control
+    # is still on, so the same fail-safe as a raise.
+    code, out, last, st, S = _failsafe((17, 57), lambda: False)
+    check(code == 500 and out.get("run_on") is True and
+          out.get("stopped") is False and st == S.HOLD and
+          "did NOT turn off, so the schedule was put on Hold" in
+          last["text"] and last.get("fault"),
+          f"a stop that answers False and leaves show control on is a "
+          f"failure, held, and said: {code} {st} {last['text']}")
+    # The Stop's Hold step itself fails: said, never claimed.
+    code, out, last, st, S = _failsafe((17, 57), lambda: False,
+                                       broken_hold=True)
+    check(code == 500 and st != S.HOLD and
+          "could NOT be put on Hold either" in last["text"] and
+          "was put on Hold" not in last["text"],
+          f"the Hold failing too is said, never claimed: {st} "
+          f"{last['text']}")
+    # The night already over: nothing can be held now; the line says what
+    # the Stop's Hold step said, not that the schedule is on Hold.
+    code, out, last, st, S = _failsafe((22, 30), lambda: False)
+    check(st != S.HOLD and "the Stop's Hold was asked for instead" in
+          last["text"] and "was put on Hold" not in last["text"],
+          f"with the night over the line is true to it: {st} "
+          f"{last['text']}")
+    # Show control already off (stop() answers False, nothing running):
+    # not a failure, and said as it is.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+    n.control.session = None
+    n.control.stop = lambda: False
+    code, out = rm.run_off("Andy", "Rack screen")
+    last = [r for r in svc.journal if r.get("action") == "stop"][-1]
+    check(code == 200 and svc.machine.state == S.STANDBY and
+          "show control was already off" in last["text"] and
+          not last.get("fault"),
+          f"show control already off: said so, no Hold: {code} "
+          f"{last['text']}")
+    n.c.close()
+    n.link.close()
+
     # Show control off whose stop wedges (an audio device that never
     # answers): the halt's own line is already in the journal while it
     # waits.
@@ -44065,8 +44131,16 @@ def test_show_control_off_ends_the_show_without_a_hold():
             "pressed Show control off" in r.get("text", "")]
     check(rows and rows[-1].get("fault") and
           rows[-1].get("outcome") == "fault" and
-          "These did NOT work: show" in rows[-1]["text"],
-          f"and the halt's line says which step did NOT work: {rows[-1:]}")
+          "These did NOT work: show" in rows[-1]["text"] and
+          "everything a Stop stops is stopped" not in rows[-1]["text"] and
+          "was asked to stop" in rows[-1]["text"],
+          f"and the halt's line says which step did NOT work, never that "
+          f"everything stopped: {rows[-1:]}")
+    last = [r for r in svc.journal if r.get("action") == "stop"][-1]
+    check("show control is off" in last["text"] and
+          "The halt did not complete: show did NOT work" in last["text"]
+          and last.get("fault"),
+          f"and the outcome line says the halt did not complete: {last}")
     n.c.close()
     n.link.close()
 

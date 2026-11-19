@@ -8152,33 +8152,47 @@ class Remote:
                 out["failed"].append("playback stop")
                 out["error"] = f"{type(e).__name__}: {e}"
             out["run_on"] = False
+            halt_bad = list(out["failed"])
             if not hold and self._show_control_still_on():
                 # Show control off asked for no Hold because show control
-                # goes off. It did not: the Stop's Hold after all, so no
-                # show starts by itself (cold review A of #277).
+                # goes off. It did not (stop raised, or answered without
+                # letting the show file go): the Stop's Hold after all, so
+                # no show starts by itself (cold review A of #277).
                 self._halt_schedule(out, who, screen, hold=True,
                                     because="for Show control off, which "
                                             "did not turn show control off")
                 out["run_on"] = True
+                out["stopped"] = False
                 if "playback stop" not in out["failed"]:
                     out["failed"].append("playback stop")
                 self._journal(who, screen, "stop", "fault",
-                              f"{who or 'An unnamed operator'}'s Show "
-                              f"control off on the {screen}: show control "
-                              f"did NOT turn off, so the schedule was put "
-                              f"on Hold as a Stop puts it. Turn show "
-                              f"control off again.", fault=True)
+                              self._run_off_not_off_words(who, screen, out),
+                              fault=True)
             elif not hold:
                 label = who or "An unnamed operator"
                 stopped = "playback stop" not in out["failed"]
-                self._journal(
-                    who, screen, "stop", "done" if stopped else "fault",
-                    f"{label}'s Show control off on the {screen}: show "
-                    f"control is off, and the schedule was not put on "
-                    f"Hold (a Hold already on stays on)."
-                    + ("" if stopped else " Stopping playback did NOT "
-                       "work cleanly; the show file was let go."),
-                    fault=not stopped)
+                if not out["stopped"] and stopped:
+                    head = (f"{label}'s Show control off on the {screen}: "
+                            f"show control was already off, and the "
+                            f"schedule was not put on Hold (a Hold already "
+                            f"on stays on).")
+                else:
+                    head = (f"{label}'s Show control off on the {screen}: "
+                            f"show control is off, and the schedule was "
+                            f"not put on Hold (a Hold already on stays "
+                            f"on).")
+                tail = ""
+                if not stopped:
+                    tail += (" Stopping playback did NOT work cleanly; the "
+                             "show file was let go.")
+                if halt_bad:
+                    tail += (f" The halt did not complete: "
+                             f"{', '.join(halt_bad)} did NOT work (the line "
+                             f"before this one says what did).")
+                bad = bool(tail)
+                self._journal(who, screen, "stop",
+                              "fault" if bad else "done", head + tail,
+                              fault=bad)
         else:
             # Stop never turns Run off (Jeff, 2026-10-30).
             out["stopped"] = True
@@ -8194,6 +8208,30 @@ class Remote:
             out["error"] = ("Stop did not complete: " +
                             ", ".join(out["failed"]) + " did NOT work.")
         return (500 if "error" in out else 200), out
+
+    def _run_off_not_off_words(self, who, screen, out):
+        """The journal line when Show control off did not turn show
+        control off, true to what the Stop's Hold step answered: held,
+        nothing to hold now (the night closing or over: the Stop's Hold
+        stands for later), or the Hold failed too."""
+        label = who or "An unnamed operator"
+        head = (f"{label}'s Show control off on the {screen}: show "
+                f"control did NOT turn off")
+        h = out.get("hold") or {}
+        state = getattr(getattr(self.schedule, "machine", None), "state",
+                        None)
+        if "hold" in out["failed"] or h.get("ok") is False:
+            why = str(h.get("text") or "it did not answer")
+            return (f"{head}, and the schedule could NOT be put on Hold "
+                    f"either ({why}). Press Stop, then turn show control "
+                    f"off again.")
+        if state == "HOLD":
+            return (f"{head}, so the schedule was put on Hold as a Stop "
+                    f"puts it. Turn show control off again.")
+        said = str(h.get("text") or "").strip()
+        return (f"{head}, so the Stop's Hold was asked for instead"
+                + (f": {said}" if said else ".")
+                + " Turn show control off again.")
 
     def _show_control_still_on(self):
         """True while a show file still runs after control.stop() (it
@@ -8394,7 +8432,10 @@ class Remote:
             bad = ", ".join(out["failed"])
             self._journal(who, screen, "stop", "done" if not bad else "fault",
                           f"{label} pressed Show control off on the "
-                          f"{screen}: everything a Stop stops is stopped. "
+                          f"{screen}: "
+                          + ("everything a Stop stops is stopped. "
+                             if not bad else
+                             "everything a Stop stops was asked to stop. ")
                           + " ".join(parts)
                           + (f" These did NOT work: {bad}." if bad else "")
                           + " Turning show control off next.",
