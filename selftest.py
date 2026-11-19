@@ -85143,12 +85143,13 @@ def test_restart_engine_between_shows_on_hold():
         why = said("a show held mid-run", "held mid-run")
         check("running" not in why.split(".")[0],
               f"and it is not called running: {why!r}")
-        # Show ctrl off: the whole Stop, which ends the held show and puts
-        # the schedule on Hold, then show control off.
+        # Show ctrl off: every step of a Stop but no Hold of its own (#277):
+        # the held show ends onto the operator's Hold that was on (not a
+        # Stop's Hold), then show control off.
         code, out = rm.run_off("Andy", "Rack screen")
         R.settle()
         check(code == 200 and R.svc.machine.state == S.HOLD and
-              R.svc.machine.stop_hold and not R.svc.machine.running,
+              not R.svc.machine.running,
               f"setup: Show ctrl off ends on Hold: {code} "
               f"{R.svc.machine.state}")
         said("on Hold after Show ctrl off, no show running")
