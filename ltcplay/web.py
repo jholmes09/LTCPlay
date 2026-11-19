@@ -289,6 +289,11 @@ class Control:
         self.lock = threading.Lock()
         self._starting = False
         self._start_gen = 0
+        # Counts each time show control comes on (a show file stored to
+        # run), and who to tell once it has (fire_ice.attach: the
+        # scheduler's run_turned_on). Jeff, 2026-11-19.
+        self.run_gen = 0
+        self.on_show_control_on = None
         self.last_error = ""
         self._sd = sd
         # -- state() cache: see the method itself for why this exists.
@@ -742,6 +747,9 @@ class Control:
         # engine the page could not see and Stop could not find. Round 2
         # of the audit reproduced it: the page said idle while 1,500
         # packets a second went to the rig. Found 2026-09-13.
+        # One more turn-on, counted before the show file can read as
+        # running (the scheduler's stamp, Jeff 2026-11-19).
+        self.run_gen += 1
         with self.lock:
             self.session = s
         try:
@@ -751,6 +759,12 @@ class Control:
                 if self.session is s:
                     self.session = None
             raise
+        tell = self.on_show_control_on
+        if tell is not None:
+            try:
+                tell()
+            except Exception:                    # noqa: BLE001
+                pass
         self.last_error = ""
         # The show file last Run (2026-10-23): the Art-Net receiver check
         # judges this one when nothing is loaded (remote._active_show_files).

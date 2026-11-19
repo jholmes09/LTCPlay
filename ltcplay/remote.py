@@ -8160,6 +8160,12 @@ class Remote:
                 out["run_on"] = True
                 if "playback stop" not in out["failed"]:
                     out["failed"].append("playback stop")
+                self._journal(who, screen, "stop", "fault",
+                              f"{who or 'An unnamed operator'}'s Show "
+                              f"control off on the {screen}: show control "
+                              f"did NOT turn off, so the schedule was put "
+                              f"on Hold as a Stop puts it. Turn show "
+                              f"control off again.", fault=True)
         else:
             # Stop never turns Run off (Jeff, 2026-10-30).
             out["stopped"] = True
@@ -8467,11 +8473,17 @@ class Remote:
         one = getattr(svc, "halt_schedule", None)
         if one is not None and not hold:
             try:
+                live = getattr(getattr(svc, "machine", None), "state",
+                               None) in self.HALT_LIVE
+            except Exception:                    # noqa: BLE001
+                live = True
+            try:
                 r = one(who, screen, "", hold=False)
                 ok, text = bool(r.get("ok")), str(r.get("text") or "")
                 kind = r.get("kind")
             except Exception as e:               # noqa: BLE001
-                ok, text, kind = False, f"{type(e).__name__}: {e}", None
+                ok, text = False, f"{type(e).__name__}: {e}"
+                kind = "stop" if live else None
             if kind == "stop":
                 out["show"] = {"ok": ok, "text": text}
                 out["show_ended"] = ok

@@ -815,6 +815,11 @@ class Service:
         # control is always off when the engine starts (Jeff's standing
         # rule, no auto-Run), so a restart starts with None, fail closed.
         self._run_on_since = None
+        # () -> show control's own turn-on count (web.Control.run_gen), set
+        # by fire_ice.attach, or None. A count that changed since the stamp
+        # means show control went off and on again unseen: stamped again.
+        self.run_gen = None
+        self._run_on_gen = None
         # alerts.Alerts.raise_(kind, text), set by remote.Remote: a failed
         # start raises a "start" alert for the rack screen and the booth
         # (Jeff, 2026-10-12: the groups are left as they are, so a person
@@ -3241,7 +3246,8 @@ class Service:
         if gate is None or m is None or m.state not in self.SHOWTIME_FROM:
             return
         try:
-            probe = sch.step(m, ev or sch.Event(sch.TICK, "scheduler"), now)
+            probe = sch.step(m, ev or sch.Event(
+                sch.TICK, "scheduler", run_on_at=self._run_on_since), now)
             shows = [e.show for e in probe.effects
                      if e.kind == sch.START_SHOW]
             if not shows:
@@ -3285,17 +3291,80 @@ class Service:
         return (str(m.date), n, at.isoformat() if at is not None else "")
 
     # -- the pre-roll (preroll.py, Jeff 2026-10-28) -------------------------
+    def _read_run_gen(self):
+        """Show control's turn-on count, or None with none attached. One
+        that cannot be read is a fresh object, never equal to the last:
+        the stamp is then taken again at every look (fail closed)."""
+        fn = self.run_gen
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:                        # noqa: BLE001
+            return object()
+
+    def run_turned_on(self):
+        """Show control has just come on (web.Control.start, wired by
+        fire_ice.attach): the moment it did, on this service's clock, the
+        stamp the rule of Jeff, 2026-11-19 measures from, taken at the
+        source, not when a tick first notices. Never raises."""
+        try:
+            with self._locked():
+                self._run_on_since = self.clock()
+                self._run_on_gen = self._read_run_gen()
+        except Exception:                        # noqa: BLE001
+            pass
+
     def _watch_run_on(self, now):
-        """The moment show control was turned on, as this service first
-        sees it on (a tick, 4 a second), or None while it is off or this
-        engine has no show control gate. Seen late, never early: a show
-        on the edge is MISSED rather than started (fail closed). Lock
-        held. Never raises."""
+        """The moment show control was turned on (run_turned_on), or None
+        while it is off or this engine has no show control gate. When the
+        source did not say (no hook, or show control went off and on
+        again between two looks: its turn-on count changed), the first
+        look that sees it on is the stamp: late, never early, so a show
+        on the edge is MISSED rather than started (fail closed). A stamp
+        ahead of the clock (the clock stepped back) is brought back to
+        now. Lock held. Never raises."""
         if self.run_gate is None or not self._run_pressed():
             self._run_on_since = None
-        elif self._run_on_since is None:
+            self._run_on_gen = None
+            return None
+        gen = self._read_run_gen()
+        if self._run_on_since is None or gen != self._run_on_gen:
+            self._run_on_since = now
+            self._run_on_gen = gen
+        elif self._run_on_since > now:
             self._run_on_since = now
         return self._run_on_since
+
+    def run_on_refusal(self, n):
+        """Why the scheduler's own start of show n is refused at the
+        start itself (Jeff, 2026-11-19), or "": its start time was
+        sch.RUN_ON_LATE_S or more before show control came on, so it is
+        never started, even when the start was decided while show control
+        was off and show control came on before it reached the show
+        runner. Asked by the show runner for automatic starts only (Start
+        now, Resume and Start at a cue are the operator's). Read without
+        the lock, from the conductor's line; a stamp it cannot trust is
+        taken as now (fail closed). Never raises."""
+        try:
+            m = self.machine
+            if m is None or self.run_gate is None or \
+                    not self._run_pressed():
+                return ""
+            s = m.slot(n)
+            on_at = self._run_on_since
+            if on_at is None or self._read_run_gen() != self._run_on_gen:
+                on_at = self.clock()
+            if sch.lateness_s(s.start, on_at) < sch.RUN_ON_LATE_S:
+                return ""
+            return (f"show control was off at its start time "
+                    f"({m.hm(s.start)}) and came on at {m.hm(on_at)}, so "
+                    f"the scheduler does not start it; press Start now to "
+                    f"start it")
+        except Exception:                        # noqa: BLE001
+            return ("whether show control came on after its start time "
+                    "could not be checked, so the scheduler does not start "
+                    "it; press Start now to start it")
 
     def _miss_shows_before_run_on(self, now):
         """Jeff, 2026-11-19: "When you turn show control back on, if it's
@@ -3382,8 +3451,9 @@ class Service:
                 return
             # Would the scheduler start it at its time (no guard, nothing
             # in the way)? Asked of the pure machine at that instant.
-            n = self._starts(sch.step(m, sch.Event(sch.TICK, "scheduler"),
-                                      max(now, nxt.start)))
+            n = self._starts(sch.step(m, sch.Event(
+                sch.TICK, "scheduler", run_on_at=self._run_on_since),
+                max(now, nxt.start)))
             if n:
                 self._preroll_kick(n)
         except Exception:                        # noqa: BLE001
@@ -3454,8 +3524,9 @@ class Service:
             # 2026-11-12: skip).
             return (f"an alert is open, so show {n} would be held at its "
                     f"time")
-        if not self._starts(sch.step(m, sch.Event(sch.TICK, "scheduler"),
-                                     max(now, s.start))):
+        if not self._starts(sch.step(m, sch.Event(
+                sch.TICK, "scheduler", run_on_at=self._run_on_since),
+                max(now, s.start))):
             return f"the scheduler would not start show {n} at its time"
         if left < pa.LEAD_S - pa.GRACE_S:
             return (f"only {max(0.0, left):.0f} s were left when it could "

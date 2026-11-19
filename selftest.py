@@ -43992,22 +43992,46 @@ def test_show_control_off_ends_the_show_without_a_hold():
           f"show control still on after Show control off: the schedule "
           f"is held as a Stop holds it, and the press says it failed: "
           f"{code} {svc.machine.state} {out}")
+    rows = [r for r in svc.journal if r.get("action") == "stop"]
+    check(rows and "show control did NOT turn off, so the schedule was "
+          "put on Hold" in rows[-1]["text"] and rows[-1].get("fault"),
+          f"and the journal says so, true to what happened: {rows[-1:]}")
+    n.c.close()
+    n.link.close()
+
+    # The scheduler's no-Hold step raising while a show is live: the show
+    # is reported as not ended, not only the schedule.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+
+    def broken(*a, **kw):
+        raise RuntimeError("the schedule file is locked")
+    svc.halt_schedule = broken
+    n.now[0] = _den(S, 18, 5)
+    code, out = rm.run_off("Andy", "Rack screen")
+    del svc.halt_schedule
+    check(code == 500 and "show" in out.get("failed", []) and
+          out.get("show", {}).get("ok") is False,
+          f"a live show the scheduler could not end is said as such: "
+          f"{code} {out}")
     n.c.close()
     n.link.close()
 
 
-def test_show_control_on_late_never_starts_a_passed_show():
-    section("Show control turned on late (Jeff, 2026-11-19: \"When you turn "
-            "show control back on, if it's past the start time by even a "
-            "second, it should not start\"): a show 1 s or more past its "
-            "start when show control went on is MISSED in words and never "
-            "started, even inside the 120 s late rule; a show still to come "
-            "starts at its time; with show control on all along the 120 s "
-            "rule is unchanged; off and on twice uses the last on")
+def _run_on_rig():
+    """_run_off_night with show control's own turn-on wired as web.Control
+    does it: on(h, m, s, us) turns show control on at that moment (the
+    turn-on count and the scheduler's stamp, at the source), off() turns it
+    off; at(h, m, s, us) is the engine looking then (a tick, the runner)."""
     n = _run_off_night()
     if n is None:
-        return
+        return None
     S, svc, c = n.S, n.svc, n.c
+    n.control.run_gen = 0
+    sess = n.sess
 
     def at(h, mi, s=0, us=0):
         n.now[0] = _den(S, h, mi, s, us)
@@ -44016,17 +44040,47 @@ def test_show_control_on_late_never_starts_a_passed_show():
         n.w.runner.poll()
         _settle(svc, c)
 
+    def on(h, mi, s=0, us=0, tell=True):
+        n.now[0] = _den(S, h, mi, s, us)
+        n.control.run_gen += 1
+        n.control.session = sess
+        if tell:
+            n.control.on_show_control_on()
+
+    def off():
+        n.control.session = None
+
     def autos(show):
         return [r for r in svc.journal if r.get("action") ==
                 "automatic start" and r.get("show") == show]
-    sess = n.sess
-    n.control.session = None                # show control off
+    n.at, n.on, n.off, n.autos = at, on, off, autos
+    return n
+
+
+def test_show_control_on_late_never_starts_a_passed_show():
+    section("Show control turned on late (Jeff, 2026-11-19: \"When you turn "
+            "show control back on, if it's past the start time by even a "
+            "second, it should not start\"): stamped when show control "
+            "really comes on; a show 1 s or more past its start then is "
+            "MISSED in words, never started, never alerted, even inside the "
+            "120 s late rule; a show still to come starts at its time; with "
+            "show control on all along the 120 s rule is unchanged; off and "
+            "on twice uses the last on")
+    n = _run_on_rig()
+    if n is None:
+        return
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    at, on, off, autos = n.at, n.on, n.off, n.autos
+    check(callable(getattr(n.control, "on_show_control_on", None)) and
+          svc.run_gen() == 0,
+          "fire_ice.attach wires show control's turn-on to the scheduler")
+    off()
     _fi_walk(n, 17, 58)
     at(17, 59, 50)
-    # The engine sees nothing at 18:00 (busy); show control goes on and
-    # the first look is 1.5 s after show 1's time.
-    n.control.session = sess
-    at(18, 0, 1, 500000)
+    # The engine busy over 18:00; show control comes on 1.5 s after show
+    # 1's time and the engine looks a moment later.
+    on(18, 0, 1, 500000)
+    at(18, 0, 2)
     s1 = svc.machine.slot(1)
     check(s1.status == S.MISSED and s1.reason == S.RUN_OFF_AT_START and
           not autos(1) and svc.machine.state != S.SHOW,
@@ -44038,6 +44092,13 @@ def test_show_control_on_late_never_starts_a_passed_show():
           said[-1]["text"] and "Start now is still there" in
           said[-1]["text"],
           f"the journal says why, in words: {said[-1:]}")
+    row = [r for r in svc.tonight_view()["slots"] if r.get("show") == 1]
+    check(row and row[0]["status"] == S.MISSED and
+          "show control was off at its start time" in row[0]["reason"],
+          f"the schedule list says it in plain words: {row}")
+    check(not rm.alerts.open(),
+          f"and it raises no alert (an open alert would hold a later "
+          f"show): {[a.text for a in rm.alerts.open()]}")
     _fi_walk(n, 18, 19, start=(18, 1))
     check(svc.machine.slot(1).status == S.MISSED and not autos(1),
           "and it is never started later")
@@ -44067,34 +44128,185 @@ def test_show_control_on_late_never_starts_a_passed_show():
           "late by" in s4.reason,
           f"and more than 120 s late is MISSED by the late rule, as "
           f"before: {s4}")
-    # Off and on twice: the last on is what counts.
+    # Off and on twice with no look in between (the engine stalled): the
+    # last on is what counts, stamped where show control came on.
     _fi_walk(n, 19, 15, start=(19, 3))
-    n.control.session = None
+    off()
     at(19, 16)
-    n.control.session = sess
-    at(19, 17)
-    n.control.session = None
-    at(19, 19, 58)
-    n.control.session = sess
-    at(19, 20, 1, 500000)
+    on(19, 17)
+    at(19, 17, 1)
+    off()
+    on(19, 20, 1, 500000)
+    at(19, 20, 2)
     s5 = svc.machine.slot(5)
     check(s5.status == S.MISSED and s5.reason == S.RUN_OFF_AT_START and
           not autos(5),
-          f"off and on twice, on again 1.5 s after show 5's time: MISSED, "
-          f"never started: {s5}")
-    # Under a second past its time when show control came on: it is not
-    # yet a second late, so it starts (the same second, as the late rule
-    # counts whole seconds).
-    _fi_walk(n, 19, 39, start=(19, 21))
-    n.control.session = None
-    at(19, 39, 59)
-    n.control.session = sess
-    at(19, 40, 0, 600000)
-    check(svc.machine.state == S.SHOW and svc.machine.running == 6,
-          f"show control on 0.6 s after show 6's time: it starts: "
-          f"{svc.machine.state} {svc.machine.slot(6)}")
+          f"off at 19:17 and on again 1.5 s after show 5's time, with no "
+          f"look between: MISSED, never started: {s5}")
+    # The same with no word from the source (its turn-on count alone).
+    _fi_walk(n, 19, 38, start=(19, 21))
+    off()
+    on(19, 40, 1, 500000, tell=False)
+    at(19, 40, 2)
+    s6 = svc.machine.slot(6)
+    check(s6.status == S.MISSED and not autos(6),
+          f"off and on again unseen, only the turn-on count changed: "
+          f"stamped at the first look, MISSED: {s6}")
+    # Under a second past its time when show control came on: not yet a
+    # second late, so it starts (the late rule counts whole seconds).
+    _fi_walk(n, 19, 59, start=(19, 41))
+    off()
+    at(19, 59, 59)
+    on(20, 0, 0, 600000)
+    at(20, 0, 0, 700000)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 7,
+          f"show control on 0.6 s after show 7's time: it starts: "
+          f"{svc.machine.state} {svc.machine.slot(7)}")
     n.c.close()
     n.link.close()
+
+    # With no turn-on count to read (run_gen None), a look that sees show
+    # control off forgets the old stamp, so the next on is stamped anew.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    svc.run_gen = None
+    n.on(17, 56, tell=False)
+    n.at(17, 56, 1)
+    n.off()
+    n.at(17, 59, 59)
+    n.on(18, 0, 2, tell=False)
+    n.at(18, 0, 2, 500000)
+    check(svc.machine.slot(1).status == S.MISSED and not n.autos(1),
+          f"off seen, then on 2 s after show 1's time: MISSED: "
+          f"{svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
+    # Busy while show control was ON keeps the 120 s rule: on at
+    # 17:59:59.5, the engine's first look 1.5 s after 18:00.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 58)
+    n.at(17, 59, 50)
+    n.on(17, 59, 59, 500000)
+    n.at(18, 0, 1, 500000)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1 and
+          n.autos(1) and n.autos(1)[-1]["outcome"] == "done",
+          f"show control came on before show 1's time and the engine was "
+          f"busy over it: it starts, late, as the 120 s rule says: "
+          f"{svc.machine.state} {svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
+    # The clock stepped back after show control came on: the stamp never
+    # stays ahead of the clock, so the next show still starts.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    _fi_walk(n, 17, 56)
+    n.on(18, 10)
+    n.at(17, 58)                            # the clock stepped back
+    check(svc._run_on_since <= n.now[0],
+          f"the stamp is brought back to the clock: {svc._run_on_since}")
+    _fi_walk(n, 18, 0, start=(17, 59))
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+          f"show 1 starts at its time after the clock stepped back: "
+          f"{svc.machine.state} {svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
+    # A start decided while show control was off reaches the show runner
+    # after show control came on (the line was behind): refused at the
+    # start itself, in words, nothing sent.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 59)
+    runner = n.w.runner
+    real = runner.start_show
+    k = [0]
+
+    def late_on(*a, **kw):
+        n.on(18, 0, 3)
+        k[0] = len(n.calls)
+        return real(*a, **kw)
+    runner.start_show = late_on
+    n.at(18, 0)
+    runner.start_show = real
+    s1 = svc.machine.slot(1)
+    autos = n.autos(1)
+    check(autos and autos[-1]["outcome"] == "refused" and
+          "show control was off at its start time" in autos[-1]["text"] and
+          s1.status != S.RUNNING and svc.machine.state != S.SHOW,
+          f"the start is refused at the show runner, in words: "
+          f"{autos[-1:]} {s1}")
+    check(not [x for x in _fi_rig_touched(n.calls, k[0])
+               if x[0] in ("pixels",) or x[0].startswith("music_")],
+          f"no music or pixels went out for it: "
+          f"{_fi_rig_touched(n.calls, k[0])[:6]}")
+    check(svc.run_on_refusal(2) == "",
+          "a show still to come is not refused")
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is True, f"Start now is unchanged and starts it: {r}")
+    n.c.close()
+    n.link.close()
+
+
+def test_show_control_on_is_stamped_at_the_source():
+    section("Show control on tells the scheduler the moment it came on "
+            "(Jeff, 2026-11-19): web.Control counts each turn-on before the "
+            "show file can read as running, and calls its hook once the "
+            "show file runs; a failed start calls nothing")
+    import tempfile
+    from ltcplay import web as web_mod
+    folder = tempfile.mkdtemp()
+    open(os.path.join(folder, "x.json"), "w").close()
+    seen = []
+
+    class _S:
+        wav = None
+
+        def __init__(self, path, **kw):
+            self.running = False
+            self.fail = False
+
+        def open(self):
+            pass
+
+        def start(self):
+            if _S.fail_next:
+                raise RuntimeError("the audio device is wedged")
+            self.running = True
+
+        def stop(self):
+            self.running = False
+    _S.fail_next = False
+    real = web_mod.Session
+    web_mod.Session = _S
+    try:
+        c = web_mod.Control(folder, sd=object())
+        c.on_show_control_on = lambda: seen.append(
+            (c.run_gen, c.session is not None and c.session.running))
+        check(c.run_gen == 0, "nothing counted before show control is on")
+        c.start("x.json", auto_reload=False)
+        check(c.run_gen == 1 and seen == [(1, True)],
+              f"one turn-on counted, the hook told once the show file "
+              f"runs: {c.run_gen} {seen}")
+        c.stop()
+        _S.fail_next = True
+        try:
+            c.start("x.json", auto_reload=False)
+        except Exception:                        # noqa: BLE001
+            pass
+        check(seen == [(1, True)] and c.session is None,
+              f"a start that failed tells no one: {seen}")
+        _S.fail_next = False
+        c.start("x.json", auto_reload=False)
+        check(seen[-1] == (3, True),
+              f"the next turn-on is counted and told: {seen}")
+    finally:
+        web_mod.Session = real
+    print("  ok")
 
 
 def test_refused_starts_say_why_and_what_to_press():
@@ -128294,6 +128506,7 @@ if __name__ == "__main__":
         test_refused_starts_say_why_and_what_to_press,
         test_show_control_off_ends_the_show_without_a_hold,
         test_show_control_on_late_never_starts_a_passed_show,
+        test_show_control_on_is_stamped_at_the_source,
         test_rack_screen_stop_in_place_of_start_now,
         test_schedule_failed_start_effects_follow_what_was_sent,
         test_soak_schedule_is_refused_outside_the_soak,

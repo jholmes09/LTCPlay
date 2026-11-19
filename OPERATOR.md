@@ -1979,8 +1979,17 @@ stop:
   start time has already passed, by even one second (Jeff, 2026-11-19):
   it is MISSED, and the journal says show control was off at its start
   time. That is so even inside the 2 minute late rule. A show whose
-  time has not come yet starts at its time. Start now, Resume and Start
-  at a cue still start a show when you press them. End rehearsal
+  time has not come yet starts at its time. Start now and Start at a cue
+  still start a show when you press them. Resume ends a Hold, but it
+  does not start a show whose time passed while show control was off:
+  that show is MISSED, and Start now starts it. A show MISSED this way
+  says so on the schedule list ("show control was off at its start
+  time") and in the journal; it raises no alert. If the scheduler had
+  already decided to start such a show when show control came on, the
+  start is refused at that moment with the same words, nothing is sent
+  to the rig for it, and it is marked FAULT with the usual alert for a
+  refused start (this can only happen in the moment between the
+  decision and the start). End rehearsal
   is the same press in a rehearsal. It needs the Show permission;
   Stop never does. Right after Stop turns back into Start now, Show
   control on or off, the button waits 2 seconds before it takes a

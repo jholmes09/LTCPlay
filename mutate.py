@@ -18408,8 +18408,10 @@ def build():
 
  ("scheduler: the moment show control came on is never noted",
   "ltcplay/schedule_service.py",
-  "        elif self._run_on_since is None:\n            self._run_on_since = now\n",
-  "        elif False:\n            self._run_on_since = now\n"),
+  "        if self._run_on_since is None or gen != self._run_on_gen:\n"
+  "            self._run_on_since = now\n",
+  "        if False:\n"
+  "            self._run_on_since = now\n"),
 
  ("scheduler: show control off does not forget when it came on",
   "ltcplay/schedule_service.py",
@@ -18417,6 +18419,38 @@ def build():
   "            self._run_on_since = None\n",
   "        if self.run_gate is None:\n"
   "            self._run_on_since = None\n"),
+
+ ("scheduler: show control's turn-on is not stamped where it happens",
+  "ltcplay/schedule_service.py",
+  "            with self._locked():\n"
+  "                self._run_on_since = self.clock()\n",
+  "            with self._locked():\n"
+  "                pass\n"),
+
+ ("scheduler: show control off and on again between two ticks keeps the old stamp",
+  "ltcplay/schedule_service.py",
+  "        if self._run_on_since is None or gen != self._run_on_gen:\n",
+  "        if self._run_on_since is None:\n"),
+
+ ("scheduler: a clock stepped back leaves the show control stamp ahead of it",
+  "ltcplay/schedule_service.py",
+  "        elif self._run_on_since > now:\n            self._run_on_since = now\n",
+  "        elif False:\n            self._run_on_since = now\n"),
+
+ ("show runner: a scheduled start past its time when show control came on is not checked at the start",
+  "ltcplay/fire_ice.py",
+  "            ask = getattr(self.svc, \"run_on_refusal\", None)\n",
+  "            ask = None\n"),
+
+ ("show control on: the scheduler is not told when it came on",
+  "ltcplay/web.py",
+  "        tell = self.on_show_control_on\n",
+  "        tell = None\n"),
+
+ ("show control on: a turn-on is not counted",
+  "ltcplay/web.py",
+  "        self.run_gen += 1\n",
+  "        pass\n"),
 
  ("halt: Stop leaves Programming playback running",
   "ltcplay/remote.py",
