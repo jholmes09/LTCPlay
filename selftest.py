@@ -44475,6 +44475,25 @@ def test_show_control_on_late_never_starts_a_passed_show():
     n.c.close()
     n.link.close()
 
+    # A press told ahead of the clock (the clock stepped back between the
+    # press and the first look): the press is not taken; the look is.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 56)
+    n.on(18, 10, running_at=(17, 58))
+    n.at(17, 58)
+    check(svc._run_on_since is not None and
+          svc._run_on_since <= n.now[0],
+          f"a press ahead of the clock is never the stamp: "
+          f"{svc._run_on_since} {n.now[0]}")
+    _fi_walk(n, 18, 0, start=(17, 59))
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+          f"and show 1 still starts at its time: {svc.machine.state} "
+          f"{svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
     # A start decided while show control was off reaches the show runner
     # after show control came on (the line was behind): refused at the
     # start itself, in words, nothing sent.

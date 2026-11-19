@@ -3339,10 +3339,13 @@ class Service:
     def _run_on_from_press(self, gen, now):
         """The moment show control came on, for the tick and the show
         runner's check alike (Jeff, 2026-11-19): the press the source told
-        for this very turn-on count, if the show file is running within
-        sch.RUN_ON_PRESS_GRACE_S of it; otherwise now, the first look that
-        sees it running (the later time). Any doubt (no press told, another
-        count, a press ahead of the clock) is now: fail closed."""
+        for this very turn-on count, if the show file is first seen running
+        within sch.RUN_ON_PRESS_GRACE_S of it. If it is first seen running
+        more than that after the press, the first look (a tick, or the show
+        runner's check, up to about a quarter second after it really began
+        running) counts as the on-moment: `now` here. Any doubt (no press
+        told, another count, a press ahead of the clock) is now too: fail
+        closed, a show is only ever MISSED by it, never started."""
         told = self._run_on_told
         try:
             if told is not None and gen is not None and told[0] == gen:

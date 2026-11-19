@@ -275,9 +275,10 @@ DEFAULT_LATE_GRACE_S = 120
 # Start at a cue stay the operator's own presses.
 RUN_ON_LATE_S = 1
 # The press of Show control on is its moment (Jeff, 2026-11-19), as long as
-# the show file is running within this many seconds of the press; one that
-# takes longer to run counts from when it was first seen running (the later
-# time, fail closed).
+# the show file is first seen running within this many seconds of the
+# press; otherwise the first look that sees it running (a tick or the show
+# runner's check, up to about a quarter second late) is the moment (the
+# later time, fail closed).
 RUN_ON_PRESS_GRACE_S = 10
 RUN_OFF_AT_START = "MISSED (show control was off at its start time)"
 # The late rule's ceiling (5 minutes). A bigger number in the rule file is

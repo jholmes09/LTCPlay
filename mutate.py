@@ -18490,6 +18490,11 @@ def build():
   "                on_at = (self._run_on_told[1] if self._run_on_told\n"
   "                         else now)\n"),
 
+ ("scheduler: a press told ahead of the clock counts as show control's moment",
+  "ltcplay/schedule_service.py",
+  "                if 0 <= waited <= sch.RUN_ON_PRESS_GRACE_S:\n",
+  "                if waited <= sch.RUN_ON_PRESS_GRACE_S:\n"),
+
  ("halt: Stop leaves Programming playback running",
   "ltcplay/remote.py",
   "            self._halt_programming(out, who, screen)\n",

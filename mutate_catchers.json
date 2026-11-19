@@ -1786,6 +1786,7 @@
 "scheduler: a show file that took more than 10 s to run still counts from the press": "test_show_control_on_late_never_starts_a_passed_show",
 "scheduler: the press grace for show control on is longer than 10 s": "test_show_control_on_late_never_starts_a_passed_show",
 "show runner: the start's check takes the press with no 10 s cap": "test_show_control_on_late_never_starts_a_passed_show",
+"scheduler: a press told ahead of the clock counts as show control's moment": "test_show_control_on_late_never_starts_a_passed_show",
 "scheduler: Show control off between shows leaves the night marked lit": "test_show_control_off_ends_the_show_without_a_hold",
 "scheduler: show control on is dated when the show file opened, not when it was pressed": "test_show_control_on_late_never_starts_a_passed_show",
 "show runner: the start's check keeps a show control stamp ahead of the clock": "test_show_control_on_late_never_starts_a_passed_show",
