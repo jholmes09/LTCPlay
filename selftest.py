@@ -44411,6 +44411,54 @@ def test_show_control_on_late_never_starts_a_passed_show():
     n.c.close()
     n.link.close()
 
+    # The press is the moment only if the show file runs within 10 s of
+    # it (Jeff, 2026-11-19); later than that, the moment it was seen
+    # running counts (the later time).
+    def _press_case(press, running, look=None):
+        n = _run_on_rig()
+        S, svc, c = n.S, n.svc, n.c
+        n.off()
+        _fi_walk(n, 17, 58)
+        n.at(17, 59, 40)
+        n.on(*press, running_at=running)
+        n.at(*(look or running))
+        got = (svc.machine.state, svc.machine.running,
+               svc.machine.slot(1).status, svc.machine.slot(1).reason)
+        n.c.close()
+        n.link.close()
+        return got, S
+    got, S = _press_case((17, 59, 59), (18, 0, 2))
+    check(got[0] == S.SHOW and got[1] == 1,
+          f"pressed 17:59:59, the show file running 3 s later: the 18:00 "
+          f"show starts: {got}")
+    got, S = _press_case((17, 59, 59), (18, 0, 11))
+    check(got[2] == S.MISSED and got[3] == S.RUN_OFF_AT_START,
+          f"pressed 17:59:59, the show file running only 12 s later "
+          f"(18:00:11): MISSED, never started: {got}")
+    got, S = _press_case((17, 59, 51), (18, 0, 1))
+    check(got[0] == S.SHOW and got[1] == 1,
+          f"the show file running exactly 10.0 s after the press: the "
+          f"press counts, so the show starts: {got}")
+    got, S = _press_case((17, 59, 51), (18, 0, 1, 1000))
+    check(got[2] == S.MISSED and got[3] == S.RUN_OFF_AT_START,
+          f"10.001 s after the press: the later time counts, MISSED: {got}")
+    # The show runner's own check agrees, before any tick has looked.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 58)
+    n.at(17, 59, 40)
+    n.on(17, 59, 59, running_at=(18, 0, 11))
+    check("show control was off at its start time" in
+          svc.run_on_refusal(1),
+          f"the show runner refuses it too, the file running 12 s after "
+          f"the press: {svc.run_on_refusal(1)!r}")
+    n.now[0] = _den(S, 18, 0, 2)
+    check(svc.run_on_refusal(1) == "",
+          "and agrees when it ran 3 s after the press")
+    n.c.close()
+    n.link.close()
+
     # The clock stepped back after show control came on: the stamp never
     # stays ahead of the clock, so the next show still starts.
     n = _run_on_rig()

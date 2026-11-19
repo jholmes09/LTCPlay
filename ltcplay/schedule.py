@@ -274,6 +274,11 @@ DEFAULT_LATE_GRACE_S = 120
 # the scheduler, whatever the late rule above allows. Start now, Resume and
 # Start at a cue stay the operator's own presses.
 RUN_ON_LATE_S = 1
+# The press of Show control on is its moment (Jeff, 2026-11-19), as long as
+# the show file is running within this many seconds of the press; one that
+# takes longer to run counts from when it was first seen running (the later
+# time, fail closed).
+RUN_ON_PRESS_GRACE_S = 10
 RUN_OFF_AT_START = "MISSED (show control was off at its start time)"
 # The late rule's ceiling (5 minutes). A bigger number in the rule file is
 # refused with a sentence rather than quietly clamped: a silent clamp is a

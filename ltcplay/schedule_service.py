@@ -3336,6 +3336,23 @@ class Service:
         except Exception:                        # noqa: BLE001
             pass
 
+    def _run_on_from_press(self, gen, now):
+        """The moment show control came on, for the tick and the show
+        runner's check alike (Jeff, 2026-11-19): the press the source told
+        for this very turn-on count, if the show file is running within
+        sch.RUN_ON_PRESS_GRACE_S of it; otherwise now, the first look that
+        sees it running (the later time). Any doubt (no press told, another
+        count, a press ahead of the clock) is now: fail closed."""
+        told = self._run_on_told
+        try:
+            if told is not None and gen is not None and told[0] == gen:
+                waited = (now - told[1]).total_seconds()
+                if 0 <= waited <= sch.RUN_ON_PRESS_GRACE_S:
+                    return told[1]
+        except Exception:                        # noqa: BLE001
+            pass
+        return now
+
     def _set_run_on(self, since, gen):
         self._run_on_since = since
         self._run_on_gen = gen
@@ -3355,10 +3372,7 @@ class Service:
             return None
         gen = self._read_run_gen()
         if self._run_on_since is None or gen != self._run_on_gen:
-            told = self._run_on_told
-            at = told[1] if told is not None and told[0] == gen and \
-                gen is not None and told[1] <= now else now
-            self._set_run_on(at, gen)
+            self._set_run_on(self._run_on_from_press(gen, now), gen)
         elif self._run_on_since > now:
             self._set_run_on(now, gen)
         return self._run_on_since
@@ -3387,9 +3401,7 @@ class Service:
             on_at, seen = self._run_on_pair      # stamp and count together
             now = self.clock()
             if on_at is None or gen != seen:
-                told = self._run_on_told
-                on_at = told[1] if told is not None and \
-                    told[0] == gen and gen is not None else now
+                on_at = self._run_on_from_press(gen, now)
             if on_at > now:                      # the clock stepped back
                 on_at = now
             if sch.lateness_s(s.start, on_at) < sch.RUN_ON_LATE_S:

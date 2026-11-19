@@ -1981,7 +1981,10 @@ stop:
   start time has already passed, by even one second (Jeff, 2026-11-19):
   it is MISSED, and the journal says show control was off at its start
   time. That is so even inside the 2 minute late rule. A show whose
-  time has not come yet starts at its time. Start now and Start at a cue
+  time has not come yet starts at its time. The moment counted is when
+  you pressed Show control on, as long as the show file is running
+  within 10 seconds of the press; if it takes longer, the moment it
+  started running counts instead. Start now and Start at a cue
   still start a show when you press them. Resume ends a Hold, but it
   does not start a show whose time passed while show control was off:
   that show is MISSED, and Start now starts it. A show MISSED this way

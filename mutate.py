@@ -18406,8 +18406,8 @@ def build():
 
  ('scheduler: the moment show control came on is never noted',
   'ltcplay/schedule_service.py',
-  '        if self._run_on_since is None or gen != self._run_on_gen:\n            told = self._run_on_told\n',
-  '        if False:\n            told = self._run_on_told\n'),
+  '        if self._run_on_since is None or gen != self._run_on_gen:\n            self._set_run_on(self._run_on_from_press(gen, now), gen)\n',
+  '        if False:\n            self._set_run_on(self._run_on_from_press(gen, now), gen)\n'),
 
  ('scheduler: show control off does not forget when it came on',
   'ltcplay/schedule_service.py',
@@ -18454,10 +18454,10 @@ def build():
   "            # down until a show starts.\n            if not m.dark:\n",
   "            # down until a show starts.\n            if False:\n"),
 
- ("scheduler: show control on is dated when the show file opened, not when it was pressed",
-  "ltcplay/schedule_service.py",
-  "                gen is not None and told[1] <= now else now\n",
-  "                gen is not None and False else now\n"),
+ ('scheduler: show control on is dated when the show file opened, not when it was pressed',
+  'ltcplay/schedule_service.py',
+  '                    return told[1]\n',
+  '                    return now\n'),
 
  ("show runner: the start's check keeps a show control stamp ahead of the clock",
   "ltcplay/schedule_service.py",
@@ -18473,6 +18473,22 @@ def build():
   "ltcplay/remote.py",
   "            self._journal(who, screen, \"stop\", \"done\" if not bad else \"fault\",\n",
   "            self._journal(who, screen, \"stop\", \"done\",\n"),
+
+ ("scheduler: a show file that took more than 10 s to run still counts from the press",
+  "ltcplay/schedule_service.py",
+  "                if 0 <= waited <= sch.RUN_ON_PRESS_GRACE_S:\n",
+  "                if 0 <= waited:\n"),
+
+ ("scheduler: the press grace for show control on is longer than 10 s",
+  "ltcplay/schedule.py",
+  "RUN_ON_PRESS_GRACE_S = 10\n",
+  "RUN_ON_PRESS_GRACE_S = 15\n"),
+
+ ("show runner: the start's check takes the press with no 10 s cap",
+  "ltcplay/schedule_service.py",
+  "                on_at = self._run_on_from_press(gen, now)\n",
+  "                on_at = (self._run_on_told[1] if self._run_on_told\n"
+  "                         else now)\n"),
 
  ("halt: Stop leaves Programming playback running",
   "ltcplay/remote.py",
