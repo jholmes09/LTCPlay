@@ -2136,6 +2136,11 @@ class Remote:
         # "timing" alert (_frame_timing_work).
         self.flame_link_get = None
         self._timing_said = 0
+        self._timing_alert_id = None  # the "timing" alert raised here
+        self._timing_keep = False     # ...had a gap over TIMING_CLICK_MS
+        self._timing_link = None      # ...from this link's counts
+        self._timing_last_t = None    # the newest late frame handled
+        self._timing_alert_link = None  # the link the alert was raised on
         self._aim_lock = threading.Lock()
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
@@ -4081,29 +4086,88 @@ class Remote:
     TIMING_TEXT = ("Flame frames late, last hour: {n}.\n"
                    "- Why: A flame pulse may be cut short.\n"
                    "- The show carries on. Nothing was changed.\n"
+                   "- {last}\n"
                    "\n"
                    "More: worst {w} ms between two frames to flamesafe. "
                    "flamesafe holds a fire value for {lim} ms after the "
-                   "last frame (its fire_hold_ms).")
+                   "last frame (its fire_hold_ms). Counted here only while "
+                   "a flame can fire: a show, a Hold, a purge or test, "
+                   "Programming, the Fireball page.")
+    TIMING_AUTO = "Clears by itself after an hour."
+    TIMING_CLICK = "A gap over {big} ms: acknowledge it."
+    # A gap this long (ms) keeps the alert open until a person
+    # acknowledges it; shorter ones clear by themselves once the last hour
+    # has none (Jeff, 2026-11-18). Display only either way.
+    TIMING_CLICK_MS = 250
 
     def _frame_timing_work(self):
         """Flame frames late (flamelink.FrameTiming, 2026-10-29): on the
         alert worker, a display only "timing" alert (alerts.DISPLAY_ONLY:
         shown and journaled, no booth note, never holds a show) each time
-        the last hour has more frames over flamesafe's fire_hold_ms than
-        when it was last raised. It stays until a person acknowledges it,
-        like every alert. Sends nothing anywhere. Never raises."""
+        the last hour has more frames over flamesafe's fire_hold_ms IN A
+        FIRE WINDOW (a show, a Hold, a purge or test, Programming, the
+        Fireball page, or a state the link could not read) than when it
+        was last raised (Jeff, 2026-11-18). Late frames outside one are
+        still counted, journaled and on the Flame timing line, never an
+        alert. It clears by itself once the last hour has no such frame,
+        unless one was over TIMING_CLICK_MS: that one stays until a person
+        acknowledges it. Sends nothing anywhere. Never raises."""
         try:
             link = self._flame_link()
             if link is None:
                 return
-            n, worst = link.late_last_hour()
-            if n > self._timing_said:
+            if link is not self._timing_link:
+                # Another link (never at run time today; web.serve sets it
+                # once): its counts start again, so nothing it says can
+                # clear the alert the last one raised.
+                self._timing_link = link
+                self._timing_last_t = None
+                self._timing_said = 0
+            newest = None
+            reader = getattr(link, "late_fire_hour", None)
+            if reader is not None:
+                got = reader()
+                if got is None:
+                    # Unreadable: never taken for "none late", so it
+                    # neither raises nor clears.
+                    return
+                n, worst, newest = got
+            else:
+                # A link that cannot tell the fire window: every late frame
+                # counts (unknown is a fire window).
+                n, worst = link.late_last_hour()
+            aid = self._timing_alert_id
+            up = aid is not None and \
+                any(a.id == aid for a in self.alerts.open())
+            if not up:
+                self._timing_alert_id = None
+                self._timing_keep = False
+            # A late frame newer than the last one handled is new, even
+            # when older ones left the hour as fast (a steady rate).
+            new = newest is not None and (self._timing_last_t is None or
+                                          newest[0] > self._timing_last_t)
+            if n > self._timing_said or new:
                 # The limit from the link itself: this module never
                 # imports the flame link (the GPL wall).
                 lim = (link.timing_view() or {}).get("limit_ms", 100)
-                self.alerts.raise_("timing", self.TIMING_TEXT.format(
-                    n=n, w=f"{worst:.0f}", lim=lim))
+                if worst > self.TIMING_CLICK_MS or \
+                        (new and newest[1] > self.TIMING_CLICK_MS):
+                    self._timing_keep = True
+                last = self.TIMING_CLICK.format(big=self.TIMING_CLICK_MS) \
+                    if self._timing_keep else self.TIMING_AUTO
+                a = self.alerts.raise_("timing", self.TIMING_TEXT.format(
+                    n=n, w=f"{worst:.0f}", lim=lim, last=last))
+                self._timing_alert_id = getattr(a, "id", None)
+                self._timing_alert_link = link
+            elif n == 0 and up and not self._timing_keep and \
+                    reader is not None and self._timing_alert_link is link:
+                # The hour it describes is over: cleared here, only the one
+                # raised here, by its id, from the same link's counts.
+                self._timing_alert_id = None
+                self.alerts.clear(id=aid, who="LTC Player",
+                                  action="Confirm", screen="engine")
+            if newest is not None:
+                self._timing_last_t = newest[0]
             self._timing_said = n
         except Exception:                        # noqa: BLE001
             pass

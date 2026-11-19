@@ -173,6 +173,20 @@ blue; it goes back to START NOW once the alert is cleared. An audio alert,
 or an alert the booth speaker could not play, also pulses the floor pixels
 blue (alert_pixels in ltcplay_remote.json) until it is acknowledged.
 
+**Flame frames late** (the "timing" alert; Jeff, 2026-11-18). LTC Player
+sends flame frames to flamesafe 40 times a second. A gap of more than
+flamesafe's fire_hold_ms (100 ms unless its config says otherwise) can cut
+a flame pulse short; it can never hold a flame on, and flamesafe's own
+cut offs work the same at every hour. This alert is raised only while a
+flame can fire: a show (a Hold included), a purge or a Morning test,
+Programming, the Fireball page, or any frame carrying a fire value. If
+LTC Player cannot tell, it counts as a flame that can fire. Late frames at
+any other time (idle, between shows, overnight) raise no alert; they are
+still counted on the Systems sheet's Flame timing line and in the journal.
+The alert is display only, like the others above, and clears by itself an
+hour after its last late frame. A gap over 250 ms keeps it open until you
+acknowledge it. Acknowledging changes nothing on the rig.
+
 **The Stream Deck's keys** (Jeff, 2026-10-26). Six keys, three on top and
 three below:
 

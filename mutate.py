@@ -8353,6 +8353,67 @@ def build():
   "                self._timing_late.append((now, gap * 1000.0))",
   "                pass"),
 
+ ("flame timing: a late frame in a fire window is not kept for the alert",
+  "ltcplay/flamelink.py",
+  "                    self._timing_late_fire.append((now, gap * 1000.0))",
+  "                    pass"),
+
+ ("flame timing: a late frame right after a fire window is not an alert",
+  "ltcplay/flamelink.py",
+  "                if fire or was:",
+  "                if fire:"),
+
+ ("flame timing: a show or a Hold is not a fire window",
+  "ltcplay/flamelink.py",
+  "            return bool(self._timing_show is not None or self._haze_live",
+  "            return bool(False"),
+
+ ("flame timing: an unreadable show state is not a fire window",
+  "ltcplay/flamelink.py",
+  '                        or self._cue_kind == "state"',
+  "                        or False"),
+
+ ("flame timing: a fire value or Programming is not a fire window",
+  "ltcplay/flamelink.py",
+  "                        or self.last_values_nonzero or self._program_on",
+  "                        or False"),
+
+ ("flame timing: a purge, a test or the Fireball page is not a fire window",
+  "ltcplay/flamelink.py",
+  "                        or self.purge_active() or self.manual_active())",
+  "                        or False)"),
+
+ ("flame timing: a fire window that cannot be worked out counts as idle",
+  "ltcplay/flamelink.py",
+  "                        or self.purge_active() or self.manual_active())\n"
+  "        except Exception:\n"
+  "            return True",
+  "                        or self.purge_active() or self.manual_active())\n"
+  "        except Exception:\n"
+  "            return False"),
+
+ ("flame timing: a gap over the big gap limit clears by itself",
+  "ltcplay/remote.py",
+  "            elif n == 0 and up and not self._timing_keep and \\\n",
+  "            elif n == 0 and up and \\\n"),
+
+ ("flame timing: a steady rate of late frames never raises again",
+  "ltcplay/remote.py",
+  "            new = newest is not None and (self._timing_last_t is None or",
+  "            new = False and (self._timing_last_t is None or"),
+
+ ("flame timing: an unreadable late count clears the alert",
+  "ltcplay/remote.py",
+  "                    # neither raises nor clears.\n"
+  "                    return\n",
+  "                    # neither raises nor clears.\n"
+  "                    got = (0, 0.0, None)\n"),
+
+ ("flame timing: a show in progress alone is not a fire window",
+  "ltcplay/flamelink.py",
+  "            return bool(self._timing_show is not None or self._haze_live",
+  "            return bool(False or self._haze_live"),
+
  ("flame timing: a finished show or hour is never journaled",
   "ltcplay/flamelink.py",
   "            while self._timing_done:",
@@ -8370,7 +8431,7 @@ def build():
 
  ("flame timing: no alert for frames late in the last hour",
   "ltcplay/remote.py",
-  "            if n > self._timing_said:",
+  "            if n > self._timing_said or new:",
   "            if False:"),
 
  ("flame timing: the timing alert holds the show and sounds the booth",
