@@ -8126,7 +8126,7 @@ class Remote:
         svc = self.schedule
         begin = getattr(svc, "halt_begin", None)
         if begin is not None:
-            begin()
+            begin("Show control off was pressed")
         try:
             return self._stop_press(who, screen, run_off=True,
                                     hold=False)
@@ -8156,7 +8156,9 @@ class Remote:
                 # Show control off asked for no Hold because show control
                 # goes off. It did not: the Stop's Hold after all, so no
                 # show starts by itself (cold review A of #277).
-                self._halt_schedule(out, who, screen, hold=True)
+                self._halt_schedule(out, who, screen, hold=True,
+                                    because="for Show control off, which "
+                                            "did not turn show control off")
                 out["run_on"] = True
                 if "playback stop" not in out["failed"]:
                     out["failed"].append("playback stop")
@@ -8165,20 +8167,18 @@ class Remote:
                               f"control off on the {screen}: show control "
                               f"did NOT turn off, so the schedule was put "
                               f"on Hold as a Stop puts it. Turn show "
-                              f"control off again. "
-                              + " ".join(h.get("_said") or []),
-                              fault=True)
+                              f"control off again.", fault=True)
             elif not hold:
                 label = who or "An unnamed operator"
-                bad = ", ".join(out["failed"])
+                stopped = "playback stop" not in out["failed"]
                 self._journal(
-                    who, screen, "stop", "fault" if bad else "done",
-                    f"{label} turned show control off on the {screen}: "
-                    f"everything stopped as a Stop stops it, and the "
-                    f"schedule was not put on Hold (a Hold already on "
-                    f"stays on). " + " ".join(h.get("_said") or [])
-                    + (f" These did NOT work: {bad}." if bad else ""),
-                    fault=bool(bad))
+                    who, screen, "stop", "done" if stopped else "fault",
+                    f"{label}'s Show control off on the {screen}: show "
+                    f"control is off, and the schedule was not put on "
+                    f"Hold (a Hold already on stays on)."
+                    + ("" if stopped else " Stopping playback did NOT "
+                       "work cleanly; the show file was let go."),
+                    fault=not stopped)
         else:
             # Stop never turns Run off (Jeff, 2026-10-30).
             out["stopped"] = True
@@ -8388,9 +8388,17 @@ class Remote:
         parts = [x["text"] for x in (out["flames"], out["lasers"],
                                      out["lasers_blank"]) if x is not None]
         if not hold:
-            # Show control off: written by _stop_press once show control
-            # is off (or not), so the line says what really happened.
-            out["_said"] = parts
+            # Show control off: the halt's own line now, before show
+            # control is turned off (a wedged audio device could keep that
+            # from ever returning); _stop_press writes the outcome after.
+            bad = ", ".join(out["failed"])
+            self._journal(who, screen, "stop", "done" if not bad else "fault",
+                          f"{label} pressed Show control off on the "
+                          f"{screen}: everything a Stop stops is stopped. "
+                          + " ".join(parts)
+                          + (f" These did NOT work: {bad}." if bad else "")
+                          + " Turning show control off next.",
+                          fault=bool(bad))
             return out
         bad = ", ".join(out["failed"])
         self._journal(who, screen, "stop", "fault" if bad else "done",
@@ -8479,7 +8487,7 @@ class Remote:
     HALT_LIVE = ("SHOW", "PAUSED")
     HALT_HOLDS = ("IDLE", "STANDBY")
 
-    def _halt_schedule(self, out, who, screen, hold=True):
+    def _halt_schedule(self, out, who, screen, hold=True, because=""):
         """halt() step 6. A live show: STOP_SHOW (the show ends; the
         schedule is held while a show is still to come). Between shows:
         the schedule's Hold, said as the Stop. Already on Hold: nothing
@@ -8526,7 +8534,8 @@ class Remote:
             # show already running is ended through the conductor's Stop.
             try:
                 r = one(who, screen,
-                        f"pressed Stop on the {screen or 'screen'}, so the "
+                        f"pressed Stop {because + ' ' if because else ''}"
+                        f"on the {screen or 'screen'}, so the "
                         f"schedule is on Hold")
                 ok, text = bool(r.get("ok")), str(r.get("text") or "")
                 kind = r.get("kind")

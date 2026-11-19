@@ -3370,9 +3370,13 @@ class Service:
         never started, even when the start was decided while show control
         was off and show control came on before it reached the show
         runner. Asked by the show runner for automatic starts only (Start
-        now, Resume and Start at a cue are the operator's). Read without
-        the lock, from the conductor's line; a stamp it cannot trust is
-        taken as now (fail closed). Never raises."""
+        now, Resume and Start at a cue are the operator's). Takes no lock
+        (it runs on the conductor's line): it reads the turn-on count
+        first, then the stamp and the count it was taken with as ONE
+        tuple (_run_on_pair, replaced whole, never half written); a count
+        that differs, or no stamp, uses the press told by the source for
+        that count, else now; a stamp ahead of the clock is taken as now
+        (fail closed). Never raises."""
         try:
             m = self.machine
             if m is None or self.run_gate is None or \
@@ -4868,14 +4872,14 @@ class Service:
             # never carries to a later start (review of #162).
             perf.continue_off = None
 
-    def halt_begin(self):
+    def halt_begin(self, why="Stop was pressed"):
         """A Stop's complete halt is under way (Remote.stop_press, web.py's
-        /api/stop with "halt"): until halt_end, Start now is refused, and
-        so is Run (re-review of #144, N2). Also ends any waiting Start
-        now. Never raises."""
+        /api/stop with "halt", Remote.run_off with its own `why`): until
+        halt_end, Start now is refused, and so is Run (re-review of #144,
+        N2). Also ends any waiting Start now. Never raises."""
         with self._halt_count_lock:
             self._halts += 1
-        self.cancel_start_wait("Stop was pressed")
+        self.cancel_start_wait(why)
 
     def halt_end(self):
         with self._halt_count_lock:

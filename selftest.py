@@ -43767,13 +43767,15 @@ def test_show_control_off_ends_the_show_without_a_hold():
           f"refused for a show: {svc.state_view().get('state')}")
     rows = list(svc.journal)
     stop_rows = [r for r in rows if r.get("action") == "stop"]
-    check(stop_rows and "turned show control off on the Rack screen"
-          in stop_rows[-1]["text"] and
-          "the schedule was not put on Hold" in stop_rows[-1]["text"]
-          and "pressed Stop" not in stop_rows[-1]["text"] and
-          "is on Hold" not in stop_rows[-1]["text"],
-          f"the journal says show control was turned off, not Stop, and "
-          f"claims no Hold: {stop_rows[-1:]}")
+    check(len(stop_rows) >= 2 and
+          "pressed Show control off on the Rack screen: everything a Stop "
+          "stops is stopped" in stop_rows[-2]["text"] and
+          "show control is off, and the schedule was not put on Hold" in
+          stop_rows[-1]["text"] and
+          not any("pressed Stop" in r["text"] or "is on Hold" in r["text"]
+                  for r in stop_rows[-2:]),
+          f"the journal says the halt was done, then that show control is "
+          f"off; never Stop, and it claims no Hold: {stop_rows[-2:]}")
     ended = [r for r in rows if r.get("action") == S.STOP_SHOW]
     check(ended and "turned show control off" in ended[-1]["text"] and
           "The schedule is not on Hold" in ended[-1]["text"] and
@@ -43936,9 +43938,11 @@ def test_show_control_off_ends_the_show_without_a_hold():
           not svc.machine.stop_hold, f"setup: an operator's Hold: {r}")
     code, out = rm.run_off("Andy", "Rack screen")
     check(svc.machine.state == S.HOLD and not svc.machine.stop_hold and
-          svc._stop_carry is None,
-          f"show control off leaves the operator's Hold as it was: "
-          f"{svc.machine.state} {svc.machine.stop_hold} {svc._stop_carry}")
+          svc._stop_carry is None and svc.machine.dark,
+          f"show control off leaves the operator's Hold as it was, and the "
+          f"night dark (the conductor's Stop took the look down): "
+          f"{svc.machine.state} {svc.machine.stop_hold} {svc._stop_carry} "
+          f"{svc.machine.dark}")
     n.control.session = n.sess
     code, out = rm.stop_press("Andy", "Rack screen")
     check(svc.machine.stop_hold and svc._stop_carry is not None,
@@ -43995,10 +43999,47 @@ def test_show_control_off_ends_the_show_without_a_hold():
     rows = [r for r in svc.journal if r.get("action") == "stop"]
     check(rows and "show control did NOT turn off, so the schedule was "
           "put on Hold" in rows[-1]["text"] and rows[-1].get("fault") and
-          not any("turned show control off on the" in r["text"]
-                  for r in rows),
-          f"and the journal says so, true to what happened, with no line "
-          f"claiming show control went off: {rows[-2:]}")
+          not any("show control is off" in r["text"] for r in rows) and
+          len(rows) >= 2 and "pressed Show control off on the Rack screen: "
+          "everything a Stop stops is stopped" in rows[-2]["text"],
+          f"and the journal says so, true to what happened: the halt's "
+          f"line first, then the failure, and no line claiming show "
+          f"control went off: {rows[-2:]}")
+    n.c.close()
+    n.link.close()
+
+    # Show control off whose stop wedges (an audio device that never
+    # answers): the halt's own line is already in the journal while it
+    # waits.
+    import threading as _th
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+    gate = _th.Event()
+    sess = n.control.session
+
+    def wedged():
+        n.control.session = None
+        gate.wait(10)
+        return True
+    n.control.stop = wedged
+    t = _th.Thread(target=rm.run_off, args=("Andy", "Rack screen"),
+                   daemon=True)
+    t.start()
+    seen = []
+    for _ in range(100):
+        seen = [r for r in svc.journal if r.get("action") == "stop" and
+                "pressed Show control off" in r.get("text", "")]
+        if seen:
+            break
+        time.sleep(0.05)
+    gate.set()
+    t.join(10)
+    check(seen and "everything a Stop stops is stopped" in seen[-1]["text"],
+          f"the halt's line is written before show control is turned off, "
+          f"so a stop that never returns still leaves it: {seen}")
     n.c.close()
     n.link.close()
 
@@ -44020,6 +44061,12 @@ def test_show_control_off_ends_the_show_without_a_hold():
           out.get("show", {}).get("ok") is False,
           f"a live show the scheduler could not end is said as such: "
           f"{code} {out}")
+    rows = [r for r in svc.journal if r.get("action") == "stop" and
+            "pressed Show control off" in r.get("text", "")]
+    check(rows and rows[-1].get("fault") and
+          rows[-1].get("outcome") == "fault" and
+          "These did NOT work: show" in rows[-1]["text"],
+          f"and the halt's line says which step did NOT work: {rows[-1:]}")
     n.c.close()
     n.link.close()
 
@@ -66064,7 +66111,7 @@ def test_stop_halt_order_hooks_and_programming():
                 return {"ok": True, "text": "held"}
             return {"ok": False, "text": "?"}
 
-        def halt_begin(self):
+        def halt_begin(self, why="Stop was pressed"):
             calls.append(("halt_begin",))
 
         def halt_end(self):

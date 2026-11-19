@@ -18464,6 +18464,16 @@ def build():
   "            if on_at > now:                      # the clock stepped back\n",
   "            if False:\n"),
 
+ ("scheduler: Show control off on a Hold leaves the night marked lit",
+  "ltcplay/schedule_service.py",
+  "            if not hold and not self.machine.dark:\n",
+  "            if False:\n"),
+
+ ("halt: Show control off's halt line hides a failed step",
+  "ltcplay/remote.py",
+  "            self._journal(who, screen, \"stop\", \"done\" if not bad else \"fault\",\n",
+  "            self._journal(who, screen, \"stop\", \"done\",\n"),
+
  ("halt: Stop leaves Programming playback running",
   "ltcplay/remote.py",
   "            self._halt_programming(out, who, screen)\n",
