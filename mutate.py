@@ -20373,7 +20373,7 @@ def build():
  ("Reload engine: a check that fails lets the restart go",
   "ltcplay/remote.py",
   "            return (f\"Whether the engine may restart could not be checked \"\n"
-  "                    f\"({type(e).__name__}).\")\n",
+  "                    f\"({type(e).__name__}). Try again in a moment.\")\n",
   "            return \"\"\n"),
 
  ("Reload engine: offered with live flame programming on",
@@ -20449,9 +20449,55 @@ def build():
 
  ("Reload engine: offered while a show runs",
   "ltcplay/remote.py",
-  "        if self.show_busy_for_reload():\n"
-  "            return \"A show is running. Reload the engine between shows.\"\n",
-  ""),
+  "            if st == \"SHOW\":\n"
+  "                return (\"A show is running. Restart the engine between \"\n",
+  "            if False:\n"
+  "                return (\"A show is running. Restart the engine between \"\n"),
+
+ # Restart the engine between shows (2026-11-19): a Hold with no show
+ # running may restart; a show held mid-run, show control on, a start, a
+ # schedule that cannot be read or a state not known may not.
+ ("Reload engine: offered while a show is held mid-run",
+  "ltcplay/remote.py",
+  "            if st == \"PAUSED\" or (st == \"HOLD\" and running):\n",
+  "            if st == \"HOLD\" and running:\n"),
+
+ ("Reload engine: offered on a Hold that still names a running show",
+  "ltcplay/remote.py",
+  "            if st == \"PAUSED\" or (st == \"HOLD\" and running):\n",
+  "            if st == \"PAUSED\":\n"),
+
+ ("Reload engine: a schedule that cannot be read lets the restart go",
+  "ltcplay/remote.py",
+  "            except Exception as e:               # noqa: BLE001\n"
+  "                return (f\"The schedule could not be read \"\n",
+  "            except Exception as e:               # noqa: BLE001\n"
+  "                return \"\"\n"
+  "                return (f\"The schedule could not be read \"\n"),
+
+ ("Reload engine: a schedule state not known lets the restart go",
+  "ltcplay/remote.py",
+  "            elif st not in RESTART_OK_STATES:\n",
+  "            elif False:\n"),
+
+ ("Reload engine: offered while a show file is starting",
+  "ltcplay/remote.py",
+  "        if getattr(c, \"_starting\", False):\n"
+  "            return (\"A show file is starting. Wait, then turn show control \"\n",
+  "        if False:\n"
+  "            return (\"A show file is starting. Wait, then turn show control \"\n"),
+
+ ("Reload engine: offered while show control is on",
+  "ltcplay/remote.py",
+  "        if sess is not None and getattr(sess, \"running\", False):\n"
+  "            if svc is None:\n",
+  "        if False:\n"
+  "            if svc is None:\n"),
+
+ ("Reload engine: the page is never told why it waits",
+  "ltcplay/web/remote2.html",
+  "  if(!b.hidden && !offered) t = \"Not now: \" + (why || ",
+  "  if(false) t = \"Not now: \" + (why || "),
 
  ("settings watch: the status never carries the notice",
   "ltcplay/remote.py",

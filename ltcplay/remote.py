@@ -496,6 +496,16 @@ FIRST_RUN_FILE = "first-run.json"    # what the supervisor wrote at first run
 SHOWPC_FILE = "showpc.json"          # the supervisor's own settings
 SCREEN_CLOSE_FILE = "close-rack-screen"   # the supervisor closes its Edge
 RESTART_ENGINE_FILE = "restart-engine"    # the supervisor restarts ltcplay
+# This engine process, told apart from the next one (restart-check's
+# "engine"): the rack screen waits after Restart the engine until another
+# answers (2026-11-19). Display only, never a decision.
+ENGINE_ID = f"{os.getpid()}.{int(time.time() * 1000)}"
+# The scheduler's states a restart may happen in (restart_refusal): no show
+# running and none held mid-run. SHOW and PAUSED refuse with their own
+# sentence; any other word, or a schedule that cannot be read, refuses too
+# (fail closed). BOOT, IDLE, STANDBY, HOLD, CLOSING and OFF as schedule.py
+# spells them, spelled here so a GPL engine does not load the scheduler.
+RESTART_OK_STATES = ("BOOT", "IDLE", "STANDBY", "HOLD", "CLOSING", "OFF")
 PROGRAMS_READ_S = 3.0
 FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"     # cli.py and ltcwin.py agree
 
@@ -1340,6 +1350,20 @@ TAILSCALE_CLI_MAC = ("/Applications/Tailscale.app/Contents/MacOS/Tailscale",
                      "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale",
                      "/usr/bin/tailscale")
 TAILSCALE_READ_S = 30.0
+# The Tailscale card's fixed lines (tailscale_view). A problem line says
+# what to do; an info line only says how it works.
+TAILSCALE_NO_LISTEN = "Nothing listens for Tailscale now."
+TAILSCALE_RESTART_WHEN = "Restart between shows, every flame disarmed."
+TAILSCALE_ROUTES_HEAD = "Security: this PC shares routes"
+TAILSCALE_ROUTES_FIX = "Security: turn off subnet routes and exit node."
+TAILSCALE_ROUTES_HOW = (
+    "Security problem: this PC offers subnet routes or an exit node over "
+    "Tailscale, so a device on your Tailscale network could reach the show "
+    "network, and the flame controllers on it, without going through LTC "
+    "Player. To turn it off: in the Tailscale admin console open Machines, "
+    "choose the show PC, then Edit route settings, and untick every subnet "
+    "route and Exit node. Or on this PC run: tailscale set "
+    "--advertise-routes= --advertise-exit-node=false")
 
 
 def tailscale_cli(windows=None, exists=None):
@@ -1392,7 +1416,7 @@ def find_tailscale(run=None, cli=None, found=None):
         return {"state": "not_installed", "address": None,
                 "head": "Tailscale is not installed",
                 "bullets": ["Install Tailscale on this PC first.",
-                            "Nothing listens for Tailscale now."]}
+                            TAILSCALE_NO_LISTEN]}
     try:
         import subprocess
         if run is None:
@@ -1411,7 +1435,7 @@ def find_tailscale(run=None, cli=None, found=None):
         return {"state": "not_running", "address": None,
                 "head": "Tailscale is not running",
                 "bullets": ["Start Tailscale and sign in.",
-                            "Nothing listens for Tailscale now."]}
+                            TAILSCALE_NO_LISTEN]}
     mine = list(found) if found is not None else \
         _local_ipv4s() + [_tailscale_route_ipv4()]
     for a in ts:
@@ -2536,7 +2560,7 @@ class Remote:
             # stops the engine for a restart-engine request.
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
-            return 200, {"refusal": self.restart_refusal()}
+            return 200, self.restart_check()
         if name == "weather":
             # Display only: what the weather thread last stored.
             from . import weather as weather_mod
@@ -3657,43 +3681,53 @@ class Remote:
         found = self.tailscale_found()
         addr = found.get("address")
         url = page_url(ts_listen, port) if ts_listen else None
-        # The URL to type by name (MagicDNS): the full name, the one a
-        # device shared in from another tailnet can use.
+        # The URL by name (MagicDNS): the full name, the one a device
+        # shared in from another tailnet can use. Shown second on the card:
+        # it needs HTTPS, which Chrome tries first on a name (2026-11-19).
         names = [n for n in listen.get("tailscale_names") or [] if "." in n]
         name_url = f"http://{names[0]}:{port}/" if ts_listen and names \
             else None
         fw_state, fw_text = self.tailscale_firewall_view()
         restart = None
+        detail = ""
         unsaved = getattr(self, "_tailscale_unsaved", "")
+        # Two kinds of line (Jeff, 2026-11-19: "I can't tell if it's
+        # telling me there is an error or just how this works"): a problem
+        # (fix) needs someone to act, an info line only says how it works.
+        # The card marks each; problems come first and an info line never
+        # pushes one out.
+        fix, info = [], []
         if unsaved and not ts_listen:
-            head, bullets = "Closed now, setting not saved", [
-                "The settings file could not be written.",
-                "It opens again after a restart."]
+            head = "Closed now, setting not saved"
+            fix = ["The settings file could not be written."]
+            info = ["It opens again after a restart."]
         elif err:
-            head, bullets = "Settings file cannot be read", [
-                "Fix ltcplay_remote.json in Settings and logs."]
+            head = "Settings file cannot be read"
+            fix = ["Fix ltcplay_remote.json in Settings and logs."]
         elif not on and not ts_listen:
-            head, bullets = "Off: Tailscale cannot reach this", [
-                "Turn on to open the page remotely.",
-                "Stop, Hold and disarm only, signed out."]
+            head = "Off: Tailscale cannot reach this"
+            info = ["Turn on to open the page remotely.",
+                    "Stop, Hold and disarm only, signed out."]
         elif not on:
-            head, bullets = "Off: restart the engine", [
-                "Still listening until the engine restarts.",
-                "Restart between shows, every flame disarmed."]
+            head = "Off: restart the engine"
+            fix = ["Still listening until the engine restarts."]
+            info = [TAILSCALE_RESTART_WHEN]
         elif found["state"] != "found" and not ts_listen:
-            head, bullets = found["head"], list(found["bullets"])
+            head = found["head"]
+            fix = [b for b in found["bullets"] if b != TAILSCALE_NO_LISTEN]
+            info = [b for b in found["bullets"] if b == TAILSCALE_NO_LISTEN]
         elif not ts_listen and listen.get("tailscale_why"):
-            head, bullets = "Could not listen on Tailscale", [
-                "Restart Tailscale, then restart the engine."]
+            head = "Could not listen on Tailscale"
+            fix = ["Restart Tailscale, then restart the engine."]
         elif not ts_listen:
-            head, bullets = "On: restart the engine", [
-                "Restart between shows, every flame disarmed."]
+            head = "On: restart the engine"
+            fix = ["Restart the engine to start listening."]
+            info = [TAILSCALE_RESTART_WHEN]
         else:
-            head, bullets = "On: listening on Tailscale", [
-                f"Type {url} on your device."]
+            head = "On: listening on Tailscale"
+            info = [f"Type {url} on your device."]
             if addr and addr != ts_listen:
-                bullets.append("Tailscale address changed. Restart "
-                               "the engine.")
+                fix.append("Tailscale address changed. Restart the engine.")
         if (on and not ts_listen and found["state"] == "found") or \
                 (not on and ts_listen) or \
                 (on and ts_listen and addr and addr != ts_listen):
@@ -3702,35 +3736,39 @@ class Remote:
                        "why": reason or ""}
         if (on or ts_listen) and self.tailscale_routes_view():
             # Never subnet routes or an exit node from here (cold review
-            # of #244, M1): first, whatever else is said.
-            bullets = ["This PC shares routes: turn that off."] + \
-                bullets[:2]
+            # of #244, M1): a security problem, first, whatever else is
+            # said, with how to turn it off (2026-11-19).
+            head = TAILSCALE_ROUTES_HEAD
+            fix = [TAILSCALE_ROUTES_FIX] + fix
+            detail = TAILSCALE_ROUTES_HOW
         if on and fw_state == "missing" and self.tailscale_setup_other():
             # Setup read another Windows account's settings (an elevated
             # account that is not this one), so it did not add the rule.
-            bullets = bullets[:2] + ["Setup ran from another Windows "
-                                     "account."]
-        elif on and fw_state not in ("present", "none") and \
-                len(bullets) < 3:
-            bullets.append(fw_text)
-        elif not on and fw_state in ("present", "off", "wide") and \
-                len(bullets) < 3:
+            fix.append("Setup ran from another Windows account.")
+        elif on and fw_state not in ("present", "none"):
+            fix.append(fw_text)
+        elif not on and fw_state in ("present", "off", "wide"):
             # Removed by the installer, which needs Windows' permission.
-            bullets.append("Use the installer again to remove the rule.")
+            fix.append("Use the installer again to remove the rule.")
         try:
             logins = list(load_settings(self.folder).get(
                 "tailscale_logins") or [])
         except ValueError:
             logins = []
-        if on and not logins and len(bullets) < 3:
-            bullets.append("Nobody gets in: add Tailscale logins.")
+        if on and not logins:
+            fix.append("Nobody gets in: add Tailscale logins.")
+        # Up to three lines in all: every problem first (at most three),
+        # then info in what room is left.
+        fix = fix[:3]
+        info = info[:3 - len(fix)]
         return {"on": on, "error": err, "port": port, "logins": logins,
                 "name_url": name_url,
                 "names": list(listen.get("tailscale_names") or []),
                 "found": found["state"], "address": addr,
                 "listening": ts_listen, "url": url,
                 "firewall": {"state": fw_state, "text": fw_text},
-                "restart": restart, "head": head, "bullets": bullets[:3]}
+                "restart": restart, "head": head, "problems": fix,
+                "info": info, "detail": detail, "bullets": fix + info}
 
     def tailscale_setup_other(self, read=None, env=None):
         """True when the installer last read the setting from another
@@ -10504,22 +10542,79 @@ class Remote:
         return self._settings_json(PROGRAMS_FILE, "programs_cfgwatch", 0.0)
 
     def show_busy_for_reload(self):
-        """True while a show is live, or a show file runs or is starting."""
-        if self._show_live():
-            return True
+        """True while a show is live, or a show file runs or is starting
+        (show_busy_reason says which)."""
+        return bool(self.show_busy_reason())
+
+    def show_busy_reason(self):
+        """Why a show keeps the engine from restarting now, in a sentence
+        that says what to do, or "" (2026-11-19). The scheduler first: a
+        show running (SHOW) or held mid-run (PAUSED, or a HOLD that still
+        names a running show) refuses; the schedule on Hold with no show
+        running does not. A schedule that cannot be read, or a state not
+        in RESTART_OK_STATES, refuses (fail closed). Then this engine's own
+        playback: a show file starting, or running (show control on, or a
+        rehearsal), refuses, since a restart would cut it."""
+        svc = self.schedule
+        if svc is not None:
+            try:
+                v = svc.state_view() or {}
+                st = v.get("state")
+                running = v.get("running")
+            except Exception as e:               # noqa: BLE001
+                return (f"The schedule could not be read "
+                        f"({type(e).__name__}), so it is not known that no "
+                        f"show is running. Try again in a moment.")
+            if st == "SHOW":
+                return ("A show is running. Restart the engine between "
+                        "shows, after it ends.")
+            if st == "PAUSED" or (st == "HOLD" and running):
+                return ("A show is held mid-run. Restart the engine only "
+                        "after that show has ended.")
+            if st is None and v.get("ok") is False:
+                pass        # no schedule loaded: it can run nothing
+            elif st not in RESTART_OK_STATES:
+                return (f"The schedule's state ({st}) is not one a restart "
+                        f"is known to be safe in. Try again in a moment.")
         c = self.control
         sess = getattr(c, "session", None)
-        return bool(getattr(c, "_starting", False) or
-                    (sess is not None and getattr(sess, "running", False)))
+        if getattr(c, "_starting", False):
+            return ("A show file is starting. Wait, then turn show control "
+                    "off before you restart.")
+        if sess is not None and getattr(sess, "running", False):
+            if svc is None:
+                return "A show file is playing. Stop it first, then restart."
+            if self._rehearsal_run(sess):
+                return ("A rehearsal is on. Press End rehearsal first, "
+                        "then restart.")
+            return ("Show control is on. Turn show control off first "
+                    "(Show ctrl off), then restart.")
+        return ""
 
     def reload_engine_refusal(self):
         """Why the rack screen's Reload engine may not be pressed now, or
         None: only on the show PC (the supervisor restarts the engine), and
         only when restart_refusal() finds nothing."""
+        why = self._supervisor_refusal()
+        return why or self.restart_refusal() or None
+
+    def _supervisor_refusal(self):
         if not os.path.isfile(os.path.join(settings_folder(), SHOWPC_FILE)):
             return ("This engine is not run by LTC Player's supervisor. "
                     "Quit it and start it again.")
-        return self.restart_refusal() or None
+        return ""
+
+    def restart_check(self):
+        """GET restart-check, on this machine only: {"refusal"} for the
+        Windows supervisor right before it stops the engine (restart_
+        refusal: "" when it may), and for the rack screen's Restart the
+        engine and Reload engine, "page" (reload_engine_refusal's sentence,
+        or "") and "engine" (ENGINE_ID, so the page can tell the engine
+        restarted). The supervisor reads "refusal" only."""
+        why = self.restart_refusal()
+        return {"refusal": why,
+                "page": self._supervisor_refusal() or why,
+                "engine": ENGINE_ID}
 
     def restart_refusal(self):
         """Why this engine may not be restarted now, in a sentence, or "".
@@ -10531,23 +10626,26 @@ class Remote:
             return self._restart_refusal()
         except Exception as e:                   # noqa: BLE001
             return (f"Whether the engine may restart could not be checked "
-                    f"({type(e).__name__}).")
+                    f"({type(e).__name__}). Try again in a moment.")
 
     def _restart_refusal(self):
-        if self.show_busy_for_reload():
-            return "A show is running. Reload the engine between shows."
+        why = self.show_busy_reason()
+        if why:
+            return why
         ann = getattr(self, "announce", None)
         if ann is not None and getattr(ann, "playing", None) is not None:
-            return "An announcement is playing."
+            return "An announcement is playing. Wait for it to end."
         fs = self.flame_status
         if fs is None:
             return ("flamesafe's status is not connected to this engine, so "
-                    "it is not known that every flame group is disarmed.")
+                    "it is not known that every flame group is disarmed. "
+                    "Check that flamesafe is running.")
         v = fs.view() or {}
         groups = v.get("groups") or []
         if v.get("stale") or not groups:
             return ("flamesafe's status is not seen, so it is not known "
-                    "that every flame group is disarmed.")
+                    "that every flame group is disarmed. Check that "
+                    "flamesafe is running.")
         if any(g.get("armed") != "disarmed" or g.get("wanted")
                for g in groups):
             return "A flame group is armed. Disarm every group first."
@@ -10613,7 +10711,7 @@ class Remote:
         self._journal("", "Rack screen", "reload engine", "asked",
                       "Reload engine was pressed: LTC Player restarts the "
                       "engine so it reads the changed settings files.")
-        return 200, {"ok": True, "text": (
+        return 200, {"ok": True, "engine": ENGINE_ID, "text": (
             "LTC Player restarts the engine now so it reads the settings "
             "files again. This page reconnects by itself. flamesafe and the "
             "Stream Deck program keep running with what they read at their "

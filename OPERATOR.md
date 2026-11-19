@@ -2984,10 +2984,15 @@ nothing fires.
 
 Only for the people the SuperUser has let in (SUPERUSER.md).
 
-**Type the name, not the address.**
+**Type the number address.**
 
-- `http://ignite-player.tail342a0a.ts.net:7878/`
-- Shared from another tailnet: always this full name.
+- `http://100.75.53.81:7878/`
+- This works in Chrome on Android today.
+- The name, `http://ignite-player.tail342a0a.ts.net:7878/`, needs HTTPS
+  for now: Chrome tries HTTPS first on a name and refuses it
+  (ERR_SSL_PROTOCOL_ERROR), and LTC Player answers plain HTTP on 7878.
+- Shared from another tailnet: the number address, or the full name once
+  HTTPS works.
 - Nothing else answers: no other name, no https.
 
 **Then it works like an iPad.**
