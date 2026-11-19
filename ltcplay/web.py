@@ -289,6 +289,11 @@ class Control:
         self.lock = threading.Lock()
         self._starting = False
         self._start_gen = 0
+        # Counts each time show control comes on (a show file stored to
+        # run), and who to tell once it has (fire_ice.attach: the
+        # scheduler's run_turned_on). Jeff, 2026-11-19.
+        self.run_gen = 0
+        self.on_show_control_on = None
         self.last_error = ""
         self._sd = sd
         # -- state() cache: see the method itself for why this exists.
@@ -733,6 +738,17 @@ class Control:
             extra = check(path)
             if isinstance(extra, dict):
                 kw.update(extra)
+        # One more turn-on, counted and told (the scheduler's stamp, Jeff
+        # 2026-11-19) before the start work, so show control on is never
+        # dated later than the press, and before the show file can read
+        # as running.
+        self.run_gen += 1
+        tell = self.on_show_control_on
+        if tell is not None:
+            try:
+                tell()
+            except Exception:                    # noqa: BLE001
+                pass
         s = Session(path, **kw)
         s.from_web = True
         s.open()

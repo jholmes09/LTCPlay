@@ -3145,7 +3145,7 @@ const MODE_WHAT = {
   programming: "<b>Programming:</b> a rehearsal. Play from, jump and loop work; the scheduler starts no show."};
 let RUN_MODE = null;
 // A rehearsal's Run off is End rehearsal (Jeff, 2026-11-11): its question.
-const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, and ends the rehearsal.";
+const REHEARSAL_END_CONFIRM = "Stops everything Stop stops and ends the rehearsal, but does not put the schedule on Hold.";
 function runModeNow(st){
   const mo = modeLook(st);
   return mo.cls === "prog" ? "programming" : (mo.cls === "show" ? "show" : null);
@@ -5456,7 +5456,7 @@ const COACH = [
   ["pill", "Show state, timecode, time elapsed and time left."],
   ["b-go", "The big button is the next step."],
   ["b-hold", "Hold pauses the schedule. Resume carries on."],
-  ["b-runoff", "Show ctrl off: turns show control off. Stop leaves it on. Asks first."],
+  ["b-runoff", "Show ctrl off: stops everything and turns show control off, with no Hold. Stop leaves it on. Asks first."],
   ["b-stop", "Stop: tap twice. Ends everything, the rig goes dark, and the schedule holds until Resume. Only there while something plays."],
   ["alert", "Problems show here. Fix, then Acknowledge."],
   ["groups", "Hold to arm. One tap disarms."]];
