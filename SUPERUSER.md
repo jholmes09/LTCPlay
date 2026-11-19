@@ -25,7 +25,7 @@ that does not exist. No screen anyone else sees names where its settings
 are kept.
 
 You use the upload's card on the show PC's own rack screen, signed in
-there. Save and Send now ask for your password again, and so does every
+there (Settings, Users, Open). Save and Send now ask for your password again, and so does every
 SuperUser change on the Users screen (type it in "Your password, for
 SuperUser changes"). On an iPad you work as an
 admin; over Tailscale the card is never there at all. Your sign-in on the
@@ -196,7 +196,7 @@ Your server needs a receiver: `tools/audit_receiver.py` is one, and
 
 ## Remote access over Tailscale (off until you switch it on)
 
-Your card, on the rack screen's Schedule tab, signed in there. Nobody else
+Your card, on the rack screen's Settings tab, signed in there. Nobody else
 sees it, its script or its routes (they answer like a route that is not
 there), exactly like the upload's card.
 

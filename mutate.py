@@ -24336,7 +24336,7 @@ def build():
 
  ("ui 2.0 switches: the outputs are never read",
   "ltcplay/web/remote2.html",
-  "  if(t === \"schedule\" && ME && ME.local) loadAnnOutputs();\n",
+  "  if(t === \"settings\" && ME && ME.local) loadAnnOutputs();\n",
   ""),
 
  ("ui 2.0 switches: Arming from a screen goes on with no question",
@@ -24608,9 +24608,9 @@ def build():
   "  try{ renderTools(isSt); }catch(e){}\n",
   ""),
 
- ("ui 2.0 tools: the Schedule tab never reads the network or the deck",
+ ("ui 2.0 tools: the Schedule tab never reads the deck or the show folder",
   "ltcplay/web/remote2.html",
-  "  if(t === \"schedule\" && ME && ME.local){ loadNetwork(); loadDeckOp(); loadFolders(); }\n",
+  "  if(t === \"schedule\" && ME && ME.local){ loadDeckOp(); loadFolders(); }\n",
   ""),
 
  ("ui 2.0 tools: Close this window is offered off the show PC",

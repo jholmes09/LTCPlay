@@ -3776,7 +3776,7 @@
 "ui 2.0 tools: Verify records does nothing": "test_ui2_show_pc_tools_driven",
 "ui 2.0 tools: the rig check card is shown off the show PC": "test_ui2_show_pc_tools_are_1_0s",
 "ui 2.0 tools: the cards are never drawn": "test_ui2_show_pc_tools_driven",
-"ui 2.0 tools: the Schedule tab never reads the network or the deck": "test_ui2_show_pc_tools_driven",
+"ui 2.0 tools: the Schedule tab never reads the deck or the show folder": "test_ui2_show_pc_tools_driven",
 "ui 2.0 tools: Close this window is offered off the show PC": "test_ui2_show_pc_tools_are_1_0s",
 "ui 2.0 tools: Check the show file checks the typed folder": "test_ui2_show_pc_tools_driven",
 "ui 2.0 tools: Getting started never shows": "test_ui2_show_pc_tools_driven",

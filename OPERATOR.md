@@ -272,7 +272,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   silence (quieter than -80 dBFS) is never played: it says "the recording
   is silent or unreadable". If the show audio process restarts while one
   plays, it is reported failed at once.
-- **Test tone.** Beside the picker (Programming, Announcement output),
+- **Test tone.** Beside the picker (Settings tab, Announcement output),
   Test tone plays one second of a soft 440 Hz tone at -20 dBFS through
   exactly the route and output an announcement would use now, so you can
   check the PA without a recording. Admin, on the show PC only, never
@@ -288,7 +288,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
 - **When the show audio is not running** (the PC idle, show control off, or a
   show file with no audio of its own), an announcement plays on its own
   output instead, never the system default. Pick it on the rack screen:
-  Programming, **Announcement output, on this machine**: a list of every
+  Settings tab, **Announcement output, on this machine**: a list of every
   output on this PC, each with its audio system and how many outputs it
   has. Choose one and press Save; it is used at once, no restart. It
   needs someone signed in who may change Settings (an admin); signed out
@@ -337,7 +337,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
 minutes before each scheduled show. This is the one thing LTC Player plays
 on the public PA by itself, an exception Jeff approved to "nothing plays on
 the PA automatically": it is OFF until an admin turns it on. Two settings
-and nothing else, on the rack screen, Schedule tab, **Pre-show audio** card
+and nothing else, on the rack screen, Settings tab, **Pre-show audio** card
 (admin, show PC only): **Turn on** or **Turn off**, and which file (choose
 it, then **Save file**; Turn on uses the saved file). The list is every
 WAV file in the Announcements folder (and beside ltcplay_announce.json):
@@ -2574,14 +2574,14 @@ Turning it off puts every controller back on the live stream immediately.
 
 ## The iPad
 
-Once, on the show machine: open the Schedule tab and pick this machine's
-show Wi-Fi address on the "Show network, on this machine" card. On a Mac, start it with the show network on (Run ltcplay, answer
+Once, on the show machine: open the Settings tab (signed in as an admin)
+and pick this machine's show Wi-Fi address on the "Show network, on this machine" card. On a Mac, start it with the show network on (Run ltcplay, answer
 y to the iPad question). There is no PIN.
 
 ### Open the page from your Mac or iPad
 
 On the Windows show PC the "Show network, on this machine" card on the
-Schedule tab says it all in plain words: the address saved (or none), where
+Settings tab says it all in plain words: the address saved (or none), where
 the engine is listening, whether the Windows Firewall rule is there,
 whether Windows calls that network Public or Private (with what to do
 when it is Public), and the address to type on the other machine, for
@@ -2710,8 +2710,8 @@ a show to see its notes (why it was moved, skipped or added, or "No notes";
 tap again to close). Programming has the scrubbing controls and, on the
 show machine only, the Show file card (the Show and Programming switch, the
 show file, and Show control on, or Start rehearsal in Programming,
-which reads Stop in the same place while it is on and something plays),
-the Stream Deck operator and the show network.
+which reads Stop in the same place while it is on and something plays)
+and the Stream Deck operator. The show network is on the Settings tab.
 Show: the scheduler starts each show at its time and scrubbing is off.
 Programming: a rehearsal; play from, jump and loop work and the scheduler
 starts no show. To switch, turn show control off (or End rehearsal),
@@ -3067,9 +3067,9 @@ tab, and the hardware e-stop always works.
   tab): Arming from a screen (show PC only; Turn on asks first and
   needs Settings, Turn off works at once), Live flame programming (Turn
   on on the show PC only, asks first and needs Settings; Turn off from
-  anywhere, also from the line at the top) and the announcement output
-  (show PC only: the output, Save, Test tone, Settings). Nothing on
-  them arms anything by itself: arming is still the Stream Deck's hold
+  anywhere, also from the line at the top). The announcement output is
+  on the Settings tab (show PC only: the output, Save, Test tone).
+  Nothing on them arms anything by itself: arming is still the Stream Deck's hold
   to arm and flamesafe's rules.
 - Programming (Schedule tab): the Programming cards, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file
@@ -3089,8 +3089,9 @@ tab, and the hardware e-stop always works.
   says why it refuses one, and its answer is shown under the card. While
   the show's flame cues follow Programming playback, a move needs the show
   PC or Settings, and the card says how the flames follow; a
-  flame cue fault is shown there in full. The show folder, the network
-  and the other show PC tools are cards further down the Schedule tab.
+  flame cue fault is shown there in full. The show folder and the other
+  show PC tools are cards further down the Schedule tab; the show
+  network is on the Settings tab.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
   live flame programming) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,
@@ -3169,9 +3170,13 @@ tab, and the hardware e-stop always works.
     someone who may change settings), Rig check (pre-roll) with Check the
     rig, the Show folder (Make a show file, Check the show file, Use this
     folder, which asks first and restarts the engine, Open the show and
-    settings folders), the Stream Deck operator (Choose), and the Show
-    network (the address to type on an iPad, Use, Save address, and
-    Restart the engine when the saved address needs it; it asks first).
+    settings folders) and the Stream Deck operator (Choose).
+  - Settings tab, on the show PC only, for someone who may change
+    settings (Jeff, 2026-11-19: set once, so moved off the Schedule tab):
+    the Show network (the address to type on an iPad, Use, Save address,
+    and Restart the engine when the saved address needs it; it asks
+    first), the announcement output, Pre-show audio and, for a SuperUser
+    only, Remote access over Tailscale.
   - Help, This LTC Player: the version, this screen, where the settings
     and logs are, the mode, how to leave this window, and on the show PC
     Close this window.

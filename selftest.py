@@ -56219,7 +56219,7 @@ def test_tailscale_session_idle_and_binding():
 
 
 def test_tailscale_card_on_the_show_pc():
-    section("remote access over Tailscale: the Schedule tab card on the "
+    section("remote access over Tailscale: the Settings tab card on the "
             "show PC only says on or off, the address to type, listening "
             "and the firewall rule, in a headline and short bullets; on and "
             "off for a SuperUser on the show PC only (everyone else: no such "
@@ -120772,7 +120772,7 @@ ME.local = true;
 
 def test_ui2_preshow_audio_card_driven():
     section("2.0's Pre-show audio card pressed in a real browser: on the "
-            "Schedule tab of the show PC, the chosen file's name shown, its "
+            "Settings tab of the show PC, the chosen file's name shown, its "
             "list from the engine; Turn on and Save file post the one "
             "setting; signed in without Settings both are off; an iPad gets "
             "no card; its words: a headline of 6 words or fewer, up to 3 "
@@ -120780,7 +120780,7 @@ def test_ui2_preshow_audio_card_driven():
     chrome = _find_chromium()
     page = _ui2_page_inline()
     card = page[page.find('id="psa-card"'):]
-    card = card[:card.find("</div>\n        <!--")]
+    card = card[:card.find('id="psa-msg"')]
     head = re.findall(r"<b>([^<]*)</b>", card)
     lines = re.findall(r"<li>([^<]*)</li>", card)
     check(head == ["Pre-show audio"] and len(head[0].split()) <= 6 and
@@ -120812,9 +120812,9 @@ const mark = () => window.__posts.length;
 const since = n => window.__posts.slice(n);
 const q = id => document.getElementById(id);
 const bare = b => { const o = Object.assign({}, b); delete o.seen; return o; };
-document.querySelector('.tab[data-tab="schedule"]').click();
+document.querySelector('.tab[data-tab="settings"]').click();
 await h.sleep(1200);
-out.card = {shown:!q("psa-card").hidden, now:q("psa-now").textContent,
+out.card = {shown:!q("psa-card").hidden && q("psa-card").getClientRects().length > 0, now:q("psa-now").textContent,
   opts:[...q("psa-pick").options].map(o => o.textContent + (o.disabled ? " (off)" : "")),
   picked:q("psa-pick").value, on_dis:q("psa-on").disabled, off_dis:q("psa-off").disabled};
 // A file chosen but not saved: Turn on still uses the SAVED file.
@@ -120994,7 +120994,8 @@ def test_ui2_show_machine_switches_driven():
             "Turn off posts on false at once; Live flame On asks first and "
             "posts on true and confirmed, its On on the show PC only, Off "
             "only while on; both On buttons off for a sign-in without "
-            "Settings; the announcement output's list, Save and Test tone; "
+            "Settings; the announcement output's list, Save and Test tone "
+            "on the Settings tab; "
             "an iPad gets neither show PC card")
     chrome = _find_chromium()
     if not chrome:
@@ -121019,10 +121020,10 @@ const yes = async () => { const b = document.querySelector('#sh-row [data-i="1"]
 const bare = b => { const o = Object.assign({}, b); delete o.seen; return o; };
 document.querySelector('.tab[data-tab="schedule"]').click();
 await h.sleep(1200);
-out.cards = {arming:!q("arming-card").hidden, lf:!q("lf-card").hidden, ann:!q("annout-card").hidden,
+const seen = id => q(id).getClientRects().length > 0;
+out.cards = {arming:seen("arming-card"), lf:seen("lf-card"), ann:seen("annout-card"),
   sa_now:q("sa-now").textContent, sa_on_dis:q("sa-on").disabled, sa_off_dis:q("sa-off").disabled,
-  lf_now:q("lf-now").textContent, lf_on:!q("lf-on").hidden && !q("lf-on").disabled, lf_off_dis:q("lf-off").disabled,
-  opts:[...q("annout-pick").options].map(o => o.textContent)};
+  lf_now:q("lf-now").textContent, lf_on:!q("lf-on").hidden && !q("lf-on").disabled, lf_off_dis:q("lf-off").disabled};
 let n = mark();
 q("sa-on").click(); await h.sleep(300);
 out.sa_sheet = {open:!q("sheet").hidden, h:q("sh-h").textContent, posts:since(n).filter(p => p.route === "screen-arming").length};
@@ -121043,7 +121044,11 @@ q("lf-on").click(); await h.sleep(300);
 out.lf_sheet = {open:!q("sheet").hidden, h:q("sh-h").textContent, posts:since(n).filter(p => p.route === "live-flame").length};
 await yes();
 out.lf_on = since(n).filter(p => p.route === "live-flame").map(p => bare(p.body));
-// The announcement output: Speakers, Save; Test tone.
+// The announcement output, on the Settings tab: Speakers, Save; Test tone.
+document.querySelector('.tab[data-tab="settings"]').click();
+await h.sleep(1200);
+out.annTab = {ann:seen("annout-card"), arming:seen("arming-card"), lf:seen("lf-card"),
+  opts:[...q("annout-pick").options].map(o => o.textContent)};
 n = mark();
 q("annout-pick").selectedIndex = 2; q("annout-save").click(); await h.sleep(400);
 q("annout-tone").click(); await h.sleep(400);
@@ -121068,13 +121073,18 @@ ME.local = true;
         print("  ok")
         return
     c = m["cards"]
-    check(c["arming"] and c["lf"] and c["ann"] and c["sa_now"] == "OFF" and
+    check(c["arming"] and c["lf"] and not c["ann"] and
+          c["sa_now"] == "OFF" and
           not c["sa_on_dis"] and c["sa_off_dis"] and c["lf_now"] == "OFF"
-          and c["lf_on"] and c["lf_off_dis"] and
-          c["opts"][:1] == ["None: only through the show audio"] and
-          "MOTU M4 (WASAPI, 4 ch), picked now" in c["opts"],
-          f"the show PC: the three cards, both off, 1.0's outputs list: "
-          f"{c}")
+          and c["lf_on"] and c["lf_off_dis"],
+          f"the show PC's Schedule tab: Arming from a screen and Live "
+          f"flame, both off; no announcement output there: {c}")
+    a = m["annTab"]
+    check(a["ann"] and not a["arming"] and not a["lf"] and
+          a["opts"][:1] == ["None: only through the show audio"] and
+          "MOTU M4 (WASAPI, 4 ch), picked now" in a["opts"],
+          f"the show PC's Settings tab: the announcement output with "
+          f"1.0's outputs list, and neither switch: {a}")
     check(m["sa_sheet"]["open"] and
           m["sa_sheet"]["h"] == "Turn on arming from a screen?" and
           m["sa_sheet"]["posts"] == 0 and m["sa_on"] == [{"on": True}],
@@ -126170,8 +126180,8 @@ def test_ui2_schedule_tab_makes_1_0_presses():
           "the Open in 1.0 link for tonight's shows is gone")
     check("/remote1#programming" not in two and
           '<div class="card col" id="folders" hidden>' in two,
-          "the rest of Programming (the show folder, the network) is on "
-          "the Schedule tab, not in 1.0")
+          "the rest of Programming (the show folder) is on the Schedule "
+          "tab, not in 1.0")
     for p in ('getJSON("/api/remote/schedule-file", 3000)',
               'post("/api/remote/schedule-file", {doc:readSchedule()})'):
         check(p in one and p in two, f"1.0 and 2.0 both press {p}")
@@ -127117,10 +127127,12 @@ def test_ui2_show_pc_tools_are_1_0s():
           "saves them; a home screen app opens them in Safari)")
     # Where they are, and who sees them.
     st_ = _js_function(two, "showTab") or ""
-    check('if(t === "schedule" && ME && ME.local){ loadNetwork(); '
-          'loadDeckOp(); loadFolders(); }' in st_,
-          "the Schedule tab reads the network, the deck operator and the "
-          "folder on the show PC, as 1.0's Programming screen")
+    check('if(t === "schedule" && ME && ME.local){ loadDeckOp(); '
+          'loadFolders(); }' in st_ and
+          'if(t === "settings" && ME && ME.local) loadNetwork();' in st_,
+          "the Schedule tab reads the deck operator and the folder on the "
+          "show PC, as 1.0's Programming screen; the Settings tab reads "
+          "the network")
     rs = _js_function(two, "renderStale") or ""
     wh = _js_function(two, "whoami") or ""
     check("try{ renderTools(isSt); }catch(e){}" in rs and
@@ -127189,6 +127201,7 @@ def test_ui2_show_pc_tools_driven():
     section("2.0's show PC tools pressed in a real browser (P12, P14, P15, "
             "P16): the checklist's Verify records posts 1.0's body and "
             "the PDF link carries today's show date; on the Schedule tab "
+            "(the Show network on the Settings tab) "
             "Getting started says 1 of 3 done and offers Make a show file; "
             "Check the show file posts /api/check {timeline}; Use this "
             "folder asks, then posts show-folder {path}; Open the show "
@@ -127255,7 +127268,7 @@ out.daySmall = small("#d-ctl .b");
 // The Schedule tab: Getting started and the show PC's cards.
 location.hash = "schedule";
 await h.sleep(900);
-out.cards = ["setup", "folders", "deck-op", "admin", "rigcheck", "cfg-card"].filter(id => !g(id).hidden);
+out.cards = ["setup", "folders", "deck-op", "admin", "rigcheck", "cfg-card"].filter(id => vis(g(id)));
 out.sum = g("su-sum").textContent; out.make = !g("su-make").hidden;
 out.fo = g("fo-now").textContent;
 out.deckPick = [...g("deck-op-pick").options].map(o => o.textContent);
@@ -127269,13 +127282,21 @@ out.folder = await yes(g("fo-save"), "Yes, use it");
 out.open = await press(document.querySelector('#folders [data-open="show"]'));
 g("deck-op-pick").value = "Sam";
 out.deck = await press(g("b-deck-op"));
+out.small = small("#t-schedule .b, #t-schedule input.f, #t-schedule select.f");
+// The Settings tab: the show network (Jeff, 2026-11-19: off Schedule).
+location.hash = "settings";
+await h.sleep(900);
+out.setCards = ["admin", "folders", "deck-op", "rigcheck"].filter(id => vis(g(id)));
 out.restart = await yes(g("net-restart"), "Yes, restart");
 const use = g("net-uses").querySelector("button[data-addr]");
 out.use = use ? await press(use) : null;
+out.small = out.small.concat(small("#t-settings .b, #t-settings input.f, #t-settings select.f"));
+out.xs = document.scrollingElement.scrollWidth - innerWidth;
+location.hash = "schedule";
+await h.sleep(600);
 out.reload = await yes(g("cfg-reload"), "Yes, reload");
 out.rig = await press(g("rc-run"));
-out.small = small("#t-schedule .b, #t-schedule input.f, #t-schedule select.f");
-out.xs = document.scrollingElement.scrollWidth - innerWidth;
+out.xs = Math.max(out.xs, document.scrollingElement.scrollWidth - innerWidth);
 // P16: Help, This LTC Player.
 g("help").click();
 await h.sleep(300);
@@ -127300,15 +127321,17 @@ out.closed = g("info").hidden;
           f"the checklist: Verify records posts 1.0's body, the PDF and "
           f"Export all download from 1.0's addresses: {m['pdf']} "
           f"{m['dl']} {m['verify']} {m['daySmall']}")
-    check(m["cards"] == ["setup", "folders", "deck-op", "admin",
+    check(m["cards"] == ["setup", "folders", "deck-op",
                          "rigcheck", "cfg-card"] and
+          m["setCards"] == ["admin"] and
           m["sum"] == "1 of 3 done" and m["make"] and
           "C:\\Shows\\Fire" in m["fo"] and
           m["deckPick"] == ["Jeff", "Sam"] and
           m["rc"] == "Last check passed" and
           m["cfg"][0].startswith("flamesafe.json changed on disk.") and
           m["cfg"][1],
-          f"the show PC's cards, read and drawn: {m['cards']} {m['sum']!r} "
+          f"the show PC's cards, read and drawn (the Show network on "
+          f"Settings): {m['cards']} {m['setCards']} {m['sum']!r} "
           f"{m['fo']!r} {m['deckPick']} {m['rc']!r} {m['cfg']}")
     check(m["check"] == [["/api/check", {"timeline": "Fire.json"}]] and
           m["checked"].startswith("Check of Fire.json: 1 cue(s)."),
@@ -127339,6 +127362,141 @@ out.closed = g("info").hidden;
           m["close"] == [["screen", {"action": "close"}]] and m["closed"],
           f"Help opens the info panel; Close this window posts 1.0's body; "
           f"Back closes it: {i} {m['close']}")
+    print("  ok")
+
+
+# The cards that are set once (Jeff, 2026-11-19: "a lot of things on the
+# Schedule tab (like this Tailscale thing) really make more sense in
+# Settings"): the show network with Restart the engine, the SuperUser's
+# Tailscale card slot, the announcement output and pre-show audio.
+UI2_SETTINGS_ONLY = ('id="admin"', 'id="ts-slot"', 'id="annout-card"',
+                     'id="psa-card"')
+
+
+def test_ui2_set_once_cards_are_on_settings_not_schedule():
+    section("the set-once cards (the show network and Restart the engine, "
+            "the SuperUser's Tailscale card, the announcement output, "
+            "pre-show audio) are on the Settings tab and never on the "
+            "Schedule tab; each is read when Settings opens, not Schedule; "
+            "the page still carries none of the Tailscale or upload card; "
+            "the guides say Settings; drawn at 360x740 and on the 2K "
+            "monitor nothing goes off the side")
+    _one, two = _ui2_pages()
+
+    def pane(pid):
+        i = two.find('<section class="pane" id="' + pid + '"')
+        j = two.find('<section class="pane"', i + 10)
+        if j < 0:
+            j = two.find("</main>", i)
+        return two[i:j] if i >= 0 else ""
+    sched, sett = pane("t-schedule"), pane("t-settings")
+    check(len(sched) > 5000 and len(sett) > 1000,
+          f"both panes are read: {len(sched)} {len(sett)}")
+    for need in UI2_SETTINGS_ONLY:
+        check(two.count(need) == 1 and need in sett and need not in sched,
+              f"{need} is on the Settings tab once and not on Schedule")
+    # What stays on Schedule: tonight and the operator's night.
+    for need in ('id="tn-card"', 'id="sched-edit"', 'id="p-run-card"',
+                 'id="p-tr"', 'id="arming-card"', 'id="lf-card"',
+                 'id="folders"', 'id="deck-op"', 'id="rigcheck"',
+                 'id="cfg-card"', 'id="fbt"', 'id="fbp"'):
+        check(need in sched and need not in sett,
+              f"{need} stays on the Schedule tab")
+    st_ = _js_function(two, "showTab") or ""
+    for load in ("loadNetwork();", "loadTailscale();", "loadAnnOutputs();",
+                 "loadPreshow();"):
+        lines = [ln for ln in st_.split("\n") if load in ln]
+        check(len(lines) == 1 and 't === "settings" && ME && ME.local'
+              in lines[0],
+              f"{load} runs when Settings opens on the show PC, never on "
+              f"Schedule: {lines}")
+    rp = _js_function(two, "renderPreshow") or ""
+    check('if(TAB === "settings" && !PSA_TRIED)' in rp and
+          '"schedule"' not in rp,
+          "pre-show audio's list is read on the Settings tab")
+    # The Settings tab: the show PC only, the Settings row; every press on
+    # the moved cards needed that row already.
+    rd = _js_function(two, "render") or ""
+    check('.tab[data-tab="settings"]\').hidden = !(ME && ME.local && '
+          'mayRow(s, "settings"));' in rd,
+          "the Settings tab is still the show PC's, for the Settings row")
+    # The SuperUser's cards stay off the page for everyone else.
+    for word in ("Remote access over Tailscale", "ts-logins", "ts-on",
+                 "Nightly upload", "au-upsave", "audit-settings",
+                 "SUPERUSER.md"):
+        check(word not in two, f"the page itself carries no {word!r}")
+    _no_dashes(sett, "the Settings tab")
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def doc(name):
+        with open(os.path.join(here, name), encoding="utf-8") as fh:
+            return " ".join(fh.read().split())
+    su, op = doc("SUPERUSER.md"), doc("OPERATOR.md")
+    check("Your card, on the rack screen's Settings tab" in su and
+          "Schedule tab" not in su,
+          "SUPERUSER.md puts the Tailscale card on the Settings tab")
+    for words in ("Settings tab, **Pre-show audio** card",
+                  "Settings tab, **Announcement output, on this machine**",
+                  "open the Settings tab (signed in as an admin) and pick",
+                  '"Show network, on this machine" card on the Settings '
+                  "tab"):
+        check(words in op, f"OPERATOR.md says {words!r}")
+    for gone in ("Schedule tab, **Pre-show audio**",
+                 "open the Schedule tab and pick this machine's",
+                 "card on the Schedule tab says it all"):
+        check(gone not in op, f"OPERATOR.md no longer says {gone!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st = _ui2_status_day()
+    st["preshow_audio"] = {"available": True, "on": False,
+                           "name": "welcome.wav", "file_ok": True,
+                           "length_s": 30.0, "lead_s": 120}
+    routes = {"/api/remote/morning": _morning_view_pico(),
+              "/api/timelines": {"timelines": []},
+              "/api/remote/preshow-audio": {"on": False, "file": "",
+                                            "choices": []},
+              "/api/remote/announce-outputs": {"device": "", "outputs": [
+                  {"name": "Speakers",
+                   "label": "Speakers (WASAPI, 2 ch)"}]},
+              "/api/remote/network": {"lines": ["Saved: nothing yet."],
+                                      "url": "", "saved": "",
+                                      "candidates": ["10.20.0.5"],
+                                      "restart": {"needed": True,
+                                                  "offered": True},
+                                      "port": 7878}}
+    steps = r"""
+const g = id => document.getElementById(id);
+const vis = el => !!el && el.getClientRects().length > 0;
+const ids = ["admin", "ts-slot", "annout-card", "psa-card"];
+document.querySelector('.tab[data-tab="schedule"]').click();
+await h.sleep(900);
+out.onSchedule = ids.filter(id => vis(g(id)) && g(id).closest("#t-schedule"));
+document.querySelector('.tab[data-tab="settings"]').click();
+await h.sleep(1200);
+out.tab = !document.querySelector('.tab[data-tab="settings"]').hidden;
+out.onSettings = ["admin", "annout-card", "psa-card"].filter(id => vis(g(id)));
+out.xs = document.scrollingElement.scrollWidth - innerWidth;
+out.wide = [...document.querySelectorAll("#t-settings .card")].filter(e => vis(e) && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.id || "card");
+"""
+    for w, h in ((360, 740), (2560, 1440)):
+        m = _ui2_drive(chrome, page, st, steps, size=(w, h),
+                       frag="?tour=0#day", routes=routes, budget_ms=30000)
+        if not check(isinstance(m, dict) and not m.get("problems"),
+                     f"{w}x{h}: Settings drawn: {m!r}"[:1500]):
+            continue
+        check(m["tab"] and m["onSchedule"] == [] and
+              m["onSettings"] == ["admin", "annout-card", "psa-card"],
+              f"{w}x{h}: none of them on Schedule; on Settings, all three "
+              f"(the Tailscale slot is empty with no SuperUser): "
+              f"{m['onSchedule']} {m['onSettings']} tab {m['tab']}")
+        check(m["xs"] <= 0 and not m["wide"],
+              f"{w}x{h}: nothing on Settings goes off the side: "
+              f"{m['xs']} {m['wide']}")
     print("  ok")
 
 
@@ -128327,6 +128485,7 @@ if __name__ == "__main__":
         test_superuser_upload_file_never_named,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
+        test_ui2_set_once_cards_are_on_settings_not_schedule,
         test_ui2_op_text_shapes_text_with_dom_nodes_only,
     ]
     _stopped = _run_tests(TESTS)
