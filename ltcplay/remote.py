@@ -3638,8 +3638,9 @@ class Remote:
         found = self.tailscale_found()
         addr = found.get("address")
         url = page_url(ts_listen, port) if ts_listen else None
-        # The URL to type by name (MagicDNS): the full name, the one a
-        # device shared in from another tailnet can use.
+        # The URL by name (MagicDNS): the full name, the one a device
+        # shared in from another tailnet can use. Shown second on the card:
+        # it needs HTTPS, which Chrome tries first on a name (2026-11-19).
         names = [n for n in listen.get("tailscale_names") or [] if "." in n]
         name_url = f"http://{names[0]}:{port}/" if ts_listen and names \
             else None

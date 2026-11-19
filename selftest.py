@@ -56398,7 +56398,19 @@ def test_tailscale_card_on_the_show_pc():
         c = card()
         check(c["name_url"] ==
               "http://ignite-player.tail342a0a.ts.net:7878/",
-              f"the URL to type, by its MagicDNS name: {c}")
+              f"the URL by its MagicDNS name: {c}")
+        # The number address leads (2026-11-19): Chrome tries HTTPS first
+        # on a name and refuses it, LTC Player answers plain HTTP. The
+        # name stays visible, second and labelled.
+        jt = str(js)
+        a = jt.find("`Type this: <b>${esc(V.url)}</b>`")
+        b = jt.find("`Name: ${esc(V.name_url)} ")
+        check(0 < a < b and "(needs HTTPS: Chrome refuses it for now)" in
+              jt[b:b + 200] and "by its Tailscale name" not in jt and
+              any(c["url"] in x for x in c["info"]) and
+              not any(c["name_url"] in x for x in c["bullets"]),
+              f"the number address first, the name second and labelled "
+              f"needs HTTPS: {a} {b} {c}")
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
                            {"on": False}, client=loop, headers=su)
         c = card()

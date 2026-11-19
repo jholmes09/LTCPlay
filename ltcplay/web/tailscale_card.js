@@ -14,7 +14,7 @@ window.ltcTailscaleCard = function(view){
     c = document.createElement("div");
     c.className = "card col"; c.id = "ts-card";
     c.innerHTML =
-      `<div class="t"><b>Remote access over Tailscale</b><span>Your own device, by its Tailscale name.</span></div>` +
+      `<div class="t"><b>Remote access over Tailscale</b><span>Your own device, by its Tailscale address.</span></div>` +
       `<div class="pline"><b id="ts-head"></b><ul id="ts-fix" style="margin:4px 0 0 0;padding:0;list-style:none"></ul></div>` +
       `<div class="pline bad" id="ts-detail" hidden></div>` +
       `<div class="pline" id="ts-more" style="opacity:.85"><svg class="i"><use href="#i-info"/></svg> More: <span id="ts-info"></span><span id="ts-serve">Tailscale Serve and HTTPS stay refused.</span></div>` +
@@ -61,9 +61,12 @@ window.ltcTailscaleCard = function(view){
     setText($("ts-info"), info.map(b => b + " ").join(""));
     const fw = (V.firewall || {}).state || "";
     const fwWord = fw === "present" ? "yes" : fw === "none" ? "not needed" : fw ? "no" : "not checked";
+    // The number address first: it works in Chrome today. The name is
+    // kept, second and labelled: Chrome tries HTTPS first on a name and
+    // refuses it, and LTC Player answers plain HTTP (2026-11-19).
     $("ts-facts").innerHTML = [
-      V.name_url ? `URL: <b>${esc(V.name_url)}</b>` : "URL: none yet",
-      V.url ? `Address: <b>${esc(V.url)}</b>` : "Address: none yet",
+      V.url ? `Type this: <b>${esc(V.url)}</b>` : "Type this: none yet",
+      V.name_url ? `Name: ${esc(V.name_url)} <span style="opacity:.85">(needs HTTPS: Chrome refuses it for now)</span>` : "Name: none yet",
       "Listening: " + (V.listening ? "yes" : "no"),
       "Firewall rule: " + fwWord,
       "Logins allowed: " + ((V.logins || []).length || "none")].map(t => `<div>${t}</div>`).join("");

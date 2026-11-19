@@ -213,8 +213,12 @@ there), exactly like the upload's card.
 - Changes count within 3 seconds.
 
 The show PC is `ignite-player.tail342a0a.ts.net` (100.75.53.81); the URL
-to give people is `http://ignite-player.tail342a0a.ts.net:7878/`. The page
-also answers to `ignite-player:7878` on your own devices, and to the
+to give people is the number address, `http://100.75.53.81:7878/`. The
+name, `http://ignite-player.tail342a0a.ts.net:7878/`, needs HTTPS for
+now: Chrome tries HTTPS first on a name and refuses it
+(ERR_SSL_PROTOCOL_ERROR), and LTC Player answers plain HTTP on 7878. The
+card shows the number address first and the name second, labelled. The
+page also answers to `ignite-player:7878` on your own devices, and to the
 address, and to nothing else. Your own login is
 `jeffholmespresents@gmail.com`. Andy uses his own Tailscale account: share
 only the show PC to him from the Tailscale admin console (Machines, the
