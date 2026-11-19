@@ -28,7 +28,10 @@ def _cap(text):
 
 
 def _audio(lamps):
-    st, word = _lamp(lamps, "Audio")
+    # The engine's lamp is "Show audio" (remote.Remote.subsystems, since
+    # 2026-10-28); read as "Audio" it was never found, and Resume always
+    # said "Audio: not known." (review, 2026-11-19).
+    st, word = _lamp(lamps, "Show audio")
     if st == "ok":
         return True, "Audio ready."
     if st == "bad":

@@ -237,6 +237,23 @@ class ConfigWatch:
                     except Exception:            # noqa: BLE001
                         pass
 
+    def engine_behind(self, path):
+        """True when the engine's copy of `path` is behind the file on disk
+        now, or when that cannot be told (fails closed). False for a file
+        this watch does not follow. A save that wants to refresh() after
+        itself asks this first, so it never hides an edit made by hand to
+        another key of the same file."""
+        if not path:
+            return False
+        path = os.path.abspath(str(path))
+        with self._lock:
+            entries = [e for e in self._entries
+                       if os.path.normcase(e.path) == os.path.normcase(path)]
+        try:
+            return any(e.engine and self._engine_behind(e) for e in entries)
+        except Exception:                        # noqa: BLE001
+            return True
+
     # -- the check ----------------------------------------------------------
     def _engine_behind(self, e):
         """By content, every check: a copy that keeps the old modified

@@ -95,26 +95,33 @@ class Levels:
         self._lock = threading.Lock()
         self.load()
 
+    def _read(self):
+        """The file read and checked as load() reads it: (levels found,
+        the doc). Raises OSError, ValueError, AttributeError or
+        TypeError."""
+        with open(self.path, encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or \
+                doc.get("hazers_format") != LEVELS_FORMAT or \
+                not isinstance(doc.get("levels"), dict):
+            raise ValueError("not a hazer levels file")
+        got = {}
+        for n, lv in doc["levels"].items():
+            if n not in self.names:
+                continue
+            h, f = lv.get("haze"), lv.get("fan")
+            for v in (h, f):
+                if isinstance(v, bool) or not isinstance(v, int) or \
+                        not 0 <= v <= 255:
+                    raise ValueError(f"{n}: a level is not 0 to 255")
+            got[n] = (h, f)
+        return got, doc
+
     def load(self):
         if not self.path or not os.path.exists(self.path):
             return
         try:
-            with open(self.path, encoding="utf-8-sig") as fh:
-                doc = json.load(fh)
-            if not isinstance(doc, dict) or \
-                    doc.get("hazers_format") != LEVELS_FORMAT or \
-                    not isinstance(doc.get("levels"), dict):
-                raise ValueError("not a hazer levels file")
-            got = {}
-            for n, lv in doc["levels"].items():
-                if n not in self.names:
-                    continue
-                h, f = lv.get("haze"), lv.get("fan")
-                for v in (h, f):
-                    if isinstance(v, bool) or not isinstance(v, int) or \
-                            not 0 <= v <= 255:
-                        raise ValueError(f"{n}: a level is not 0 to 255")
-                got[n] = (h, f)
+            got, doc = self._read()
             self.levels.update(got)
             self.other = {k: v for k, v in doc.items()
                           if k not in ("hazers_format", "levels")}
@@ -152,14 +159,66 @@ class Levels:
         doc.update({"hazers_format": LEVELS_FORMAT,
                     "levels": {n: {"haze": h, "fan": f}
                                for n, (h, f) in levels.items()}})
+        self._dump(doc)
+        self.other = other
+        self.fault = ""
+
+    def _dump(self, doc):
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, indent=1)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, self.path)
-        self.other = other
-        self.fault = ""
+
+    def set_other(self, key, value):
+        """Replace one key of the file beside the levels (the haze fluid
+        settings, "fluid", from the Settings tab's Haze fluid card,
+        fuelhaze.py); None removes it. The levels and every other key are
+        written back exactly as they are on disk now (as they are in
+        memory when there is no file yet), under the same lock as set(),
+        so a level set and this never lose each other's change. Refused
+        (ValueError, nothing written) while the file cannot be read: a
+        save here never writes over levels it could not read. Never
+        touches the levels the hazers run at."""
+        if key in ("hazers_format", "levels"):
+            raise ValueError(f"{key} is not a setting beside the levels")
+        with self._lock:
+            if not self.path:
+                raise ValueError("there is no settings folder")
+            if self.fault:
+                # Unreadable at start: read it again now (it may have been
+                # fixed by hand since); still bad, refused. The levels in
+                # use (what the hazers run at) are not changed by this.
+                try:
+                    self._read()
+                except (OSError, ValueError, AttributeError,
+                        TypeError) as e:
+                    raise ValueError(f"{self.fault} Still: {e}")
+            if os.path.exists(self.path):
+                try:
+                    with open(self.path, encoding="utf-8-sig") as fh:
+                        doc = json.load(fh)
+                except (OSError, ValueError) as e:
+                    raise ValueError(f"{LEVELS_FILE} could not be read "
+                                     f"({e})")
+                if not isinstance(doc, dict) or \
+                        doc.get("hazers_format") != LEVELS_FORMAT or \
+                        not isinstance(doc.get("levels"), dict):
+                    raise ValueError(f"{LEVELS_FILE} is not a hazer levels "
+                                     f"file")
+            else:
+                doc = {"hazers_format": LEVELS_FORMAT,
+                       "levels": {n: {"haze": h, "fan": f}
+                                  for n, (h, f) in self.levels.items()}}
+            doc = dict(doc)
+            if value is None:
+                doc.pop(key, None)
+            else:
+                doc[key] = value
+            self._dump(doc)
+            self.other = {k: v for k, v in doc.items()
+                          if k not in ("hazers_format", "levels")}
 
 
 class Hazers:

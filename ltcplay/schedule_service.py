@@ -810,6 +810,22 @@ class Service:
         # the performer, which checks Run on its own. None (no conductor,
         # or one built without fire_ice) gates nothing, as before.
         self.run_gate = None
+        # When show control was last seen turned on, on this service's
+        # clock (_watch_run_on), or None while it is off. Memory only: show
+        # control is always off when the engine starts (Jeff's standing
+        # rule, no auto-Run), so a restart starts with None, fail closed.
+        self._run_on_since = None
+        # () -> show control's own turn-on count (web.Control.run_gen), set
+        # by fire_ice.attach, or None. A count that changed since the stamp
+        # means show control went off and on again unseen: stamped again.
+        self.run_gen = None
+        self._run_on_gen = None
+        # (turn-on count, stamp) that run_turned_on took at the source,
+        # kept while show control comes up (the source tells before the
+        # show file reads as running), and (stamp, count) together for a
+        # reader without the lock (run_on_refusal).
+        self._run_on_told = None
+        self._run_on_pair = (None, None)
         # alerts.Alerts.raise_(kind, text), set by remote.Remote: a failed
         # start raises a "start" alert for the rack screen and the booth
         # (Jeff, 2026-10-12: the groups are left as they are, so a person
@@ -2968,6 +2984,9 @@ class Service:
             # it once that is over, before this tick looks at the list.
             self._follow_rule(now, deferred=True)
             ev = self._tick_event()
+            # Before the rig check and the alert hold look at the list.
+            self._miss_shows_before_run_on(now)
+            ev = replace(ev, run_on_at=self._run_on_since)
             self._preroll_lookahead(now)
             self._preshow_lookahead(now)
             self._preroll_before_gate(now, ev)
@@ -2996,7 +3015,7 @@ class Service:
         except Exception:                        # noqa: BLE001
             return True
 
-    def halt_schedule(self, who, screen, detail=""):
+    def halt_schedule(self, who, screen, detail="", hold=True):
         """A Stop's step at the scheduler (Remote.halt; Jeff, 2026-10-30),
         decided and applied in ONE locked step with NO tick before it
         (cold review of #191, A-F1: a tick first could start the show
@@ -3015,12 +3034,23 @@ class Service:
                         now; the Stop's Hold waits for the next state a
                         show could start from.
 
-        {"ok", "kind" ("stop", "hold", "held" or "carried"), "text",
-        "state"}. Never raises for who or where: Stop is never refused."""
+        {"ok", "kind" ("stop", "hold", "held", "carried" or "not held"),
+        "text", "state"}. Never raises for who or where: Stop is never
+        refused.
+
+        hold False is Show control off (Jeff, 2026-11-19: everything a Stop
+        does except the Hold): the same steps, but no Stop's Hold is set
+        or marked, a live show ends with the schedule left OFF Hold
+        (STOP_SHOW, hold False), and between shows nothing is held. A Hold
+        that already stands is left exactly as it is."""
         who = str(who or "").strip() or "An unnamed operator"
         screen = str(screen or "").strip() or "screen"
         screen = {x.lower(): x for x in self.screens}.get(screen.lower(),
                                                            screen)
+        if hold is False:
+            with self._locked():
+                return self._halt_schedule_locked(who, screen, detail,
+                                                  hold=False)
         with self._locked():
             self._stop_carry_set(who, screen)
             try:
@@ -3084,31 +3114,45 @@ class Service:
                        "no show starts by itself, tonight or on a later "
                        "night, until someone presses Resume.")
 
-    def _halt_schedule_locked(self, who, screen, detail):
+    # Show control off's answer where a Stop would hold (Jeff, 2026-11-19).
+    RUN_OFF_NOT_HELD = ("The schedule is not on Hold: the night carries on, "
+                        "and no show starts while show control is off.")
+
+    def _halt_schedule_locked(self, who, screen, detail, hold=True):
         m = self.machine
         if m is None:
-            return {"ok": True, "kind": "carried", "state": None,
-                    "text": self.STOP_HELD_LATER}
+            return {"ok": True, "kind": "carried" if hold else "not held",
+                    "state": None,
+                    "text": self.STOP_HELD_LATER if hold
+                    else self.RUN_OFF_NOT_HELD}
         st = m.state
+        later = self.STOP_HELD_LATER if hold else self.RUN_OFF_NOT_HELD
         if st == sch.HOLD:
-            if not m.stop_hold or not m.dark:
+            if hold and (not m.stop_hold or not m.dark):
                 # The Stop's now, and dark: the conductor's Stop (asked at
                 # the press) has taken the look down.
                 self.machine = replace(m, stop_hold=True, dark=True)
+                self._save_tonight()
+            if not hold and not self.machine.dark:
+                # Show control off on a Hold: the conductor's Stop has
+                # taken the look down, as a Stop's does (the Hold itself,
+                # and whose it is, is left as it was).
+                self.machine = replace(self.machine, dark=True)
                 self._save_tonight()
             return {"ok": True, "kind": "held", "state": st,
                     "text": "The schedule was already on Hold; it stays on "
                             "Hold until Resume."}
         if st in (sch.SHOW, sch.PAUSED):
             ev = sch.Event(sch.STOP_SHOW, "operator", who=who,
-                           screen=screen, confirmed=True, surface=True)
+                           screen=screen, confirmed=True, surface=True,
+                           hold=hold)
             kind = "stop"
         elif st in self.SHOWTIME_FROM and not m.waiting():
             # No show left tonight (the last one just ended): the night
             # closes as it would (round 3, F2); the Stop's Hold stands for
             # the next night with shows.
-            return {"ok": True, "kind": "carried", "state": st,
-                    "text": self.STOP_HELD_LATER}
+            return {"ok": True, "kind": "carried" if hold else "not held",
+                    "state": st, "text": later}
         elif m.held_look and st == sch.OFF:
             # The idle look held after the last show (after_last_show
             # "idle"): a Stop ends it to black, as End of night does (Jeff,
@@ -3126,8 +3170,18 @@ class Service:
             self.machine = replace(m, held_look=False,
                                    closed_by_operator=True)
             self._save_tonight()
-            return {"ok": True, "kind": "carried", "state": st,
-                    "text": self.STOP_HELD_LATER}
+            return {"ok": True, "kind": "carried" if hold else "not held",
+                    "state": st, "text": later}
+        elif st in self.SHOWTIME_FROM and not hold:
+            # Show control off between shows: nothing is held, the night
+            # carries on (Jeff, 2026-11-19). Dark, as after a Stop: the
+            # conductor's Stop took the look down, and a restart keeps it
+            # down until a show starts.
+            if not m.dark:
+                self.machine = replace(m, dark=True)
+                self._save_tonight()
+            return {"ok": True, "kind": "not held", "state": st,
+                    "text": self.RUN_OFF_NOT_HELD}
         elif st in self.SHOWTIME_FROM:
             ev = sch.Event(sch.HOLD_ON, "operator", who=who, screen=screen,
                            surface=True,
@@ -3136,8 +3190,8 @@ class Service:
                                             f"on Hold")
             kind = "hold"
         else:
-            return {"ok": True, "kind": "carried", "state": st,
-                    "text": self.STOP_HELD_LATER}
+            return {"ok": True, "kind": "carried" if hold else "not held",
+                    "state": st, "text": later}
         self._press_stamp = self.stamp_press()
         try:
             out = self._apply(ev)
@@ -3209,7 +3263,8 @@ class Service:
         if gate is None or m is None or m.state not in self.SHOWTIME_FROM:
             return
         try:
-            probe = sch.step(m, ev or sch.Event(sch.TICK, "scheduler"), now)
+            probe = sch.step(m, ev or sch.Event(
+                sch.TICK, "scheduler", run_on_at=self._run_on_since), now)
             shows = [e.show for e in probe.effects
                      if e.kind == sch.START_SHOW]
             if not shows:
@@ -3253,10 +3308,140 @@ class Service:
         return (str(m.date), n, at.isoformat() if at is not None else "")
 
     # -- the pre-roll (preroll.py, Jeff 2026-10-28) -------------------------
+    def _read_run_gen(self):
+        """Show control's turn-on count, or None with none attached. One
+        that cannot be read is a fresh object, never equal to the last:
+        the stamp is then taken again at every look (fail closed)."""
+        fn = self.run_gen
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:                        # noqa: BLE001
+            return object()
+
+    def run_turned_on(self):
+        """Show control is coming on (web.Control.start, wired by
+        fire_ice.attach, before the start work, so never dated later than
+        it really was): the moment, on this service's clock, the rule of
+        Jeff, 2026-11-19 measures from, kept with its turn-on count until
+        the show file reads as running (_watch_run_on). Never raises."""
+        try:
+            with self._locked():
+                now = self.clock()
+                gen = self._read_run_gen()
+                self._run_on_told = (gen, now)
+                if self._run_pressed() and self.run_gate is not None:
+                    self._set_run_on(now, gen)
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def _run_on_from_press(self, gen, now):
+        """The moment show control came on, for the tick and the show
+        runner's check alike (Jeff, 2026-11-19): the press the source told
+        for this very turn-on count, if the show file is first seen running
+        within sch.RUN_ON_PRESS_GRACE_S of it. If it is first seen running
+        more than that after the press, the first look (a tick, or the show
+        runner's check, up to about a quarter second after it really began
+        running) counts as the on-moment: `now` here. Any doubt (no press
+        told, another count, a press ahead of the clock) is now too: fail
+        closed, a show is only ever MISSED by it, never started."""
+        told = self._run_on_told
+        try:
+            if told is not None and gen is not None and told[0] == gen:
+                waited = (now - told[1]).total_seconds()
+                if 0 <= waited <= sch.RUN_ON_PRESS_GRACE_S:
+                    return told[1]
+        except Exception:                        # noqa: BLE001
+            pass
+        return now
+
+    def _set_run_on(self, since, gen):
+        self._run_on_since = since
+        self._run_on_gen = gen
+        self._run_on_pair = (since, gen)
+
+    def _watch_run_on(self, now):
+        """The moment show control was turned on (run_turned_on), or None
+        while it is off or this engine has no show control gate. When the
+        source did not say (no hook, or show control went off and on
+        again between two looks: its turn-on count changed), the first
+        look that sees it on is the stamp: late, never early, so a show
+        on the edge is MISSED rather than started (fail closed). A stamp
+        ahead of the clock (the clock stepped back) is brought back to
+        now. Lock held. Never raises."""
+        if self.run_gate is None or not self._run_pressed():
+            self._set_run_on(None, None)
+            return None
+        gen = self._read_run_gen()
+        if self._run_on_since is None or gen != self._run_on_gen:
+            self._set_run_on(self._run_on_from_press(gen, now), gen)
+        elif self._run_on_since > now:
+            self._set_run_on(now, gen)
+        return self._run_on_since
+
+    def run_on_refusal(self, n):
+        """Why the scheduler's own start of show n is refused at the
+        start itself (Jeff, 2026-11-19), or "": its start time was
+        sch.RUN_ON_LATE_S or more before show control came on, so it is
+        never started, even when the start was decided while show control
+        was off and show control came on before it reached the show
+        runner. Asked by the show runner for automatic starts only (Start
+        now, Resume and Start at a cue are the operator's). Takes no lock
+        (it runs on the conductor's line): it reads the turn-on count
+        first, then the stamp and the count it was taken with as ONE
+        tuple (_run_on_pair, replaced whole, never half written); a count
+        that differs, or no stamp, uses the press told by the source for
+        that count, else now; a stamp ahead of the clock is taken as now
+        (fail closed). Never raises."""
+        try:
+            m = self.machine
+            if m is None or self.run_gate is None or \
+                    not self._run_pressed():
+                return ""
+            s = m.slot(n)
+            gen = self._read_run_gen()           # the count first
+            on_at, seen = self._run_on_pair      # stamp and count together
+            now = self.clock()
+            if on_at is None or gen != seen:
+                on_at = self._run_on_from_press(gen, now)
+            if on_at > now:                      # the clock stepped back
+                on_at = now
+            if sch.lateness_s(s.start, on_at) < sch.RUN_ON_LATE_S:
+                return ""
+            return (f"show control was off at its start time "
+                    f"({m.hm(s.start)}) and came on at {m.hm(on_at)}, so "
+                    f"the scheduler does not start it; press Start now to "
+                    f"start it")
+        except Exception:                        # noqa: BLE001
+            return ("whether show control came on after its start time "
+                    "could not be checked, so the scheduler does not start "
+                    "it; press Start now to start it")
+
+    def _miss_shows_before_run_on(self, now):
+        """Jeff, 2026-11-19: "When you turn show control back on, if it's
+        past the start time by even a second, it should not start." Every
+        show still waiting whose start was sch.RUN_ON_LATE_S or more before
+        show control went on is MISSED, said in the journal, before
+        anything else this tick looks at the list (the rig check, the
+        alert hold), with a settling TICK that never starts a show. Only
+        between shows (IDLE, STANDBY); a Hold keeps its own rule. Lock
+        held."""
+        on_at = self._watch_run_on(now)
+        m = self.machine
+        if on_at is None or m is None or \
+                m.state not in self.SHOWTIME_FROM:
+            return
+        if not any(sch.lateness_s(s.start, on_at) >= sch.RUN_ON_LATE_S
+                   for s in m.pending()):
+            return
+        self._apply(sch.Event(sch.TICK, "scheduler", settle=True,
+                              run_on_at=on_at), now)
+
     def _tick_event(self):
         """The scheduler's TICK, with the late allowance (late_ok_s) for
         the next show when its pre-roll could only run at its time."""
-        ev = sch.Event(sch.TICK, "scheduler")
+        ev = sch.Event(sch.TICK, "scheduler", run_on_at=self._run_on_since)
         m = self.machine
         if self._preroll_late and m is not None:
             nxt = m.next_slot()
@@ -3318,8 +3503,9 @@ class Service:
                 return
             # Would the scheduler start it at its time (no guard, nothing
             # in the way)? Asked of the pure machine at that instant.
-            n = self._starts(sch.step(m, sch.Event(sch.TICK, "scheduler"),
-                                      max(now, nxt.start)))
+            n = self._starts(sch.step(m, sch.Event(
+                sch.TICK, "scheduler", run_on_at=self._run_on_since),
+                max(now, nxt.start)))
             if n:
                 self._preroll_kick(n)
         except Exception:                        # noqa: BLE001
@@ -3390,8 +3576,9 @@ class Service:
             # 2026-11-12: skip).
             return (f"an alert is open, so show {n} would be held at its "
                     f"time")
-        if not self._starts(sch.step(m, sch.Event(sch.TICK, "scheduler"),
-                                     max(now, s.start))):
+        if not self._starts(sch.step(m, sch.Event(
+                sch.TICK, "scheduler", run_on_at=self._run_on_since),
+                max(now, s.start))):
             return f"the scheduler would not start show {n} at its time"
         if left < pa.LEAD_S - pa.GRACE_S:
             return (f"only {max(0.0, left):.0f} s were left when it could "
@@ -4700,14 +4887,14 @@ class Service:
             # never carries to a later start (review of #162).
             perf.continue_off = None
 
-    def halt_begin(self):
+    def halt_begin(self, why="Stop was pressed"):
         """A Stop's complete halt is under way (Remote.stop_press, web.py's
-        /api/stop with "halt"): until halt_end, Start now is refused, and
-        so is Run (re-review of #144, N2). Also ends any waiting Start
-        now. Never raises."""
+        /api/stop with "halt", Remote.run_off with its own `why`): until
+        halt_end, Start now is refused, and so is Run (re-review of #144,
+        N2). Also ends any waiting Start now. Never raises."""
         with self._halt_count_lock:
             self._halts += 1
-        self.cancel_start_wait("Stop was pressed")
+        self.cancel_start_wait(why)
 
     def halt_end(self):
         with self._halt_count_lock:

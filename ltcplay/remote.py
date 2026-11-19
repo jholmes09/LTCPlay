@@ -156,8 +156,9 @@ END_OF_NIGHT_CONFIRM = ("Tap End of night twice to end the idle look. "
                         "Nothing was changed.")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
 # Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
-# and holds the schedule instead; "run-off" is the halt and then playback
-# stopped, Run off (the Programming Run card). A live show's fade is let
+# and holds the schedule instead; "run-off" is the halt with no Hold and
+# then playback stopped, Show control off (Jeff, 2026-11-19). A live show's
+# fade is let
 # run this long at most first (web.HALT_FADE_WAIT_S).
 STOP_FADE_WAIT_S = 3.0
 # Play from with the box left empty (Windows stress round 3, 2026-11-10:
@@ -249,6 +250,11 @@ FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
 # Haze fluid (fuelhaze.py, 2026-11-12): the Fuel page's Hazers section, in
 # the fuel GET; a refill needs what a fuel refill needs, an undo an admin.
 HAZE_POST_ROUTES = ("haze-refill", "haze-undo")
+# The Settings tab's Haze fluid card (fuelhaze.route_fluid, Jeff
+# 2026-11-19): litres per hour, tank litres, Set level now and Reset
+# learning; the Settings row, on the show machine only (LOCAL_ONLY).
+# Records only: it never reaches a hazer.
+HAZE_FLUID_POST_ROUTES = ("haze-fluid",)
 # The Fireball page (fireball.py): read by anyone; a channel ON needs the
 # arm row (users.classify), everything off never.
 FIREBALL_GET_ROUTES = ("fireball",)
@@ -337,9 +343,15 @@ LIVE_FLAME_ENABLES = (
 # and Fill selected need what a fuel refill needs, a type's shows per
 # refill an admin (fuel.py checks). Kept apart from FUEL_POST_ROUTES.
 SHOWS_POST_ROUTES = ("fuel-shows",)
-POST_ROUTES = POST_ROUTES + SHOWS_POST_ROUTES
+POST_ROUTES = POST_ROUTES + SHOWS_POST_ROUTES + HAZE_FLUID_POST_ROUTES
 # End of night (Jeff, 2026-11-14), above with CONTROL_ROUTES.
 POST_ROUTES = POST_ROUTES + END_OF_NIGHT_ROUTES
+# The Booth speaker card (boothcard.py, Jeff 2026-11-19): GET the card,
+# POST {"action": "save"} or {"action": "test"}. The show PC only
+# (LOCAL_ONLY below), the Settings row (users.py).
+BOOTH_ROUTES = ("booth-speaker",)
+GET_ROUTES = GET_ROUTES + BOOTH_ROUTES
+POST_ROUTES = POST_ROUTES + BOOTH_ROUTES
 # The switch "Fire flames while scrubbing" is gone (Jeff, 2026-10-29: "as
 # long as I am armed, then jumping around timecode will work"). On a show
 # that plays from the show audio, Programming playback is the show's own
@@ -375,6 +387,12 @@ LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",
 LOCAL_ONLY = LOCAL_ONLY | {"preshow-audio"}
 # Remote access over Tailscale (2026-11-12): switched on the show PC only.
 LOCAL_ONLY = LOCAL_ONLY | frozenset(("tailscale",))
+# The Booth speaker card (Jeff, 2026-11-19): the show PC only, like the
+# announcement output beside it.
+LOCAL_ONLY = LOCAL_ONLY | frozenset(("booth-speaker",))
+# The haze fluid settings (Jeff, 2026-11-19): on the Settings tab of the
+# show PC, like the cards beside them.
+LOCAL_ONLY = LOCAL_ONLY | frozenset(HAZE_FLUID_POST_ROUTES)
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -478,6 +496,16 @@ FIRST_RUN_FILE = "first-run.json"    # what the supervisor wrote at first run
 SHOWPC_FILE = "showpc.json"          # the supervisor's own settings
 SCREEN_CLOSE_FILE = "close-rack-screen"   # the supervisor closes its Edge
 RESTART_ENGINE_FILE = "restart-engine"    # the supervisor restarts ltcplay
+# This engine process, told apart from the next one (restart-check's
+# "engine"): the rack screen waits after Restart the engine until another
+# answers (2026-11-19). Display only, never a decision.
+ENGINE_ID = f"{os.getpid()}.{int(time.time() * 1000)}"
+# The scheduler's states a restart may happen in (restart_refusal): no show
+# running and none held mid-run. SHOW and PAUSED refuse with their own
+# sentence; any other word, or a schedule that cannot be read, refuses too
+# (fail closed). BOOT, IDLE, STANDBY, HOLD, CLOSING and OFF as schedule.py
+# spells them, spelled here so a GPL engine does not load the scheduler.
+RESTART_OK_STATES = ("BOOT", "IDLE", "STANDBY", "HOLD", "CLOSING", "OFF")
 PROGRAMS_READ_S = 3.0
 FLAMESAFE_ENV = "LTCPLAY_FLAMESAFE_CONFIG"     # cli.py and ltcwin.py agree
 
@@ -1322,6 +1350,20 @@ TAILSCALE_CLI_MAC = ("/Applications/Tailscale.app/Contents/MacOS/Tailscale",
                      "/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale",
                      "/usr/bin/tailscale")
 TAILSCALE_READ_S = 30.0
+# The Tailscale card's fixed lines (tailscale_view). A problem line says
+# what to do; an info line only says how it works.
+TAILSCALE_NO_LISTEN = "Nothing listens for Tailscale now."
+TAILSCALE_RESTART_WHEN = "Restart between shows, every flame disarmed."
+TAILSCALE_ROUTES_HEAD = "Security: this PC shares routes"
+TAILSCALE_ROUTES_FIX = "Security: turn off subnet routes and exit node."
+TAILSCALE_ROUTES_HOW = (
+    "Security problem: this PC offers subnet routes or an exit node over "
+    "Tailscale, so a device on your Tailscale network could reach the show "
+    "network, and the flame controllers on it, without going through LTC "
+    "Player. To turn it off: in the Tailscale admin console open Machines, "
+    "choose the show PC, then Edit route settings, and untick every subnet "
+    "route and Exit node. Or on this PC run: tailscale set "
+    "--advertise-routes= --advertise-exit-node=false")
 
 
 def tailscale_cli(windows=None, exists=None):
@@ -1374,7 +1416,7 @@ def find_tailscale(run=None, cli=None, found=None):
         return {"state": "not_installed", "address": None,
                 "head": "Tailscale is not installed",
                 "bullets": ["Install Tailscale on this PC first.",
-                            "Nothing listens for Tailscale now."]}
+                            TAILSCALE_NO_LISTEN]}
     try:
         import subprocess
         if run is None:
@@ -1393,7 +1435,7 @@ def find_tailscale(run=None, cli=None, found=None):
         return {"state": "not_running", "address": None,
                 "head": "Tailscale is not running",
                 "bullets": ["Start Tailscale and sign in.",
-                            "Nothing listens for Tailscale now."]}
+                            TAILSCALE_NO_LISTEN]}
     mine = list(found) if found is not None else \
         _local_ipv4s() + [_tailscale_route_ipv4()]
     for a in ts:
@@ -2119,6 +2161,11 @@ class Remote:
         # "timing" alert (_frame_timing_work).
         self.flame_link_get = None
         self._timing_said = 0
+        self._timing_alert_id = None  # the "timing" alert raised here
+        self._timing_keep = False     # ...had a gap over TIMING_CLICK_MS
+        self._timing_link = None      # ...from this link's counts
+        self._timing_last_t = None    # the newest late frame handled
+        self._timing_alert_link = None  # the link the alert was raised on
         self._aim_lock = threading.Lock()
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
@@ -2271,6 +2318,11 @@ class Remote:
         # the announcements and the scheduler both run; None: its card says
         # it is not available here.
         self.preshow_audio = None
+        # The Booth speaker card (boothcard.py): the audio module the booth
+        # player uses (web.serve sets it; None imports sounddevice when it
+        # is needed), and one save or test at a time.
+        self.booth_sd = None
+        self._booth_lock = threading.Lock()
         # The Windows supervisor's word on the disk (housekeeping.py writes
         # disk-low.txt in the settings folder while it is low or critical,
         # and removes it when it is fine again). Read at most every 30 s.
@@ -2508,7 +2560,7 @@ class Remote:
             # stops the engine for a restart-engine request.
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
-            return 200, {"refusal": self.restart_refusal()}
+            return 200, self.restart_check()
         if name == "weather":
             # Display only: what the weather thread last stored.
             from . import weather as weather_mod
@@ -2531,6 +2583,10 @@ class Remote:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
             return self.preshow_audio_get(ctx)
+        if name == "booth-speaker":
+            if not ctx.local:
+                return 403, {"error": "Only on the show machine itself."}
+            return self.booth_speaker_get(ctx)
         if name in MORNING_GET_ROUTES:
             return self.morning_get(name, query, ctx)
         if name in FUEL_GET_ROUTES:
@@ -2608,6 +2664,10 @@ class Remote:
                     if name == "announce-test-tone" else
                     "Pre-show audio is set"
                     if name == "preshow-audio" else
+                    "The booth speaker is set"
+                    if name == "booth-speaker" else
+                    "The haze fluid settings are changed"
+                    if name in HAZE_FLUID_POST_ROUTES else
                     "The show network is set")
             return 403, {"error": f"{what} on the show machine itself, not "
                                   f"from here. Nothing was changed."}, {}
@@ -2627,6 +2687,8 @@ class Remote:
             return (*self.announce_test_tone(ctx),) + ({},)
         if name == "preshow-audio":
             return (*self.preshow_audio_post(body, ctx),) + ({},)
+        if name == "booth-speaker":
+            return (*self.booth_speaker_post(body, ctx),) + ({},)
         if name == "live-flame":
             return (*self.live_flame_post(body, ctx),) + ({},)
         if name in USER_POST_ROUTES:
@@ -2661,6 +2723,11 @@ class Remote:
             from . import fuelhaze
             return (*fuelhaze.route_post(self.haze, name, body, ctx,
                                          self.users),) + ({},)
+        if name in HAZE_FLUID_POST_ROUTES:
+            from . import fuelhaze
+            return (*fuelhaze.route_fluid(self.haze, body, ctx, self.users,
+                                          getattr(self, "audit", None)),) + \
+                ({},)
         if name in FIREBALL_POST_ROUTES:
             from . import fireball as fireball_mod
             return (*fireball_mod.route_post(self.fireball, self, name, body,
@@ -3614,43 +3681,53 @@ class Remote:
         found = self.tailscale_found()
         addr = found.get("address")
         url = page_url(ts_listen, port) if ts_listen else None
-        # The URL to type by name (MagicDNS): the full name, the one a
-        # device shared in from another tailnet can use.
+        # The URL by name (MagicDNS): the full name, the one a device
+        # shared in from another tailnet can use. Shown second on the card:
+        # it needs HTTPS, which Chrome tries first on a name (2026-11-19).
         names = [n for n in listen.get("tailscale_names") or [] if "." in n]
         name_url = f"http://{names[0]}:{port}/" if ts_listen and names \
             else None
         fw_state, fw_text = self.tailscale_firewall_view()
         restart = None
+        detail = ""
         unsaved = getattr(self, "_tailscale_unsaved", "")
+        # Two kinds of line (Jeff, 2026-11-19: "I can't tell if it's
+        # telling me there is an error or just how this works"): a problem
+        # (fix) needs someone to act, an info line only says how it works.
+        # The card marks each; problems come first and an info line never
+        # pushes one out.
+        fix, info = [], []
         if unsaved and not ts_listen:
-            head, bullets = "Closed now, setting not saved", [
-                "The settings file could not be written.",
-                "It opens again after a restart."]
+            head = "Closed now, setting not saved"
+            fix = ["The settings file could not be written."]
+            info = ["It opens again after a restart."]
         elif err:
-            head, bullets = "Settings file cannot be read", [
-                "Fix ltcplay_remote.json in Settings and logs."]
+            head = "Settings file cannot be read"
+            fix = ["Fix ltcplay_remote.json in Settings and logs."]
         elif not on and not ts_listen:
-            head, bullets = "Off: Tailscale cannot reach this", [
-                "Turn on to open the page remotely.",
-                "Stop, Hold and disarm only, signed out."]
+            head = "Off: Tailscale cannot reach this"
+            info = ["Turn on to open the page remotely.",
+                    "Stop, Hold and disarm only, signed out."]
         elif not on:
-            head, bullets = "Off: restart the engine", [
-                "Still listening until the engine restarts.",
-                "Restart between shows, every flame disarmed."]
+            head = "Off: restart the engine"
+            fix = ["Still listening until the engine restarts."]
+            info = [TAILSCALE_RESTART_WHEN]
         elif found["state"] != "found" and not ts_listen:
-            head, bullets = found["head"], list(found["bullets"])
+            head = found["head"]
+            fix = [b for b in found["bullets"] if b != TAILSCALE_NO_LISTEN]
+            info = [b for b in found["bullets"] if b == TAILSCALE_NO_LISTEN]
         elif not ts_listen and listen.get("tailscale_why"):
-            head, bullets = "Could not listen on Tailscale", [
-                "Restart Tailscale, then restart the engine."]
+            head = "Could not listen on Tailscale"
+            fix = ["Restart Tailscale, then restart the engine."]
         elif not ts_listen:
-            head, bullets = "On: restart the engine", [
-                "Restart between shows, every flame disarmed."]
+            head = "On: restart the engine"
+            fix = ["Restart the engine to start listening."]
+            info = [TAILSCALE_RESTART_WHEN]
         else:
-            head, bullets = "On: listening on Tailscale", [
-                f"Type {url} on your device."]
+            head = "On: listening on Tailscale"
+            info = [f"Type {url} on your device."]
             if addr and addr != ts_listen:
-                bullets.append("Tailscale address changed. Restart "
-                               "the engine.")
+                fix.append("Tailscale address changed. Restart the engine.")
         if (on and not ts_listen and found["state"] == "found") or \
                 (not on and ts_listen) or \
                 (on and ts_listen and addr and addr != ts_listen):
@@ -3659,35 +3736,39 @@ class Remote:
                        "why": reason or ""}
         if (on or ts_listen) and self.tailscale_routes_view():
             # Never subnet routes or an exit node from here (cold review
-            # of #244, M1): first, whatever else is said.
-            bullets = ["This PC shares routes: turn that off."] + \
-                bullets[:2]
+            # of #244, M1): a security problem, first, whatever else is
+            # said, with how to turn it off (2026-11-19).
+            head = TAILSCALE_ROUTES_HEAD
+            fix = [TAILSCALE_ROUTES_FIX] + fix
+            detail = TAILSCALE_ROUTES_HOW
         if on and fw_state == "missing" and self.tailscale_setup_other():
             # Setup read another Windows account's settings (an elevated
             # account that is not this one), so it did not add the rule.
-            bullets = bullets[:2] + ["Setup ran from another Windows "
-                                     "account."]
-        elif on and fw_state not in ("present", "none") and \
-                len(bullets) < 3:
-            bullets.append(fw_text)
-        elif not on and fw_state in ("present", "off", "wide") and \
-                len(bullets) < 3:
+            fix.append("Setup ran from another Windows account.")
+        elif on and fw_state not in ("present", "none"):
+            fix.append(fw_text)
+        elif not on and fw_state in ("present", "off", "wide"):
             # Removed by the installer, which needs Windows' permission.
-            bullets.append("Use the installer again to remove the rule.")
+            fix.append("Use the installer again to remove the rule.")
         try:
             logins = list(load_settings(self.folder).get(
                 "tailscale_logins") or [])
         except ValueError:
             logins = []
-        if on and not logins and len(bullets) < 3:
-            bullets.append("Nobody gets in: add Tailscale logins.")
+        if on and not logins:
+            fix.append("Nobody gets in: add Tailscale logins.")
+        # Up to three lines in all: every problem first (at most three),
+        # then info in what room is left.
+        fix = fix[:3]
+        info = info[:3 - len(fix)]
         return {"on": on, "error": err, "port": port, "logins": logins,
                 "name_url": name_url,
                 "names": list(listen.get("tailscale_names") or []),
                 "found": found["state"], "address": addr,
                 "listening": ts_listen, "url": url,
                 "firewall": {"state": fw_state, "text": fw_text},
-                "restart": restart, "head": head, "bullets": bullets[:3]}
+                "restart": restart, "head": head, "problems": fix,
+                "info": info, "detail": detail, "bullets": fix + info}
 
     def tailscale_setup_other(self, read=None, env=None):
         """True when the installer last read the setting from another
@@ -4044,29 +4125,88 @@ class Remote:
     TIMING_TEXT = ("Flame frames late, last hour: {n}.\n"
                    "- Why: A flame pulse may be cut short.\n"
                    "- The show carries on. Nothing was changed.\n"
+                   "- {last}\n"
                    "\n"
                    "More: worst {w} ms between two frames to flamesafe. "
                    "flamesafe holds a fire value for {lim} ms after the "
-                   "last frame (its fire_hold_ms).")
+                   "last frame (its fire_hold_ms). Counted here only while "
+                   "a flame can fire: a show, a Hold, a purge or test, "
+                   "Programming, the Fireball page.")
+    TIMING_AUTO = "Clears by itself after an hour."
+    TIMING_CLICK = "A gap over {big} ms: acknowledge it."
+    # A gap this long (ms) keeps the alert open until a person
+    # acknowledges it; shorter ones clear by themselves once the last hour
+    # has none (Jeff, 2026-11-18). Display only either way.
+    TIMING_CLICK_MS = 250
 
     def _frame_timing_work(self):
         """Flame frames late (flamelink.FrameTiming, 2026-10-29): on the
         alert worker, a display only "timing" alert (alerts.DISPLAY_ONLY:
         shown and journaled, no booth note, never holds a show) each time
-        the last hour has more frames over flamesafe's fire_hold_ms than
-        when it was last raised. It stays until a person acknowledges it,
-        like every alert. Sends nothing anywhere. Never raises."""
+        the last hour has more frames over flamesafe's fire_hold_ms IN A
+        FIRE WINDOW (a show, a Hold, a purge or test, Programming, the
+        Fireball page, or a state the link could not read) than when it
+        was last raised (Jeff, 2026-11-18). Late frames outside one are
+        still counted, journaled and on the Flame timing line, never an
+        alert. It clears by itself once the last hour has no such frame,
+        unless one was over TIMING_CLICK_MS: that one stays until a person
+        acknowledges it. Sends nothing anywhere. Never raises."""
         try:
             link = self._flame_link()
             if link is None:
                 return
-            n, worst = link.late_last_hour()
-            if n > self._timing_said:
+            if link is not self._timing_link:
+                # Another link (never at run time today; web.serve sets it
+                # once): its counts start again, so nothing it says can
+                # clear the alert the last one raised.
+                self._timing_link = link
+                self._timing_last_t = None
+                self._timing_said = 0
+            newest = None
+            reader = getattr(link, "late_fire_hour", None)
+            if reader is not None:
+                got = reader()
+                if got is None:
+                    # Unreadable: never taken for "none late", so it
+                    # neither raises nor clears.
+                    return
+                n, worst, newest = got
+            else:
+                # A link that cannot tell the fire window: every late frame
+                # counts (unknown is a fire window).
+                n, worst = link.late_last_hour()
+            aid = self._timing_alert_id
+            up = aid is not None and \
+                any(a.id == aid for a in self.alerts.open())
+            if not up:
+                self._timing_alert_id = None
+                self._timing_keep = False
+            # A late frame newer than the last one handled is new, even
+            # when older ones left the hour as fast (a steady rate).
+            new = newest is not None and (self._timing_last_t is None or
+                                          newest[0] > self._timing_last_t)
+            if n > self._timing_said or new:
                 # The limit from the link itself: this module never
                 # imports the flame link (the GPL wall).
                 lim = (link.timing_view() or {}).get("limit_ms", 100)
-                self.alerts.raise_("timing", self.TIMING_TEXT.format(
-                    n=n, w=f"{worst:.0f}", lim=lim))
+                if worst > self.TIMING_CLICK_MS or \
+                        (new and newest[1] > self.TIMING_CLICK_MS):
+                    self._timing_keep = True
+                last = self.TIMING_CLICK.format(big=self.TIMING_CLICK_MS) \
+                    if self._timing_keep else self.TIMING_AUTO
+                a = self.alerts.raise_("timing", self.TIMING_TEXT.format(
+                    n=n, w=f"{worst:.0f}", lim=lim, last=last))
+                self._timing_alert_id = getattr(a, "id", None)
+                self._timing_alert_link = link
+            elif n == 0 and up and not self._timing_keep and \
+                    reader is not None and self._timing_alert_link is link:
+                # The hour it describes is over: cleared here, only the one
+                # raised here, by its id, from the same link's counts.
+                self._timing_alert_id = None
+                self.alerts.clear(id=aid, who="LTC Player",
+                                  action="Confirm", screen="engine")
+            if newest is not None:
+                self._timing_last_t = newest[0]
             self._timing_said = n
         except Exception:                        # noqa: BLE001
             pass
@@ -4442,6 +4582,442 @@ class Remote:
         self._journal(who, screen, "pre-show audio", "saved",
                       f"{who} set pre-show audio on the {screen}. {text}")
         return 200, {"ok": True, "text": text, "preshow_audio": pa.view()}
+
+    # -- the Booth speaker card (boothcard.py, Jeff 2026-11-19) -------------
+    BOOTH_STATES_REFUSED = ("SHOW", "PAUSED", "HOLD")
+
+    def _booth_sd(self):
+        sd = self.booth_sd
+        if sd is None:
+            sd = getattr(self.alerts.booth, "_sd", None)
+        if sd is None:
+            from . import boothaudio
+            sd = boothaudio._import_sounddevice()
+        return sd
+
+    def _booth_block_on_disk(self):
+        """(the booth_alert block as ltcplay_remote.json has it now, or
+        None, and the file's path), or ValueError with a plain sentence."""
+        path = os.path.join(self.folder or settings_folder(), SETTINGS_FILE)
+        if not os.path.exists(path):
+            return None, path
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ValueError(f"{path} could not be read ({e}). Nothing was "
+                             f"changed.")
+        if not isinstance(doc, dict):
+            raise ValueError(f"{path} is not a settings object. Nothing was "
+                             f"changed.")
+        return doc.get("booth_alert"), path
+
+    # The engine's restart sentences (show_busy_reason, restart_refusal),
+    # said for a booth speaker press: the reason kept, the "then restart"
+    # part told as what the operator pressed (integration of #279 and #280).
+    BOOTH_RESTART_WORDS = (
+        ("Restart the engine between shows", "{Act} between shows"),
+        ("Restart the engine only after", "{Act} only after"),
+        ("a restart is known to be safe in", "this is known to be safe in"),
+        ("before you restart.", "before you {act}."),
+        ("then restart.", "then {act}."),
+        ("Whether the engine may restart could not be checked",
+         "Whether you may {act} could not be checked"),
+    )
+
+    def _booth_words(self, why, act):
+        """A restart refusal's sentence said for the booth speaker press
+        `act` ("change the booth speaker", "play the Test note"): the same
+        reason and what to do, never "restart". A sentence still about a
+        restart is left out, and the operator is told to try between
+        shows."""
+        why = str(why or "")
+        for a, b in self.BOOTH_RESTART_WORDS:
+            why = why.replace(a, b.format(act=act, Act=act[:1].upper()
+                                          + act[1:]))
+        if "restart" not in why.lower():
+            return why
+        keep = [x for x in re.split(r"(?<=\.)\s+", why)
+                if x and "restart" not in x.lower()]
+        return " ".join(keep + [f"{act[:1].upper() + act[1:]} between "
+                                f"shows, with show control off."])
+
+    def _booth_show_refusal(self, act="change the booth speaker"):
+        """Why the booth speaker may not be changed (or its Test note
+        played: `act`) now, or "": while a show is live or running, a Hold
+        included, show control on or a show file starting, or when that
+        cannot be read (fails closed). The true reason, from
+        show_busy_reason, said for this press."""
+        Act = act[:1].upper() + act[1:]
+        left = ("the booth speaker was left as it is"
+                if act == "change the booth speaker" else
+                f"you may not {act} now")
+        try:
+            why = self.show_busy_reason()
+            if why:
+                return self._booth_words(why, act)
+            if self.schedule is not None:
+                st = self._show_live_state()
+                if st is None:
+                    return f"The show's state could not be read, so {left}."
+                if st in self.BOOTH_STATES_REFUSED:
+                    return (f"A show is live or on Hold. {Act} between "
+                            f"shows.")
+        except Exception as e:                   # noqa: BLE001
+            return (f"The show's state could not be read "
+                    f"({type(e).__name__}), so {left}.")
+        return ""
+
+    def _booth_test_refusal(self):
+        """Why the Test note may not play now, or "": everything that
+        refuses Reload engine (a show running, an announcement, a flame
+        group armed or not known, live flame, the Fireball page, a purge, a
+        laser test or arm), a Hold, the hazer test, cleaning or the fuel
+        pump, said as a Test note's refusal, never a restart's. Fails
+        closed."""
+        act = "play the Test note"
+        why = self._booth_show_refusal(act)
+        if why:
+            return why
+        why = self.restart_refusal()
+        if why:
+            return self._booth_words(why, act)
+        try:
+            ht = self.hazer_test
+            if ht is not None and ht.on():
+                return "The hazer test is on. Turn it off first."
+            cl = self.cleaning
+            if cl is not None and cl.active():
+                return "Wave flamer cleaning is running. Stop it first."
+            pm = self.pump
+            if pm is not None and pm.on():
+                return "The fuel pump is on. Turn it off first."
+        except Exception as e:                   # noqa: BLE001
+            return (f"Whether a test is on could not be checked "
+                    f"({type(e).__name__}).")
+        return ""
+
+    def _booth_reserved(self, outs):
+        """boothcard.Reserved: the outputs a booth note must never play on
+        (cold review of #280, P2-1). The announcements' show_outputs (Main
+        L/R unless their file says otherwise) and every stem's and the
+        timecode's outputs on each show audio device, from the running
+        show and every show file in the show folder; outputs 1 and 2 of
+        the announcements' own output. This PC's default output is unsure
+        (MadMapper's show audio plays there), and so is every device when
+        the show folder or a show file's audio cannot be read. Never
+        raises: anything not known is unsure."""
+        from . import boothcard
+        res = boothcard.Reserved()
+        try:
+            ann = self.announce
+            show_outs = (1, 2)
+            if ann is not None:
+                show_outs = tuple((getattr(ann, "options", None) or {})
+                                  .get("show_outputs") or (1, 2))
+                own = getattr(ann, "device_name", "") or ""
+                if own:
+                    res.add(own, (1, 2), "the announcements' own output")
+            why_show = "the show audio"
+            why_ann = "the announcements (on the show audio)"
+
+            def add_audio(acfg):
+                chans = set()
+                for cue in (getattr(acfg, "cues", None) or {}).values():
+                    for st in getattr(cue, "stems", None) or ():
+                        chans |= set(getattr(st, "channels", None) or ())
+                ltc = getattr(acfg, "ltc_output", None)
+                if ltc:
+                    chans.add(ltc)
+                res.add(acfg.device, sorted(chans), why_show)
+                res.add(acfg.device, show_outs, why_ann)
+            sess = getattr(self.control, "session", None)
+            clk = getattr(sess, "clock", None) if sess is not None else None
+            if getattr(clk, "source", None) == "audio_master":
+                acfg = getattr(clk, "audio", None)
+                if acfg is not None:
+                    add_audio(acfg)
+                else:
+                    res.everywhere = ("the running show's audio could not "
+                                      "be read")
+            folder = self._show_folder()
+            if not folder or not os.path.isdir(folder):
+                res.everywhere = res.everywhere or (
+                    "no show folder is set here, so the show audio is not "
+                    "known")
+            else:
+                import glob
+                from .clock import ClockConfig
+                for path in sorted(glob.glob(os.path.join(
+                        glob.escape(folder), "*.json"))):
+                    try:
+                        with open(path, encoding="utf-8-sig") as fh:
+                            doc = json.load(fh)
+                    except (OSError, ValueError):
+                        continue
+                    if not (isinstance(doc, dict) and
+                            isinstance(doc.get("cues"), list)):
+                        continue
+                    ck = doc.get("clock")
+                    if not (isinstance(ck, dict) and
+                            ck.get("source") == "audio_master"):
+                        continue
+                    try:
+                        add_audio(ClockConfig.parse(ck, path).audio)
+                    except Exception:            # noqa: BLE001
+                        res.everywhere = res.everywhere or (
+                            f"{os.path.basename(path)} names show audio "
+                            f"that could not be read")
+            for d in outs or ():
+                if d.get("default"):
+                    res.unknown(d.get("name"),
+                                "it is this PC's default output, where "
+                                "MadMapper's show audio plays")
+        except Exception as e:                   # noqa: BLE001
+            res.everywhere = (f"the show audio could not be checked "
+                              f"({type(e).__name__})")
+        return res
+
+    def booth_speaker_view(self):
+        """The card: what the file says, the outputs to pick from, the check
+        line and the revision a save sends back. Never raises."""
+        from . import boothaudio, boothcard
+        out = {"device": "", "hostapi": "", "channels": [], "outputs": [],
+               "rev": None, "applies": "now",
+               "max_note_s": boothaudio.MAX_NOTE_S}
+        try:
+            block, _path = self._booth_block_on_disk()
+            out["rev"] = boothcard.revision(block)
+            cfg = boothaudio.parse_config(block)
+            out.update(device=cfg["device"], hostapi=cfg["hostapi"],
+                       channels=list(cfg["channels"]) if cfg["device"]
+                       else [])
+        except ValueError as e:
+            out["error"] = str(e)
+        sd = None
+        res = None
+        try:
+            from . import announce
+            sd = self._booth_sd()
+            if sd is None:
+                out["outputs_error"] = ("sounddevice is not installed here, "
+                                        "so the outputs cannot be listed.")
+            else:
+                outs = announce.list_outputs(sd)
+                res = self._booth_reserved(outs)
+                out["outputs"] = boothcard.choices(
+                    outs, out["device"], out["hostapi"], res)
+        except Exception as e:                   # noqa: BLE001
+            out["outputs_error"] = (f"The audio system could not list its "
+                                    f"outputs ({type(e).__name__}: {e}).")
+        out["line"] = boothcard.line(self.alerts.booth, sd)
+        out["confirm_words"] = boothcard.CONFIRM_WORDS
+        if res is not None and out["device"]:
+            # A setting written by hand on an output the show uses: said.
+            taken, _u = res.for_device(out["device"])
+            bad = [c for c in out["channels"] if c in taken]
+            if bad:
+                out["line"] = {"ok": False, "text": (
+                    out["line"]["text"] + f" Output {bad[0]} is in use by "
+                    f"{taken[bad[0]]}: pick another channel and Save.")}
+        why = self._booth_show_refusal()
+        out["locked"] = why
+        return out
+
+    def booth_speaker_get(self, ctx):
+        """GET booth-speaker: the card. The show PC only, and the Settings
+        row, as its POST: the outputs of this PC go to nobody else."""
+        if self.users_active():
+            me = getattr(ctx, "session", None) or {}
+            if not self.users.may(me.get("role"), "settings"):
+                return 403, {"error": "The booth speaker is set by someone "
+                                      "signed in who may change Settings.",
+                             "role_refused": True}
+        return 200, self.booth_speaker_view()
+
+    def booth_speaker_post(self, body, ctx):
+        """POST booth-speaker {"action": "save", "device", "hostapi",
+        "channels": [a] or [a, b], "rev"} or {"action": "test"}. The show
+        PC only (LOCAL_ONLY), the Settings row (users.py)."""
+        action = body.get("action")
+        if action == "save":
+            return self.booth_speaker_save(body, ctx)
+        if action == "test":
+            return self.booth_speaker_test(ctx)
+        return 400, {"error": "action has to be save or test. Nothing was "
+                              "changed."}
+
+    def booth_speaker_save(self, body, ctx):
+        """Save the booth speaker's device and channels to the booth_alert
+        block of ltcplay_remote.json (save_settings: every other key and
+        the block's own files and response_s kept, checked by parse_config
+        before anything is written, written whole), then put a new booth
+        player in place of the old one at once. Refused while a show is
+        live, a Hold, or a note playing; a page that read an older setting
+        is refused, never saved over."""
+        from . import announce, boothaudio, boothcard
+        who = ctx.user or "unsigned"
+        screen = ctx.screen or "Rack screen"
+        if not self._booth_lock.acquire(timeout=5.0):
+            return 409, {"error": "Another booth speaker change is under "
+                                  "way. Nothing was changed."}
+        try:
+            why = self._booth_show_refusal()
+            if why:
+                return 409, {"error": f"{why} Nothing was changed.",
+                             "booth": self.booth_speaker_view()}
+            try:
+                old_block, path = self._booth_block_on_disk()
+            except ValueError as e:
+                return 409, {"error": str(e)}
+            if body.get("rev") != boothcard.revision(old_block):
+                return 409, {"error": "The booth speaker was changed "
+                                      "somewhere else since this page read "
+                                      "it. The card shows the new setting "
+                                      "now; pick again. Nothing was "
+                                      "changed.",
+                             "booth": self.booth_speaker_view()}
+            try:
+                old = boothaudio.parse_config(old_block)
+            except ValueError as e:
+                return 409, {"error": f"{e} Fix it in the file first. "
+                                      f"Nothing was changed."}
+            device = body.get("device")
+            if device is None:
+                device = ""
+            sd = self._booth_sd()
+            outs = []
+            if isinstance(device, str) and device.strip():
+                if sd is None:
+                    return 409, {"error": "sounddevice is not installed "
+                                          "here, so the outputs cannot be "
+                                          "checked. Nothing was changed."}
+                try:
+                    outs = announce.list_outputs(sd)
+                except Exception as e:           # noqa: BLE001
+                    return 409, {"error": f"The audio system could not "
+                                          f"list its outputs ({e}). Nothing "
+                                          f"was changed."}
+            confirm = body.get("confirm") is True
+            try:
+                name, host, chans = boothcard.validate(
+                    outs, device, body.get("hostapi"), body.get("channels"),
+                    reserved=self._booth_reserved(outs) if outs else None,
+                    confirm=confirm)
+            except ValueError as e:
+                return 409, {"error": str(e)}
+            block = dict(old_block) if isinstance(old_block, dict) else {}
+            block["device"] = name
+            if name:
+                block["channels"] = list(chans)
+            else:
+                block["channels"] = list(old["channels"])
+            if host:
+                block["hostapi"] = host
+            else:
+                block.pop("hostapi", None)
+            try:
+                new_cfg = boothaudio.parse_config(block)
+            except ValueError as e:
+                return 409, {"error": f"{e} Nothing was changed."}
+            player = self.alerts.booth
+            if player is not None and hasattr(player, "retire") and \
+                    not player.retire():
+                return 409, {"error": "A booth note is playing. Save again "
+                                      "when it has finished. Nothing was "
+                                      "changed."}
+            cw = self.config_watch
+            behind = True
+            try:
+                behind = cw is None or cw.engine_behind(path)
+            except Exception:                    # noqa: BLE001
+                behind = True
+            # The old player is retired above: whatever fails from here on,
+            # it plays again unless the new one is in its place (cold review
+            # of #280, P3-2), so the alerts are never left silent.
+            swapped = False
+            try:
+                try:
+                    save_settings(self.folder, booth_alert=block)
+                except (ValueError, OSError) as e:
+                    return 409, {"error": f"{e} Nothing was changed."}
+                new = boothaudio.BoothPlayer(
+                    block, sd=self.booth_sd,
+                    journal=getattr(player, "_journal", None),
+                    folders=boothaudio.note_folders(
+                        self.folder or settings_folder()))
+                self.alerts.booth = new
+                swapped = True
+            finally:
+                if not swapped and player is not None and \
+                        hasattr(player, "unretire"):
+                    player.unretire()
+            if cw is not None and not behind:
+                try:
+                    cw.refresh(path)
+                except Exception:                # noqa: BLE001
+                    pass
+
+            def said(cfg):
+                if not cfg["device"]:
+                    return "off"
+                return (f"{cfg['device']}, "
+                        f"{boothaudio.outputs_words(cfg['channels'])}")
+            text = ("Booth speaker saved: " + said(new_cfg) + ". In use now."
+                    if name else "Booth speaker off. No booth notes play.")
+            checked = (" They ticked that they checked the channel is free "
+                       "on the mixer." if confirm and name else "")
+            self._journal(who, screen, "booth speaker", "saved",
+                          f"{who} changed the booth speaker on the {screen} "
+                          f"from {said(old)} to {said(new_cfg)}.{checked}")
+            # The audit log too: who, which screen, the old and the new
+            # device and channels. Nothing else from the file.
+            log = getattr(self, "audit", None)
+            if log is not None:
+                try:
+                    log.event(user=who, surface="web",
+                              action="booth-speaker changed",
+                              target=f"from {said(old)} to {said(new_cfg)}",
+                              result="accepted", source=screen)
+                except Exception:                # noqa: BLE001
+                    pass
+            return 200, {"ok": True, "text": text,
+                         "booth": self.booth_speaker_view()}
+        finally:
+            self._booth_lock.release()
+
+    def booth_speaker_test(self, ctx):
+        """The Test note: booth_test.wav through the booth player in use,
+        its device and channels only. Never the PA, never the show audio;
+        refused while a show is live or running, a Hold, a flame group
+        armed or not known, a purge or a test on, or no booth speaker."""
+        who = ctx.user or "unsigned"
+        screen = ctx.screen or "Rack screen"
+        player = self.alerts.booth
+        if player is None or not getattr(player, "enabled", False):
+            return 409, {"error": "The booth speaker is not set. Pick a "
+                                  "device and a channel, then Save. Nothing "
+                                  "was played."}
+        why = self._booth_test_refusal()
+        if why:
+            return 409, {"error": f"{why} Nothing was played."}
+        if getattr(player, "playing", 0):
+            return 409, {"error": "A booth note is playing. Try again when "
+                                  "it has finished. Nothing was played."}
+        if not self._booth_lock.acquire(timeout=5.0):
+            return 409, {"error": "The booth speaker is being changed. "
+                                  "Nothing was played."}
+        try:
+            ok, text = player.play("test")
+        finally:
+            self._booth_lock.release()
+        self._journal(who, screen, "booth speaker",
+                      "test" if ok else "test refused",
+                      f"{who} pressed Test note on the {screen}: {text}",
+                      fault=not ok)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
 
     # -- presses -----------------------------------------------------------
     def _stale(self, body):
@@ -8115,23 +8691,29 @@ class Remote:
                 end()
 
     def run_off(self, who, screen):
-        """Run off (the Programming Run card, 2026-10-30): the whole Stop
-        (halt) first, then playback stops, so Run is off. This is what
-        Stop did before 2026-10-30; Stop itself now leaves Run on."""
+        """Show control off (Run off, 2026-10-30): the whole Stop (halt)
+        first, then playback stops, so show control is off. Everything a
+        Stop does EXCEPT put the schedule on Hold (Jeff, 2026-11-19: "Show
+        Control Off should do everything it does now except put the
+        schedule on Hold"): a live show still ends, but the night carries
+        on, and a show whose time comes while show control is off is
+        refused by the show runner (nothing reaches the rig)."""
         svc = self.schedule
         begin = getattr(svc, "halt_begin", None)
         if begin is not None:
-            begin()
+            begin("Show control off was pressed")
         try:
-            return self._stop_press(who, screen, run_off=True)
+            return self._stop_press(who, screen, run_off=True,
+                                    hold=False)
         finally:
             end = getattr(svc, "halt_end", None)
             if end is not None:
                 end()
 
-    def _stop_press(self, who, screen, run_off=False):
+    def _stop_press(self, who, screen, run_off=False, hold=True):
         # A screen's Stop is a double tap (pressed); the deck's is held.
-        h = self.halt(who, screen, how="pressed")
+        # hold False: Show control off, no Hold (run_off).
+        h = self.halt(who, screen, how="pressed", hold=hold)
         self.wait_stop_window(h, STOP_FADE_WAIT_S)
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
@@ -8145,6 +8727,47 @@ class Remote:
                 out["failed"].append("playback stop")
                 out["error"] = f"{type(e).__name__}: {e}"
             out["run_on"] = False
+            halt_bad = list(out["failed"])
+            if not hold and self._show_control_still_on():
+                # Show control off asked for no Hold because show control
+                # goes off. It did not (stop raised, or answered without
+                # letting the show file go): the Stop's Hold after all, so
+                # no show starts by itself (cold review A of #277).
+                self._halt_schedule(out, who, screen, hold=True,
+                                    because="for Show control off, which "
+                                            "did not turn show control off")
+                out["run_on"] = True
+                out["stopped"] = False
+                if "playback stop" not in out["failed"]:
+                    out["failed"].append("playback stop")
+                self._journal(who, screen, "stop", "fault",
+                              self._run_off_not_off_words(who, screen, out),
+                              fault=True)
+            elif not hold:
+                label = who or "An unnamed operator"
+                stopped = "playback stop" not in out["failed"]
+                if not out["stopped"] and stopped:
+                    head = (f"{label}'s Show control off on the {screen}: "
+                            f"show control was already off, and the "
+                            f"schedule was not put on Hold (a Hold already "
+                            f"on stays on).")
+                else:
+                    head = (f"{label}'s Show control off on the {screen}: "
+                            f"show control is off, and the schedule was "
+                            f"not put on Hold (a Hold already on stays "
+                            f"on).")
+                tail = ""
+                if not stopped:
+                    tail += (" Stopping playback did NOT work cleanly; the "
+                             "show file was let go.")
+                if halt_bad:
+                    tail += (f" The halt did not complete: "
+                             f"{', '.join(halt_bad)} did NOT work (the line "
+                             f"before this one says what did).")
+                bad = bool(tail)
+                self._journal(who, screen, "stop",
+                              "fault" if bad else "done", head + tail,
+                              fault=bad)
         else:
             # Stop never turns Run off (Jeff, 2026-10-30).
             out["stopped"] = True
@@ -8153,12 +8776,49 @@ class Remote:
             self.control._state_cache = None
         except Exception:                        # noqa: BLE001
             pass
+        if out["failed"] and "error" not in out and not hold:
+            out["error"] = ("Show control off did not complete: " +
+                            ", ".join(out["failed"]) + " did NOT work.")
         if out["failed"] and "error" not in out:
             out["error"] = ("Stop did not complete: " +
                             ", ".join(out["failed"]) + " did NOT work.")
         return (500 if "error" in out else 200), out
 
-    def halt(self, who, screen, how="held"):
+    def _run_off_not_off_words(self, who, screen, out):
+        """The journal line when Show control off did not turn show
+        control off, true to what the Stop's Hold step answered: held,
+        nothing to hold now (the night closing or over: the Stop's Hold
+        stands for later), or the Hold failed too."""
+        label = who or "An unnamed operator"
+        head = (f"{label}'s Show control off on the {screen}: show "
+                f"control did NOT turn off")
+        h = out.get("hold") or {}
+        state = getattr(getattr(self.schedule, "machine", None), "state",
+                        None)
+        if "hold" in out["failed"] or h.get("ok") is False:
+            why = str(h.get("text") or "it did not answer")
+            return (f"{head}, and the schedule could NOT be put on Hold "
+                    f"either ({why}). Press Stop, then turn show control "
+                    f"off again.")
+        if state == "HOLD":
+            return (f"{head}, so the schedule was put on Hold as a Stop "
+                    f"puts it. Turn show control off again.")
+        said = str(h.get("text") or "").strip()
+        return (f"{head}, so the Stop's Hold was asked for instead"
+                + (f": {said}" if said else ".")
+                + " Turn show control off again.")
+
+    def _show_control_still_on(self):
+        """True while a show file still runs after control.stop() (it
+        raised before it let go of the session). Never raises."""
+        try:
+            sess = getattr(self.control, "session", None)
+            return sess is not None and bool(getattr(sess, "running",
+                                                     False))
+        except Exception:                        # noqa: BLE001
+            return True
+
+    def halt(self, who, screen, how="held", hold=True):
         """Stop, a complete halt of everything (Jeff, 2026-10-26), during a
         scheduled show too, with every guarantee a screen's Abort had (Jeff,
         2026-10-30), in the Abort's order, WITHOUT the Abort latch. Every
@@ -8186,11 +8846,18 @@ class Remote:
              by itself meanwhile is not a failure, nor is a night already
              closing or over (there is nothing to hold).
 
+        hold False is Show control off (run_off; Jeff, 2026-11-19): every
+        step above in the same order, but step 6 puts NO Hold on the
+        schedule (a live show still ends; a Hold already standing is left
+        as it is), and the journal says show control was turned off.
+
         {"flames", "lasers", "lasers_blank", "show", "show_ended", "hold",
         "programming", "failed"}: each step's {"ok"/"disarmed", "text"}
         (None when there is nothing of it in this engine) and the names of
         the steps that failed."""
         label = who or "An unnamed operator"
+        hold = hold is not False
+        what = "Stop" if hold else "Show control off"
         # A start waiting for the purge's groups never outlives a Stop
         # (purge_off_before_start): Stop wins.
         self._halt_seq = getattr(self, "_halt_seq", 0) + 1
@@ -8210,12 +8877,12 @@ class Remote:
             cancel = getattr(self.schedule, "cancel_start_wait", None)
             if cancel is not None:
                 try:
-                    cancel(f"Stop was pressed on the {screen}")
+                    cancel(f"{what} was pressed on the {screen}")
                 except Exception:                # noqa: BLE001
                     pass
             # 1. The flames first, every time (the Abort's rule).
             try:
-                f_ok, f_text = self._disarm_now(who, screen, "Stop")
+                f_ok, f_text = self._disarm_now(who, screen, what)
             except Exception as e:               # noqa: BLE001
                 f_ok, f_text = False, f"{type(e).__name__}: {e}"
             if f_ok is not None:
@@ -8235,7 +8902,8 @@ class Remote:
                     pass
             # 2. Live flame programming, cut as an Abort cuts it (review of
             # #130, second pass, 3).
-            why = f"{label} {how} Stop on the {screen}"
+            why = (f"{label} {how} Stop on the {screen}" if hold else
+                   f"{label} turned show control off on the {screen}")
             self.timed_purge_cut(why, who, screen)
             for name in ("live_flame_cut",):
                 fn = getattr(self, name, None)
@@ -8259,8 +8927,9 @@ class Remote:
             fn = getattr(m, "lasers_disarm_now", None)
             if fn is not None:
                 try:
-                    r = fn(f"Stop held by {label} on the {screen}", who,
-                           screen)
+                    r = fn(f"Stop held by {label} on the {screen}" if hold
+                           else f"Show control turned off by {label} on "
+                                f"the {screen}", who, screen)
                     if isinstance(r, tuple) and len(r) == 2:
                         l_ok, l_text = r
                     else:
@@ -8276,7 +8945,8 @@ class Remote:
                     out["failed"].append("lasers")
             try:
                 b_ok, b_text = self._lasers_dark_now(
-                    f"Stop held on the {screen}")
+                    f"Stop held on the {screen}" if hold else
+                    f"Show control turned off on the {screen}")
             except Exception as e:               # noqa: BLE001
                 b_ok, b_text = False, (f"The laser blank did NOT go out "
                                        f"({type(e).__name__}: {e}).")
@@ -8298,15 +8968,19 @@ class Remote:
             # fireball and the cleaning (at once, not when their watchers
             # next see the flame link's zero), the laser tests.
             try:
-                self.cancel_holds(f"{who or 'someone'} {how} Stop on the "
+                self.cancel_holds(f"{who or 'someone'} {how} {what} on the "
                                   f"{screen}")
             except Exception:                    # noqa: BLE001
                 pass
             for obj, meth, args in (
                     (getattr(m, "purge", None), "clear",
-                     (f"Stop held by {who or screen or 'someone'}",)),
-                    (m, "stop_hooks", (who, screen)),
-                    (getattr(m, "lasers", None), "all_off", ("Stop held",))):
+                     (f"Stop held by {who or screen or 'someone'}" if hold
+                      else f"Show control turned off by "
+                           f"{who or screen or 'someone'}",)),
+                    (m, "stop_hooks", (who, screen) if hold else
+                     (who, screen, "Show control off")),
+                    (getattr(m, "lasers", None), "all_off",
+                     ("Stop held" if hold else "Show control turned off",))):
                 fn = getattr(obj, meth, None)
                 try:
                     if fn is not None:
@@ -8317,7 +8991,7 @@ class Remote:
             # Stop, so the playback is stopped here (Abort's playhead stop).
             self._halt_programming(out, who, screen)
             # 6. The scheduler: the show ended, and the schedule held.
-            self._halt_schedule(out, who, screen)
+            self._halt_schedule(out, who, screen, hold=hold)
         finally:
             if arm is not None:
                 try:
@@ -8326,9 +9000,26 @@ class Remote:
                     pass
         parts = [x["text"] for x in (out["flames"], out["lasers"],
                                      out["lasers_blank"]) if x is not None]
+        if not hold:
+            # Show control off: the halt's own line now, before show
+            # control is turned off (a wedged audio device could keep that
+            # from ever returning); _stop_press writes the outcome after.
+            bad = ", ".join(out["failed"])
+            self._journal(who, screen, "stop", "done" if not bad else "fault",
+                          f"{label} pressed Show control off on the "
+                          f"{screen}: "
+                          + ("everything a Stop stops is stopped. "
+                             if not bad else
+                             "everything a Stop stops was asked to stop. ")
+                          + " ".join(parts)
+                          + (f" These did NOT work: {bad}." if bad else "")
+                          + " Turning show control off next.",
+                          fault=bool(bad))
+            return out
         bad = ", ".join(out["failed"])
         self._journal(who, screen, "stop", "fault" if bad else "done",
-                      f"{label} {how} Stop on the {screen}: a complete halt. "
+                      f"{label} {how} Stop on the {screen}: a complete "
+                      f"halt. "
                       + " ".join(parts)
                       + (f" These did NOT work: {bad}." if bad else ""),
                       fault=bool(bad))
@@ -8412,17 +9103,46 @@ class Remote:
     HALT_LIVE = ("SHOW", "PAUSED")
     HALT_HOLDS = ("IDLE", "STANDBY")
 
-    def _halt_schedule(self, out, who, screen):
+    def _halt_schedule(self, out, who, screen, hold=True, because=""):
         """halt() step 6. A live show: STOP_SHOW (the show ends; the
         schedule is held while a show is still to come). Between shows:
         the schedule's Hold, said as the Stop. Already on Hold: nothing
         more. The night closing or over: nothing to hold. If the state
         moved under the press (a show started or ended as it landed), the
-        step is asked once more of the state it moved to."""
+        step is asked once more of the state it moved to. hold False (Show
+        control off): the scheduler is asked for no Hold at all. Only a
+        scheduler without halt_schedule (the fallback below, a test's
+        stand-in; the engine's scheduler always has it) still ends a live
+        show on Hold there: operator_press("stop-show") has no way to ask
+        for no Hold."""
         svc = self.schedule
         if svc is None:
             return
         one = getattr(svc, "halt_schedule", None)
+        if one is not None and not hold:
+            try:
+                live = getattr(getattr(svc, "machine", None), "state",
+                               None) in self.HALT_LIVE
+            except Exception:                    # noqa: BLE001
+                live = True
+            try:
+                r = one(who, screen, "", hold=False)
+                ok, text = bool(r.get("ok")), str(r.get("text") or "")
+                kind = r.get("kind")
+            except Exception as e:               # noqa: BLE001
+                ok, text = False, f"{type(e).__name__}: {e}"
+                kind = "stop" if live else None
+            if kind == "stop":
+                out["show"] = {"ok": ok, "text": text}
+                out["show_ended"] = ok
+                if not ok:
+                    out["failed"].append("show")
+            elif kind == "held":
+                # A Hold that stood before: kept, and said.
+                out["hold"] = {"ok": ok, "text": text}
+            elif not ok:
+                out["failed"].append("schedule")
+            return
         if one is not None:
             # The scheduler decides and applies it in one locked step with
             # no tick first (cold review of #191, A-F1): a show coming due
@@ -8430,7 +9150,8 @@ class Remote:
             # show already running is ended through the conductor's Stop.
             try:
                 r = one(who, screen,
-                        f"pressed Stop on the {screen or 'screen'}, so the "
+                        f"pressed Stop {because + ' ' if because else ''}"
+                        f"on the {screen or 'screen'}, so the "
                         f"schedule is on Hold")
                 ok, text = bool(r.get("ok")), str(r.get("text") or "")
                 kind = r.get("kind")
@@ -8478,6 +9199,8 @@ class Remote:
                 if now_state == "HOLD":
                     out["hold"] = {"ok": True, "text": ""}
                 return
+            if state in self.HALT_HOLDS and not hold:
+                return                    # Show control off: no Hold
             if state in self.HALT_HOLDS:
                 try:
                     r = svc.operator_press(
@@ -9855,22 +10578,79 @@ class Remote:
         return self._settings_json(PROGRAMS_FILE, "programs_cfgwatch", 0.0)
 
     def show_busy_for_reload(self):
-        """True while a show is live, or a show file runs or is starting."""
-        if self._show_live():
-            return True
+        """True while a show is live, or a show file runs or is starting
+        (show_busy_reason says which)."""
+        return bool(self.show_busy_reason())
+
+    def show_busy_reason(self):
+        """Why a show keeps the engine from restarting now, in a sentence
+        that says what to do, or "" (2026-11-19). The scheduler first: a
+        show running (SHOW) or held mid-run (PAUSED, or a HOLD that still
+        names a running show) refuses; the schedule on Hold with no show
+        running does not. A schedule that cannot be read, or a state not
+        in RESTART_OK_STATES, refuses (fail closed). Then this engine's own
+        playback: a show file starting, or running (show control on, or a
+        rehearsal), refuses, since a restart would cut it."""
+        svc = self.schedule
+        if svc is not None:
+            try:
+                v = svc.state_view() or {}
+                st = v.get("state")
+                running = v.get("running")
+            except Exception as e:               # noqa: BLE001
+                return (f"The schedule could not be read "
+                        f"({type(e).__name__}), so it is not known that no "
+                        f"show is running. Try again in a moment.")
+            if st == "SHOW":
+                return ("A show is running. Restart the engine between "
+                        "shows, after it ends.")
+            if st == "PAUSED" or (st == "HOLD" and running):
+                return ("A show is held mid-run. Restart the engine only "
+                        "after that show has ended.")
+            if st is None and v.get("ok") is False:
+                pass        # no schedule loaded: it can run nothing
+            elif st not in RESTART_OK_STATES:
+                return (f"The schedule's state ({st}) is not one a restart "
+                        f"is known to be safe in. Try again in a moment.")
         c = self.control
         sess = getattr(c, "session", None)
-        return bool(getattr(c, "_starting", False) or
-                    (sess is not None and getattr(sess, "running", False)))
+        if getattr(c, "_starting", False):
+            return ("A show file is starting. Wait, then turn show control "
+                    "off before you restart.")
+        if sess is not None and getattr(sess, "running", False):
+            if svc is None:
+                return "A show file is playing. Stop it first, then restart."
+            if self._rehearsal_run(sess):
+                return ("A rehearsal is on. Press End rehearsal first, "
+                        "then restart.")
+            return ("Show control is on. Turn show control off first "
+                    "(Show ctrl off), then restart.")
+        return ""
 
     def reload_engine_refusal(self):
         """Why the rack screen's Reload engine may not be pressed now, or
         None: only on the show PC (the supervisor restarts the engine), and
         only when restart_refusal() finds nothing."""
+        why = self._supervisor_refusal()
+        return why or self.restart_refusal() or None
+
+    def _supervisor_refusal(self):
         if not os.path.isfile(os.path.join(settings_folder(), SHOWPC_FILE)):
             return ("This engine is not run by LTC Player's supervisor. "
                     "Quit it and start it again.")
-        return self.restart_refusal() or None
+        return ""
+
+    def restart_check(self):
+        """GET restart-check, on this machine only: {"refusal"} for the
+        Windows supervisor right before it stops the engine (restart_
+        refusal: "" when it may), and for the rack screen's Restart the
+        engine and Reload engine, "page" (reload_engine_refusal's sentence,
+        or "") and "engine" (ENGINE_ID, so the page can tell the engine
+        restarted). The supervisor reads "refusal" only."""
+        why = self.restart_refusal()
+        return {"refusal": why,
+                "page": self._supervisor_refusal() or why,
+                "engine": ENGINE_ID}
 
     def restart_refusal(self):
         """Why this engine may not be restarted now, in a sentence, or "".
@@ -9882,23 +10662,26 @@ class Remote:
             return self._restart_refusal()
         except Exception as e:                   # noqa: BLE001
             return (f"Whether the engine may restart could not be checked "
-                    f"({type(e).__name__}).")
+                    f"({type(e).__name__}). Try again in a moment.")
 
     def _restart_refusal(self):
-        if self.show_busy_for_reload():
-            return "A show is running. Reload the engine between shows."
+        why = self.show_busy_reason()
+        if why:
+            return why
         ann = getattr(self, "announce", None)
         if ann is not None and getattr(ann, "playing", None) is not None:
-            return "An announcement is playing."
+            return "An announcement is playing. Wait for it to end."
         fs = self.flame_status
         if fs is None:
             return ("flamesafe's status is not connected to this engine, so "
-                    "it is not known that every flame group is disarmed.")
+                    "it is not known that every flame group is disarmed. "
+                    "Check that flamesafe is running.")
         v = fs.view() or {}
         groups = v.get("groups") or []
         if v.get("stale") or not groups:
             return ("flamesafe's status is not seen, so it is not known "
-                    "that every flame group is disarmed.")
+                    "that every flame group is disarmed. Check that "
+                    "flamesafe is running.")
         if any(g.get("armed") != "disarmed" or g.get("wanted")
                for g in groups):
             return "A flame group is armed. Disarm every group first."
@@ -9964,7 +10747,7 @@ class Remote:
         self._journal("", "Rack screen", "reload engine", "asked",
                       "Reload engine was pressed: LTC Player restarts the "
                       "engine so it reads the changed settings files.")
-        return 200, {"ok": True, "text": (
+        return 200, {"ok": True, "engine": ENGINE_ID, "text": (
             "LTC Player restarts the engine now so it reads the settings "
             "files again. This page reconnects by itself. flamesafe and the "
             "Stream Deck program keep running with what they read at their "
@@ -10246,6 +11029,132 @@ class Remote:
             add("Pixels", "ok", "sending")
         return out
 
+    def systems_view(self, cs, lamps=None):
+        """The 2.0 page's Systems sheet and its header badge (Jeff,
+        2026-11-19: "the whole point of this page is for things we can't
+        see otherwise, like is BEYOND software even on and talking to us,
+        just like MadMapper"). One row per outside program or device this
+        rig has: is it there and talking to us. Built from subsystems()
+        (the lamps the Resume rig check reads, left as they are) and the
+        watches. Not here: the laser arm (the main page shows it). A row
+        that cannot be known until a show runs is "idle" (the page says
+        "Checked when a show starts"), never "off"; something this rig
+        does not have is left out. Display only; never raises."""
+        try:
+            lamps = self.subsystems(cs) if lamps is None else lamps
+        except Exception:                        # noqa: BLE001
+            lamps = []
+        rows = []
+
+        def add(name, state, word):
+            rows.append({"name": name, "state": state, "word": word})
+
+        def lamp(name):
+            for x in lamps or ():
+                if isinstance(x, dict) and x.get("name") == name:
+                    return x
+            return None
+        cs = cs or {}
+        try:
+            d = lamp("Deck")
+            if d and d.get("state") != "off":
+                rows.append(dict(d))
+            for name in ("Flame timing",):
+                x = lamp(name)
+                if x:
+                    rows.append(dict(x))
+            if self.flame_status is not None:
+                x = lamp("Flamesafe") or {}
+                if x.get("state") in (None, "off"):
+                    add("Flamesafe", "bad", "not connected")
+                else:
+                    rows.append(dict(x))
+            # Show audio: the interface the show file names, from
+            # audiowatch before Run; the show clock's own word while a
+            # show plays.
+            watch = self.audio_interface_view()
+            audio = (cs.get("clock") or {}).get("audio")
+            if watch and watch.get("missing"):
+                add("Show audio", "bad", "not attached")
+            elif isinstance(audio, dict):
+                x = lamp("Show audio") or {}
+                rows.append(dict(x) if x else {"name": "Show audio",
+                                                "state": "ok", "word": "ok"})
+            elif watch and not watch.get("wanted") and \
+                    watch.get("checked_ago_s") is not None:
+                pass            # no show here plays on show audio
+            elif watch and watch.get("checked_ago_s") is not None and \
+                    not watch.get("error") and not watch.get("skipped"):
+                add("Show audio", "ok", "attached")
+            else:
+                add("Show audio", "idle", "checked when a show starts")
+            for name in ("Announcements", "Disk", "Audit"):
+                x = lamp(name)
+                if x:
+                    rows.append(dict(x))
+            # BEYOND: is its program running on this PC (beyondwatch).
+            # BEYOND never answers, so running is all that can be known.
+            link = self.beyond_link()
+            fault = self.laser_fault()
+            if fault:
+                add("BEYOND", "bad", "blanking not set up")
+            elif link is not None:
+                cond = getattr(self.schedule, "conductor", None)
+                if link.get("link") == "lost":
+                    add("BEYOND", "bad", "not running")
+                elif link.get("link") == "up" and \
+                        self._lit_since_loss(cond) is False:
+                    add("BEYOND", "warn", "BEYOND restarted: dark until lit "
+                                          "again")
+                elif link.get("link") == "up":
+                    add("BEYOND", "ok", "running")
+                else:
+                    add("BEYOND", "warn", "not known")
+                rows[-1]["title"] = str(link.get("why") or "")
+            # MadMapper: running (madmapperwatch), its heartbeat while a
+            # show plays, and its output window on the projector.
+            snap = {}
+            try:
+                snap = getattr(self.schedule, "conductor",
+                               None).snapshot() or {}
+            except Exception:                    # noqa: BLE001
+                snap = {}
+            mm = self.madmapper_link(self._video_moving(cs, snap))
+            if mm is not None:
+                if mm.get("link") == "lost":
+                    add("MadMapper", "bad", "not running")
+                elif mm.get("link") == "up":
+                    track_wrong = mm.get("heartbeat_track_wrong")
+                    if mm.get("heartbeat") == "silent":
+                        add("MadMapper", "warn", "no heartbeat")
+                    elif track_wrong:
+                        add("MadMapper", "warn", "heartbeat track wrong")
+                    else:
+                        add("MadMapper", "ok", "running")
+                else:
+                    add("MadMapper", "warn", "not known")
+                rows[-1]["title"] = str(mm.get("why") or "")
+            else:
+                x = lamp("Video")
+                if x:
+                    rows.append(dict(x, state="idle",
+                                     word="checked when a show starts")
+                                if x.get("state") == "off" else dict(x))
+            x = lamp("MadMapper output")
+            if x:
+                rows.append(dict(x))
+            x = lamp("Pixels") or {}
+            if x.get("state") == "off":
+                # Pixels go out over UDP and nothing answers: whether
+                # they reach the controllers shows only while a show
+                # sends them.
+                add("Pixels", "idle", "checked when a show starts")
+            elif x:
+                rows.append(dict(x))
+        except Exception as e:                   # noqa: BLE001
+            add("Systems", "warn", f"not known: {type(e).__name__}")
+        return rows
+
     def version_line(self):
         """Which LTC Player this is, for the rack screen's header: the
         release it was stamped with and its build id, or that it has been
@@ -10394,11 +11303,13 @@ class Remote:
                            "rate_note": rate_mismatch(cs)}
             cue_now = cs.get("now")
             out["subsystems"] = self.subsystems(cs)
+            out["systems"] = self.systems_view(cs, out["subsystems"])
         except Exception as e:
             out["show"] = {"running": False, "show_control_on": False,
                            "error": f"{type(e).__name__}: {e}"}
             cue_now = None
             out["subsystems"] = self.subsystems({})
+            out["systems"] = self.systems_view({}, out["subsystems"])
         out["countdown"] = countdown_view(out["schedule"], out["show"],
                                           cue_now)
         out["audio_interface"] = self.audio_interface_view()

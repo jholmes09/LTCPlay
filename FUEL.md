@@ -141,8 +141,8 @@ theirs).
 - Until it has seen 3 tanks it uses the **smallest** one and says it is
   still learning. A forgotten Refilled press makes a tank look twice as
   big, so only a small one is trusted.
-- From 3 tanks on it takes the middle value of the last 5 and leaves out one
-  that is far off.
+- From 3 tanks on it takes the middle value of the last 5 and leaves out
+  every one that is far off (under half or over twice that middle value).
 - A tank much longer than the others is named at the top: a Refilled press
   was probably missed.
 
@@ -211,7 +211,8 @@ written over, and the page says so.
 ## Haze fluid (the hazers)
 
 The Fuel page also shows each hazer (Hazer 1 to 4, flamesafe's hazer
-entries) under **Haze fluid**, with the same tiles.
+entries) under **Haze fluid**, with the same tiles. Its record is
+`haze.json` in the settings folder.
 
 - **What counts.** The seconds a hazer's **haze** channel was above 0 in a
   frame LTC Player actually sent to flamesafe. The **fan** alone never
@@ -235,15 +236,64 @@ entries) under **Haze fluid**, with the same tiles.
   needs the same sign-in as a fuel refill, and is logged the same way.
   A wrong one: an **admin** opens **Refills and notes** and presses
   **Undo** on it, as for fuel. It stays in the record, marked undone.
-- **Litres.** Only if you set them, in `ltcplay_hazers.json` (beside the
+- **How long a tank lasts (learned).** Like the flame fuel, it learns
+  from your refills: the full output seconds between two refills of a
+  hazer is one tank. Each hazer learns on its own (flamesafe names no
+  hazer model, so there is no kind to share with). The flame fuel's
+  rules: under 3 tanks it trusts the **smallest**; from 3 on the middle
+  value of the last 5, every one far off (under half or over twice the
+  middle value) left out; a tank much longer than the others is said (a Refilled press was probably missed). A tank of under
+  a minute at full output is a double press and is never learned. An
+  Undo of a refill takes back what that refill taught.
+- **Percent left.** 100 less the full output seconds since the refill
+  over the tank, never above 100 or below 0. "Not sure" time counts as
+  full output, so it reads emptier, never fuller. Until a tank is
+  learned the tile says **Estimating (from the set numbers)** and uses
+  the litres below; once one is, **Learned from N tanks** (still
+  learning under 3), where N is the tanks that number came from: at
+  most the last 5, less any far off. With neither it shows haze time only.
+- **Shows left.** What is left over the average full output haze of
+  that hazer's last 10 full shows (a show is full at 90 percent or more
+  of the longest one); it needs 3 first. A hazer has no shows per
+  refill number: the flame units' Refueled +1 counts machine types, and
+  a hazer is refilled as a whole tank.
+- **Settings tab, Haze fluid** (the show PC, the Settings permission,
+  an admin by default). Per hazer: **Litres per hour at full output**
+  and **Tank litres** (over 0, up to 50 and 500; blank clears), what it
+  has learned, and two buttons. **Set level now**: look at the tank,
+  type the percent left (0 to 100). It is a correction, logged with who
+  and the old and new percent: never a refill, never usage, and it never
+  teaches how long a tank lasts. **Reset learning** (it asks first)
+  starts learning again from the next refill and keeps every refill.
+  Every change is in the audit log with who and the screen. A card drawn
+  before someone else's change is refused: look again. The buttons are
+  off while a change is being sent, and a level that moves during a show
+  never wipes numbers you are typing. If the numbers in the file cannot
+  be used, the card says why and what to do; a hazer that was renamed or
+  removed in flamesafe gets a **Remove** button (it asks first, and is
+  logged) that takes its numbers out so the others work again.
+- **Litres.** Saved by the card in `ltcplay_hazers.json` (beside the
   levels): `"fluid": {"Hazer 1": {"litres_per_hour": 0.6, "tank_litres":
-  2.5}}`, the litres an hour at full output and the tank size. With both,
-  the tile shows the percent left from the last refill; with only the
-  first, litres used. Without them it shows haze time only. "Not sure"
-  time is counted as full output, so it reads emptier, never fuller.
-  An older LTC Player that sets a hazer level rewrites
+  2.5}}`, the litres an hour at full output and the tank size. It can
+  still be edited by hand (a `"notes"` key in the block is kept by a card
+  save). Saving a hazer level keeps it, and saving it keeps the levels. If
+  the file could not be read when LTC Player started, a card save reads
+  it again, so fixing the file by hand is enough. Numbers are kept to
+  3 decimals, so the smallest is 0.001. An older LTC Player that sets a hazer level rewrites
   `ltcplay_hazers.json` without the `fluid` block: set it again after
-  going back to an older build.
+  going back to an older build. An older build also forgets Set level
+  now and Reset learning (the refills stay).
+- **To calibrate.** The learner is only as good as the refills. Refill
+  only when a tank is really empty (or fill it to the top and press
+  Refilled), then run it down to empty in normal shows and press
+  Refilled when you fill it again: that is one tank. After 3 such tanks
+  it is firm; until then the tile says still learning. A tank topped up
+  half full teaches a small tank, so the tile reads emptier, never
+  fuller. Use Set level now to correct the percent after looking at a
+  tank, and Reset learning if refills were pressed wrong for a while.
 - **Where it is kept.** `haze.json` in the settings folder, beside
   `fuel.json`, written the same safe way with its own format number.
   `fuel.json` is not changed.
+- **Records only.** Learning, Set level now, Reset learning and the
+  card never change, slow or hold back what goes to a hazer or to
+  flamesafe.

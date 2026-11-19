@@ -517,7 +517,10 @@ def show_running(port):
     except Exception:
         return False, ""
     if isinstance(doc, dict) and (doc.get("running") or doc.get("starting")):
-        return True, ("A show is running. Press Stop on the show page "
+        # Show control on (or a rehearsal, or a start under way): the
+        # engine plays a show file all night, between shows too.
+        return True, ("A show file is running or starting (show control "
+                      "is on, or a rehearsal). Turn show control off "
                       "first, then try again.")
     return False, ""
 

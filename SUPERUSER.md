@@ -25,7 +25,7 @@ that does not exist. No screen anyone else sees names where its settings
 are kept.
 
 You use the upload's card on the show PC's own rack screen, signed in
-there. Save and Send now ask for your password again, and so does every
+there (Settings, Users, Open). Save and Send now ask for your password again, and so does every
 SuperUser change on the Users screen (type it in "Your password, for
 SuperUser changes"). On an iPad you work as an
 admin; over Tailscale the card is never there at all. Your sign-in on the
@@ -196,7 +196,7 @@ Your server needs a receiver: `tools/audit_receiver.py` is one, and
 
 ## Remote access over Tailscale (off until you switch it on)
 
-Your card, on the rack screen's Schedule tab, signed in there. Nobody else
+Your card, on the rack screen's Settings tab, signed in there. Nobody else
 sees it, its script or its routes (they answer like a route that is not
 there), exactly like the upload's card.
 
@@ -213,8 +213,12 @@ there), exactly like the upload's card.
 - Changes count within 3 seconds.
 
 The show PC is `ignite-player.tail342a0a.ts.net` (100.75.53.81); the URL
-to give people is `http://ignite-player.tail342a0a.ts.net:7878/`. The page
-also answers to `ignite-player:7878` on your own devices, and to the
+to give people is the number address, `http://100.75.53.81:7878/`. The
+name, `http://ignite-player.tail342a0a.ts.net:7878/`, needs HTTPS for
+now: Chrome tries HTTPS first on a name and refuses it
+(ERR_SSL_PROTOCOL_ERROR), and LTC Player answers plain HTTP on 7878. The
+card shows the number address first and the name second, labelled. The
+page also answers to `ignite-player:7878` on your own devices, and to the
 address, and to nothing else. Your own login is
 `jeffholmespresents@gmail.com`. Andy uses his own Tailscale account: share
 only the show PC to him from the Tailscale admin console (Machines, the
@@ -235,7 +239,18 @@ cannot prove anyone is at the rig.
 
 - No subnet routes, no exit node, ever.
 - Not the show LAN, 10.112.4.0/24, above all.
-- The card warns if this PC shares routes.
+- The card warns if this PC shares routes: a security problem, said
+  first. To turn it off: in the Tailscale admin console open Machines, the
+  show PC, Edit route settings, and untick every subnet route and Exit
+  node. Or on the show PC: `tailscale set --advertise-routes=
+  --advertise-exit-node=false`.
+
+How to read the card: a line with a warning sign and the word **Fix:**
+needs you to act (shared routes, a missing firewall rule, nobody allowed
+in, an engine restart). The **More:** line under it only says how it
+works. "Nothing to fix." means there is nothing to do. When Restart the
+engine cannot be pressed, the reason is written under it, with what to
+do; after a press the card waits for the engine and draws itself again.
 
 Shared routes would let tailnet devices reach the flame controllers
 directly, past the engine, and arrive with a show network address, so
