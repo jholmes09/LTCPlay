@@ -52352,6 +52352,82 @@ def test_flame_timing_alert_only_in_a_fire_window():
     check(len(rm.alerts.open()) == 1, "a late frame right after a fire "
                                       "value: alerts")
 
+    # A steady rate (review of #276, P2): one late frame every 20 minutes,
+    # so the hour's count stays at 3 as old ones leave. Each new one is
+    # still new: acknowledged, it comes back; a big one while it is open
+    # keeps it open past the hour.
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    for k in range(3):
+        tick(0.025, 3)
+        tick(0.130)
+        if k < 2:
+            clk[0] += 1200.0
+    rm._frame_timing_work()
+    check(lk.late_fire_hour()[0] == 3 and len(rm.alerts.open()) == 1,
+          f"steady rate: 3 in the hour, open: {lk.late_fire_hour()}")
+    for a in rm.alerts.open():
+        rm.alerts.clear(id=a.id, who="Andy", action="Acknowledge",
+                        screen="rack")
+    clk[0] += 1200.0
+    tick(0.025, 3)
+    tick(0.130)
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(lk.late_fire_hour()[0] == 3 and len(al) == 1,
+          f"steady rate: the count stayed 3, the new one alerts again: "
+          f"{lk.late_fire_hour()} {[a.text for a in al]}")
+    clk[0] += 1200.0
+    tick(0.025, 3)
+    tick((big + 30) / 1000.0)
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(lk.late_fire_hour()[0] == 3 and len(al) == 1 and
+          f"A gap over {big} ms: acknowledge it." in al[0].text,
+          f"steady rate: a big gap while open asks for a click: "
+          f"{[a.text for a in al]}")
+    lk._haze_live, lk._frame_tc = False, None
+    tick(0.025, 3)
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "steady rate: the big gap stays open")
+
+    # Unreadable (review of #276, P3): never taken for "none late".
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 3)
+    tick(0.130)
+    rm._frame_timing_work()
+    lk._haze_live, lk._frame_tc = False, None
+    tick(0.025, 3)
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+
+    class Busy:
+        def __iter__(self):
+            raise RuntimeError("deque mutated during iteration")
+    keep = lk._timing_late_fire
+    lk._timing_late_fire = Busy()
+    check(lk.late_fire_hour() is None, "a copy that keeps failing: None")
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "unreadable: the alert stays open")
+    lk._timing_late_fire = keep
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "readable again: it clears by itself")
+
+    # Another link object (review of #276, P3): its empty counts never
+    # clear the alert the first one raised.
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 3)
+    tick(0.130)
+    rm._frame_timing_work()
+    lk2 = fl.FlameLink(cfg, clock=lambda: clk[0])
+    rm.flame_link_get = lambda: lk2
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+    rm._frame_timing_work()
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "another link: the alert stays open")
+
     # A link that cannot tell the fire window: every late frame alerts.
     class OldLink:
         def late_last_hour(self):

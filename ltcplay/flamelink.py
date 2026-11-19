@@ -1352,6 +1352,31 @@ class FlameLink:
         except Exception:
             return 0, 0.0
 
+    def late_fire_hour(self, now=None):
+        """The rack screen alert's read (remote.Remote._frame_timing_work):
+        (how many intervals over TIMING_ALERT_MS in a fire window in the
+        last hour, the worst of them in ms, (when, ms) of the newest of
+        them or None), or None when it could not be read, so an unreadable
+        answer is never taken for "none". Never raises."""
+        try:
+            now = self._clock() if now is None else now
+            got = None
+            for _ in range(3):
+                try:
+                    got = list(self._timing_late_fire)
+                    break
+                except RuntimeError:
+                    continue
+            if got is None:
+                return None
+            got = [(t, ms) for t, ms in got if now - t <= TIMING_HOUR_S]
+            if not got:
+                return 0, 0.0, None
+            return (len(got), round(max(ms for _t, ms in got), 1),
+                    (got[-1][0], round(got[-1][1], 1)))
+        except Exception:
+            return None
+
     def timing_view(self):
         """The status's "frame_timing": since start, in every show so far,
         this hour, the last whole hour, this show (None outside one), and

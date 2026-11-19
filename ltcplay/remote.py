@@ -2121,6 +2121,9 @@ class Remote:
         self._timing_said = 0
         self._timing_alert_id = None  # the "timing" alert raised here
         self._timing_keep = False     # ...had a gap over TIMING_CLICK_MS
+        self._timing_link = None      # ...from this link's counts
+        self._timing_last_t = None    # the newest late frame handled
+        self._timing_alert_link = None  # the link the alert was raised on
         self._aim_lock = threading.Lock()
         # beyondwatch.BeyondWatch, set by web.serve with BEYOND configured:
         # the Lasers lamp never says lit while BEYOND is not running.
@@ -4076,9 +4079,23 @@ class Remote:
             link = self._flame_link()
             if link is None:
                 return
-            try:
-                n, worst = link.late_last_hour(fire_only=True)
-            except TypeError:
+            if link is not self._timing_link:
+                # Another link (never at run time today; web.serve sets it
+                # once): its counts start again, so nothing it says can
+                # clear the alert the last one raised.
+                self._timing_link = link
+                self._timing_last_t = None
+                self._timing_said = 0
+            newest = None
+            reader = getattr(link, "late_fire_hour", None)
+            if reader is not None:
+                got = reader()
+                if got is None:
+                    # Unreadable: never taken for "none late", so it
+                    # neither raises nor clears.
+                    return
+                n, worst, newest = got
+            else:
                 # A link that cannot tell the fire window: every late frame
                 # counts (unknown is a fire window).
                 n, worst = link.late_last_hour()
@@ -4088,23 +4105,32 @@ class Remote:
             if not up:
                 self._timing_alert_id = None
                 self._timing_keep = False
-            if n > self._timing_said:
+            # A late frame newer than the last one handled is new, even
+            # when older ones left the hour as fast (a steady rate).
+            new = newest is not None and (self._timing_last_t is None or
+                                          newest[0] > self._timing_last_t)
+            if n > self._timing_said or new:
                 # The limit from the link itself: this module never
                 # imports the flame link (the GPL wall).
                 lim = (link.timing_view() or {}).get("limit_ms", 100)
-                if worst > self.TIMING_CLICK_MS:
+                if worst > self.TIMING_CLICK_MS or \
+                        (new and newest[1] > self.TIMING_CLICK_MS):
                     self._timing_keep = True
                 last = self.TIMING_CLICK.format(big=self.TIMING_CLICK_MS) \
                     if self._timing_keep else self.TIMING_AUTO
                 a = self.alerts.raise_("timing", self.TIMING_TEXT.format(
                     n=n, w=f"{worst:.0f}", lim=lim, last=last))
                 self._timing_alert_id = getattr(a, "id", None)
-            elif n == 0 and up and not self._timing_keep:
+                self._timing_alert_link = link
+            elif n == 0 and up and not self._timing_keep and \
+                    reader is not None and self._timing_alert_link is link:
                 # The hour it describes is over: cleared here, only the one
-                # raised here, by its id.
+                # raised here, by its id, from the same link's counts.
                 self._timing_alert_id = None
                 self.alerts.clear(id=aid, who="LTC Player",
                                   action="Confirm", screen="engine")
+            if newest is not None:
+                self._timing_last_t = newest[0]
             self._timing_said = n
         except Exception:                        # noqa: BLE001
             pass
