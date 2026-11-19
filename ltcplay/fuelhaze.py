@@ -72,9 +72,43 @@ fuel.json is not changed at all (fuel_format stays 1).
 
 Settings (optional): in ltcplay_hazers.json, beside the levels,
   "fluid": {"Hazer 1": {"litres_per_hour": 0.6, "tank_litres": 2.5}}
-litres_per_hour is the fluid used per hour at full output (haze 255). With
-it, the page shows litres used since the refill; with tank_litres too,
-litres and percent left. Without them it shows only seconds.
+litres_per_hour is the fluid used per hour at full output (haze 255). An
+admin sets them on the Settings tab's Haze fluid card (POST haze-fluid,
+the role matrix's Settings row, the show PC only), written through
+hazers.Levels.set_other so the levels are kept; or by hand.
+
+How long a tank lasts (Jeff, 2026-11-19: "evaluating usage and adjusting
+available time based on percentages")
+=====================================================================
+
+Learned per hazer (flamesafe's entries say only "hazer", never a model,
+so there is no kind to share a tank between), the flame fuel learner's
+rules (fuel.learned_tank): one tank is the full output seconds between
+two refills of that hazer that are not undone; under LEARN_MIN_CYCLES
+tanks the SMALLEST, from then the median of the last LEARN_TANKS with one
+far off left out; a tank much longer than the others is said (a Refilled
+press probably missed). A tank under MIN_TANK_S is a double press, never
+learned. Not sure seconds are left out of what a tank taught (it reads
+smaller: emptier) and put into what is used (emptier again).
+
+Until a tank is learned, litres_per_hour and tank_litres give one
+(tank_litres / litres_per_hour hours at full output), said as
+"estimating"; with neither, haze time only.
+
+Percent left = 100 less the full output and not sure seconds since the
+refill over the tank, never above 100 or below 0. "Set level now" (an
+admin, after looking at the tank) is a CORRECTION: the level from then
+is the percent typed, it is kept in its own list (corrections), never a
+refill, so it never teaches the learner and never counts as usage; it is
+logged with who, the old and the new percent. "Reset learning" starts
+the learning again from the next refill and keeps every refill.
+
+Shows left: what is left over the average full output haze of that
+hazer's last RECENT_SHOWS full shows (a show is full when it hazed at
+least FULL_SHOW of the longest recent one); MIN_SHOWS of them first.
+
+All of it is records and the page's words: nothing here is read by the
+flame link, the hazers or flamesafe.
 """
 import collections
 import json
@@ -84,7 +118,7 @@ import threading
 import time
 
 from .fuel import (EPISODE_JOIN_S, TC_STEP_MAX_S, tc_seconds, may_refill,
-                   may_undo, median)
+                   may_undo, learned_tank, suspect_cycles)
 
 HAZE_FILE = "haze.json"
 HAZE_FORMAT = 1             # the hazer record's version
@@ -118,6 +152,12 @@ RED_BELOW = 15
 LPH_MAX = 50.0
 TANK_MAX = 500.0
 FLUID_KEYS = frozenset(("litres_per_hour", "tank_litres"))
+# The tank learner (fuel.learned_tank's rules, fuel's defaults).
+LEARN_TANKS = 5             # fuel's learn_refills
+OUTLIER_RATIO = 2.0         # fuel's outlier_ratio
+MIN_TANK_S = 60.0           # less full output than this: a double press
+FULL_SHOW = 0.9             # a full show hazed this much of the longest
+CORRECTIONS_KEPT = 20
 
 
 # ------------------------------------------------------------ settings --
@@ -197,7 +237,27 @@ def _pair(p, what):
 def new_hazer():
     return {"on": {s: 0.0 for s in SOURCES},
             "full": {s: 0.0 for s in SOURCES},
-            "shows": 0, "show_burns": [], "refills": [], "unsure_s": 0.0}
+            "shows": 0, "show_burns": [], "refills": [], "unsure_s": 0.0,
+            "corrections": [], "learn_from": 0}
+
+
+def _read_correction(c, what):
+    """One Set level now: never a refill (see the module docstring)."""
+    if not isinstance(c, dict) or not isinstance(c.get("who"), str):
+        raise ValueError(f"{what} is not a correction")
+    old = c.get("old_pct")
+    if old is not None:
+        old = _count(old, f"{what}.old_pct")
+    new = _count(c.get("new_pct"), f"{what}.new_pct")
+    if new > 100 or (old is not None and old > 100):
+        raise ValueError(f"{what}: a level is 0 to 100 percent")
+    return {"id": _count(c.get("id"), f"{what}.id", 1),
+            "at": _num(c.get("at"), f"{what}.at"), "who": c["who"],
+            "role": str(c.get("role") or ""),
+            "screen": str(c.get("screen") or ""),
+            "old_pct": old, "new_pct": new,
+            "full_total": _num(c.get("full_total"), f"{what}.full_total"),
+            "unsure_s": _num(c.get("unsure_s", 0.0), f"{what}.unsure_s")}
 
 
 def read_record(doc):
@@ -244,11 +304,18 @@ def read_record(doc):
         for s in SOURCES:
             if full[s] > on[s] + 1e-6:
                 raise ValueError(f"{w} has more full output than haze time")
+        cs = u.get("corrections", [])
+        if not isinstance(cs, list):
+            raise ValueError(f"{w}: corrections is a list")
         out[n] = {"on": on, "full": full,
                   "shows": _count(u.get("shows", 0), f"{w}.shows"),
                   "show_burns": [_pair(p, f"{w}.show_burns") for p in sb],
                   "refills": refills,
-                  "unsure_s": _num(u.get("unsure_s", 0.0), f"{w}.unsure_s")}
+                  "unsure_s": _num(u.get("unsure_s", 0.0), f"{w}.unsure_s"),
+                  "corrections": [_read_correction(
+                      c, f"{w}.corrections[{i}]") for i, c in enumerate(cs)],
+                  "learn_from": _count(u.get("learn_from", 0),
+                                       f"{w}.learn_from")}
     ep = doc.get("episode")
     if ep is not None:
         if not isinstance(ep, dict) or not isinstance(ep.get("burn"), dict):
@@ -265,7 +332,9 @@ def read_record(doc):
     if not isinstance(hazing, list) or \
             not all(isinstance(x, str) for x in hazing):
         raise ValueError("hazing is not a list of names")
-    ids = [r["id"] for u in out.values() for r in u["refills"]]
+    ids = [r["id"] for u in out.values()
+           for r in u["refills"] + u["corrections"]] + \
+        [u["learn_from"] - 1 for u in out.values()]
     nid = _count(doc.get("next_id", 1), "next_id", 1)
     return {"hazers": out, "episode": ep,
             "next_id": max([nid] + [i + 1 for i in ids]),
@@ -296,12 +365,14 @@ class HazeTracker:
     min_show_s_get  () -> fuel's min_show_s (the same rule for a show)
     rehearsal_get   () -> True in a programming session
     journal         (text, fault=False) -> anything; failures ignored
+    fluid_writer    (block) -> None: saves the "fluid" block (see above)
     """
 
     def __init__(self, folder, hazers_get, status_get=lambda: None,
                  min_show_s_get=lambda: MIN_SHOW_S,
                  rehearsal_get=lambda: False, journal=None,
-                 clock=time.monotonic, wall=time.time, threaded=True):
+                 clock=time.monotonic, wall=time.time, threaded=True,
+                 fluid_writer=None):
         self.folder = folder
         self.path = os.path.join(folder, HAZE_FILE)
         self.levels_path = os.path.join(folder, LEVELS_FILE)
@@ -310,6 +381,10 @@ class HazeTracker:
         self._min_show_s_get = min_show_s_get
         self._rehearsal_get = rehearsal_get
         self._journal = journal
+        # (block or None) -> None, raises ValueError or OSError: writes the
+        # "fluid" block of LEVELS_FILE keeping the levels (build(): the
+        # engine's hazers.Levels.set_other). None: a Levels of its own.
+        self._fluid_writer = fluid_writer
         self._clock = clock
         self._wall = wall
         self._lock = threading.RLock()       # the record, this thread only
@@ -388,8 +463,9 @@ class HazeTracker:
 
     def _reload_fluid(self):
         """The "fluid" block of ltcplay_hazers.json, read again when the
-        file changes. Read only: this module never writes that file.
-        Never raises."""
+        file changes. Read only here: the Settings card's save goes
+        through save_fluid and the levels file's own writer. Never
+        raises."""
         try:
             st = os.stat(self.levels_path)
             stamp = (st.st_mtime_ns, st.st_size)
@@ -810,6 +886,188 @@ class HazeTracker:
                             "undone": r.get("undone")})
         return sorted(out, key=lambda b: -(b["id"] or 0))[:RECENT_BATCHES]
 
+    # -- the Settings tab's Haze fluid card ---------------------------------
+    def stamp(self):
+        """What the card was drawn from: the fluid settings, each hazer's
+        Reset learning and its Set level now corrections. A save sent with
+        another stamp is refused (a stale page never writes over a newer
+        change)."""
+        import hashlib
+        with self._lock:
+            key = json.dumps(
+                [self.fluid, self.config_error,
+                 {n: [u.get("learn_from", 0),
+                      [c["id"] for c in u.get("corrections", [])]]
+                  for n, u in sorted(self.units.items())
+                  if u.get("learn_from") or u.get("corrections")}],
+                sort_keys=True)
+        return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+    def _write_fluid(self, block):
+        w = self._fluid_writer
+        if w is None:
+            from . import hazers as hazers_mod
+            lv = hazers_mod.Levels(self.folder,
+                                   [n for n, _h, _f in self.hazers()])
+            w = lambda b: lv.set_other("fluid", b)     # noqa: E731
+        w(block)
+
+    def save_fluid(self, name, lph, tank):
+        """An admin's litres an hour at full output and tank litres for
+        hazer `name` (None clears one), checked as the file is
+        (parse_fluid), saved into the "fluid" block of LEVELS_FILE with
+        the levels and every other key kept. (ok, sentence, (old, new))."""
+        names = [n for n, _h, _f in self.hazers()]
+        if name not in names:
+            return False, (f"There is no hazer called {name!r}. Nothing was "
+                           f"changed."), None
+        got = {}
+        for k, v, hi, what in (("litres_per_hour", lph, LPH_MAX,
+                                "Litres per hour at full output"),
+                               ("tank_litres", tank, TANK_MAX,
+                                "Tank litres")):
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or \
+                    not math.isfinite(v) or not 0 < v <= hi:
+                return False, (f"{what} is a number over 0 and up to "
+                               f"{hi:g}. Nothing was changed."), None
+            got[k] = round(float(v), 3)
+        self._reload_fluid()
+        if self.config_error:
+            return False, (f"{self.config_error} Fix the file first. Nothing "
+                           f"was changed."), None
+        old = dict(self.fluid.get(name) or {})
+        block = {n: dict(d) for n, d in self.fluid.items()}
+        if got:
+            block[name] = got
+        else:
+            block.pop(name, None)
+        try:
+            self._write_fluid(block or None)
+        except (OSError, ValueError) as e:
+            return False, (f"The haze fluid settings could not be saved "
+                           f"({e}). Nothing was changed."), None
+        self._fluid_stamp = None
+        self._reload_fluid()
+        return True, f"{name}: haze fluid settings saved.", (old, got)
+
+    def set_level(self, name, pct, who, role="", screen=""):
+        """Set level now: an admin looked at the tank and says it is `pct`
+        percent full. A CORRECTION: kept apart from the refills, so it is
+        never a refill, never usage and never a tank to learn from; the
+        level counts from it until the next refill. (ok, sentence, (old
+        percent or None, new percent))."""
+        names = [n for n, _h, _f in self.hazers()]
+        if name not in names:
+            return False, (f"There is no hazer called {name!r}. Nothing was "
+                           f"changed."), None
+        if isinstance(pct, bool) or not isinstance(pct, (int, float)) or \
+                not math.isfinite(pct) or not 0 <= pct <= 100 or \
+                pct != int(pct):
+            return False, ("The level is a whole percent, 0 to 100. Nothing "
+                           "was changed."), None
+        pct = int(pct)
+        with self._lock:
+            u = self._unit(name)
+            v = self._hazer_view(name, 0, 0)
+            if v["tank_s"] is None:
+                return False, (f"{name} has no tank size yet: set its litres "
+                               f"per hour and tank litres, or log two "
+                               f"refills. Nothing was changed."), None
+            old = v["percent"]
+            snap = self._snapshot(name, u)
+            cid = self.next_id
+            self.next_id += 1
+            u.setdefault("corrections", [])
+            u["corrections"] = (u["corrections"] + [{
+                "id": cid, "at": self._wall(), "who": who or "unsigned",
+                "role": role or "", "screen": screen or "",
+                "old_pct": old, "new_pct": pct,
+                "full_total": snap["full_total"],
+                "unsure_s": snap["unsure_s"]}])[-CORRECTIONS_KEPT:]
+            self._dirty = True
+        was = "not known" if old is None else f"{old} percent"
+        self._note(f"Haze: {who or 'someone'} set the level of {name} from "
+                   f"{was} to {pct} percent (a correction, not a refill).")
+        if not self.save():
+            return True, (f"{name}: level set to {pct} percent, but "
+                          f"haze.json could NOT be written "
+                          f"({self.save_error}). It is kept in memory and "
+                          f"tried again every {SAVE_EVERY_S:g} s."), \
+                (old, pct)
+        return True, f"{name}: level set to {pct} percent.", (old, pct)
+
+    def reset_learning(self, name, who):
+        """Reset learning: hazer `name` learns its tank again from its next
+        refill on. Every refill stays in the record. (ok, sentence,
+        tanks it had learned from)."""
+        names = [n for n, _h, _f in self.hazers()]
+        if name not in names:
+            return False, (f"There is no hazer called {name!r}. Nothing was "
+                           f"changed."), None
+        with self._lock:
+            u = self._unit(name)
+            had = len(self._cycles(u))
+            u["learn_from"] = self.next_id
+            self.next_id += 1
+            self._dirty = True
+        self._note(f"Haze: {who or 'someone'} reset the learning of {name} "
+                   f"(it had learned from {had} tanks). The refills are "
+                   f"kept.")
+        saved = self.save()
+        tail = "" if saved else (f" haze.json could NOT be written "
+                                 f"({self.save_error}); it is tried again "
+                                 f"every {SAVE_EVERY_S:g} s.")
+        return True, (f"{name}: learning starts again from the next refill. "
+                      f"The refills are kept.{tail}"), had
+
+    # -- how long a tank lasts (records only) --------------------------------
+    def _cycles(self, u):
+        """Each tank of this hazer, oldest first: the full output seconds
+        between two refills that are not undone, from its Reset learning
+        on. Refills only: a Set level now correction is never one, so it
+        never teaches a tank length. An undone refill is not one either,
+        so an Undo takes back what it taught."""
+        rs = sorted((r for r in u["refills"] if not r.get("undone")),
+                    key=lambda r: r.get("id", 0))
+        out = []
+        for a, b in zip(rs, rs[1:]):
+            if a.get("id", 0) < u.get("learn_from", 0):
+                continue
+            c = float(b["full_total"]) - float(a["full_total"])
+            if c >= MIN_TANK_S:
+                out.append(c)
+        return out
+
+    def _tank(self, name, u):
+        """(full output seconds of a full tank or None, "learned",
+        "estimating" or "", tanks learned from, firm, a tank much longer
+        than the others)."""
+        cycles = self._cycles(u)
+        got, _n, firm = learned_tank(cycles, LEARN_TANKS, OUTLIER_RATIO)
+        if got is not None:
+            return (got, "learned", len(cycles), firm,
+                    bool(suspect_cycles(cycles, LEARN_TANKS)))
+        fl = self.fluid.get(name) or {}
+        lph, tank = fl.get("litres_per_hour"), fl.get("tank_litres")
+        if lph and tank:
+            # The set numbers, until a tank is learned: tank / flow hours.
+            return tank / lph * 3600.0, "estimating", 0, False, False
+        return None, "", 0, False, False
+
+    def _show_avg(self, u):
+        """The average full output haze of this hazer's last RECENT_SHOWS
+        full shows (FULL_SHOW of the longest one or more), or None under
+        MIN_SHOWS of them."""
+        recent = u["show_burns"][-RECENT_SHOWS:]
+        longest = max([p[0] for p in recent] or [0.0])
+        full = [p[1] for p in recent
+                if longest > 0 and p[0] >= FULL_SHOW * longest]
+        if len(full) < MIN_SHOWS:
+            return None
+        return sum(full) / len(full)
+
     # -- what the page shows --------------------------------------------------
     def _hazer_view(self, name, hs, fs):
         u = self.units.get(name) or new_hazer()
@@ -827,10 +1085,15 @@ class HazeTracker:
         unsure = max(0.0, cur["unsure_s"] - base["unsure_s"])
         shows = max(0, cur["shows"] - base["shows"])
         gaps = self.gaps - int(base.get("gaps", 0)) if last else 0
-        recent = [p[1] for p in u["show_burns"][-RECENT_SHOWS:]]
-        avg = median(recent) if len(recent) >= MIN_SHOWS else None
+        avg = self._show_avg(u)
         fl = self.fluid.get(name) or {}
         lph, tank = fl.get("litres_per_hour"), fl.get("tank_litres")
+        tank_s, basis, tanks, firm, suspect = self._tank(name, u)
+        # The level counts from the newest of the last refill (100
+        # percent) and a Set level now after it (the percent typed).
+        corr = [c for c in u.get("corrections", [])
+                if last is None or c["id"] > last["id"]]
+        lvl = corr[-1] if corr else None
         v = {"name": name, "haze_slot": hs, "fan_slot": fs,
              "since": since, "on_s": round(on_s, 1),
              "full_s": round(full_s, 1), "unsure_s": round(unsure, 1),
@@ -840,29 +1103,59 @@ class HazeTracker:
              "litres_per_hour": lph, "tank_litres": tank,
              "litres_used": None, "litres_left": None, "percent": None,
              "color": None, "refill_soon": False,
+             "tank_s": None if tank_s is None else round(tank_s, 1),
+             "tank_litres_learned": None, "basis": basis,
+             "tanks_learned": tanks, "learn_firm": firm,
+             "suspect": suspect, "shows_left": None, "sub": "",
+             "level_set": None if lvl is None else {
+                 "who": lvl["who"], "pct": lvl["new_pct"],
+                 "at_ms": int(float(lvl["at"]) * 1000)},
              "last_refill": None if last is None else {
                  "id": last["id"], "who": last["who"],
                  "at_ms": int(float(last["at"]) * 1000)},
              "big": "", "words": ""}
+        if tank_s is not None and basis == "learned" and lph:
+            v["tank_litres_learned"] = round(tank_s / 3600.0 * lph, 2)
         haze_line = (f"{haze_words(on_s)} of haze "
                      f"({haze_words(full_s)} at full output)")
         if lph:
             # Not sure seconds count as full output: emptier, never fuller.
             used = (full_s + unsure) / 3600.0 * lph
             v["litres_used"] = round(used, 2)
-            if tank and last is not None:
-                # A level only from a refill on: before one, how full the
-                # tank was is not known.
-                left = max(0.0, tank - used)
-                v["litres_left"] = round(left, 2)
-                p = int(math.floor(100.0 * left / tank))
-                v["percent"] = p
-                v["color"] = ("red" if p < RED_BELOW else
-                              "amber" if p < AMBER_BELOW else "green")
-                if v["color"] == "green" and v["not_sure"]:
-                    v["color"] = "amber"
-                v["refill_soon"] = v["color"] == "red"
-        if last is None:
+        if tank_s and (last is not None or lvl is not None):
+            # A level only from a refill or a Set level now on: before
+            # one, how full the tank was is not known. Not sure seconds
+            # count as full output (emptier, never fuller).
+            if lvl is not None:
+                start = float(lvl["new_pct"])
+                gone = max(0.0, cur["full_total"] - lvl["full_total"]) + \
+                    max(0.0, cur["unsure_s"] - lvl["unsure_s"])
+            else:
+                start, gone = 100.0, full_s + unsure
+            exact = min(100.0, max(0.0, start - 100.0 * gone / tank_s))
+            p = int(math.floor(exact))
+            v["percent"] = p
+            left_s = tank_s * exact / 100.0
+            if lph:
+                v["litres_left"] = round(left_s / 3600.0 * lph, 2)
+            if avg:
+                v["shows_left"] = int(math.floor(left_s / avg))
+            v["color"] = ("red" if p < RED_BELOW else
+                          "amber" if p < AMBER_BELOW else "green")
+            if v["color"] == "green" and v["not_sure"]:
+                v["color"] = "amber"
+            v["refill_soon"] = v["color"] == "red" or v["shows_left"] == 0
+        if basis == "learned":
+            v["sub"] = (f"Learned from {tanks} "
+                        f"{'tank' if tanks == 1 else 'tanks'}" +
+                        ("" if firm else ", still learning"))
+        elif basis == "estimating":
+            v["sub"] = "Estimating (from the set numbers)"
+        if v["shows_left"] is not None:
+            v["sub"] += (f". {v['shows_left']} "
+                         f"{'show' if v['shows_left'] == 1 else 'shows'} "
+                         f"left")
+        if last is None and lvl is None:
             v["big"] = f"{haze_words(on_s)} haze"
             v["words"] = (f"No refill logged yet: {haze_line} since "
                           f"tracking began. Press Refilled the next time its "
@@ -875,12 +1168,29 @@ class HazeTracker:
             v["words"] = (f"{haze_line} and {shows} "
                           f"{'show' if shows == 1 else 'shows'} since the "
                           f"refill.")
-            if v["percent"] is not None:
+            if v["percent"] is not None and v["litres_left"] is not None:
+                of = tank if basis == "estimating" else \
+                    v["tank_litres_learned"]
                 v["words"] += (f" About {v['litres_left']:.2f} L left of "
-                               f"{tank:g} L ({v['percent']} percent).")
+                               f"{of:g} L ({v['percent']} percent).")
+            elif v["percent"] is not None:
+                v["words"] += f" About {v['percent']} percent left."
             elif v["litres_used"] is not None:
                 v["words"] += (f" About {v['litres_used']:.2f} L used. Set "
                                f"tank_litres to see what is left.")
+            if lvl is not None:
+                v["words"] += (f" Level set by {lvl['who']} to "
+                               f"{lvl['new_pct']} percent.")
+        if basis == "learned":
+            v["words"] += f" {v['sub'].split('.')[0]}."
+        elif basis == "estimating" and v["percent"] is not None:
+            v["words"] += (" Estimating from the set numbers until a tank "
+                           "is learned.")
+        if v["shows_left"] is not None:
+            v["words"] += f" About {v['shows_left']} shows left."
+        if suspect:
+            v["words"] += (" One tank was much longer than the others: a "
+                           "Refilled press was probably missed.")
         if v["not_sure"]:
             v["words"] = ("Not sure: some haze since the refill could not be "
                           "counted (see the note at the top). " + v["words"])
@@ -893,6 +1203,7 @@ class HazeTracker:
     def view(self):
         """The Fuel page's Hazers section. Never raises."""
         try:
+            self._reload_fluid()
             hz = self.hazers()
             with self._lock:
                 hazers = [self._hazer_view(n, h, f) for n, h, f in hz]
@@ -910,6 +1221,7 @@ class HazeTracker:
                         "notes": notes, "shows_total": self.shows_total,
                         "watching": self._link is not None,
                         "config_error": self.config_error,
+                        "stamp": self.stamp(),
                         "refill_soon": [h["name"] for h in hazers
                                         if h["refill_soon"]],
                         "not_sure": [h["name"] for h in hazers
@@ -970,6 +1282,10 @@ class HazeTracker:
 # ------------------------------------------------------- the page's routes --
 
 POST_ROUTES = ("haze-refill", "haze-undo")
+# The Settings tab's Haze fluid card (Jeff, 2026-11-19): the role matrix's
+# Settings row (users.py), on the show PC only (remote.LOCAL_ONLY).
+FLUID_ROUTES = ("haze-fluid",)
+FLUID_ACTIONS = ("save", "level", "reset")
 
 
 def route_view(tracker, ctx=None, users=None):
@@ -1021,6 +1337,115 @@ def route_post(tracker, name, body, ctx, users):
                                     else {"error": text})
 
 
+def may_set_fluid(ctx, users):
+    """The Haze fluid card: the role matrix's Settings row (admin by
+    default), signed in; with nobody able to sign in yet, only the show
+    machine itself. web.py's role check asks the same first; this is the
+    route's own. (ok, why)."""
+    active = False
+    try:
+        active = users is not None and bool(users.active())
+    except Exception:                             # noqa: BLE001
+        active = True                              # not known: refused
+    if not active:
+        if getattr(ctx, "local", False):
+            return True, ""
+        return False, ("The haze fluid settings are changed on the show "
+                       "machine itself. Nothing was changed.")
+    s = getattr(ctx, "session", None) or {}
+    name, role = s.get("name"), s.get("role")
+    if not name:
+        return False, ("Sign in to change the haze fluid settings (the user "
+                       "chip at the top). Nothing was changed.")
+    try:
+        ok = bool(users.may(role, "settings"))
+    except Exception:                             # noqa: BLE001
+        ok = False
+    if not ok:
+        return False, (f"{name} is signed in as {role}; the haze fluid "
+                       f"settings need the Settings permission (an admin). "
+                       f"Nothing was changed.")
+    return True, ""
+
+
+def _num_or_none(v):
+    """A number from the card: blank (None or "") is not set."""
+    if v is None or v == "":
+        return None, True
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return v, False
+    return v, True
+
+
+def route_fluid(tracker, body, ctx, users, audit=None):
+    """POST haze-fluid (the Settings tab's Haze fluid card): {"action":
+    "save", "hazer", "litres_per_hour", "tank_litres", "stamp"},
+    {"action": "level", "hazer", "percent", "stamp"} (Set level now) or
+    {"action": "reset", "hazer", "confirm": true, "stamp"} (Reset
+    learning). Every change is audit logged with who and the screen.
+    Refused, with "Nothing was changed.", when the stamp is not the
+    settings now (a stale page). Records and words only: nothing here
+    reaches a hazer or flamesafe. (code, body)."""
+    if tracker is None:
+        return 404, {"error": "Haze tracking is not set up in this engine "
+                              "(it needs hazers in flamesafe's config)."}
+    ok, why = may_set_fluid(ctx, users)
+    if not ok:
+        return 403, {"error": why}
+    body = body if isinstance(body, dict) else {}
+    act, name = body.get("action"), body.get("hazer")
+    if act not in FLUID_ACTIONS:
+        return 400, {"error": "Say what to do. Nothing was changed."}
+    if not isinstance(name, str) or not name:
+        return 400, {"error": "Say which hazer. Nothing was changed."}
+    tracker._reload_fluid()          # a hand edit since counts too
+    if body.get("stamp") != tracker.stamp():
+        return 409, {"error": "The haze fluid settings changed since this "
+                              "page drew them. Look again. Nothing was "
+                              "changed.", "stale": True}
+    s = getattr(ctx, "session", None) or {}
+    who = s.get("name") or getattr(ctx, "device", "") or "unsigned"
+    role = s.get("role") or ""
+    screen = (getattr(ctx, "screen", "") if getattr(ctx, "local", False)
+              else getattr(ctx, "device", "")) or "Rack screen"
+    extra = {}
+    if act == "save":
+        lph, ok1 = _num_or_none(body.get("litres_per_hour"))
+        tank, ok2 = _num_or_none(body.get("tank_litres"))
+        if not (ok1 and ok2):
+            return 400, {"error": "Litres per hour and tank litres are "
+                                  "numbers. Nothing was changed."}
+        done, text, ch = tracker.save_fluid(name, lph, tank)
+        if done:
+            (old, new) = ch
+            extra = {"old": json.dumps(old, sort_keys=True),
+                     "new": json.dumps(new, sort_keys=True)}
+    elif act == "level":
+        done, text, ch = tracker.set_level(name, body.get("percent"), who,
+                                           role, screen)
+        if done:
+            extra = {"old": "not known" if ch[0] is None else ch[0],
+                     "new": ch[1], "correction": True}
+    else:
+        if body.get("confirm") is not True:
+            return 400, {"error": "Reset learning needs its confirm. Nothing "
+                                  "was changed."}
+        done, text, had = tracker.reset_learning(name, who)
+        if done:
+            extra = {"tanks_before": had}
+    if not done:
+        return 400, {"error": text}
+    if audit is not None:
+        try:
+            audit.event(user=who, surface="web",
+                        action=f"haze-fluid-{act}", target=f"hazer={name}",
+                        result="accepted", source=screen, screen=screen,
+                        **extra)
+        except Exception:                         # noqa: BLE001
+            pass
+    return 200, {"text": text, "stamp": tracker.stamp()}
+
+
 def build(remote, link, fuel=None, journal=None, threaded=True):
     """The engine's haze tracker (web.serve): the flame link's hazers,
     flamesafe's status freshness from the remote, fuel's min_show_s, and
@@ -1047,8 +1472,19 @@ def build(remote, link, fuel=None, journal=None, threaded=True):
         return (getattr(fuel, "cfg", None) or {}).get("min_show_s",
                                                       MIN_SHOW_S)
 
+    def fluid_writer(block):
+        # The engine's own levels file writer (hazers.Levels), so a level
+        # set and a fluid save share its lock and keep each other's keys.
+        lv = getattr(getattr(remote, "hazers", None), "levels", None)
+        if lv is None:
+            from . import hazers as hazers_mod
+            lv = hazers_mod.Levels(remote.folder, [n for n, _s in
+                                                   link.cfg.hazers])
+        lv.set_other("fluid", block)
+
     tr = HazeTracker(remote.folder, hazers, status_get=fresh,
                      min_show_s_get=min_show_s, rehearsal_get=rehearsal,
-                     journal=journal, threaded=threaded)
+                     journal=journal, threaded=threaded,
+                     fluid_writer=fluid_writer)
     tr.attach(link)
     return tr
