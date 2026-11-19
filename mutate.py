@@ -18400,6 +18400,24 @@ def build():
   "        _abort_effects(n), abort=True, hold=False)\n",
   "        [], abort=True, hold=False)\n"),
 
+ ("scheduler: a show already past its start when show control comes on is started",
+  "ltcplay/schedule.py",
+  "        if on_at is not None and not held and \\\n"
+  "                lateness_s(s.start, on_at) >= RUN_ON_LATE_S:\n",
+  "        if False:\n"),
+
+ ("scheduler: the moment show control came on is never noted",
+  "ltcplay/schedule_service.py",
+  "        elif self._run_on_since is None:\n            self._run_on_since = now\n",
+  "        elif False:\n            self._run_on_since = now\n"),
+
+ ("scheduler: show control off does not forget when it came on",
+  "ltcplay/schedule_service.py",
+  "        if self.run_gate is None or not self._run_pressed():\n"
+  "            self._run_on_since = None\n",
+  "        if self.run_gate is None:\n"
+  "            self._run_on_since = None\n"),
+
  ("halt: Stop leaves Programming playback running",
   "ltcplay/remote.py",
   "            self._halt_programming(out, who, screen)\n",

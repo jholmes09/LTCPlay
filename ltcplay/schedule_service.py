@@ -810,6 +810,11 @@ class Service:
         # the performer, which checks Run on its own. None (no conductor,
         # or one built without fire_ice) gates nothing, as before.
         self.run_gate = None
+        # When show control was last seen turned on, on this service's
+        # clock (_watch_run_on), or None while it is off. Memory only: show
+        # control is always off when the engine starts (Jeff's standing
+        # rule, no auto-Run), so a restart starts with None, fail closed.
+        self._run_on_since = None
         # alerts.Alerts.raise_(kind, text), set by remote.Remote: a failed
         # start raises a "start" alert for the rack screen and the booth
         # (Jeff, 2026-10-12: the groups are left as they are, so a person
@@ -2968,6 +2973,9 @@ class Service:
             # it once that is over, before this tick looks at the list.
             self._follow_rule(now, deferred=True)
             ev = self._tick_event()
+            # Before the rig check and the alert hold look at the list.
+            self._miss_shows_before_run_on(now)
+            ev = replace(ev, run_on_at=self._run_on_since)
             self._preroll_lookahead(now)
             self._preshow_lookahead(now)
             self._preroll_before_gate(now, ev)
@@ -3277,10 +3285,42 @@ class Service:
         return (str(m.date), n, at.isoformat() if at is not None else "")
 
     # -- the pre-roll (preroll.py, Jeff 2026-10-28) -------------------------
+    def _watch_run_on(self, now):
+        """The moment show control was turned on, as this service first
+        sees it on (a tick, 4 a second), or None while it is off or this
+        engine has no show control gate. Seen late, never early: a show
+        on the edge is MISSED rather than started (fail closed). Lock
+        held. Never raises."""
+        if self.run_gate is None or not self._run_pressed():
+            self._run_on_since = None
+        elif self._run_on_since is None:
+            self._run_on_since = now
+        return self._run_on_since
+
+    def _miss_shows_before_run_on(self, now):
+        """Jeff, 2026-11-19: "When you turn show control back on, if it's
+        past the start time by even a second, it should not start." Every
+        show still waiting whose start was sch.RUN_ON_LATE_S or more before
+        show control went on is MISSED, said in the journal, before
+        anything else this tick looks at the list (the rig check, the
+        alert hold), with a settling TICK that never starts a show. Only
+        between shows (IDLE, STANDBY); a Hold keeps its own rule. Lock
+        held."""
+        on_at = self._watch_run_on(now)
+        m = self.machine
+        if on_at is None or m is None or \
+                m.state not in self.SHOWTIME_FROM:
+            return
+        if not any(sch.lateness_s(s.start, on_at) >= sch.RUN_ON_LATE_S
+                   for s in m.pending()):
+            return
+        self._apply(sch.Event(sch.TICK, "scheduler", settle=True,
+                              run_on_at=on_at), now)
+
     def _tick_event(self):
         """The scheduler's TICK, with the late allowance (late_ok_s) for
         the next show when its pre-roll could only run at its time."""
-        ev = sch.Event(sch.TICK, "scheduler")
+        ev = sch.Event(sch.TICK, "scheduler", run_on_at=self._run_on_since)
         m = self.machine
         if self._preroll_late and m is not None:
             nxt = m.next_slot()

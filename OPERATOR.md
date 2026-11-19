@@ -1975,8 +1975,12 @@ stop:
   refused in words, marked on its slot, journaled, and raises an alert
   (nothing reaches the rig). If that alert is still open at the next
   show's time, the engine holds the schedule then, as it does for any
-  open alert. Turning show control on again never starts a refused or a
-  missed show late: the next show starts at its own time. End rehearsal
+  open alert. Turning show control on again never starts a show whose
+  start time has already passed, by even one second (Jeff, 2026-11-19):
+  it is MISSED, and the journal says show control was off at its start
+  time. That is so even inside the 2 minute late rule. A show whose
+  time has not come yet starts at its time. Start now, Resume and Start
+  at a cue still start a show when you press them. End rehearsal
   is the same press in a rehearsal. It needs the Show permission;
   Stop never does. Right after Stop turns back into Start now, Show
   control on or off, the button waits 2 seconds before it takes a

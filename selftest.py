@@ -43996,6 +43996,107 @@ def test_show_control_off_ends_the_show_without_a_hold():
     n.link.close()
 
 
+def test_show_control_on_late_never_starts_a_passed_show():
+    section("Show control turned on late (Jeff, 2026-11-19: \"When you turn "
+            "show control back on, if it's past the start time by even a "
+            "second, it should not start\"): a show 1 s or more past its "
+            "start when show control went on is MISSED in words and never "
+            "started, even inside the 120 s late rule; a show still to come "
+            "starts at its time; with show control on all along the 120 s "
+            "rule is unchanged; off and on twice uses the last on")
+    n = _run_off_night()
+    if n is None:
+        return
+    S, svc, c = n.S, n.svc, n.c
+
+    def at(h, mi, s=0, us=0):
+        n.now[0] = _den(S, h, mi, s, us)
+        svc.tick()
+        _settle(svc, c)
+        n.w.runner.poll()
+        _settle(svc, c)
+
+    def autos(show):
+        return [r for r in svc.journal if r.get("action") ==
+                "automatic start" and r.get("show") == show]
+    sess = n.sess
+    n.control.session = None                # show control off
+    _fi_walk(n, 17, 58)
+    at(17, 59, 50)
+    # The engine sees nothing at 18:00 (busy); show control goes on and
+    # the first look is 1.5 s after show 1's time.
+    n.control.session = sess
+    at(18, 0, 1, 500000)
+    s1 = svc.machine.slot(1)
+    check(s1.status == S.MISSED and s1.reason == S.RUN_OFF_AT_START and
+          not autos(1) and svc.machine.state != S.SHOW,
+          f"1 s past its start when show control came on: MISSED, never "
+          f"started, inside the 120 s rule too: {s1} {svc.machine.state}")
+    said = [r for r in svc.journal if r.get("show") == 1 and
+            r.get("outcome") == "missed"]
+    check(said and "show control was off at its start time" in
+          said[-1]["text"] and "Start now is still there" in
+          said[-1]["text"],
+          f"the journal says why, in words: {said[-1:]}")
+    _fi_walk(n, 18, 19, start=(18, 1))
+    check(svc.machine.slot(1).status == S.MISSED and not autos(1),
+          "and it is never started later")
+    # A show still to come starts at its time.
+    _fi_walk(n, 18, 20, start=(18, 20))
+    check(svc.machine.state == S.SHOW and svc.machine.running == 2 and
+          autos(2) and autos(2)[-1]["outcome"] == "done",
+          f"show 2, due after show control came on, starts on time: "
+          f"{svc.machine.state} {svc.machine.running}")
+    n.now[0] = _den(S, 18, 28)
+    svc._apply(S.Event(S.SHOW_ENDED, "madmapper", show=2))
+    _settle(svc, c)
+    # Show control on all along: the 120 s rule is unchanged. The engine
+    # busy until 18:41:30 (90 s late): show 3 still starts, late.
+    _fi_walk(n, 18, 39, start=(18, 29))
+    at(18, 41, 30)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 3,
+          f"with show control on all along a show 90 s late still starts: "
+          f"{svc.machine.state} {svc.machine.slot(3)}")
+    n.now[0] = _den(S, 18, 48)
+    svc._apply(S.Event(S.SHOW_ENDED, "madmapper", show=3))
+    _settle(svc, c)
+    _fi_walk(n, 18, 59, start=(18, 49))
+    at(19, 2, 30)
+    s4 = svc.machine.slot(4)
+    check(s4.status == S.MISSED and s4.reason != S.RUN_OFF_AT_START and
+          "late by" in s4.reason,
+          f"and more than 120 s late is MISSED by the late rule, as "
+          f"before: {s4}")
+    # Off and on twice: the last on is what counts.
+    _fi_walk(n, 19, 15, start=(19, 3))
+    n.control.session = None
+    at(19, 16)
+    n.control.session = sess
+    at(19, 17)
+    n.control.session = None
+    at(19, 19, 58)
+    n.control.session = sess
+    at(19, 20, 1, 500000)
+    s5 = svc.machine.slot(5)
+    check(s5.status == S.MISSED and s5.reason == S.RUN_OFF_AT_START and
+          not autos(5),
+          f"off and on twice, on again 1.5 s after show 5's time: MISSED, "
+          f"never started: {s5}")
+    # Under a second past its time when show control came on: it is not
+    # yet a second late, so it starts (the same second, as the late rule
+    # counts whole seconds).
+    _fi_walk(n, 19, 39, start=(19, 21))
+    n.control.session = None
+    at(19, 39, 59)
+    n.control.session = sess
+    at(19, 40, 0, 600000)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 6,
+          f"show control on 0.6 s after show 6's time: it starts: "
+          f"{svc.machine.state} {svc.machine.slot(6)}")
+    n.c.close()
+    n.link.close()
+
+
 def test_refused_starts_say_why_and_what_to_press():
     section("Jeff's field report (2026-10-28), refusals: a show refused with "
             "Run off says so on its slot and in its alert, with what to "
@@ -128192,6 +128293,7 @@ if __name__ == "__main__":
         test_a_refused_start_sends_no_fade,
         test_refused_starts_say_why_and_what_to_press,
         test_show_control_off_ends_the_show_without_a_hold,
+        test_show_control_on_late_never_starts_a_passed_show,
         test_rack_screen_stop_in_place_of_start_now,
         test_schedule_failed_start_effects_follow_what_was_sent,
         test_soak_schedule_is_refused_outside_the_soak,

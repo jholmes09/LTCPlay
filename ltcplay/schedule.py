@@ -267,6 +267,14 @@ DELAY_CHOICES = (5, 10)
 # late_grace_s keeps its name; when the rule file does not give one, this is
 # the value. It was 15 s before (and 0 when the file left it out).
 DEFAULT_LATE_GRACE_S = 120
+# Show control turned on late (Jeff, 2026-11-19: "When you turn show control
+# back on, if it's past the start time by even a second, it should not
+# start"): a show already this many whole seconds past its start at the
+# moment show control went on (Event.run_on_at) is MISSED, never started by
+# the scheduler, whatever the late rule above allows. Start now, Resume and
+# Start at a cue stay the operator's own presses.
+RUN_ON_LATE_S = 1
+RUN_OFF_AT_START = "MISSED (show control was off at its start time)"
 # The late rule's ceiling (5 minutes). A bigger number in the rule file is
 # refused with a sentence rather than quietly clamped: a silent clamp is a
 # setting that says one thing and does another. A grace longer than the gap
@@ -1038,6 +1046,11 @@ class Event:
     # ends a live show as every Stop does but leaves the schedule OFF Hold,
     # so the night carries on to its next show (_stop_show_no_hold).
     hold: bool = True
+    # TICK only, filled in by the service (Jeff, 2026-11-19): when show
+    # control was last turned on (the service's own clock), or None when
+    # this engine has no show control gate. A show RUN_ON_LATE_S or more
+    # past its start at that moment is MISSED, never started (_sweep).
+    run_on_at: object = None
 
 
 @dataclass(frozen=True)
@@ -1697,6 +1710,14 @@ def _sweep(tx, held=None):
         if late < 0:
             break
         state = tx.m.state
+        on_at = tx.ev.run_on_at
+        if on_at is not None and not held and \
+                lateness_s(s.start, on_at) >= RUN_ON_LATE_S:
+            # Show control came on after this show's time: never started
+            # by the scheduler, even inside the late rule (Jeff,
+            # 2026-11-19).
+            _miss(tx, s, RUN_OFF_AT_START)
+            continue
         grace = tx.m.late_grace_s
         if tx.ev.late_show and tx.ev.late_show == s.n:
             grace = late_limit_s(grace, tx.ev.late_ok_s)
