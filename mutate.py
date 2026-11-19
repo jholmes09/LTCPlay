@@ -17452,8 +17452,8 @@ def build():
 
  ("haze fluid: Remove takes out a hazer that is still in flamesafe",
   "ltcplay/fuelhaze.py",
-  "        if name in names or name == \"notes\" or name not in raw:",
-  "        if name == \"notes\" or name not in raw:"),
+  "        if name in names or name in FLUID_NOT_HAZERS or name not in raw:",
+  "        if name in FLUID_NOT_HAZERS or name not in raw:"),
 
  ("haze fluid: two posts from the same card both pass at once",
   "ltcplay/fuelhaze.py",

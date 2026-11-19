@@ -153,6 +153,9 @@ RED_BELOW = 15
 LPH_MAX = 50.0
 TANK_MAX = 500.0
 FLUID_KEYS = frozenset(("litres_per_hour", "tank_litres"))
+# Keys of the "fluid" block that are no hazer: kept as they are, never
+# offered for Remove.
+FLUID_NOT_HAZERS = frozenset(("notes",))
 # The tank learner (fuel.learned_tank's rules, fuel's defaults).
 LEARN_TANKS = 5             # fuel's learn_refills
 OUTLIER_RATIO = 2.0         # fuel's outlier_ratio
@@ -981,7 +984,7 @@ class HazeTracker:
         names = [n for n, _h, _f in self.hazers()]
         with self._lock:
             raw = dict(self._fluid_raw)
-        if name in names or name == "notes" or name not in raw:
+        if name in names or name in FLUID_NOT_HAZERS or name not in raw:
             return False, (f"{name} is not a hazer that is gone from "
                            f"flamesafe's config. Nothing was changed."), None
         was = raw.pop(name)
