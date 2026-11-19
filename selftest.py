@@ -109873,7 +109873,7 @@ def test_ui2_systems_rows_say_each_word_once():
         check(f is not None, f"{n} is found")
         fns += "\n" + (f or "")
     check("const r = sysRow(x);" in two and
-          "<b>${esc(r.head)}</b>${esc(r.rest)}</li>" in two,
+          "<span><b>${esc(r.head)}</b>${esc(r.rest)}</span></li>" in two,
           "the Systems sheet draws each row with sysRow, escaped")
     import shutil
     node = shutil.which("node")
@@ -109884,8 +109884,8 @@ def test_ui2_systems_rows_say_each_word_once():
     cases = [
         (["Deck", "ok", "ok"], "Stream Deck: OK"),
         (["Flamesafe", "ok", "linked"], "Flames: OK"),
-        (["Laser arm", "warn", "disarmed"], "Laser arm: Off, not in use here."),
-        (["Video", "warn", "not set up"], "Video: Off, not in use here."),
+        (["Laser arm", "warn", "disarmed"], "Laser arm: Off"),
+        (["Video", "warn", "not set up"], "Video: Off"),
         (["Laser arm", "ok", "ARMED"], "Laser arm: All armed"),
         (["Lasers", "bad", "LINK LOST"],
          "Laser output: FAULT. BEYOND not answering. Check laser PC."),
@@ -109913,6 +109913,72 @@ def test_ui2_systems_rows_say_each_word_once():
     check(r.returncode == 0 and got == want,
           f"each Systems row says its state once: {bad or got} "
           f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
+def test_ui2_systems_off_row_is_one_word():
+    section("2.0's Systems sheet (Jeff, 2026-11-19: 'Show audio: Off , not "
+            "in use here.' was excess prose with a stray space): an Off row "
+            "reads only its name and Off, keeps the grey power icon, and no "
+            "row has a space before a comma (the row's flex gap split the "
+            "bold head from the rest)")
+    two = _ui2_pages()[1]
+    fns = ""
+    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY", "SYS_WORD"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        check(m is not None, f"{c} is found")
+        fns += "\n" + (m.group(0) if m else "")
+    for n in ("short8", "sysItem", "sysRow"):
+        f = _js_function(two, n)
+        check(f is not None, f"{n} is found")
+        fns += "\n" + (f or "")
+    # The row is a flex box with a gap: the bold head and the rest must be
+    # one flex item, or the gap draws as a space before ", ...".
+    check("<span><b>${esc(r.head)}</b>${esc(r.rest)}</span></li>" in two,
+          "the Systems row's head and rest are one flex item")
+    check('off:"power"' in two and "li.sys-off svg{color:var(--grey)}" in two,
+          "an Off row keeps the grey power icon")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    names = ["Deck", "Flamesafe", "Show audio", "Announcements", "Disk",
+             "Audit", "Laser arm", "Lasers", "Pixels", "Video", "Timecode",
+             "Somethingnew"]
+    offs = ["none", "none set up", "not set up", "stopped", "not connected",
+            "disarmed", "Not Set Up"]
+    rows = [[n, st, w] for n in names for st in ("warn", "ok", "off")
+            for w in offs]
+    others = [[n, st, w] for n in names for st in ("ok", "warn", "bad")
+              for w in ("ok", "linked", "ARMED", "late 1.2 s", "LINK LOST",
+                        "2 of 4 armed", "fault", "lost", "pick an output",
+                        "critical", "not sending", "3 retries")]
+    js = fns + "\nconst offs = " + json.dumps(rows) + ";\n" \
+        "const others = " + json.dumps(others) + ";\n" \
+        "const row = x => { const i = sysItem({name:x[0], state:x[1], " \
+        "word:x[2]}); const r = sysRow(i); return [i.state, r.head + r.rest]; };\n" \
+        "console.log(JSON.stringify({offs: offs.map(row), " \
+        "others: others.map(row)}));\n"
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    check(r.returncode == 0 and got is not None,
+          f"the Systems rows were built: {r.stderr.strip()[:600]}")
+    if got is None:
+        return
+    label = {"Deck": "Stream Deck", "Flamesafe": "Flames", "Audit": "Audit log",
+             "Lasers": "Laser output"}
+    bad = [(x, g) for x, g in zip(rows, got["offs"])
+           if g != ["off", label.get(x[0], x[0]) + ": Off"]]
+    check(not bad, f"an Off row reads only its name and Off: {bad[:6]}")
+    spaced = [g[1] for g in got["offs"] + got["others"]
+              if re.search(r"\s[,.:]|\s\s|^\s|\s$", g[1])]
+    check(not spaced, f"no Systems row has a space before a comma or "
+          f"stop, or a double space: {spaced[:6]}")
     print("  ok")
 
 
@@ -128241,6 +128307,7 @@ if __name__ == "__main__":
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,
         test_ui2_systems_rows_say_each_word_once,
+        test_ui2_systems_off_row_is_one_word,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_big_button_second_line_is_state_only,
         test_ui2_time_elapsed_and_left,

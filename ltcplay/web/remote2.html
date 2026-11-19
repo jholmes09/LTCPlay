@@ -4904,7 +4904,7 @@ function sysItem(x){
   let state = (x && x.state) || "warn";
   if(state !== "bad" && SYS_OFF.test(w.trim())) state = "off";
   if(name === "Laser arm" && /^armed$/i.test(w.trim())) state = "on";
-  let say = state === "ok" ? "OK." : state === "off" ? "Off: not in use here." : state === "on" ? "All armed." : "";
+  let say = state === "ok" ? "OK." : state === "off" ? "Off." : state === "on" ? "All armed." : "";
   if(!say){
     const hit = SYS_SAY.find(([n, r]) => n.test(lc) && r.test(w.toLowerCase()));
     say = hit ? hit[2] : short8(w ? w.charAt(0).toUpperCase() + w.slice(1) + "." : "", "Tap a row for its words.");
@@ -4924,7 +4924,7 @@ function sysLook(subs, isStaleNow){
 }
 // One Systems row (Jeff, 2026-11-11: "Stream Deck: OK. OK." said it
 // twice): the state word once, then only what the words add. "Stream
-// Deck: OK", "Laser arm: Off, not in use here", "Lasers: FAULT. BEYOND
+// Deck: OK", "Laser arm: Off", "Lasers: FAULT. BEYOND
 // not answering. Check laser PC." Never drops words that add a reason
 // or a number. Pure.
 const SYS_WORD = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off", on:"All armed"};
@@ -4951,7 +4951,7 @@ $("sys").addEventListener("click", () => {
   const L = sysLook((ST && ST.subsystems) || [], stale());
   const ic = {ok:"check", warn:"warn", bad:"warn", off:"power", on:"check"};
   const rows = L.items.map(x => { const r = sysRow(x);
-    return `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<b>${esc(r.head)}</b>${esc(r.rest)}</li>`; }).join("");
+    return `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<span><b>${esc(r.head)}</b>${esc(r.rest)}</span></li>`; }).join("");
   sheet("Systems", (L.first ? `<div class="first">${esc(L.first)}</div>` : "") +
     (L.items.length ? `<ul class="sys">${rows}</ul>` : `<div>${esc(L.first || "Not known yet.")}</div>`) +
     `<div class="dim">${esc(ST && ST.version ? "LTC Player " + ST.version : "")}</div>`, [{label:"Close", cls:"blue"}]);
