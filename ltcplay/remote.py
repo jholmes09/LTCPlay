@@ -10993,6 +10993,132 @@ class Remote:
             add("Pixels", "ok", "sending")
         return out
 
+    def systems_view(self, cs, lamps=None):
+        """The 2.0 page's Systems sheet and its header badge (Jeff,
+        2026-11-19: "the whole point of this page is for things we can't
+        see otherwise, like is BEYOND software even on and talking to us,
+        just like MadMapper"). One row per outside program or device this
+        rig has: is it there and talking to us. Built from subsystems()
+        (the lamps the Resume rig check reads, left as they are) and the
+        watches. Not here: the laser arm (the main page shows it). A row
+        that cannot be known until a show runs is "idle" (the page says
+        "Checked when a show starts"), never "off"; something this rig
+        does not have is left out. Display only; never raises."""
+        try:
+            lamps = self.subsystems(cs) if lamps is None else lamps
+        except Exception:                        # noqa: BLE001
+            lamps = []
+        rows = []
+
+        def add(name, state, word):
+            rows.append({"name": name, "state": state, "word": word})
+
+        def lamp(name):
+            for x in lamps or ():
+                if isinstance(x, dict) and x.get("name") == name:
+                    return x
+            return None
+        cs = cs or {}
+        try:
+            d = lamp("Deck")
+            if d and d.get("state") != "off":
+                rows.append(dict(d))
+            for name in ("Flame timing",):
+                x = lamp(name)
+                if x:
+                    rows.append(dict(x))
+            if self.flame_status is not None:
+                x = lamp("Flamesafe") or {}
+                if x.get("state") in (None, "off"):
+                    add("Flamesafe", "bad", "not connected")
+                else:
+                    rows.append(dict(x))
+            # Show audio: the interface the show file names, from
+            # audiowatch before Run; the show clock's own word while a
+            # show plays.
+            watch = self.audio_interface_view()
+            audio = (cs.get("clock") or {}).get("audio")
+            if watch and watch.get("missing"):
+                add("Show audio", "bad", "not attached")
+            elif isinstance(audio, dict):
+                x = lamp("Show audio") or {}
+                rows.append(dict(x) if x else {"name": "Show audio",
+                                                "state": "ok", "word": "ok"})
+            elif watch and not watch.get("wanted") and \
+                    watch.get("checked_ago_s") is not None:
+                pass            # no show here plays on show audio
+            elif watch and watch.get("checked_ago_s") is not None and \
+                    not watch.get("error") and not watch.get("skipped"):
+                add("Show audio", "ok", "attached")
+            else:
+                add("Show audio", "idle", "checked when a show starts")
+            for name in ("Announcements", "Disk", "Audit"):
+                x = lamp(name)
+                if x:
+                    rows.append(dict(x))
+            # BEYOND: is its program running on this PC (beyondwatch).
+            # BEYOND never answers, so running is all that can be known.
+            link = self.beyond_link()
+            fault = self.laser_fault()
+            if fault:
+                add("BEYOND", "bad", "blanking not set up")
+            elif link is not None:
+                cond = getattr(self.schedule, "conductor", None)
+                if link.get("link") == "lost":
+                    add("BEYOND", "bad", "not running")
+                elif link.get("link") == "up" and \
+                        self._lit_since_loss(cond) is False:
+                    add("BEYOND", "warn", "BEYOND restarted: dark until lit "
+                                          "again")
+                elif link.get("link") == "up":
+                    add("BEYOND", "ok", "running")
+                else:
+                    add("BEYOND", "warn", "not known")
+                rows[-1]["title"] = str(link.get("why") or "")
+            # MadMapper: running (madmapperwatch), its heartbeat while a
+            # show plays, and its output window on the projector.
+            snap = {}
+            try:
+                snap = getattr(self.schedule, "conductor",
+                               None).snapshot() or {}
+            except Exception:                    # noqa: BLE001
+                snap = {}
+            mm = self.madmapper_link(self._video_moving(cs, snap))
+            if mm is not None:
+                if mm.get("link") == "lost":
+                    add("MadMapper", "bad", "not running")
+                elif mm.get("link") == "up":
+                    track_wrong = mm.get("heartbeat_track_wrong")
+                    if mm.get("heartbeat") == "silent":
+                        add("MadMapper", "warn", "no heartbeat")
+                    elif track_wrong:
+                        add("MadMapper", "warn", "heartbeat track wrong")
+                    else:
+                        add("MadMapper", "ok", "running")
+                else:
+                    add("MadMapper", "warn", "not known")
+                rows[-1]["title"] = str(mm.get("why") or "")
+            else:
+                x = lamp("Video")
+                if x:
+                    rows.append(dict(x, state="idle",
+                                     word="checked when a show starts")
+                                if x.get("state") == "off" else dict(x))
+            x = lamp("MadMapper output")
+            if x:
+                rows.append(dict(x))
+            x = lamp("Pixels") or {}
+            if x.get("state") == "off":
+                # Pixels go out over UDP and nothing answers: whether
+                # they reach the controllers shows only while a show
+                # sends them.
+                add("Pixels", "idle", "checked when a show starts")
+            elif x:
+                rows.append(dict(x))
+        except Exception as e:                   # noqa: BLE001
+            add("Systems", "warn", f"not known: {type(e).__name__}")
+        return rows
+
     def version_line(self):
         """Which LTC Player this is, for the rack screen's header: the
         release it was stamped with and its build id, or that it has been
@@ -11141,11 +11267,13 @@ class Remote:
                            "rate_note": rate_mismatch(cs)}
             cue_now = cs.get("now")
             out["subsystems"] = self.subsystems(cs)
+            out["systems"] = self.systems_view(cs, out["subsystems"])
         except Exception as e:
             out["show"] = {"running": False, "show_control_on": False,
                            "error": f"{type(e).__name__}: {e}"}
             cue_now = None
             out["subsystems"] = self.subsystems({})
+            out["systems"] = self.systems_view({}, out["subsystems"])
         out["countdown"] = countdown_view(out["schedule"], out["show"],
                                           cue_now)
         out["audio_interface"] = self.audio_interface_view()

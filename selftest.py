@@ -59635,6 +59635,10 @@ def _rack_status_pico(many=True):
             ("Show", "ok", "ready"), ("Timecode", "bad", "fault"),
             ("flamesafe", "ok", "live"), ("Stream Deck", "bad", "missing"),
             ("Lasers", "ok", "dark"), ("Audio", "ok", "ready"))],
+        # The 2.0 Systems badge and sheet read these (systems_view).
+        "systems": [{"name": n, "state": s, "word": w} for n, s, w in (
+            ("Timecode", "bad", "fault"), ("Deck", "bad", "missing"),
+            ("BEYOND", "ok", "running"), ("Show audio", "ok", "attached"))],
         "laser_arm": {"lasers": [{"id": "L1", "name": "Laser 1",
                                   "armed": False},
                                  {"id": "L2", "name": "Laser 2",
@@ -112764,7 +112768,7 @@ def test_ui2_systems_rows_say_each_word_once():
         check(f is not None, f"{n} is found")
         fns += "\n" + (f or "")
     check("const r = sysRow(x);" in two and
-          "<b>${esc(r.head)}</b>${esc(r.rest)}</li>" in two,
+          "<span><b>${esc(r.head)}</b>${esc(r.rest)}</span></li>" in two,
           "the Systems sheet draws each row with sysRow, escaped")
     import shutil
     node = shutil.which("node")
@@ -112775,8 +112779,16 @@ def test_ui2_systems_rows_say_each_word_once():
     cases = [
         (["Deck", "ok", "ok"], "Stream Deck: OK"),
         (["Flamesafe", "ok", "linked"], "Flames: OK"),
-        (["Laser arm", "warn", "disarmed"], "Laser arm: Off, not in use here."),
-        (["Video", "warn", "not set up"], "Video: Off, not in use here."),
+        (["Pixels", "idle", "checked when a show starts"],
+         "Pixels: Checked when a show starts"),
+        (["Video", "warn", "not set up"], "Video: Checked when a show starts"),
+        (["BEYOND", "bad", "not running"],
+         "BEYOND: FAULT. Not running. Start BEYOND."),
+        (["MadMapper", "ok", "running"], "MadMapper: OK"),
+        (["Show audio", "bad", "not attached"],
+         "Show audio: FAULT. Not attached. Plug in the audio interface."),
+        (["Flamesafe", "bad", "not connected"],
+         "Flames: FAULT. Not connected. Start flamesafe."),
         (["Laser arm", "ok", "ARMED"], "Laser arm: All armed"),
         (["Lasers", "bad", "LINK LOST"],
          "Laser output: FAULT. BEYOND not answering. Check laser PC."),
@@ -112804,6 +112816,163 @@ def test_ui2_systems_rows_say_each_word_once():
     check(r.returncode == 0 and got == want,
           f"each Systems row says its state once: {bad or got} "
           f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
+def test_ui2_systems_idle_row_is_one_phrase():
+    section("2.0's Systems sheet (Jeff, 2026-11-19: 'Show audio: Off , not "
+            "in use here.' was excess prose with a stray space, and Off read "
+            "as not OK): a row that is only idle reads its name and "
+            "'Checked when a show starts' and nothing else, with a grey "
+            "clock, never Off; no row has a space before a comma (the row's "
+            "flex gap split the bold head from the rest)")
+    two = _ui2_pages()[1]
+    fns = ""
+    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY", "SYS_WORD"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        check(m is not None, f"{c} is found")
+        fns += "\n" + (m.group(0) if m else "")
+    for n in ("short8", "sysItem", "sysRow"):
+        f = _js_function(two, n)
+        check(f is not None, f"{n} is found")
+        fns += "\n" + (f or "")
+    # The row is a flex box with a gap: the bold head and the rest must be
+    # one flex item, or the gap draws as a space before ", ...".
+    check("<span><b>${esc(r.head)}</b>${esc(r.rest)}</span></li>" in two,
+          "the Systems row's head and rest are one flex item")
+    check('idle:"clock"' in two and "li.sys-idle svg{color:var(--grey)}" in two,
+          "an idle row has the grey clock icon")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    names = ["Deck", "Flamesafe", "Show audio", "Announcements", "Disk",
+             "Audit", "Laser arm", "Lasers", "Pixels", "Video", "Timecode",
+             "BEYOND", "MadMapper", "MadMapper output", "Somethingnew"]
+    offs = ["none", "none set up", "not set up", "stopped", "disarmed",
+            "Not Set Up"]
+    offs.append("checked when a show starts")
+    rows = [[n, st, w] for n in names for st in ("warn", "ok", "off", "idle")
+            for w in offs]
+    others = [[n, st, w] for n in names for st in ("ok", "warn", "bad")
+              for w in ("ok", "linked", "ARMED", "late 1.2 s", "LINK LOST",
+                        "not running", "not attached", "not connected",
+                        "no heartbeat", "OFF", "running", "attached",
+                        "2 of 4 armed", "fault", "lost", "pick an output",
+                        "critical", "not sending", "3 retries")]
+    js = fns + "\nconst offs = " + json.dumps(rows) + ";\n" \
+        "const others = " + json.dumps(others) + ";\n" \
+        "const row = x => { const i = sysItem({name:x[0], state:x[1], " \
+        "word:x[2]}); const r = sysRow(i); return [i.state, r.head + r.rest]; };\n" \
+        "console.log(JSON.stringify({offs: offs.map(row), " \
+        "others: others.map(row)}));\n"
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    check(r.returncode == 0 and got is not None,
+          f"the Systems rows were built: {r.stderr.strip()[:600]}")
+    if got is None:
+        return
+    label = {"Deck": "Stream Deck", "Flamesafe": "Flames", "Audit": "Audit log",
+             "Lasers": "Laser output", "MadMapper output": "MadMapper window"}
+    bad = [(x, g) for x, g in zip(rows, got["offs"])
+           if g != ["idle", label.get(x[0], x[0]) +
+                    ": Checked when a show starts"]]
+    check(not bad, f"an idle row reads only its name and 'Checked when a "
+          f"show starts': {bad[:6]}")
+    off = [g[1] for g in got["offs"] + got["others"]
+           if re.search(r": Off\b", g[1])]
+    check(not off, f"no Systems row says Off: {off[:6]}")
+    spaced = [g[1] for g in got["offs"] + got["others"]
+              if re.search(r"\s[,.:]|\s\s|^\s|\s$", g[1])]
+    check(not spaced, f"no Systems row has a space before a comma or "
+          f"stop, or a double space: {spaced[:6]}")
+    print("  ok")
+
+
+def test_systems_sheet_rows_are_outside_programs():
+    section("the Systems sheet's rows (remote.systems_view, Jeff, "
+            "2026-11-19: 'the whole point of this page is for things we "
+            "can't see otherwise, like is BEYOND software even on and "
+            "talking to us, just like MadMapper'): no Laser arm row (the "
+            "main page has it), BEYOND and MadMapper say whether they run, "
+            "Show audio says whether the show's interface is attached, an "
+            "idle row is never Off, and the lamps the Resume rig check "
+            "reads are unchanged")
+    from ltcplay import remote as RM
+    from ltcplay import beyondwatch as BW
+    from ltcplay import madmapperwatch as MW
+    import types
+    t = [1000.0]
+    snap = {"applied": {"video": "unknown", "lasers": "unknown"},
+            "look": "BETWEEN"}
+    cond = types.SimpleNamespace(
+        snapshot=lambda: snap,
+        devices=types.SimpleNamespace(beyond=types.SimpleNamespace(
+            fault="")), _ver={"lasers": 0, "video": 0})
+    sched = types.SimpleNamespace(conductor=cond, state_dir=None)
+    r = RM.Remote(types.SimpleNamespace(session=None), sched,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+    arm = types.SimpleNamespace(status_view=lambda: {
+        "armed": [], "total": 4, "output_permitted": False,
+        "output_fault": ""})
+    r.morning = types.SimpleNamespace(laser_arm=arm)
+    by, mm = [True], [True]
+    r.beyond_watch = BW.BeyondWatch(lambda: by[0], clock=lambda: t[0])
+    r.madmapper_watch = MW.MadMapperWatch(lambda: mm[0], clock=lambda: t[0])
+    aw = [{"missing": [], "outputs": ["PreSonus"], "checked_ago_s": 3.0,
+           "skipped": "", "error": "", "wanted": {"PreSonus": "show.json"}}]
+    r.audio_watch = types.SimpleNamespace(view=lambda: aw[0])
+
+    def rows(cs=None):
+        r.beyond_watch.check_once()
+        r.madmapper_watch.check_once()
+        return {x["name"]: (x["state"], x["word"])
+                for x in r.systems_view(cs or {})}
+    got = rows()
+    check("Laser arm" in [x["name"] for x in r.subsystems({})] and
+          "Laser arm" not in got,
+          f"the laser arm is a lamp still, and not a Systems row: {got}")
+    check(got.get("BEYOND") == ("ok", "running") and
+          got.get("MadMapper") == ("ok", "running"),
+          f"BEYOND and MadMapper running read OK, show or no show: {got}")
+    check(got.get("Show audio") == ("ok", "attached"),
+          f"the show's interface attached reads OK before Run: {got}")
+    check(got.get("Pixels") == ("idle", "checked when a show starts"),
+          f"pixels with no show: checked when a show starts: {got}")
+    check(not [n for n, (st, _w) in got.items() if st == "off"],
+          f"no Systems row is off: {got}")
+    by[0], mm[0] = False, False
+    aw[0] = dict(aw[0], missing=["PreSonus"])
+    got = rows()
+    check(got.get("BEYOND") == ("bad", "not running") and
+          got.get("MadMapper") == ("bad", "not running") and
+          got.get("Show audio") == ("bad", "not attached"),
+          f"BEYOND or MadMapper not running, the interface not attached: "
+          f"each a fault: {got}")
+    aw[0] = dict(aw[0], missing=[], checked_ago_s=None)
+    got = rows()
+    check(got.get("Show audio") == ("idle", "checked when a show starts"),
+          f"the interface not looked for yet: idle: {got}")
+    got = rows({"running": True, "since_ok": 0.1,
+                "clock": {"audio": {"connected": True}}})
+    check(got.get("Pixels") == ("ok", "sending") and
+          got.get("Show audio") == ("ok", "ok"),
+          f"while a show runs: pixels sending, show audio OK: {got}")
+    cond.devices.beyond.fault = "not set up"
+    check(rows().get("BEYOND") == ("bad", "blanking not set up"),
+          "BEYOND blanking not set up is a fault")
+    cond.devices.beyond.fault = ""
+    r.beyond_watch = r.madmapper_watch = r.audio_watch = None
+    got = {x["name"]: (x["state"], x["word"]) for x in r.systems_view({})}
+    check("BEYOND" not in got and "MadMapper" not in got and
+          not [n for n, (st, _w) in got.items() if st == "off"],
+          f"a rig without BEYOND or MadMapper has no rows for them, and "
+          f"nothing reads off: {got}")
     print("  ok")
 
 
@@ -113597,11 +113766,12 @@ t(L.text === "Lasers: fault" && /BEYOND not answering/.test(L.first) && L.cls ==
 L = sysLook([{name:"Deck", state:"warn", word:"late 1.2 s"}, {name:"Pixels", state:"bad", word:"not sending"}], false);
 t(L.text === "2 to check" && /^First: Pixels\./.test(L.first), "several: the count, and the worst first: " + L.first);
 L = sysLook([{name:"Announcements", state:"warn", word:"pick an output"}, {name:"Laser arm", state:"warn", word:"ARMED"}, {name:"Deck", state:"off", word:"not heard"}], false);
-t(L.text === "Announce: check" && L.items.map(i => i.state).join(",") === "warn,on,off" && /Pick one in Settings/.test(L.first),
-  "announcements with no output picked are a problem, all armed reads On, not set up reads Off: " + L.text + " " + L.items.map(i => i.state));
+t(L.text === "Announce: check" && L.items.map(i => i.state).join(",") === "warn,on,idle" && /Pick one in Settings/.test(L.first),
+  "announcements with no output picked are a problem, all armed reads On, not set up is idle (never Off): " + L.text + " " + L.items.map(i => i.state));
 t(sysLook([{name:"Disk", state:"bad", word:"critical"}], true).text === "No contact", "no contact: said");
-for(const [n, w] of [["Video", "not set up"], ["Show audio", "none"], ["Pixels", "stopped"], ["Flamesafe", "not connected"]])
-  t(sysItem({name:n, state:"warn", word:w}).state === "off", "a warn that is only not set up here reads Off: " + n + " " + w);
+for(const [n, w] of [["Video", "not set up"], ["Show audio", "none"], ["Pixels", "stopped"], ["Pixels", "checked when a show starts"]])
+  t(sysItem({name:n, state:"warn", word:w}).state === "idle", "a warn that is only idle here reads Checked when a show starts: " + n + " " + w);
+t(sysItem({name:"Flamesafe", state:"warn", word:"not connected"}).state === "warn", "flamesafe not connected is a problem, not idle");
 for(const w of ["not heard", "missing", "late 1.2 s", "USB slow 2.0 s", "default keys: ltcplay_deck.json not used", "USB 3 write(s) failed", "not known", "no status", "fault",
                 "not attached", "lost", "show audio not open", "output not attached", "pick one output", "file problem", "low", "critical", "not writing", "2 of 4 armed",
                 "LINK LOST", "blanking not set up", "BEYOND restarted: dark until lit again", "lit? link unknown", "not sending", "a long engine sentence with many words in it here"])
@@ -131612,6 +131782,8 @@ if __name__ == "__main__":
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,
         test_ui2_systems_rows_say_each_word_once,
+        test_ui2_systems_idle_row_is_one_phrase,
+        test_systems_sheet_rows_are_outside_programs,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_big_button_second_line_is_state_only,
         test_ui2_time_elapsed_and_left,

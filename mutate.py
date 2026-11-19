@@ -21252,7 +21252,7 @@ def build():
   '  return {head:x.label + ": " + word, rest:""};'),
 
  ("ui2 page: a system not set up here reads Check", "ltcplay/web/remote2.html",
-  "  if(state !== \"bad\" && SYS_OFF.test(w.trim())) state = \"off\";\n",
+  "  if(state === \"off\" || (state !== \"bad\" && SYS_OFF.test(w.trim()))) state = \"idle\";\n",
   ""),
 
  ("ui2 day: Space fires the purge on any DAY step", "ltcplay/web/remote2.html",

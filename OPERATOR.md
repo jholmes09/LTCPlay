@@ -3306,7 +3306,14 @@ tab, and the hardware e-stop always works.
   USERS.md, "The SuperUser", says what an admin may not change.
 - The systems badge in the header names a single problem ("Stream Deck:
   check"); one tap opens the list, which starts with what to do first.
-  Something not set up here reads Off.
+  The list is only what cannot be seen elsewhere: whether each outside
+  program and device is there and talking to this PC (Stream Deck,
+  flamesafe, show audio, announcements, BEYOND, MadMapper and its window,
+  pixels, disk, audit log). The laser arm is on the main page, not here.
+  BEYOND reads OK while its program runs on this PC; it never answers, so
+  that is all the list can know. Pixels, and the show audio until it has
+  been looked for, read "Checked when a show starts" in grey: not a
+  problem. A problem says what is wrong and what to do.
 - Help (header): the tour again, and a quick card to print. Each "?" says
   what the buttons near it do, in one sentence each.
 
