@@ -1262,6 +1262,20 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <button class="b" id="annout-tone" title="1 s of a soft 440 Hz tone at -20 dBFS through the same route and output as the announcements. Never during a show; holds nothing."><svg class="i"><use href="#i-mega"/></svg>Test tone</button></div>
         <div class="pline" id="annout-msg" role="status"></div>
       </div>
+      <!-- The booth speaker (boothcard.py, Jeff 2026-11-19): the device and
+           one or two of its outputs for the short booth alert notes, so
+           nobody edits ltcplay_remote.json by hand. On the show PC only,
+           the Settings row, like the announcement output above. -->
+      <div class="card col" id="booth-card" hidden>
+        <div class="t"><b>Booth speaker, on this machine</b><span>The short alert notes play here, on a private speaker in the booth. Never the PA. A save is used at once, between shows.</span></div>
+        <div class="pbar"><select class="f" id="booth-dev" aria-label="Booth speaker device"></select></div>
+        <div class="pbar"><select class="f" id="booth-a" aria-label="Booth speaker channel A"></select>
+          <select class="f" id="booth-b" aria-label="Booth speaker channel B"></select></div>
+        <div class="pline" id="booth-line" role="status"></div>
+        <div class="pbar"><button class="b green" id="booth-save"><svg class="i"><use href="#i-check"/></svg>Save</button>
+          <button class="b" id="booth-test" title="Plays the test note on the booth speaker only. Never during a show, never with a flame group armed."><svg class="i"><use href="#i-mega"/></svg>Test note</button></div>
+        <div class="pline" id="booth-msg" role="status"></div>
+      </div>
       <!-- Pre-show audio (preshow_audio.py, Jeff 2026-11-12): On or Off
            and one file, on the show machine, Settings permission. The
            engine decides when it plays; this card only sets the two. -->
@@ -1642,6 +1656,7 @@ function showTab(t){
   // 1.0's Programming screen read the outputs when it opened (P13); they
   // are on the Settings tab now (Jeff, 2026-11-19), with pre-show audio.
   if(t === "settings" && ME && ME.local) loadAnnOutputs();
+  if(t === "settings" && ME && ME.local) loadBooth();
   if(t === "settings" && ME && ME.local){ PSA_TRIED = true; loadPreshow(); }
   if(prog) try{ $("t-prog").scrollIntoView(); }catch(e){}
   if(t === "show") layoutGroups();
@@ -3558,6 +3573,77 @@ $("annout-save").addEventListener("click", async () => {
   }catch(e){ $("annout-msg").textContent = e.message; }
   $("annout-msg").title = $("annout-msg").textContent;
 });
+// The booth speaker (boothcard.py, Jeff 2026-11-19): a device from this
+// PC's outputs, Channel A from 1 to its output count, Channel B or none.
+// The engine checks every pick again and says the check line; a page that
+// read an older setting is refused (rev).
+var BOOTH = null;
+function boothPicked(){
+  const v = $("booth-dev").value;
+  try{ return v ? JSON.parse(v) : null; }catch(e){ return null; }
+}
+function boothChannels(keepA, keepB){
+  const d = boothPicked();
+  const n = d && d.device ? d.n : 0;
+  const a = keepA >= 1 && keepA <= n ? keepA : 1;
+  const b = keepB >= 1 && keepB <= n && keepB !== a ? keepB : 0;
+  let ha = "", hb = `<option value="0"${b ? "" : " selected"}>Channel B: none, one channel only</option>`;
+  for(let i = 1; i <= n; i++){
+    ha += `<option value="${i}"${i === a ? " selected" : ""}>Channel A: ${i} of ${n}</option>`;
+    hb += `<option value="${i}"${i === b ? " selected" : ""}>Channel B: ${i} of ${n}</option>`;
+  }
+  if(!n) ha = `<option value="0">Channel A: pick a device first</option>`;
+  $("booth-a").innerHTML = ha; $("booth-b").innerHTML = hb;
+  $("booth-a").disabled = $("booth-b").disabled = !n;
+}
+function boothDraw(v, keep){
+  BOOTH = v;
+  const outs = v.outputs || [];
+  let opts = [`<option value="${esc(JSON.stringify({device:"", hostapi:null, n:0}))}"${v.device ? "" : " selected"}>None: booth speaker off</option>`];
+  let found = false;
+  outs.forEach(o => {
+    if(o.picked) found = true;
+    const val = JSON.stringify({device:String(o.name || ""), hostapi:o.same_name ? String(o.hostapi || "") : null, n:Number(o.channels) || 0});
+    opts.push(`<option value="${esc(val)}"${o.picked ? " selected" : ""}${o.cannot_pick ? " disabled" : ""}>${esc(String(o.label || o.name || ""))}</option>`);
+  });
+  if(v.device && !found) opts.unshift(`<option value="" selected>${esc(String(v.device))}: not on this PC now, choose an output</option>`);
+  $("booth-dev").innerHTML = opts.join("");
+  const ch = v.channels || [];
+  boothChannels(ch[0] || 1, ch[1] || 0);
+  const ln = v.line || {};
+  $("booth-line").textContent = String(ln.text || "") + (v.outputs_error ? " " + v.outputs_error : "") + (v.error ? " " + v.error : "");
+  $("booth-line").classList.toggle("warn", ln.ok === false || !!v.error);
+  if(!keep) $("booth-msg").textContent = v.locked || "";
+  const may = mayRow(ST, "settings");
+  $("booth-save").disabled = !may;
+  $("booth-test").disabled = !may || !v.device;
+}
+async function loadBooth(keep){
+  try{ boothDraw(await getJSON("/api/remote/booth-speaker", 4000), keep); }
+  catch(e){ $("booth-msg").textContent = e.message; }
+  $("booth-msg").title = $("booth-msg").textContent;
+}
+$("booth-dev").addEventListener("change", () => boothChannels(Number($("booth-a").value), Number($("booth-b").value)));
+$("booth-a").addEventListener("change", () => boothChannels(Number($("booth-a").value), Number($("booth-b").value)));
+$("booth-save").addEventListener("click", async () => {
+  const d = boothPicked();
+  if(!d || !BOOTH){ $("booth-msg").textContent = "Choose a device first. Nothing was changed."; return; }
+  const a = Number($("booth-a").value), b = Number($("booth-b").value);
+  const body = {action:"save", device:d.device, hostapi:d.hostapi, channels:b ? [a, b] : [a], rev:BOOTH.rev};
+  try{
+    const j = await post("/api/remote/booth-speaker", body);
+    $("booth-msg").textContent = j.text;
+    if(j.booth) boothDraw(j.booth, true);
+  }catch(e){ $("booth-msg").textContent = e.message; loadBooth(true); }
+  $("booth-msg").title = $("booth-msg").textContent;
+});
+$("booth-test").addEventListener("click", async () => {
+  try{
+    const j = await post("/api/remote/booth-speaker", {action:"test"});
+    $("booth-msg").textContent = j.text;
+  }catch(e){ $("booth-msg").textContent = e.message; }
+  $("booth-msg").title = $("booth-msg").textContent;
+});
 // Pre-show audio (preshow_audio.py, Jeff 2026-11-12): On or Off and one
 // file, the WAV files the announcements know. The show machine only, the
 // Settings row; the engine decides everything else and says it.
@@ -3680,6 +3766,7 @@ function renderSwitches(){
   const L = announceLook((ST || {}).announce, (ST || {}).booth);
   const an = !local || !L.show;
   if($("annout-card").hidden !== an) $("annout-card").hidden = an;
+  if($("booth-card").hidden !== !local) $("booth-card").hidden = !local;
 }
 // ---- the show PC's tools (P12, P14, P15, P16): 1.0's code ----
 // Copied word for word from 1.0 (selftest.py checks each copy); the

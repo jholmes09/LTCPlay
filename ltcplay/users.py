@@ -286,6 +286,9 @@ REMOTE_ROUTES = {
     "announce-output": "settings", "announce-test-tone": "settings",
     # Pre-show audio's On/Off and file (remote.preshow_audio_post).
     "preshow-audio": "settings",
+    # The Booth speaker card's Save and Test note (remote.booth_speaker_post,
+    # Jeff 2026-11-19): set once, on the show PC.
+    "booth-speaker": "settings",
     "live-flame": "settings",
     # The nightly upload: the SuperUser's alone (UPLOAD, is_upload_route).
     "audit-settings": UPLOAD,

@@ -7579,14 +7579,15 @@ def build():
 
  # The booth note.
  ("the booth note goes to the show's main outputs", "ltcplay/boothaudio.py",
-  "        block[:, a - 1] = left\n        block[:, b - 1] = right",
-  "        block[:] = left[:, None]"),
+  "            block[:, chans[0] - 1] = left\n"
+  "            block[:, chans[1] - 1] = right",
+  "            block[:] = left[:, None]"),
 
  ("the booth player falls back to the default device",
   "ltcplay/boothaudio.py",
   "        except ValueError as e:\n"
   "            # Missing device: silent. Nothing else is ever used instead.\n"
-  "            return False, f\"Booth speaker {name} is not attached. {e}\"",
+  "            return None, f\"Booth speaker {name} is not attached. {e}\"",
   "        except ValueError as e:\n"
   "            dev = {\"index\": 0, \"name\": name, \"channels\": 64}"),
 
@@ -7634,6 +7635,61 @@ def build():
   "ltcplay/boothaudio.py",
   "        if p and os.path.isfile(p):\n            found += 1",
   "        if True:\n            found += 1"),
+
+ # The Settings tab's Booth speaker card (boothcard.py, Jeff 2026-11-19):
+ # the note stays off the show's outputs and the PA, and the card's
+ # refusals and permissions hold.
+ ("booth speaker: a one-output note goes to every output of the device",
+  "ltcplay/boothaudio.py",
+  "            block[:, chans[0] - 1] = (left + right) * 0.5",
+  "            block[:] = ((left + right) * 0.5)[:, None]"),
+
+ ("booth speaker: a retired player still plays on the old device",
+  "ltcplay/boothaudio.py",
+  "            if self._retired:\n"
+  "                return False, (\"The booth speaker setting was just changed, \"",
+  "            if False:\n"
+  "                return False, (\"The booth speaker setting was just changed, \""),
+
+ ("booth speaker: a channel the device does not have is saved",
+  "ltcplay/boothcard.py",
+  "        if c > have:",
+  "        if False:"),
+
+ ("booth speaker: the card saves from the network",
+  "ltcplay/remote.py",
+  "LOCAL_ONLY = LOCAL_ONLY | frozenset((\"booth-speaker\",))",
+  "LOCAL_ONLY = LOCAL_ONLY | frozenset(())"),
+
+ ("booth speaker: anyone may save it or play the test note",
+  "ltcplay/users.py",
+  "    \"booth-speaker\": \"settings\",",
+  "    \"booth-speaker\": None,"),
+
+ ("booth speaker: anyone signed in sees this PC's outputs",
+  "ltcplay/remote.py",
+  "            if not self.users.may(me.get(\"role\"), \"settings\"):",
+  "            if False:"),
+
+ ("booth speaker: saved during a Hold",
+  "ltcplay/remote.py",
+  "                if st in self.BOOTH_STATES_REFUSED:",
+  "                if False:"),
+
+ ("booth speaker: a stale page saves over a newer setting",
+  "ltcplay/remote.py",
+  "            if body.get(\"rev\") != boothcard.revision(old_block):",
+  "            if False:"),
+
+ ("booth speaker: a save swaps the player while a note plays",
+  "ltcplay/remote.py",
+  "                    not player.retire():",
+  "                    False:"),
+
+ ("booth speaker: the test note plays with a flame group armed",
+  "ltcplay/remote.py",
+  "        why = self.restart_refusal()\n        if why:\n            return why\n",
+  "        why = \"\"\n"),
 
  ("booth notes: the status carries no note count",
   "ltcplay/remote.py",

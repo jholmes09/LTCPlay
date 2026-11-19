@@ -3,12 +3,16 @@ never the PA (Jeff, 2026-10-07: "private path only (never the PA); app
 picks exact device and channel pair; if device missing, stay silent and
 show the on-screen banner; never fall back to show output").
 
-Config, the "booth_alert" block of ltcplay_remote.json (written by hand
-until the Settings screen, Phase 5):
+Config, the "booth_alert" block of ltcplay_remote.json, set on the
+Settings tab's Booth speaker card on the show PC (boothcard.py; Jeff,
+2026-11-19), or by hand:
 
     "booth_alert": {
       "device": "StudioLive 16R",      exact name as this computer lists it
-      "channels": [15, 16],            the output pair, 1-based
+      "hostapi": "Windows WASAPI",     optional: which audio system, when
+                                       the name is listed more than once
+      "channels": [15, 16],            one output or two different ones,
+                                       counted from 1: [7] or [15, 16]
       "response_s": 30
     }
 
@@ -37,9 +41,11 @@ Rules:
   player is off (enabled False) and every alert banner says so;
 - a missing device at play time: silent, a sentence for the banner, and
   the alert service runs the pulse instead. Nothing else is tried;
-- the note goes to the two named channels only; every other channel of
-  the stream the note opens is zero, so a pair on the show mixer never
-  carries it;
+- the note goes to the named channels only (one, or two different
+  ones); every other channel of the stream the note opens is zero, so a
+  pair on the show mixer never carries it. On one output a stereo note is
+  folded to one (left and right averaged); on two, left on the first and
+  right on the second, as always;
 - the file is checked the way announce.py checks (announce._wav_info),
   at load (check_files) and again at play: the same function, so the two
   cannot disagree;
@@ -174,11 +180,20 @@ def notes_view(files, folders):
             "missing": missing}
 
 
+def outputs_words(chans):
+    """"output 7" or "outputs 15 and 16": the channels in a sentence."""
+    chans = tuple(chans or ())
+    if len(chans) == 1:
+        return f"output {chans[0]}"
+    return "outputs " + " and ".join(str(c) for c in chans)
+
+
 def parse_config(doc, where="ltcplay_remote.json booth_alert"):
-    """{"device": str, "channels": (a, b), "files": {kind: path},
-    "response_s": int}. None or {} is the safe default (off). Anything
-    malformed raises ValueError with a plain sentence."""
-    out = {"device": "", "channels": (1, 2), "files": {},
+    """{"device": str, "hostapi": str, "channels": (a,) or (a, b),
+    "files": {kind: path}, "response_s": int}. None or {} is the safe
+    default (off). Anything malformed raises ValueError with a plain
+    sentence."""
+    out = {"device": "", "hostapi": "", "channels": (1, 2), "files": {},
            "response_s": DEFAULT_RESPONSE_S}
     if doc is None:
         return out
@@ -189,13 +204,19 @@ def parse_config(doc, where="ltcplay_remote.json booth_alert"):
         raise ValueError(f"{where}: device has to be the output's exact "
                          f"name.")
     out["device"] = (dev or "").strip()
+    host = doc.get("hostapi", "")
+    if host is not None and not isinstance(host, str):
+        raise ValueError(f"{where}: hostapi has to be the audio system's "
+                         f"name, like Windows WASAPI.")
+    out["hostapi"] = (host or "").strip()
     ch = doc.get("channels", [1, 2])
-    if not (isinstance(ch, (list, tuple)) and len(ch) == 2 and
+    if not (isinstance(ch, (list, tuple)) and len(ch) in (1, 2) and
             all(isinstance(c, int) and not isinstance(c, bool) and c >= 1
-                for c in ch) and ch[0] != ch[1]):
-        raise ValueError(f"{where}: channels has to be two different "
-                         f"output numbers counted from 1, like [15, 16].")
-    out["channels"] = (int(ch[0]), int(ch[1]))
+                for c in ch) and len(set(ch)) == len(ch)):
+        raise ValueError(f"{where}: channels has to be one output number, "
+                         f"or two different output numbers, counted from "
+                         f"1, like [7] or [15, 16].")
+    out["channels"] = tuple(int(c) for c in ch)
     files = doc.get("files", {}) or {}
     if not isinstance(files, dict):
         raise ValueError(f"{where}: files has to map an alert kind to a "
@@ -268,6 +289,9 @@ class BoothPlayer:
         self._lock = threading.Lock()
         self._queue = queue.Queue()
         self._worker = None
+        # Set by retire() when the Settings card puts a new player in this
+        # one's place: from then on this one plays nothing.
+        self._retired = False
 
     @property
     def enabled(self):
@@ -284,6 +308,61 @@ class BoothPlayer:
     def notes(self):
         """notes_view for this player's files and folders."""
         return notes_view(self.config["files"], self.folders)
+
+    def retire(self):
+        """The Settings card is about to put a new player in this one's
+        place. True: this one plays nothing from now on. False: a note is
+        playing or waiting, so it is not retired and nothing may change."""
+        with self._lock:
+            if self.playing:
+                return False
+            self._retired = True
+            return True
+
+    def unretire(self):
+        """The new setting could not be saved: this one plays again."""
+        with self._lock:
+            self._retired = False
+
+    def check(self, sd=None):
+        """(True, "") when a note could play now: the device named is
+        attached and has every output named. Else (False, the sentence a
+        note would be refused with). The same lookup play() does, so the
+        Settings card and a note never disagree. Plays nothing."""
+        dev, why = self._device(sd)
+        return (dev is not None), why
+
+    def _device(self, sd=None):
+        """(the device, "") or (None, why): the device a note plays on."""
+        name = self.config["device"]
+        if not name:
+            return None, ("No booth speaker is configured, so the alert "
+                          "note was not played.")
+        if sd is None:
+            sd = self._sd if self._sd is not None else _import_sounddevice()
+        if sd is None:
+            return None, ("sounddevice is not installed here, so the booth "
+                          "note was not played.")
+        try:
+            dev = _announce().resolve_output_device(
+                sd, name, self.config.get("hostapi") or None)
+        except ValueError as e:
+            # Missing device: silent. Nothing else is ever used instead.
+            return None, f"Booth speaker {name} is not attached. {e}"
+        except Exception as e:           # noqa: BLE001
+            return None, (f"Booth speaker {name} could not be looked up "
+                          f"({type(e).__name__}: {e}).")
+        chans = self.config["channels"]
+        hi = max(chans)
+        have = int(dev.get("channels") or 0)
+        if have < hi:
+            missing = [c for c in chans if c > have]
+            return None, (f"Booth speaker {name} has only {have} outputs, so "
+                          f"{'channel' if len(missing) == 1 else 'channels'}"
+                          f" {' and '.join(str(c) for c in missing)} "
+                          f"{'is' if len(missing) == 1 else 'are'} not "
+                          f"there.")
+        return dev, ""
 
     def check_files(self):
         """{name: problem sentence} for every note file that is there (or
@@ -328,23 +407,11 @@ class BoothPlayer:
             return False, (f"No booth note file is set for {kind} alerts"
                            f"{where}, so nothing was played.")
         sd = self._sd if self._sd is not None else _import_sounddevice()
-        if sd is None:
-            return False, ("sounddevice is not installed here, so the booth "
-                           "note was not played.")
-        try:
-            dev = _announce().resolve_output_device(sd, name)
-        except ValueError as e:
-            # Missing device: silent. Nothing else is ever used instead.
-            return False, f"Booth speaker {name} is not attached. {e}"
-        except Exception as e:           # noqa: BLE001
-            return False, (f"Booth speaker {name} could not be looked up "
-                           f"({type(e).__name__}: {e}).")
-        a, b = self.config["channels"]
-        hi = max(a, b)
-        have = int(dev.get("channels") or 0)
-        if have < hi:
-            return False, (f"Booth speaker {name} has {have} outputs, so "
-                           f"channels {a} and {b} are not there.")
+        dev, why = self._device(sd)
+        if dev is None:
+            return False, why
+        chans = self.config["channels"]
+        hi = max(chans)
         try:
             pcm, ch, rate, length = _announce()._wav_info(path, decode=True)
         except ValueError as e:
@@ -352,8 +419,12 @@ class BoothPlayer:
         if length > MAX_NOTE_S:
             return False, (f"The booth note for {kind} is {length:.1f} s "
                            f"long; a booth note is at most {MAX_NOTE_S:g} s.")
-        block = self._block(pcm, ch, a, b, hi)
+        block = self._block(pcm, ch, chans, hi)
         with self._lock:
+            if self._retired:
+                return False, ("The booth speaker setting was just changed, "
+                               "so this note was not played on the old "
+                               "one.")
             if self.playing >= MAX_WAITING:
                 return False, (f"Booth speaker {name} still has "
                                f"{self.playing} notes to play, so the note "
@@ -364,20 +435,25 @@ class BoothPlayer:
                 self._worker = threading.Thread(
                     target=self._run, daemon=True, name="ltcplay-booth-note")
                 self._worker.start()
-        return True, (f"Booth note for {kind} playing on {name}, outputs "
-                      f"{a} and {b} ({length:.1f} s).")
+        return True, (f"Booth note for {kind} playing on {name}, "
+                      f"{outputs_words(chans)} ({length:.1f} s).")
 
     @staticmethod
-    def _block(pcm, ch, a, b, hi):
-        """frames x hi, float32: the note on outputs a and b (counted from
-        1), zero on every other output of the stream."""
+    def _block(pcm, ch, chans, hi):
+        """frames x hi, float32: the note on the outputs in `chans`
+        (counted from 1; one, or two different ones), zero on every other
+        output of the stream. Two: left on the first, right on the second.
+        One: left and right averaged onto it."""
         import numpy as np
         f = _as_float(pcm).reshape(-1, ch)
         block = np.zeros((f.shape[0], hi), dtype=np.float32)
         left = f[:, 0]
         right = f[:, 1] if ch > 1 else f[:, 0]
-        block[:, a - 1] = left
-        block[:, b - 1] = right
+        if len(chans) == 2:
+            block[:, chans[0] - 1] = left
+            block[:, chans[1] - 1] = right
+        else:
+            block[:, chans[0] - 1] = (left + right) * 0.5
         return block
 
     @staticmethod
