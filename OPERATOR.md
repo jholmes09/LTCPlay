@@ -1965,8 +1965,19 @@ stop:
 - **Show control off** is on the Show file card's button: with show
   control on and nothing playing, the button reads Show control off
   (End rehearsal in a rehearsal). It is also in Stop's place on the SHOW
-  tab at those times, in full colour, reading Show ctrl off. It asks first, then does a Stop and
-  stops playback, so show control is off. It needs the Show permission;
+  tab at those times, in full colour, reading Show ctrl off. It asks first, then does
+  everything a Stop does except the Hold, and stops playback, so show
+  control is off (Jeff, 2026-11-19). Every flame group and laser is
+  disarmed and blanked, every test and Programming playback ends, and a
+  show that is live ends and is not resumed, but the schedule is NOT put
+  on Hold: the night carries on. A Hold that was already on stays on. A
+  show whose time comes while show control is off is not started: it is
+  refused in words, marked on its slot, journaled, and raises an alert
+  (nothing reaches the rig). If that alert is still open at the next
+  show's time, the engine holds the schedule then, as it does for any
+  open alert. Turning show control on again never starts a refused or a
+  missed show late: the next show starts at its own time. End rehearsal
+  is the same press in a rehearsal. It needs the Show permission;
   Stop never does. Right after Stop turns back into Start now, Show
   control on or off, the button waits 2 seconds before it takes a
   press, and a press made just as the show ended or started does nothing
@@ -2111,7 +2122,7 @@ the Schedule tab's editor (the schedule file's `after_last_show`):
 | End of night, tapped twice | the pixels go black; the night is closed for good (a restart or a schedule save never holds it again) |
 | One tap only | nothing is sent; after 3 s the message line says "End of night not sent: tap twice" |
 | Stop | a complete halt as always, and the held look ends: the pixels go black, the night is closed for good |
-| Show control off | it is a Stop first, so the same: black, closed for good |
+| Show control off | everything a Stop does but the Hold, so the same: black, closed for good |
 | Hold | refused as on any closed night ("nothing to hold"); the look stays |
 | Start now | an extra show starts; when it ends by itself the idle look is held again, with End of night |
 | The hand over to the next night (2 AM, or earlier for an early next night) | the held look ends, the pixels go black, the journal says so, and the next night starts as it always does |

@@ -1034,6 +1034,10 @@ class Event:
     # hold, pre-roll and Stop checks (Jeff's rule; simulation review B of
     # PR #202).
     settle: bool = False
+    # STOP_SHOW only (Jeff, 2026-11-19): False for Show control off, which
+    # ends a live show as every Stop does but leaves the schedule OFF Hold,
+    # so the night carries on to its next show (_stop_show_no_hold).
+    hold: bool = True
 
 
 @dataclass(frozen=True)
@@ -2332,6 +2336,27 @@ NOTHING_SENT_TO_RIG = (
     "was.")
 
 
+def _stop_show_no_hold(m, ev, now):
+    """Show control turned off during a show (Jeff, 2026-11-19: "Show
+    Control Off should do everything it does now except put the schedule
+    on Hold"): the show ends exactly as a Stop ends it (the same Abort
+    sequence, nothing latched), but the schedule is NOT put on Hold. With
+    a show still to come the night waits in STANDBY, dark; with none left
+    it stays STANDBY and the next tick closes it, as after an Abort. A
+    show whose time comes while show control is off is refused by the
+    show runner, which sends nothing to the rig."""
+    n = m.running
+    who = ev.who.strip() or "Someone, with no operator chosen,"
+    return _show_stopped(
+        m, ev, now, ABORTED, "STOPPED (show control turned off)",
+        f"{who} turned show control off{_screen(ev)} during show {n}. "
+        f"Flame cues zeroed and lasers blanked; music, video and pixels "
+        f"fading to black over {ABORT_FADE_S:g} s, then MadMapper stopped. "
+        f"Nothing is latched. The schedule is not on Hold: the night "
+        f"carries on, and no show starts while show control is off.",
+        _abort_effects(n), abort=True, hold=False)
+
+
 def _stop_show(m, ev, now):
     """Stop during a show (every Stop: a screen's double tap, an iPad, the
     Stream Deck's Stop held): the show ends now, faded to dark, and
@@ -2343,6 +2368,8 @@ def _stop_show(m, ev, now):
     flame groups and lasers itself before this and journals how that went,
     so this line claims only what the scheduler does. The slot's status is
     ABORTED (a show cut short), its reason STOPPED (operator Stop)."""
+    if not ev.hold:
+        return _stop_show_no_hold(m, ev, now)
     n = m.running
     held = m.waiting()
     return _show_stopped(

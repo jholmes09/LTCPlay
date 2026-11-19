@@ -18084,7 +18084,7 @@ def build():
 
  ("halt: the flames are not first (review of #130, 6)",
   "ltcplay/remote.py",
-  "            try:\n                f_ok, f_text = self._disarm_now(who, screen, \"Stop\")\n            except Exception as e:               # noqa: BLE001\n                f_ok, f_text = False, f\"{type(e).__name__}: {e}\"\n",
+  "            try:\n                f_ok, f_text = self._disarm_now(who, screen, what)\n            except Exception as e:               # noqa: BLE001\n                f_ok, f_text = False, f\"{type(e).__name__}: {e}\"\n",
   "            f_ok, f_text = None, \"\"\n"),
 
  ("halt: the laser arm is not told a press is under way",
@@ -18328,10 +18328,56 @@ def build():
 
  ("halt: Run off leaves playback running",
   "ltcplay/remote.py",
-  "            return self._stop_press(who, screen, run_off=True)\n"
+  "            return self._stop_press(who, screen, run_off=True,\n"
+  "                                    hold=False)\n"
   "        finally:",
-  "            return self._stop_press(who, screen, run_off=False)\n"
+  "            return self._stop_press(who, screen, run_off=False,\n"
+  "                                    hold=False)\n"
   "        finally:"),
+
+ ("halt: Show control off puts the schedule on Hold again (Jeff, 2026-11-19)",
+  "ltcplay/remote.py",
+  "            return self._stop_press(who, screen, run_off=True,\n"
+  "                                    hold=False)\n"
+  "        finally:",
+  "            return self._stop_press(who, screen, run_off=True,\n"
+  "                                    hold=True)\n"
+  "        finally:"),
+
+ ("halt: Stop no longer holds the schedule (its hold read wrong)",
+  "ltcplay/remote.py",
+  "        hold = hold is not False\n",
+  "        hold = False\n"),
+
+ ("halt: Show control off asks the scheduler for a Stop's Hold",
+  "ltcplay/remote.py",
+  "        if one is not None and not hold:\n",
+  "        if False:\n"),
+
+ ("halt: Show control off holds the schedule between shows (no scheduler call)",
+  "ltcplay/remote.py",
+  "            if state in self.HALT_HOLDS and not hold:\n",
+  "            if False:\n"),
+
+ ("scheduler: Show control off during a show holds the schedule",
+  "ltcplay/schedule.py",
+  "    if not ev.hold:\n        return _stop_show_no_hold(m, ev, now)\n",
+  "    if False:\n        return _stop_show_no_hold(m, ev, now)\n"),
+
+ ("scheduler: Show control off keeps a Stop's Hold for later",
+  "ltcplay/schedule_service.py",
+  "        if hold is False:\n            with self._locked():",
+  "        if False:\n            with self._locked():"),
+
+ ("scheduler: Show control off between shows holds the schedule",
+  "ltcplay/schedule_service.py",
+  "        elif st in self.SHOWTIME_FROM and not hold:",
+  "        elif False:"),
+
+ ("scheduler: Show control off turns an operator's Hold into a Stop's",
+  "ltcplay/schedule_service.py",
+  "            if hold and (not m.stop_hold or not m.dark):",
+  "            if not m.stop_hold or not m.dark:"),
 
  ("halt: Stop leaves Programming playback running",
   "ltcplay/remote.py",
@@ -19218,7 +19264,7 @@ def build():
   '  if(false) return true;\n  // The rig is up'),
 
  ("Stop from a screen does not disarm or end the show", "ltcplay/remote.py",
-  "        h = self.halt(who, screen, how=\"pressed\")\n",
+  "        h = self.halt(who, screen, how=\"pressed\", hold=hold)\n",
   "        h = {}\n"),
 
  ("a broken intermission file blocks every show start",

@@ -156,8 +156,9 @@ END_OF_NIGHT_CONFIRM = ("Tap End of night twice to end the idle look. "
                         "Nothing was changed.")
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
 # Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
-# and holds the schedule instead; "run-off" is the halt and then playback
-# stopped, Run off (the Programming Run card). A live show's fade is let
+# and holds the schedule instead; "run-off" is the halt with no Hold and
+# then playback stopped, Show control off (Jeff, 2026-11-19). A live show's
+# fade is let
 # run this long at most first (web.HALT_FADE_WAIT_S).
 STOP_FADE_WAIT_S = 3.0
 # Play from with the box left empty (Windows stress round 3, 2026-11-10:
@@ -8115,23 +8116,29 @@ class Remote:
                 end()
 
     def run_off(self, who, screen):
-        """Run off (the Programming Run card, 2026-10-30): the whole Stop
-        (halt) first, then playback stops, so Run is off. This is what
-        Stop did before 2026-10-30; Stop itself now leaves Run on."""
+        """Show control off (Run off, 2026-10-30): the whole Stop (halt)
+        first, then playback stops, so show control is off. Everything a
+        Stop does EXCEPT put the schedule on Hold (Jeff, 2026-11-19: "Show
+        Control Off should do everything it does now except put the
+        schedule on Hold"): a live show still ends, but the night carries
+        on, and a show whose time comes while show control is off is
+        refused by the show runner (nothing reaches the rig)."""
         svc = self.schedule
         begin = getattr(svc, "halt_begin", None)
         if begin is not None:
             begin()
         try:
-            return self._stop_press(who, screen, run_off=True)
+            return self._stop_press(who, screen, run_off=True,
+                                    hold=False)
         finally:
             end = getattr(svc, "halt_end", None)
             if end is not None:
                 end()
 
-    def _stop_press(self, who, screen, run_off=False):
+    def _stop_press(self, who, screen, run_off=False, hold=True):
         # A screen's Stop is a double tap (pressed); the deck's is held.
-        h = self.halt(who, screen, how="pressed")
+        # hold False: Show control off, no Hold (run_off).
+        h = self.halt(who, screen, how="pressed", hold=hold)
         self.wait_stop_window(h, STOP_FADE_WAIT_S)
         out = {k: h[k] for k in ("flames", "lasers", "lasers_blank", "show",
                                  "hold", "programming")
@@ -8153,12 +8160,15 @@ class Remote:
             self.control._state_cache = None
         except Exception:                        # noqa: BLE001
             pass
+        if out["failed"] and "error" not in out and not hold:
+            out["error"] = ("Show control off did not complete: " +
+                            ", ".join(out["failed"]) + " did NOT work.")
         if out["failed"] and "error" not in out:
             out["error"] = ("Stop did not complete: " +
                             ", ".join(out["failed"]) + " did NOT work.")
         return (500 if "error" in out else 200), out
 
-    def halt(self, who, screen, how="held"):
+    def halt(self, who, screen, how="held", hold=True):
         """Stop, a complete halt of everything (Jeff, 2026-10-26), during a
         scheduled show too, with every guarantee a screen's Abort had (Jeff,
         2026-10-30), in the Abort's order, WITHOUT the Abort latch. Every
@@ -8186,11 +8196,18 @@ class Remote:
              by itself meanwhile is not a failure, nor is a night already
              closing or over (there is nothing to hold).
 
+        hold False is Show control off (run_off; Jeff, 2026-11-19): every
+        step above in the same order, but step 6 puts NO Hold on the
+        schedule (a live show still ends; a Hold already standing is left
+        as it is), and the journal says show control was turned off.
+
         {"flames", "lasers", "lasers_blank", "show", "show_ended", "hold",
         "programming", "failed"}: each step's {"ok"/"disarmed", "text"}
         (None when there is nothing of it in this engine) and the names of
         the steps that failed."""
         label = who or "An unnamed operator"
+        hold = hold is not False
+        what = "Stop" if hold else "Show control off"
         # A start waiting for the purge's groups never outlives a Stop
         # (purge_off_before_start): Stop wins.
         self._halt_seq = getattr(self, "_halt_seq", 0) + 1
@@ -8215,7 +8232,7 @@ class Remote:
                     pass
             # 1. The flames first, every time (the Abort's rule).
             try:
-                f_ok, f_text = self._disarm_now(who, screen, "Stop")
+                f_ok, f_text = self._disarm_now(who, screen, what)
             except Exception as e:               # noqa: BLE001
                 f_ok, f_text = False, f"{type(e).__name__}: {e}"
             if f_ok is not None:
@@ -8235,7 +8252,8 @@ class Remote:
                     pass
             # 2. Live flame programming, cut as an Abort cuts it (review of
             # #130, second pass, 3).
-            why = f"{label} {how} Stop on the {screen}"
+            why = (f"{label} {how} Stop on the {screen}" if hold else
+                   f"{label} turned show control off on the {screen}")
             self.timed_purge_cut(why, who, screen)
             for name in ("live_flame_cut",):
                 fn = getattr(self, name, None)
@@ -8259,8 +8277,9 @@ class Remote:
             fn = getattr(m, "lasers_disarm_now", None)
             if fn is not None:
                 try:
-                    r = fn(f"Stop held by {label} on the {screen}", who,
-                           screen)
+                    r = fn(f"Stop held by {label} on the {screen}" if hold
+                           else f"Show control turned off by {label} on "
+                                f"the {screen}", who, screen)
                     if isinstance(r, tuple) and len(r) == 2:
                         l_ok, l_text = r
                     else:
@@ -8317,7 +8336,7 @@ class Remote:
             # Stop, so the playback is stopped here (Abort's playhead stop).
             self._halt_programming(out, who, screen)
             # 6. The scheduler: the show ended, and the schedule held.
-            self._halt_schedule(out, who, screen)
+            self._halt_schedule(out, who, screen, hold=hold)
         finally:
             if arm is not None:
                 try:
@@ -8328,7 +8347,11 @@ class Remote:
                                      out["lasers_blank"]) if x is not None]
         bad = ", ".join(out["failed"])
         self._journal(who, screen, "stop", "fault" if bad else "done",
-                      f"{label} {how} Stop on the {screen}: a complete halt. "
+                      (f"{label} {how} Stop on the {screen}: a complete "
+                       f"halt. " if hold else
+                       f"{label} turned show control off on the {screen}: "
+                       f"everything stopped as a Stop stops it, without "
+                       f"putting the schedule on Hold. ")
                       + " ".join(parts)
                       + (f" These did NOT work: {bad}." if bad else ""),
                       fault=bool(bad))
@@ -8412,17 +8435,33 @@ class Remote:
     HALT_LIVE = ("SHOW", "PAUSED")
     HALT_HOLDS = ("IDLE", "STANDBY")
 
-    def _halt_schedule(self, out, who, screen):
+    def _halt_schedule(self, out, who, screen, hold=True):
         """halt() step 6. A live show: STOP_SHOW (the show ends; the
         schedule is held while a show is still to come). Between shows:
         the schedule's Hold, said as the Stop. Already on Hold: nothing
         more. The night closing or over: nothing to hold. If the state
         moved under the press (a show started or ended as it landed), the
-        step is asked once more of the state it moved to."""
+        step is asked once more of the state it moved to. hold False (Show
+        control off): the scheduler is asked for no Hold at all."""
         svc = self.schedule
         if svc is None:
             return
         one = getattr(svc, "halt_schedule", None)
+        if one is not None and not hold:
+            try:
+                r = one(who, screen, "", hold=False)
+                ok, text = bool(r.get("ok")), str(r.get("text") or "")
+                kind = r.get("kind")
+            except Exception as e:               # noqa: BLE001
+                ok, text, kind = False, f"{type(e).__name__}: {e}", None
+            if kind == "stop":
+                out["show"] = {"ok": ok, "text": text}
+                out["show_ended"] = ok
+                if not ok:
+                    out["failed"].append("show")
+            elif not ok:
+                out["failed"].append("schedule")
+            return
         if one is not None:
             # The scheduler decides and applies it in one locked step with
             # no tick first (cold review of #191, A-F1): a show coming due
@@ -8478,6 +8517,8 @@ class Remote:
                 if now_state == "HOLD":
                     out["hold"] = {"ok": True, "text": ""}
                 return
+            if state in self.HALT_HOLDS and not hold:
+                return                    # Show control off: no Hold
             if state in self.HALT_HOLDS:
                 try:
                     r = svc.operator_press(

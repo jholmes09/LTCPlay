@@ -43694,6 +43694,282 @@ def _fi_show_cue(n):
     return clk
 
 
+def _run_off_night():
+    """A Fire & Ice night (_fi_night, show control on, no laser armed,
+    the show's own 120 s late limit) with a real Remote on its scheduler,
+    as web.serve wires it, whose control.stop() turns show control off
+    (the session goes)."""
+    import tempfile
+    from ltcplay import remote as remote_mod
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), _sched_doc(
+        weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                        "last_end": "22:00"}}, exceptions={},
+        late_grace_s=120))
+    n = _fi_night(armed=False, work=work)
+    if n.S is None:
+        return None
+
+    def stop():
+        n.control.session = None
+        return True
+    n.control.stop = stop
+    n.rm = remote_mod.Remote(n.control, n.svc, folder=tempfile.mkdtemp(),
+                             log=lambda t: None)
+    return n
+
+
+def test_show_control_off_ends_the_show_without_a_hold():
+    section("Show control off (Jeff, 2026-11-19: \"Show Control Off should "
+            "do everything it does now except put the schedule on Hold\"): "
+            "a live show ends as a Stop ends it, the night is left between "
+            "shows (not HOLD, not PAUSED), no Stop's Hold is kept, a Hold "
+            "already standing is left as it was, the journal says show "
+            "control was turned off; a plain Stop still holds; with show "
+            "control off and no Hold every way to start a show is refused "
+            "in words and journaled, and nothing reaches the rig")
+    n = _run_off_night()
+    if n is None:
+        return
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+          f"setup: show 1 is live: {svc.machine.state}")
+    n.now[0] = _den(S, 18, 5)
+    code, out = rm.run_off("Andy", "Rack screen")
+    m = svc.machine
+    s1 = m.slot(1)
+    check(code == 200 and out.get("run_on") is False and
+          out.get("stopped") is True and not out.get("failed") and
+          n.control.session is None,
+          f"show control is off: {code} {out}")
+    check(out.get("flames", {}).get("disarmed") is True and
+          out.get("lasers_blank", {}).get("ok") is True and
+          out.get("show", {}).get("ok") is True and
+          out.get("hold") is None,
+          f"every flame group disarmed, the lasers blanked, the live show "
+          f"ended, and no Hold claimed: {out}")
+    check(m.state == S.STANDBY and m.state not in (S.HOLD, S.PAUSED) and
+          m.running == 0 and not m.stop_hold and m.dark and
+          svc._stop_carry is None,
+          f"the show ended and the night waits between shows, dark, with "
+          f"no Hold and no Stop's Hold kept: {m.state} {m.stop_hold} "
+          f"{m.dark} {svc._stop_carry}")
+    check(s1.status == S.ABORTED and
+          s1.reason == "STOPPED (show control turned off)" and
+          m.slot(2).status == S.PENDING,
+          f"show 1 is ended, never resumed; show 2 still waits: {s1}")
+    check(not rm.show_busy_for_reload() and not rm._show_live(),
+          f"nothing counts as a live show, so an engine Restart is not "
+          f"refused for a show: {svc.state_view().get('state')}")
+    rows = list(svc.journal)
+    stop_rows = [r for r in rows if r.get("action") == "stop"]
+    check(stop_rows and "turned show control off on the Rack screen"
+          in stop_rows[-1]["text"] and
+          "without putting the schedule on Hold" in stop_rows[-1]["text"]
+          and "pressed Stop" not in stop_rows[-1]["text"] and
+          "is on Hold" not in stop_rows[-1]["text"],
+          f"the journal says show control was turned off, not Stop, and "
+          f"claims no Hold: {stop_rows[-1:]}")
+    ended = [r for r in rows if r.get("action") == S.STOP_SHOW]
+    check(ended and "turned show control off" in ended[-1]["text"] and
+          "The schedule is not on Hold" in ended[-1]["text"] and
+          "Resume" not in ended[-1]["text"],
+          f"the scheduler's line says the same: {ended[-1:]}")
+    sent = [r for r in rows if r.get("action") == "conductor" and
+            "Stop:" in r.get("text", "")]
+    check(sent, f"the show ended through the conductor's Stop (Abort's "
+                f"sequence): {[r['text'] for r in rows][-6:]}")
+    said = out["show"]["text"] + stop_rows[-1]["text"]
+    check(chr(0x2014) not in said and chr(0x2013) not in said,
+          f"no em or en dash in what the operator reads: {said}")
+    # The fade finishes; from here nothing may reach the rig.
+    _fi_walk(n, 18, 10, start=(18, 6))
+    k = len(n.calls)
+    j0 = len(list(svc.journal))
+    # Every start path with show control off and no Hold.
+    from ltcplay import schedule_service as SV
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is False and "Show control is off" in r["text"],
+          f"Start now is refused in words: {r}")
+    r = svc.operator_press("resume", "Andy", "Rack screen")
+    check(r["ok"] is False and svc.machine.state == S.STANDBY,
+          f"Resume finds nothing held and starts nothing: {r}")
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=_pf_start_at())
+    check(r["ok"] is False and "Show control is off" in r["text"],
+          f"a Start at a cue is refused in words: {r}")
+    start_at, why = rm.start_at_cue({"cue_id": "x"})
+    check(start_at is None and "Turn show control on" in why,
+          f"the page's Start at a cue is refused before it reaches the "
+          f"scheduler: {why}")
+
+    class _Pre:
+        continued = None
+
+        def last_failed(self):
+            return object()
+
+        def skip(self):
+            return False
+    keep = svc.preroll
+    svc.preroll = _Pre()
+    try:
+        r = svc.continue_anyway("Andy", "Rack screen")
+    finally:
+        svc.preroll = keep
+    check(r["ok"] is False and "show control is off" in r["text"],
+          f"Continue anyway after a failed rig check is refused: {r}")
+    check(svc._preroll_applies() is False,
+          "no rig check runs (so none can release a start) while show "
+          "control is off")
+    started = [x for x in list(svc.journal)[j0:]
+               if x.get("action") == "start-now" and
+               x.get("outcome") == "refused"]
+    check(len(started) >= 2,
+          f"the refused starts are journaled: {started}")
+    # The scheduler's own start at show time: refused, said, journaled.
+    _fi_walk(n, 18, 21, start=(18, 11))
+    s2 = svc.machine.slot(2)
+    autos = [x for x in list(svc.journal)[j0:]
+             if x.get("action") == "automatic start"]
+    check(s2.status == S.FAULT and "Show control is off" in s2.reason and
+          autos and autos[-1]["outcome"] == "refused",
+          f"show 2 came due with show control off: tried, refused in "
+          f"words, journaled: {s2} {autos[-1:]}")
+    check(_fi_rig_touched(n.calls, k) == [],
+          f"nothing reached the rig (no flame, laser, video, music or "
+          f"pixel command) while show control was off: "
+          f"{_fi_rig_touched(n.calls, k)[:6]}")
+    check(svc.machine.state == S.STANDBY,
+          f"and the night carries on to the next show: "
+          f"{svc.machine.state}")
+    n.c.close()
+    n.link.close()
+
+    # A late show inside the 120 s limit, show control off; show control
+    # on again inside the limit and past it.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _fi_walk(n, 18, 4, start=(18, 2))
+    n.now[0] = _den(S, 18, 5)
+    svc._apply(S.Event(S.SHOW_ENDED, "madmapper", show=1))
+    _settle(svc, c)
+    _fi_walk(n, 18, 18, start=(18, 6))
+    n.now[0] = _den(S, 18, 19)
+    code, out = rm.run_off("Andy", "Rack screen")
+    check(code == 200 and svc.machine.state == S.STANDBY and
+          out.get("hold") is None and svc._stop_carry is None,
+          f"between shows show control off holds nothing: "
+          f"{svc.machine.state} {out}")
+    _fi_walk(n, 18, 19, start=(18, 19))
+    k = len(n.calls)
+    n.now[0] = _den(S, 18, 21, 30)          # show 2 (18:20) 90 s late
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    s2 = svc.machine.slot(2)
+    check(s2.status == S.FAULT and "Show control is off" in s2.reason and
+          _fi_rig_touched(n.calls, k) == [],
+          f"a show inside its 120 s limit is tried, refused, sends "
+          f"nothing: {s2} {_fi_rig_touched(n.calls, k)[:4]}")
+    rm.alerts.clear()          # its alert seen, so no alert Hold below
+    n.control.session = n.sess              # show control on again
+    autos0 = len([x for x in svc.journal
+                  if x.get("action") == "automatic start"])
+    n.now[0] = _den(S, 18, 21, 45)
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    autos = [x for x in svc.journal if x.get("action") == "automatic start"]
+    check(len(autos) == autos0 and svc.machine.state == S.STANDBY and
+          svc.machine.slot(2).status == S.FAULT,
+          f"show control on again: the refused show is NOT started late: "
+          f"{svc.machine.state} {autos[-1:]}")
+    # Show 3 at 18:40, show control off at its time and on at 18:42:30
+    # with no tick between (a stalled engine): more than 120 s late, MISSED.
+    n.control.session = None
+    n.now[0] = _den(S, 18, 39, 50)
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    n.control.session = n.sess
+    n.now[0] = _den(S, 18, 42, 30)
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    s3 = svc.machine.slot(3)
+    check(s3.status == S.MISSED and svc.machine.state == S.STANDBY,
+          f"show control on with a show more than 120 s late: MISSED, "
+          f"never started: {s3} {svc.machine.state}")
+    # With show control on, the night carries on: show 4 starts on time.
+    _fi_walk(n, 19, 0, start=(18, 43))
+    check(svc.machine.state == S.SHOW and svc.machine.running == 4,
+          f"the night carried on, with no Hold to Resume: "
+          f"{svc.machine.state} {svc.machine.running}")
+    n.c.close()
+    n.link.close()
+
+    # A Hold that already stands is left as it is: an operator's Hold
+    # stays an operator's Hold, a Stop's Hold stays a Stop's Hold.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    r = svc.operator_press("hold", "Andy", "Rack screen")
+    check(r["ok"] and svc.machine.state == S.HOLD and
+          not svc.machine.stop_hold, f"setup: an operator's Hold: {r}")
+    code, out = rm.run_off("Andy", "Rack screen")
+    check(svc.machine.state == S.HOLD and not svc.machine.stop_hold and
+          svc._stop_carry is None,
+          f"show control off leaves the operator's Hold as it was: "
+          f"{svc.machine.state} {svc.machine.stop_hold} {svc._stop_carry}")
+    n.control.session = n.sess
+    code, out = rm.stop_press("Andy", "Rack screen")
+    check(svc.machine.stop_hold and svc._stop_carry is not None,
+          f"setup: a Stop's Hold: {svc.machine}")
+    code, out = rm.run_off("Andy", "Rack screen")
+    check(svc.machine.state == S.HOLD and svc.machine.stop_hold and
+          svc._stop_carry is not None,
+          f"show control off leaves a Stop's Hold standing: "
+          f"{svc.machine.state} {svc._stop_carry}")
+    n.c.close()
+    n.link.close()
+
+    # A plain Stop is unchanged: a live show ends and the schedule holds.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    n.now[0] = _den(S, 18, 5)
+    code, out = rm.stop_press("Andy", "Rack screen")
+    check(code == 200 and out.get("run_on") is True and
+          svc.machine.state == S.HOLD and svc.machine.stop_hold and
+          svc._stop_carry is not None and
+          out.get("hold", {}).get("ok") is True and
+          svc.machine.slot(1).reason == "STOPPED (operator Stop)",
+          f"a plain Stop still ends the show and holds the schedule: "
+          f"{svc.machine.state} {out}")
+    rows = [r for r in svc.journal if r.get("action") == "stop"]
+    check(rows and "pressed Stop on the Rack screen: a complete halt" in
+          rows[-1]["text"], f"and is journaled as the Stop: {rows[-1:]}")
+    n.c.close()
+    n.link.close()
+
+
 def test_refused_starts_say_why_and_what_to_press():
     section("Jeff's field report (2026-10-28), refusals: a show refused with "
             "Run off says so on its slot and in its alert, with what to "
@@ -65394,6 +65670,8 @@ def test_stop_halt_order_hooks_and_programming():
     check(kinds.index("press_end") > kinds.index("press") and
           kinds[-1] == "halt_end",
           f"the laser arm's press ends after the schedule's step: {kinds}")
+    stop_kinds = list(kinds)
+    stop_calls = list(calls)
     import shutil as _shu
     _shu.rmtree(_fold, ignore_errors=True)
     # Run off: the same halt, then playback stops.
@@ -65405,6 +65683,27 @@ def test_stop_halt_order_hooks_and_programming():
           kinds.index("control.stop") > kinds.index("flames") and
           out.get("run_on") is False and out.get("stopped") is True,
           f"Run off is the halt, then playback stopped: {out} {kinds}")
+    # Show control off (Jeff, 2026-11-19): every step of the Stop, in the
+    # Stop's order, except the schedule's Hold; then playback stops.
+    check([k for k in kinds if k != "control.stop"] ==
+          [k for k in stop_kinds if k != "press"] and
+          kinds.index("control.stop") > kinds.index("press_end") and
+          kinds[-1] == "halt_end",
+          f"show control off runs every step of the Stop in its order, "
+          f"with no Hold: {kinds} against {stop_kinds}")
+    check(not any(c_[0] == "press" for c_ in calls) and
+          rm.schedule.machine.state == "STANDBY" and
+          out.get("hold") is None and code == 200,
+          f"and the schedule is not put on Hold: {calls} {out}")
+    for step in ("cancel wait", "flames", "lasers", "stop hooks",
+                 "purge clear", "laser tests off", "playback stop",
+                 "holds"):
+        check(step in kinds, f"show control off still does {step}: "
+                             f"{kinds}")
+    check(("lasers", "Show control turned off by Andy on the Rack "
+           "screen") in calls and
+          ("lasers", "Stop held by Andy on the Rack screen") in stop_calls,
+          f"the laser disarm says what did it: {calls}")
     # press("stop") tells the laser arm too, around the whole press.
     del calls[:]
     rm._press = lambda name, body, ctx: (calls.append(("pressing", name)),
@@ -125676,8 +125975,9 @@ def test_ui2_programming_tab_makes_1_0_presses():
     # reviews of #239): the Show file card's tooltip and question, the
     # SHOW tab's button and its question; the card's heading claims no
     # state it may not be in.
-    check('const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, '
-          'and ends the rehearsal.";' in two and
+    check('const REHEARSAL_END_CONFIRM = "Stops everything Stop stops and '
+          'ends the rehearsal, but does not put the schedule on Hold.";'
+          in two and
           'reh ? confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
           '"Yes, end it", "red")' in two and
           '? await confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
@@ -127865,6 +128165,7 @@ if __name__ == "__main__":
         test_schedule_never_touches_the_rig_before_run,
         test_a_refused_start_sends_no_fade,
         test_refused_starts_say_why_and_what_to_press,
+        test_show_control_off_ends_the_show_without_a_hold,
         test_rack_screen_stop_in_place_of_start_now,
         test_schedule_failed_start_effects_follow_what_was_sent,
         test_soak_schedule_is_refused_outside_the_soak,

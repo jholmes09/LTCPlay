@@ -2996,7 +2996,7 @@ class Service:
         except Exception:                        # noqa: BLE001
             return True
 
-    def halt_schedule(self, who, screen, detail=""):
+    def halt_schedule(self, who, screen, detail="", hold=True):
         """A Stop's step at the scheduler (Remote.halt; Jeff, 2026-10-30),
         decided and applied in ONE locked step with NO tick before it
         (cold review of #191, A-F1: a tick first could start the show
@@ -3015,12 +3015,23 @@ class Service:
                         now; the Stop's Hold waits for the next state a
                         show could start from.
 
-        {"ok", "kind" ("stop", "hold", "held" or "carried"), "text",
-        "state"}. Never raises for who or where: Stop is never refused."""
+        {"ok", "kind" ("stop", "hold", "held", "carried" or "not held"),
+        "text", "state"}. Never raises for who or where: Stop is never
+        refused.
+
+        hold False is Show control off (Jeff, 2026-11-19: everything a Stop
+        does except the Hold): the same steps, but no Stop's Hold is set
+        or marked, a live show ends with the schedule left OFF Hold
+        (STOP_SHOW, hold False), and between shows nothing is held. A Hold
+        that already stands is left exactly as it is."""
         who = str(who or "").strip() or "An unnamed operator"
         screen = str(screen or "").strip() or "screen"
         screen = {x.lower(): x for x in self.screens}.get(screen.lower(),
                                                            screen)
+        if hold is False:
+            with self._locked():
+                return self._halt_schedule_locked(who, screen, detail,
+                                                  hold=False)
         with self._locked():
             self._stop_carry_set(who, screen)
             try:
@@ -3084,14 +3095,21 @@ class Service:
                        "no show starts by itself, tonight or on a later "
                        "night, until someone presses Resume.")
 
-    def _halt_schedule_locked(self, who, screen, detail):
+    # Show control off's answer where a Stop would hold (Jeff, 2026-11-19).
+    RUN_OFF_NOT_HELD = ("The schedule is not on Hold: the night carries on, "
+                        "and no show starts while show control is off.")
+
+    def _halt_schedule_locked(self, who, screen, detail, hold=True):
         m = self.machine
         if m is None:
-            return {"ok": True, "kind": "carried", "state": None,
-                    "text": self.STOP_HELD_LATER}
+            return {"ok": True, "kind": "carried" if hold else "not held",
+                    "state": None,
+                    "text": self.STOP_HELD_LATER if hold
+                    else self.RUN_OFF_NOT_HELD}
         st = m.state
+        later = self.STOP_HELD_LATER if hold else self.RUN_OFF_NOT_HELD
         if st == sch.HOLD:
-            if not m.stop_hold or not m.dark:
+            if hold and (not m.stop_hold or not m.dark):
                 # The Stop's now, and dark: the conductor's Stop (asked at
                 # the press) has taken the look down.
                 self.machine = replace(m, stop_hold=True, dark=True)
@@ -3101,14 +3119,15 @@ class Service:
                             "Hold until Resume."}
         if st in (sch.SHOW, sch.PAUSED):
             ev = sch.Event(sch.STOP_SHOW, "operator", who=who,
-                           screen=screen, confirmed=True, surface=True)
+                           screen=screen, confirmed=True, surface=True,
+                           hold=hold)
             kind = "stop"
         elif st in self.SHOWTIME_FROM and not m.waiting():
             # No show left tonight (the last one just ended): the night
             # closes as it would (round 3, F2); the Stop's Hold stands for
             # the next night with shows.
-            return {"ok": True, "kind": "carried", "state": st,
-                    "text": self.STOP_HELD_LATER}
+            return {"ok": True, "kind": "carried" if hold else "not held",
+                    "state": st, "text": later}
         elif m.held_look and st == sch.OFF:
             # The idle look held after the last show (after_last_show
             # "idle"): a Stop ends it to black, as End of night does (Jeff,
@@ -3126,8 +3145,13 @@ class Service:
             self.machine = replace(m, held_look=False,
                                    closed_by_operator=True)
             self._save_tonight()
-            return {"ok": True, "kind": "carried", "state": st,
-                    "text": self.STOP_HELD_LATER}
+            return {"ok": True, "kind": "carried" if hold else "not held",
+                    "state": st, "text": later}
+        elif st in self.SHOWTIME_FROM and not hold:
+            # Show control off between shows: nothing is held, the night
+            # carries on (Jeff, 2026-11-19).
+            return {"ok": True, "kind": "not held", "state": st,
+                    "text": self.RUN_OFF_NOT_HELD}
         elif st in self.SHOWTIME_FROM:
             ev = sch.Event(sch.HOLD_ON, "operator", who=who, screen=screen,
                            surface=True,
@@ -3136,8 +3160,8 @@ class Service:
                                             f"on Hold")
             kind = "hold"
         else:
-            return {"ok": True, "kind": "carried", "state": st,
-                    "text": self.STOP_HELD_LATER}
+            return {"ok": True, "kind": "carried" if hold else "not held",
+                    "state": st, "text": later}
         self._press_stamp = self.stamp_press()
         try:
             out = self._apply(ev)
