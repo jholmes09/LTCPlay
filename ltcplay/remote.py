@@ -249,6 +249,11 @@ FUEL_POST_ROUTES = ("fuel-refill", "fuel-undo")
 # Haze fluid (fuelhaze.py, 2026-11-12): the Fuel page's Hazers section, in
 # the fuel GET; a refill needs what a fuel refill needs, an undo an admin.
 HAZE_POST_ROUTES = ("haze-refill", "haze-undo")
+# The Settings tab's Haze fluid card (fuelhaze.route_fluid, Jeff
+# 2026-11-19): litres per hour, tank litres, Set level now and Reset
+# learning; the Settings row, on the show machine only (LOCAL_ONLY).
+# Records only: it never reaches a hazer.
+HAZE_FLUID_POST_ROUTES = ("haze-fluid",)
 # The Fireball page (fireball.py): read by anyone; a channel ON needs the
 # arm row (users.classify), everything off never.
 FIREBALL_GET_ROUTES = ("fireball",)
@@ -337,7 +342,7 @@ LIVE_FLAME_ENABLES = (
 # and Fill selected need what a fuel refill needs, a type's shows per
 # refill an admin (fuel.py checks). Kept apart from FUEL_POST_ROUTES.
 SHOWS_POST_ROUTES = ("fuel-shows",)
-POST_ROUTES = POST_ROUTES + SHOWS_POST_ROUTES
+POST_ROUTES = POST_ROUTES + SHOWS_POST_ROUTES + HAZE_FLUID_POST_ROUTES
 # End of night (Jeff, 2026-11-14), above with CONTROL_ROUTES.
 POST_ROUTES = POST_ROUTES + END_OF_NIGHT_ROUTES
 # The Booth speaker card (boothcard.py, Jeff 2026-11-19): GET the card,
@@ -384,6 +389,9 @@ LOCAL_ONLY = LOCAL_ONLY | frozenset(("tailscale",))
 # The Booth speaker card (Jeff, 2026-11-19): the show PC only, like the
 # announcement output beside it.
 LOCAL_ONLY = LOCAL_ONLY | frozenset(("booth-speaker",))
+# The haze fluid settings (Jeff, 2026-11-19): on the Settings tab of the
+# show PC, like the cards beside them.
+LOCAL_ONLY = LOCAL_ONLY | frozenset(HAZE_FLUID_POST_ROUTES)
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -2628,6 +2636,8 @@ class Remote:
                     if name == "preshow-audio" else
                     "The booth speaker is set"
                     if name == "booth-speaker" else
+                    "The haze fluid settings are changed"
+                    if name in HAZE_FLUID_POST_ROUTES else
                     "The show network is set")
             return 403, {"error": f"{what} on the show machine itself, not "
                                   f"from here. Nothing was changed."}, {}
@@ -2683,6 +2693,11 @@ class Remote:
             from . import fuelhaze
             return (*fuelhaze.route_post(self.haze, name, body, ctx,
                                          self.users),) + ({},)
+        if name in HAZE_FLUID_POST_ROUTES:
+            from . import fuelhaze
+            return (*fuelhaze.route_fluid(self.haze, body, ctx, self.users,
+                                          getattr(self, "audit", None)),) + \
+                ({},)
         if name in FIREBALL_POST_ROUTES:
             from . import fireball as fireball_mod
             return (*fireball_mod.route_post(self.fireball, self, name, body,

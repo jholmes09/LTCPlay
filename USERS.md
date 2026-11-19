@@ -157,7 +157,7 @@ the ticks there. These are the proposed defaults:
 | Unlock a machine, turn a laser test on | always | yes | yes | no | never |
 | Tick the Morning and Shutdown checklists | always | yes | yes | no | never |
 | Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | always | yes | yes | no | never |
-| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, idle sign out, sign out after the last show, the play-from cues, the fireball timeline) | always | yes | no | no | never |
+| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, idle sign out, sign out after the last show, the play-from cues, the fireball timeline, the haze fluid settings) | always | yes | no | no | never |
 | Users (add, remove, passwords, roles, lockouts; a SuperUser only by a SuperUser) | always | yes | no | no | never |
 | The nightly upload (SuperUser only; shown only to a SuperUser) | always | never | never | never | never |
 
