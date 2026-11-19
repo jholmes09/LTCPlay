@@ -112,7 +112,7 @@ a.b{text-decoration:none}
 #sh-body ul.sys li{display:flex;gap:8px;align-items:flex-start}
 #sh-body ul.sys li svg{flex:0 0 auto;margin-top:2px}
 #sh-body ul.sys li.sys-bad svg{color:var(--red-hi)} #sh-body ul.sys li.sys-warn svg{color:var(--amber)}
-#sh-body ul.sys li.sys-ok svg,#sh-body ul.sys li.sys-on svg{color:var(--green)} #sh-body ul.sys li.sys-off svg{color:var(--grey)}
+#sh-body ul.sys li.sys-ok svg,#sh-body ul.sys li.sys-on svg{color:var(--green)} #sh-body ul.sys li.sys-idle svg{color:var(--grey)}
 #sh-body .first{font-weight:800;color:#FFD08A}
 main{min-height:0;position:relative;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
 .pane{flex:1 0 auto;padding:var(--gap) var(--pad);min-height:0}
@@ -4860,17 +4860,19 @@ $("ann-stop").addEventListener("click", () => annPress("announce-stop"));
 
 // ---- the header: systems, who is signed in, help, back to 1.0 ----
 // The systems badge (Jeff, 2026-10-29: "1 to check" said nothing of what):
-// each subsystem the engine lists, with its name, its state and what is
-// wrong and what to do in 8 words or fewer. Something not set up here
-// (the engine says "none", "not set up") reads Off, and
-// lasers fully armed are a state, not a problem. Pure.
+// each outside program or device the engine lists (ST.systems,
+// remote.systems_view, Jeff 2026-11-19: only what cannot be seen
+// elsewhere), with its name, its state and what is wrong and what to do
+// in 8 words or fewer. What can only be known once a show runs reads
+// "Checked when a show starts" in grey, never Off. Pure.
 const SYS_LABEL = {"Deck":"Stream Deck", "Flamesafe":"Flames", "Show audio":"Show audio", "Announcements":"Announcements",
-  "Disk":"Disk", "Audit":"Audit log", "Laser arm":"Laser arm", "Lasers":"Laser output", "Video":"Video", "Pixels":"Pixels", "Timecode":"Timecode"};
+  "Disk":"Disk", "Audit":"Audit log", "Laser arm":"Laser arm", "Lasers":"Laser output", "Video":"Video", "Pixels":"Pixels", "Timecode":"Timecode",
+  "BEYOND":"BEYOND", "MadMapper":"MadMapper", "MadMapper output":"MadMapper window"};
 // The badge's own short names (the sheet says the whole name).
-const SYS_SHORT = {"Stream Deck":"Deck", "Show audio":"Audio", "Announcements":"Announce", "Audit log":"Audit", "Laser output":"Lasers"};
+const SYS_SHORT = {"Stream Deck":"Deck", "Show audio":"Audio", "Announcements":"Announce", "Audit log":"Audit", "Laser output":"Lasers", "MadMapper window":"MM window"};
 // "pick an output" is not here: the announcements are set up and cannot
 // play until one is picked (review of #169).
-const SYS_OFF = /^(none|none set up|not set up|stopped|not connected|disarmed)$/i;
+const SYS_OFF = /^(none|none set up|not set up|stopped|disarmed|checked when a show starts)$/i;
 const SYS_SAY = [
   [/^deck$/, /not heard|missing/, "Not heard. Check its USB cable."],
   [/^deck$/, /late|usb slow/, "Slow. Check its USB cable."],
@@ -4879,7 +4881,8 @@ const SYS_SAY = [
   [/^deck$/, /not known/, "Not known yet. Wait a moment."],
   [/^flamesafe$/, /no status/, "Silent. Disarm with the Deck or e-stop."],
   [/^flamesafe$/, /fault/, "Fault. Disarm, then tell Jeff."],
-  [/^show audio$/, /not attached/, "Interface missing. Check its USB."],
+  [/^flamesafe$/, /not connected/, "Not connected. Start flamesafe."],
+  [/^show audio$/, /not attached/, "Not attached. Plug in the audio interface."],
   [/^show audio$/, /lost|fault/, "Lost. Check the audio interface."],
   [/^announcements$/, /delayed recording/, "Delayed button cannot play. Tell Jeff."],
   [/^announcements$/, /show audio not open/, "Cannot play: show audio not open."],
@@ -4894,6 +4897,16 @@ const SYS_SAY = [
   [/^lasers$/, /blanking/, "Cannot blank. Set BEYOND's OSC address."],
   [/^lasers$/, /restarted/, "BEYOND restarted. Dark until the next show."],
   [/^lasers$/, /link unknown|not known/, "Link unknown. Check the laser PC."],
+  [/^beyond$/, /not running/, "Not running. Start BEYOND."],
+  [/^beyond$/, /blanking/, "Cannot blank. Set BEYOND's OSC address."],
+  [/^beyond$/, /restarted/, "Restarted. Dark until the next show."],
+  [/^beyond$/, /not known/, "Not known. Check the laser PC."],
+  [/^madmapper$/, /not running/, "Not running. Start MadMapper."],
+  [/^madmapper$/, /no heartbeat/, "No heartbeat. Check MadMapper's project."],
+  [/^madmapper$/, /track/, "Heartbeat track wrong. Tell Jeff."],
+  [/^madmapper$/, /not known/, "Not known yet. Wait a moment."],
+  [/^madmapper output$/, /^off$/, "Not on the projector. Check MadMapper."],
+  [/^madmapper output$/, /not known/, "Not known yet. Wait a moment."],
   [/^pixels$/, /not sending/, "Not sending. Check the pixel network."],
   [/^pixels$/, /not known/, "Not known yet. Wait a moment."],
   [/^video$/, /./, "Check the video PC."],
@@ -4902,9 +4915,9 @@ function sysItem(x){
   const name = String((x && x.name) || ""), w = String((x && x.word) || ""), lc = name.toLowerCase();
   const label = SYS_LABEL[name] || name;
   let state = (x && x.state) || "warn";
-  if(state !== "bad" && SYS_OFF.test(w.trim())) state = "off";
+  if(state === "off" || (state !== "bad" && SYS_OFF.test(w.trim()))) state = "idle";
   if(name === "Laser arm" && /^armed$/i.test(w.trim())) state = "on";
-  let say = state === "ok" ? "OK." : state === "off" ? "Off." : state === "on" ? "All armed." : "";
+  let say = state === "ok" ? "OK." : state === "idle" ? "Checked when a show starts." : state === "on" ? "All armed." : "";
   if(!say){
     const hit = SYS_SAY.find(([n, r]) => n.test(lc) && r.test(w.toLowerCase()));
     say = hit ? hit[2] : short8(w ? w.charAt(0).toUpperCase() + w.slice(1) + "." : "", "Tap a row for its words.");
@@ -4924,10 +4937,10 @@ function sysLook(subs, isStaleNow){
 }
 // One Systems row (Jeff, 2026-11-11: "Stream Deck: OK. OK." said it
 // twice): the state word once, then only what the words add. "Stream
-// Deck: OK", "Laser arm: Off", "Lasers: FAULT. BEYOND
-// not answering. Check laser PC." Never drops words that add a reason
-// or a number. Pure.
-const SYS_WORD = {ok:"OK", warn:"Check", bad:"FAULT", off:"Off", on:"All armed"};
+// Deck: OK", "Pixels: Checked when a show starts", "BEYOND: FAULT. Not
+// running. Start BEYOND." Never drops words that add a reason or a
+// number. Pure.
+const SYS_WORD = {ok:"OK", warn:"Check", bad:"FAULT", idle:"Checked when a show starts", on:"All armed"};
 function sysRow(x){
   const word = SYS_WORD[x.state] || "Check", lw = word.toLowerCase();
   let rest = String(x.say || "").trim();
@@ -4940,7 +4953,7 @@ function sysRow(x){
   return {head:x.label + ": " + word + ".", rest:" " + rest};
 }
 function renderSys(){
-  const L = sysLook((ST && ST.subsystems) || [], stale());
+  const L = sysLook((ST && ST.systems) || [], stale());
   const b = $("sys");
   b.className = "hb " + L.cls; setIcon(b.querySelector("svg"), L.icon); setText(b.querySelector("span"), L.text);
 }
@@ -4948,8 +4961,8 @@ setInterval(renderSys, 1000);
 // One tap opens the sheet: what to do first, then every system with what
 // is wrong and what to do.
 $("sys").addEventListener("click", () => {
-  const L = sysLook((ST && ST.subsystems) || [], stale());
-  const ic = {ok:"check", warn:"warn", bad:"warn", off:"power", on:"check"};
+  const L = sysLook((ST && ST.systems) || [], stale());
+  const ic = {ok:"check", warn:"warn", bad:"warn", idle:"clock", on:"check"};
   const rows = L.items.map(x => { const r = sysRow(x);
     return `<li class="sys-${x.state}">${icon(ic[x.state] || "info")}<span><b>${esc(r.head)}</b>${esc(r.rest)}</span></li>`; }).join("");
   sheet("Systems", (L.first ? `<div class="first">${esc(L.first)}</div>` : "") +
