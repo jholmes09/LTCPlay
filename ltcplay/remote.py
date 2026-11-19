@@ -8152,6 +8152,14 @@ class Remote:
                 out["failed"].append("playback stop")
                 out["error"] = f"{type(e).__name__}: {e}"
             out["run_on"] = False
+            if not hold and self._show_control_still_on():
+                # Show control off asked for no Hold because show control
+                # goes off. It did not: the Stop's Hold after all, so no
+                # show starts by itself (cold review A of #277).
+                self._halt_schedule(out, who, screen, hold=True)
+                out["run_on"] = True
+                if "playback stop" not in out["failed"]:
+                    out["failed"].append("playback stop")
         else:
             # Stop never turns Run off (Jeff, 2026-10-30).
             out["stopped"] = True
@@ -8167,6 +8175,16 @@ class Remote:
             out["error"] = ("Stop did not complete: " +
                             ", ".join(out["failed"]) + " did NOT work.")
         return (500 if "error" in out else 200), out
+
+    def _show_control_still_on(self):
+        """True while a show file still runs after control.stop() (it
+        raised before it let go of the session). Never raises."""
+        try:
+            sess = getattr(self.control, "session", None)
+            return sess is not None and bool(getattr(sess, "running",
+                                                     False))
+        except Exception:                        # noqa: BLE001
+            return True
 
     def halt(self, who, screen, how="held", hold=True):
         """Stop, a complete halt of everything (Jeff, 2026-10-26), during a
@@ -8459,6 +8477,9 @@ class Remote:
                 out["show_ended"] = ok
                 if not ok:
                     out["failed"].append("show")
+            elif kind == "held":
+                # A Hold that stood before: kept, and said.
+                out["hold"] = {"ok": ok, "text": text}
             elif not ok:
                 out["failed"].append("schedule")
             return

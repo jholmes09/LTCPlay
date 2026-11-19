@@ -18379,6 +18379,27 @@ def build():
   "            if hold and (not m.stop_hold or not m.dark):",
   "            if not m.stop_hold or not m.dark:"),
 
+ ("halt: Show control off that did not turn show control off leaves no Hold",
+  "ltcplay/remote.py",
+  "            if not hold and self._show_control_still_on():\n",
+  "            if False:\n"),
+
+ ("scheduler: Show control off's STOP_SHOW loses its no-Hold",
+  "ltcplay/schedule_service.py",
+  "                           screen=screen, confirmed=True, surface=True,\n"
+  "                           hold=hold)\n",
+  "                           screen=screen, confirmed=True, surface=True)\n"),
+
+ ("scheduler: Show control off during a show ends on a Stop's Hold",
+  "ltcplay/schedule.py",
+  "        _abort_effects(n), abort=True, hold=False)\n",
+  "        _abort_effects(n), abort=True, hold=True)\n"),
+
+ ("scheduler: Show control off during a show ends it with no fade or blank",
+  "ltcplay/schedule.py",
+  "        _abort_effects(n), abort=True, hold=False)\n",
+  "        [], abort=True, hold=False)\n"),
+
  ("halt: Stop leaves Programming playback running",
   "ltcplay/remote.py",
   "            self._halt_programming(out, who, screen)\n",

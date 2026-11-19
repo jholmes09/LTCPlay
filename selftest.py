@@ -43786,8 +43786,10 @@ def test_show_control_off_ends_the_show_without_a_hold():
     said = out["show"]["text"] + stop_rows[-1]["text"]
     check(chr(0x2014) not in said and chr(0x2013) not in said,
           f"no em or en dash in what the operator reads: {said}")
-    # The fade finishes; from here nothing may reach the rig.
+    # The fade finishes (MadMapper's worker emptied too); from here
+    # nothing may reach the rig.
     _fi_walk(n, 18, 10, start=(18, 6))
+    n.link._submit(lambda: None)
     k = len(n.calls)
     j0 = len(list(svc.journal))
     # Every start path with show control off and no Hold.
@@ -43868,6 +43870,7 @@ def test_show_control_off_ends_the_show_without_a_hold():
           f"between shows show control off holds nothing: "
           f"{svc.machine.state} {out}")
     _fi_walk(n, 18, 19, start=(18, 19))
+    n.link._submit(lambda: None)
     k = len(n.calls)
     n.now[0] = _den(S, 18, 21, 30)          # show 2 (18:20) 90 s late
     svc.tick()
@@ -43966,6 +43969,29 @@ def test_show_control_off_ends_the_show_without_a_hold():
     rows = [r for r in svc.journal if r.get("action") == "stop"]
     check(rows and "pressed Stop on the Rack screen: a complete halt" in
           rows[-1]["text"], f"and is journaled as the Stop: {rows[-1:]}")
+    n.c.close()
+    n.link.close()
+
+    # Show control off that could not turn show control off (its stop
+    # raised before letting go of the show file): the Stop's Hold after
+    # all, so no show starts by itself, and the answer says it failed.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+
+    def stuck():
+        raise OSError("the audio device is wedged")
+    n.control.stop = stuck
+    code, out = rm.run_off("Andy", "Rack screen")
+    check(code == 500 and out.get("run_on") is True and
+          "playback stop" in out.get("failed", []) and
+          svc.machine.state == S.HOLD and svc.machine.stop_hold and
+          svc._stop_carry is not None,
+          f"show control still on after Show control off: the schedule "
+          f"is held as a Stop holds it, and the press says it failed: "
+          f"{code} {svc.machine.state} {out}")
     n.c.close()
     n.link.close()
 
