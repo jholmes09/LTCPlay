@@ -289,6 +289,11 @@ class Control:
         self.lock = threading.Lock()
         self._starting = False
         self._start_gen = 0
+        # Counts each time show control comes on (a show file stored to
+        # run), and who to tell once it has (fire_ice.attach: the
+        # scheduler's run_turned_on). Jeff, 2026-11-19.
+        self.run_gen = 0
+        self.on_show_control_on = None
         self.last_error = ""
         self._sd = sd
         # -- state() cache: see the method itself for why this exists.
@@ -733,6 +738,17 @@ class Control:
             extra = check(path)
             if isinstance(extra, dict):
                 kw.update(extra)
+        # One more turn-on, counted and told (the scheduler's stamp, Jeff
+        # 2026-11-19) before the start work, so show control on is never
+        # dated later than the press, and before the show file can read
+        # as running.
+        self.run_gen += 1
+        tell = self.on_show_control_on
+        if tell is not None:
+            try:
+                tell()
+            except Exception:                    # noqa: BLE001
+                pass
         s = Session(path, **kw)
         s.from_web = True
         s.open()
@@ -2315,10 +2331,12 @@ def _attach_preroll(httpd, fire_ice, fstatus):
         def booth_resolve(name):
             from . import announce as announce_mod
             from . import boothaudio
-            sd = remote.alerts.booth._sd or boothaudio._import_sounddevice()
+            booth = remote.alerts.booth
+            sd = booth._sd or boothaudio._import_sounddevice()
             if sd is None:
                 raise ValueError("sounddevice is not installed here")
-            announce_mod.resolve_output_device(sd, name)
+            announce_mod.resolve_output_device(
+                sd, name, booth.config.get("hostapi") or None)
         mm = httpd.madmapper if isinstance(httpd.madmapper, tuple) else None
         mm_cfg = getattr(fire_ice, "madmapper", None)
         hb = getattr(getattr(mm_cfg, "heartbeat", None), "show_len_s", None)
@@ -3073,7 +3091,10 @@ def serve(folder, port=7878, bind="127.0.0.1", defaults=None, sd=None,
         _attach_accounts(httpd)
     # The booth speaker and the blue pulse's pixels (alerts.py,
     # boothaudio.py), from ltcplay_remote.json. Off until configured; a
-    # bad block is said once here and the booth stays off.
+    # bad block is said once here and the booth stays off. The Settings
+    # tab's Booth speaker card (boothcard.py) builds a new player with the
+    # same audio module when it saves, with no restart.
+    httpd.remote.booth_sd = sd
     try:
         rs = remote_mod.load_settings(remote_folder)
         if rs.get("booth_alert"):

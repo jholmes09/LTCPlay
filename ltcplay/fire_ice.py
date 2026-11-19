@@ -2904,6 +2904,13 @@ class ShowRunner:
                 self._cue = {"show": n, "failed": why, "nothing_sent": True}
             return C.failed(f"Show {n} was not started: {why}.")
         why = self._refusal(s, clk)
+        if not why and auto:
+            # Show control came on after this show's time (Jeff,
+            # 2026-11-19): never started by the scheduler, even when the
+            # start was decided while show control was off.
+            ask = getattr(self.svc, "run_on_refusal", None)
+            if ask is not None:
+                why = str(ask(n) or "")
         if not why and getattr(self.conductor, "stops", 0) != stops0:
             # A Stop since the start was decided: refused before the
             # pixels are touched (cold review A of #199, F2 and F5).
@@ -3709,6 +3716,14 @@ def attach(svc, control, cfg, madmapper=None, beyond=None, announce=None,
     # Nothing the scheduler decides by itself reaches this conductor until
     # the operator presses Run (Service._hold_back_unattended).
     svc.run_gate = lambda: show._session() is not None
+    # The moment show control comes on, stamped at the source (Jeff,
+    # 2026-11-19: a show already past its time never starts), and its
+    # turn-on count, so an off and on between two ticks is never missed.
+    svc.run_gen = lambda: getattr(control, "run_gen", None)
+    try:
+        control.on_show_control_on = svc.run_turned_on
+    except Exception:                            # noqa: BLE001
+        pass
     runner = None
     if cfg.scheduler_performs:
         runner = ShowRunner(svc, control, show, conductor, cfg,
