@@ -1123,6 +1123,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
           <div class="pline" id="net-status"></div>
           <div class="pbar" id="net-uses"></div>
           <div class="pbar"><button class="b redline" id="net-restart" hidden><svg class="i"><use href="#i-reset"/></svg>Restart the engine</button></div>
+          <div class="pline warn" id="net-restart-why" role="status" hidden></div>
           <label class="fl" for="net-addr"><span>Show Wi-Fi address of this machine (port 7878)</span></label>
           <div class="pbar">
             <select class="f" id="net-pick" aria-label="Addresses of this machine"></select>
@@ -3835,6 +3836,7 @@ function renderNetwork(n){
   $("net-restart").hidden = !r.needed;
   $("net-restart").disabled = !r.offered || !mayRow(ST, "settings");
   $("net-restart").title = r.why || "";
+  restartWhy("net-restart", "net-restart-why", r.offered, r.why, mayRow(ST, "settings"));
   $("net-save").disabled = !mayRow(ST, "settings");
   for(const b of $("net-uses").querySelectorAll("button")) b.disabled = !mayRow(ST, "settings");
 }
@@ -3857,9 +3859,74 @@ $("net-uses").addEventListener("click", ev => {
 });
 $("net-restart").addEventListener("click", async () => {
   if(!(await confirmBox("Restart the engine?", "Restarts the show engine on the saved address. Refused while a show runs or a group is armed. flamesafe and the Stream Deck keep running.", "Yes, restart", "green"))) return;
-  try{ const j = await post("/api/remote/reload-engine", {}); $("net-msg").textContent = j.text; }
-  catch(e){ $("net-msg").textContent = e.message; }
+  pressRestart(t => { $("net-msg").textContent = t; }, loadNetwork);
 });
+// Restart the engine and Reload engine (2026-11-19). Why one waits is said
+// in words beside it, with what to do: a tooltip is never seen on a touch
+// screen, and a dashed button alone looks broken. After a press the page
+// waits for the engine to answer again (restart-check's "engine" is a new
+// one), then redraws the card; a restart the supervisor did not do is
+// said too. Display only: the engine and the supervisor decide.
+function restartWhy(btnId, whyId, offered, why, mayPress){
+  const b = $(btnId), w = $(whyId);
+  if(!b || !w) return;
+  let t = "";
+  if(!b.hidden && !offered) t = "Not now: " + (why || "the engine did not say why. Try again in a moment.");
+  else if(!b.hidden && mayPress === false) t = "Not now: restarting needs the Settings permission. Sign in with it first.";
+  w.hidden = !t;
+  if(w.dataset.t !== t){ w.dataset.t = t; w.textContent = t; if(t) w.insertAdjacentHTML("afterbegin", `<svg class="i"><use href="#i-warn"/></svg> `); }
+}
+async function restartCheck(){
+  try{ return await getJSON("/api/remote/restart-check", 3000); }catch(e){ return null; }
+}
+let RESTART_WAIT = false;
+async function pressRestart(say, redraw){
+  let j;
+  try{ j = await post("/api/remote/reload-engine", {}); }
+  catch(e){ say(e.message); try{ redraw(); }catch(_){} return; }
+  say(j.text);
+  if(RESTART_WAIT) return;
+  RESTART_WAIT = true;
+  try{
+    const t0 = Date.now(); let gone = false;
+    while(Date.now() - t0 < 90000){
+      await new Promise(r => setTimeout(r, 1500));
+      const c = await restartCheck();
+      if(!c){ gone = true; say("Restarting the engine. This card updates when it answers again."); continue; }
+      if(c.engine && c.engine !== j.engine){ say("The engine restarted and answers again."); try{ redraw(); }catch(_){} return; }
+      if(!gone && Date.now() - t0 > 20000){
+        say("The engine did not restart." + (c.page ? " " + c.page : " LTC Player did not restart it. Press again; if it still does not, look at Settings and logs."));
+        try{ redraw(); }catch(_){} return;
+      }
+    }
+    say("The engine has not answered for 90 seconds. Reload this page; if it still does not answer, start LTC Player again.");
+  } finally { RESTART_WAIT = false; }
+}
+// While the Schedule tab is open, the waiting reason is read again every 5 s:
+// Show ctrl off, a disarm or a show's end changes it, and the card must not
+// keep a stale dashed button.
+let RESTART_TICKS = 0;
+setInterval(async () => {
+  if(TAB !== "schedule" || !ME || !ME.local || RESTART_WAIT) return;
+  // The Tailscale card's own lines too, every 30 s (what it reads is kept
+  // 30 s by the engine anyway).
+  if(++RESTART_TICKS % 6 === 0 && $("ts-card")) loadTailscale();
+  const shown = ["net-restart", "ts-restart"].filter(id => $(id) && !$(id).hidden);
+  if(!shown.length) return;
+  const c = await restartCheck();
+  if(!c) return;
+  const ok = !c.page;
+  if(!$("net-restart").hidden){
+    $("net-restart").disabled = !ok || !mayRow(ST, "settings");
+    $("net-restart").title = c.page || "";
+    restartWhy("net-restart", "net-restart-why", ok, c.page, mayRow(ST, "settings"));
+  }
+  if($("ts-restart") && !$("ts-restart").hidden){
+    $("ts-restart").disabled = !ok;
+    $("ts-restart").title = c.page || "";
+    restartWhy("ts-restart", "ts-restart-why", ok, c.page);
+  }
+}, 5000);
 $("net-pick").addEventListener("change", () => { if($("net-pick").value) $("net-addr").value = $("net-pick").value; });
 // A SuperUser's own card (the upload card's pattern): its code is not on
 // this page. Only a SuperUser signed in on this show PC's rack screen gets
@@ -3894,8 +3961,7 @@ function cfgNote(cc){
 }
 $("cfg-reload").addEventListener("click", async () => {
   if(!(await confirmBox("Reload the engine?", "Restarts the show engine to read the changed files. Refused while a show runs or a group is armed. flamesafe and the Stream Deck keep running.", "Yes, reload", "green"))) return;
-  try{ const j = await post("/api/remote/reload-engine", {}); $("cfg-msg").textContent = j.text; }
-  catch(e){ $("cfg-msg").textContent = e.message; }
+  pressRestart(t => { $("cfg-msg").textContent = t; }, () => {});
 });
 function setWarn(id, msg){
   const el = $(id);

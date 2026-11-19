@@ -56258,6 +56258,12 @@ def test_tailscale_card_on_the_show_pc():
         check(_ts_words_ok(out.get("head", ""), out.get("bullets", [])),
               f"its words keep the rules: {out.get('head')!r} "
               f"{out.get('bullets')}")
+        # Problems first, then info, three lines in all (2026-11-19).
+        fx, nf = out.get("problems"), out.get("info")
+        check(isinstance(fx, list) and isinstance(nf, list) and
+              out["bullets"] == fx + nf and len(fx + nf) <= 3 and
+              not (set(fx) & set(nf)),
+              f"every line is a problem or info, problems first: {out}")
         return out
     try:
         for who, door, client in (("an iPad", R.httpd, ("10.20.0.44", 5)),
@@ -56302,6 +56308,9 @@ def test_tailscale_card_on_the_show_pc():
         check(c["head"] == "On: restart the engine" and
               c["restart"]["needed"] and c["listening"] is None,
               f"on, found, not listening yet: Restart the engine: {c}")
+        check("Restart the engine to start listening." in c["problems"] and
+              RM.TAILSCALE_RESTART_WHEN not in c["problems"],
+              f"the restart to do is a problem; when to do it is info: {c}")
         rm.listen = {"addresses": ["127.0.0.1", _TS_ADDR], "port": 7878,
                      "why": "", "tailscale": _TS_ADDR, "tailscale_why": ""}
         c = card()
@@ -56315,8 +56324,10 @@ def test_tailscale_card_on_the_show_pc():
         rm._firewall_run = _TsRun(rc=1)
         c = card()
         check(c["firewall"]["state"] == "missing" and
-              any("installer" in b for b in c["bullets"]),
-              f"the rule missing: said, with what to do: {c}")
+              any("installer" in b for b in c["problems"]),
+              f"the rule missing: a problem, with what to do: {c}")
+        check(not any(c["url"] in b for b in c["problems"]),
+              f"the address to type is info, never a problem: {c}")
         other = rm.tailscale_setup_other
         env = {"PROGRAMDATA": "/pd", "LOCALAPPDATA": r"C:\Users\show\AppData\Local"}
         check(other(read=lambda p: "C:\\Users\\admin\\AppData\\Local\r\noff\r\n",
@@ -56337,8 +56348,26 @@ def test_tailscale_card_on_the_show_pc():
         rm._tailscale_routes = lambda: True
         rm._ts_routes_cache = None
         c = card()
-        check(c["bullets"][0] == "This PC shares routes: turn that off.",
-              f"this PC sharing routes: said first: {c}")
+        check(c["bullets"][0] == RM.TAILSCALE_ROUTES_FIX and
+              c["problems"][0] == RM.TAILSCALE_ROUTES_FIX and
+              c["head"] == RM.TAILSCALE_ROUTES_HEAD and
+              "Security" in c["head"] and
+              "Edit route settings" in c["detail"] and
+              "--advertise-routes= --advertise-exit-node=false" in
+              c["detail"] and _cfg_dashes(c["detail"]),
+              f"this PC sharing routes: a security problem, said first, "
+              f"with how to turn it off: {c}")
+        rm._firewall_run = _TsRun(rc=1)
+        rm._ts_firewall_cache = None
+        c = card()
+        check(c["problems"][0] == RM.TAILSCALE_ROUTES_FIX and
+              any("Firewall rule missing" in b for b in c["problems"]) and
+              (c["info"] == [] if len(c["problems"]) == 3 else
+               len(c["problems"] + c["info"]) <= 3),
+              f"an info line never pushes a problem out: {c}")
+        rm._firewall_run = _TsRun(out="Enabled: Yes\nRemoteIP: "
+                                      "100.64.0.0/10\n")
+        rm._ts_firewall_cache = None
         rm._tailscale_routes = lambda: None
         rm._ts_routes_cache = None
         c = card()
@@ -56351,6 +56380,15 @@ def test_tailscale_card_on_the_show_pc():
               "Tailscale Serve and HTTPS stay refused." in str(js),
               "the card's script, for the SuperUser: passwords matter, "
               "Serve and HTTPS refused")
+        check('<use href="#i-warn"/></svg> <b style="color:#FFD08A">Fix:'
+              '</b> ${esc(b)}</li>' in str(js) and
+              ' More: <span id="ts-info"></span>' in str(js) and
+              "Nothing to fix." in str(js) and
+              'id="ts-restart-why"' in str(js) and
+              "V.problems" in str(js) and "V.info" in str(js),
+              "the card marks a problem (a warning sign, amber, Fix:) "
+              "apart from info (the More line), and says when nothing "
+              "needs fixing")
         page = _ui2_pages()[1]
         check("Remote access over Tailscale" not in page and
               "ts-logins" not in page,
@@ -56372,9 +56410,10 @@ def test_tailscale_card_on_the_show_pc():
               f"removes the rule: {c}")
         # During a show Restart the engine is refused (the same rule as
         # the show network's).
-        rm.show_busy_for_reload = lambda: True
+        rm.show_busy_reason = lambda: "A show is running."
         check(rm.restart_refusal().startswith("A show is running"),
               "a restart is refused during a show")
+        del rm.show_busy_reason
         # Nobody but a SuperUser on the rack screen: no such route, not
         # even the card's script; and audited (#251's pattern).
         _o, _w, atok, _n = us.sign_in("Andy", "andy-own-pw-1", True,
@@ -83068,7 +83107,8 @@ def test_config_watch_on_the_status_and_reload_engine():
                               "flamesafe": True},
               f"between shows, nothing armed: offered: {v}")
         code, body = rm.get("/api/remote/restart-check", rack)[:2]
-        check(code == 200 and body == {"refusal": ""},
+        check(code == 200 and body["refusal"] == "" and
+              body["page"] == "" and body["engine"] == RM.ENGINE_ID,
               f"the supervisor's check agrees: {code} {body}")
         code, body = rm.get("/api/remote/restart-check", ipad)[:2]
         check(code == 403, f"never from the network: {code}")
@@ -83102,9 +83142,9 @@ def test_config_watch_on_the_status_and_reload_engine():
         rm.flame_status = _ty.SimpleNamespace(view=lambda: 1 / 0)
         refused("could not be checked", "when the check itself fails")
         rm.flame_status = fs_was
-        rm.show_busy_for_reload = lambda: True
+        rm.show_busy_reason = lambda: "A show is running."
         refused("show is running", "while a show runs")
-        del rm.show_busy_for_reload
+        del rm.show_busy_reason
         rm.announce = _ty.SimpleNamespace(playing="delayed")
         refused("announcement", "while an announcement plays")
         rm.announce = None
@@ -83129,6 +83169,7 @@ def test_config_watch_on_the_status_and_reload_engine():
         code, body = rm.reload_engine({})
         check(code == 200 and os.path.exists(
                   os.path.join(d, RM.RESTART_ENGINE_FILE)) and
+              body.get("engine") == RM.ENGINE_ID and
               "flamesafe" in body["text"] and _cfg_dashes(body["text"]),
               f"pressed: the supervisor is asked to restart the engine: "
               f"{code} {body}")
@@ -83161,6 +83202,216 @@ def test_config_watch_on_the_status_and_reload_engine():
     finally:
         RM.settings_folder = real_folder
         _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_restart_engine_between_shows_on_hold():
+    section("Restart the engine (2026-11-19): the schedule on Hold with no "
+            "show running restarts (a Show ctrl off ends on Hold); a show "
+            "running or held mid-run refuses, and so does show control on, "
+            "a start under way, a schedule that cannot be read and a state "
+            "not known, each with a true sentence that says what to do; "
+            "the supervisor's restart-check says the same; the rack screen "
+            "says why in words beside the button and waits for the engine "
+            "after a press")
+    import shutil
+    import types as _ty
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    R = _RemoteRig(S)
+    rm = R.remote
+    rack = RM.Ctx(True, "127.0.0.1")
+    rm.flame_status = _ty.SimpleNamespace(view=lambda: {
+        "stale": False, "groups": [{"name": "wave flamer",
+                                    "armed": "disarmed", "wanted": False}]})
+
+    def said(what, word=None):
+        why = rm.restart_refusal()
+        code, body = rm.get("/api/remote/restart-check", rack)[:2]
+        ok = code == 200 and body.get("refusal") == why and \
+            body.get("engine") == RM.ENGINE_ID and _cfg_dashes(why)
+        if word is None:
+            check(ok and why == "", f"{what}: a restart may go: {why!r}")
+        else:
+            check(ok and word in why, f"{what}: refused, {word!r}: {why!r}")
+        return why
+    try:
+        said("between shows, show control off")
+        _live_show(R)
+        said("a show running", "A show is running")
+        R.svc.operator_press("hold", "Andy", "iPad", confirmed=True)
+        R.settle()
+        check(R.svc.machine.state == S.PAUSED, "setup: show 1 held mid-run")
+        why = said("a show held mid-run", "held mid-run")
+        check("running" not in why.split(".")[0],
+              f"and it is not called running: {why!r}")
+        # Show ctrl off: the whole Stop, which ends the held show and puts
+        # the schedule on Hold, then show control off.
+        code, out = rm.run_off("Andy", "Rack screen")
+        R.settle()
+        check(code == 200 and R.svc.machine.state == S.HOLD and
+              R.svc.machine.stop_hold and not R.svc.machine.running,
+              f"setup: Show ctrl off ends on Hold: {code} "
+              f"{R.svc.machine.state}")
+        said("on Hold after Show ctrl off, no show running")
+        # Show control on (a show file playing all night) refuses, with
+        # the true reason: not "a show is running".
+        rm.control.session = _ty.SimpleNamespace(running=True)
+        why = said("on Hold with show control on", "Show control is on")
+        check("Show ctrl off" in why and "show is running" not in why,
+              f"it says what to press: {why!r}")
+        rm.control.session = None
+        rm.control._starting = True
+        said("a show file starting", "starting")
+        rm.control._starting = False
+        said("clear again")
+        # Fail closed: a schedule that cannot be read, a state not known,
+        # a HOLD that still names a running show.
+        real = R.svc.state_view
+        R.svc.state_view = lambda *a, **k: 1 / 0
+        said("a schedule that cannot be read", "could not be read")
+        R.svc.state_view = lambda *a, **k: {"ok": True, "state": "WEIRD"}
+        said("a state not known", "WEIRD")
+        R.svc.state_view = lambda *a, **k: {"ok": True, "state": None}
+        said("no state from a loaded schedule", "not one")
+        R.svc.state_view = lambda *a, **k: {"ok": True, "state": "HOLD",
+                                            "running": 2}
+        said("a Hold that names a running show", "held mid-run")
+        R.svc.state_view = lambda *a, **k: {"ok": False, "state": None}
+        said("no schedule loaded at all")
+        R.svc.state_view = real
+        check(rm.show_busy_for_reload() is False,
+              "the announcements' own check agrees")
+        # The press itself at a moment it is refused: said, nothing asked.
+        d = tempfile.mkdtemp()
+        real_folder = RM.settings_folder
+        RM.settings_folder = lambda: d
+        try:
+            with open(os.path.join(d, RM.SHOWPC_FILE), "w") as fh:
+                fh.write("{}")
+            rm.control.session = _ty.SimpleNamespace(running=True)
+            code, body = rm.reload_engine({})
+            check(code == 409 and "Show control is on" in body["error"] and
+                  not os.path.exists(os.path.join(d,
+                                                  RM.RESTART_ENGINE_FILE)),
+                  f"pressed with show control on: refused, said, nothing "
+                  f"asked: {code} {body}")
+            code, ck = rm.get("/api/remote/restart-check", rack)[:2]
+            check(ck["page"] == body["error"].split("Not reloaded: ")[1]
+                  .split(" Nothing was")[0],
+                  f"the page's reason is the press's: {ck}")
+            rm.control.session = None
+            code, body = rm.reload_engine({})
+            check(code == 200 and body["engine"] == RM.ENGINE_ID and
+                  os.path.exists(os.path.join(d, RM.RESTART_ENGINE_FILE)),
+                  f"on Hold, show control off: asked: {code} {body}")
+        finally:
+            RM.settings_folder = real_folder
+            shutil.rmtree(d, ignore_errors=True)
+    finally:
+        R.close()
+    # The rack screen: the reason in words beside each button, never only
+    # a tooltip, and a press that waits for the engine to answer again.
+    two = _ui2_pages()[1]
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "ltcplay", "web", "tailscale_card.js"),
+              encoding="utf-8") as fh:
+        card = fh.read()
+    check('<div class="pline warn" id="net-restart-why" role="status" '
+          'hidden></div>' in two and
+          '<div class="pline warn" id="ts-restart-why" role="status" '
+          'hidden></div>' in card and
+          'restartWhy("ts-restart", "ts-restart-why", r.offered, r.why);'
+          in card and
+          'pressRestart(t => setText($("ts-msg"), t), loadTailscale);'
+          in card and
+          'pressRestart(t => { $("cfg-msg").textContent = t; }, () => {});'
+          in two and
+          '" Reload engine is not offered now: " + r.why' in two,
+          "each Restart the engine and Reload engine says why it waits in "
+          "words, and every press waits for the engine")
+    import shutil as _sh2
+    node = _sh2.which("node")
+    fns = [_js_function(two, n) for n in ("restartWhy", "restartCheck",
+                                          "pressRestart")]
+    if not node or not all(fns):
+        check(not IN_CI and all(fns), "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = r"""
+let NOW = 0; Date.now = () => NOW;
+const setTimeout = (f, ms) => { NOW += ms; f(); };
+const els = {};
+function El(){ this.hidden = false; this._t = ""; this.dataset = {}; this.title = ""; }
+Object.defineProperty(El.prototype, "textContent", {get(){ return this._t; }, set(v){ this._t = String(v); }});
+El.prototype.insertAdjacentHTML = function(){ this.icon = true; };
+const $ = id => els[id] || (els[id] = new El());
+let CHECKS = [], POST = null;
+async function getJSON(){ const c = CHECKS.shift(); if(c === undefined || c === null) throw new Error("down"); return c; }
+async function post(){ if(POST instanceof Error) throw POST; return POST; }
+let RESTART_WAIT = false;
+""" + "\n".join(fns) + r"""
+(async () => {
+  const out = {};
+  $("b").hidden = false;
+  restartWhy("b", "w", false, "Show control is on. Turn show control off first (Show ctrl off), then restart.");
+  out.why = [$("w").hidden, $("w").textContent, !!$("w").icon];
+  restartWhy("b", "w", true, "");
+  out.clear = [$("w").hidden, $("w").textContent];
+  restartWhy("b", "w", true, "", false);
+  out.perm = $("w").textContent;
+  const says = [];
+  let redrawn = 0;
+  POST = new Error("Not reloaded: A show is held mid-run. Nothing was changed.");
+  await pressRestart(t => says.push(t), () => redrawn++);
+  out.refused = [says.slice(), redrawn];
+  says.length = 0; redrawn = 0; NOW = 0;
+  POST = {ok:true, engine:"old", text:"LTC Player restarts the engine now."};
+  CHECKS = [null, null, {engine:"old", page:""}, null, {engine:"new", page:""}];
+  await pressRestart(t => says.push(t), () => redrawn++);
+  out.restarted = [says.slice(), redrawn];
+  says.length = 0; redrawn = 0; NOW = 0;
+  CHECKS = Array(30).fill({engine:"old", page:"A flame group is armed. Disarm every group first."});
+  await pressRestart(t => says.push(t), () => redrawn++);
+  out.notDone = [says.slice(), redrawn];
+  console.log(JSON.stringify(out));
+})();
+"""
+    import subprocess as _sp
+    p = _sp.run([node, "-e", js], capture_output=True, text=True,
+                timeout=60)
+    try:
+        m = json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception:                            # noqa: BLE001
+        check(False, f"the page's restart words ran: {p.stdout!r} "
+                     f"{p.stderr!r}")
+        print("  ok")
+        return
+    check(m["why"] == [False, "Not now: Show control is on. Turn show "
+                              "control off first (Show ctrl off), then "
+                              "restart.", True],
+          f"refused: the reason in words, a warning sign beside it: "
+          f"{m['why']}")
+    check(m["clear"] == [True, ""] and "Settings permission" in m["perm"],
+          f"offered: no line; no permission: said: {m}")
+    check(m["refused"] == [["Not reloaded: A show is held mid-run. Nothing "
+                            "was changed."], 1],
+          f"a press refused at press time says why and redraws: "
+          f"{m['refused']}")
+    check(m["restarted"][1] == 1 and
+          m["restarted"][0][-1] == "The engine restarted and answers again.",
+          f"a press that went waits for a new engine, then redraws: "
+          f"{m['restarted']}")
+    check(m["notDone"][1] == 1 and
+          m["notDone"][0][-1].startswith("The engine did not restart.") and
+          "Disarm every group" in m["notDone"][0][-1],
+          f"a restart that never happened is said, with why: "
+          f"{m['notDone']}")
+    for t in sum((m[k][0] for k in ("refused", "restarted", "notDone")),
+                 []) + [m["why"][1], m["perm"]]:
+        check(_cfg_dashes(t), f"no dashes: {t!r}")
     print("  ok")
 
 
@@ -83272,8 +83523,9 @@ def test_config_watch_supervisor_and_rack_screen_note():
             _get(self)
         _H.do_GET = do_get
         busy, why = SUP.engine_restart_blocked(port)
-        check(busy and "show is running" in why,
-              f"a show running is refused first: {busy} {why!r}")
+        check(busy and "show control" in why and _cfg_dashes(why),
+              f"a show file running (show control on) is refused first: "
+              f"{busy} {why!r}")
         state[0] = b'{"starting": true}'
         check(SUP.engine_restart_blocked(port)[0], "and one starting")
         state[0] = b'{}'
@@ -110305,6 +110557,9 @@ _UI2_ROUTES = {
     "/api/remote/purge-stop": "safety",
     "/api/remote/purge-timed": "arm",
     "/api/remote/reload-engine": "settings",
+    # Read by Restart the engine and Reload engine for why they wait, and
+    # whether the engine restarted (2026-11-19). The show PC only.
+    "/api/remote/restart-check": None,
     "/api/remote/resume": "show",
     "/api/remote/role-matrix": "users",
     "/api/remote/run-off": "show",
@@ -126905,8 +127160,19 @@ def _ui2_tools_copies(one):
     fit = "  try{ fitSetup(); }catch(e){}\n"
     out = [(n, fn(n)) for n in (
         "fill", "makeOffered", "checkWords", "loadDeckOp",
-        "renderNetwork", "loadNetwork", "saveNetwork", "cfgNote",
-        "setWarn")]
+        "loadNetwork", "saveNetwork", "cfgNote", "setWarn")]
+    # A named difference (2026-11-19): why Restart the engine waits is
+    # said in words beside it, not only in a tooltip; and a press waits
+    # for the engine to answer again (pressRestart).
+    tip = '  $("net-restart").title = r.why || "";\n'
+    out += [("renderNetwork", sub(fn("renderNetwork"), tip, tip +
+             '  restartWhy("net-restart", "net-restart-why", r.offered, '
+             'r.why, mayRow(ST, "settings"));\n'))]
+    press = ('  try{ const j = await post("/api/remote/reload-engine", {}); '
+             '$("{m}").textContent = j.text; }\n'
+             '  catch(e){ $("{m}").textContent = e.message; }\n')
+    pressed = '  pressRestart(t => { $("{m}").textContent = t; }, {r});\n'
+
     # A named difference (Jeff, 2026-11-11: less prose): the show folder
     # problem keeps its line breaks (headline, bullets, More).
     out += [("loadFolders", sub(fn("loadFolders"),
@@ -126942,7 +127208,7 @@ def _ui2_tools_copies(one):
             # Less prose (Jeff, 2026-11-11): the confirms are shorter,
             # every condition kept.
             ("Restart the engine",
-             sub(sub(blk('$("net-restart").addEventListener('),
+             sub(sub(sub(blk('$("net-restart").addEventListener('),
                      '"Yes, restart", "start"', '"Yes, restart", "green"'),
                  '"LTC Player restarts the show engine so it listens on the '
                  'saved show network address. It is refused while a show '
@@ -126950,9 +127216,12 @@ def _ui2_tools_copies(one):
                  'Deck program keep running."',
                  '"Restarts the show engine on the saved address. Refused '
                  'while a show runs or a group is armed. flamesafe and the '
-                 'Stream Deck keep running."')),
+                 'Stream Deck keep running."'),
+                 press.replace("{m}", "net-msg"),
+                 pressed.replace("{m}", "net-msg").replace(
+                     "{r}", "loadNetwork"))),
             ("Reload engine",
-             sub(sub(sub(blk('$("cfg-reload").addEventListener('),
+             sub(sub(sub(sub(blk('$("cfg-reload").addEventListener('),
                          '"Yes, reload", "start"', '"Yes, reload", "green"'),
                      '$("ctl-msg")', '$("cfg-msg")', 2),
                  '"LTC Player restarts the show engine so it reads the '
@@ -126961,7 +127230,10 @@ def _ui2_tools_copies(one):
                  'program keep running."',
                  '"Restarts the show engine to read the changed files. '
                  'Refused while a show runs or a group is armed. flamesafe '
-                 'and the Stream Deck keep running."')),
+                 'and the Stream Deck keep running."'),
+                 press.replace("{m}", "cfg-msg"),
+                 pressed.replace("{m}", "cfg-msg").replace(
+                     "{r}", "() => {}"))),
             ("Check the rig", blk('$("rc-run").addEventListener(')),
             ("Close this window", blk('$("info-exit").addEventListener('))]
     for ln in ('$("net-pick").addEventListener("change", () => { '
@@ -128236,6 +128508,7 @@ if __name__ == "__main__":
         test_config_watch_names_the_file_and_who_is_behind,
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
+        test_restart_engine_between_shows_on_hold,
         test_ui2_screen_served,
         test_ui2_is_the_default_screen,
         test_remote_rules_file,

@@ -235,7 +235,18 @@ cannot prove anyone is at the rig.
 
 - No subnet routes, no exit node, ever.
 - Not the show LAN, 10.112.4.0/24, above all.
-- The card warns if this PC shares routes.
+- The card warns if this PC shares routes: a security problem, said
+  first. To turn it off: in the Tailscale admin console open Machines, the
+  show PC, Edit route settings, and untick every subnet route and Exit
+  node. Or on the show PC: `tailscale set --advertise-routes=
+  --advertise-exit-node=false`.
+
+How to read the card: a line with a warning sign and the word **Fix:**
+needs you to act (shared routes, a missing firewall rule, nobody allowed
+in, an engine restart). The **More:** line under it only says how it
+works. "Nothing to fix." means there is nothing to do. When Restart the
+engine cannot be pressed, the reason is written under it, with what to
+do; after a press the card waits for the engine and draws itself again.
 
 Shared routes would let tailnet devices reach the flame controllers
 directly, past the engine, and arrive with a show network address, so
