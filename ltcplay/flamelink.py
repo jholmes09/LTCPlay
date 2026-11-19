@@ -625,6 +625,16 @@ TIMING_LIMITS_MS = (50, 75, 100, 150)
 # built in code). Read here, never changed here.
 TIMING_ALERT_MS = 100
 TIMING_HOUR_S = 3600.0
+# The fire window (Jeff, 2026-11-18: the alert only while a flame can
+# fire). A late frame is a "fire window" one when, at the frame before it
+# or at it, this link had a source of fire values: a show in progress (its
+# first live frame to the first frame with no show timecode, a Hold
+# included), a show cue playing, the purge frame (the Morning and Cleaning
+# tests and purges), live flame programming, the Fireball page's frame,
+# or any fire value at all in the frame. A show state that could not be
+# read counts too (unknown is a fire window). Only the rack screen's alert
+# is judged by it: every late frame is still counted, journaled and shown
+# in the Flame timing line, and flamesafe's own cut offs never look at it.
 # next_deadline: no two frames closer together than this share of a period
 # (5 ms at 40 a second).
 MIN_GAP_SHARE = 0.2
@@ -1059,6 +1069,10 @@ class FlameLink:
         self._timing_show = None
         self._timing_done = collections.deque()
         self._timing_late = collections.deque(maxlen=2000)
+        # The same, only the ones in a fire window (_fire_window): the rack
+        # screen's alert reads these.
+        self._timing_late_fire = collections.deque(maxlen=2000)
+        self._fire_prev = True      # unknown before the first frame
         self._frame_tc = None
 
     # -- the journal -----------------------------------------------------------
@@ -1266,8 +1280,12 @@ class FlameLink:
             if show is not None:
                 show.add(gap)
                 self._timing_shows.add(gap)
+            fire = self._fire_window()
+            was, self._fire_prev = self._fire_prev, fire
             if gap * 1000.0 > self.timing_limit_ms:
                 self._timing_late.append((now, gap * 1000.0))
+                if fire or was:
+                    self._timing_late_fire.append((now, gap * 1000.0))
             if self._haze_live:
                 if show is None:
                     self._timing_show = FrameTiming(
@@ -1278,6 +1296,19 @@ class FlameLink:
                                           show))
         except Exception:
             pass
+
+    def _fire_window(self):
+        """True while this link has a source of fire values (the fire
+        window, the comment under TIMING_HOUR_S), or when that cannot be
+        told. The sender thread's, once a frame: plain reads, no lock,
+        never raises."""
+        try:
+            return bool(self._timing_show is not None or self._haze_live
+                        or self._cue_kind == "state"
+                        or self.last_values_nonzero or self._program_on
+                        or self.purge_active() or self.manual_active())
+        except Exception:
+            return True
 
     def _timing_journal(self):
         """The watch thread's half: one journal line for each finished hour
@@ -1302,15 +1333,17 @@ class FlameLink:
         except Exception:
             pass
 
-    def late_last_hour(self, now=None):
+    def late_last_hour(self, now=None, fire_only=False):
         """(how many intervals over TIMING_ALERT_MS in the last hour, the
-        worst of them in ms). Never raises."""
+        worst of them in ms). With `fire_only`, only the ones in a fire
+        window (_fire_window). Never raises."""
         try:
             now = self._clock() if now is None else now
+            src = self._timing_late_fire if fire_only else self._timing_late
             got = []
             for _ in range(3):
                 try:
-                    got = list(self._timing_late)
+                    got = list(src)
                     break
                 except RuntimeError:
                     continue
@@ -1326,8 +1359,11 @@ class FlameLink:
         raises."""
         try:
             n, worst = self.late_last_hour()
+            nf, worstf = self.late_last_hour(fire_only=True)
             out = {"limit_ms": self.timing_limit_ms,
-                   "late_last_hour": n, "late_last_hour_worst_ms": worst}
+                   "late_last_hour": n, "late_last_hour_worst_ms": worst,
+                   "late_fire_last_hour": nf,
+                   "late_fire_last_hour_worst_ms": worstf}
             for k, w in (("since_start", self._timing_total),
                          ("in_shows", self._timing_shows),
                          ("this_hour", self._timing_hour),

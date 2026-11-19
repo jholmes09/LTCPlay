@@ -52136,6 +52136,7 @@ def test_flame_frame_timing_alert_and_systems_line():
     rm._frame_timing_work()
     check(not rm.alerts.open(), "no flame link: no alert")
     rm.flame_link_get = lambda: lk
+    lk._haze_live = True             # a show cue playing: a fire window
     for _ in range(100):
         clk[0] += 0.025
         lk._timing_add(0.025, clk[0])
@@ -52174,6 +52175,195 @@ def test_flame_frame_timing_alert_and_systems_line():
     check(len(al) == 1 and al[0].text.startswith(
         "Flame frames late, last hour: 2.") and "worst 178 ms" in al[0].text,
           f"a new late frame raises it again: {[a.text for a in al]}")
+    print("  ok")
+
+
+def test_flame_timing_alert_only_in_a_fire_window():
+    section("flame link timing (Jeff, 2026-11-18): a late frame is an alert "
+            "only in a fire window (a show, a Hold, a purge or test, "
+            "Programming, the Fireball page, an unreadable state); outside "
+            "one it is still counted and journaled. The alert clears by "
+            "itself after its hour, unless a gap was over the big gap limit")
+    import tempfile
+    from ltcplay import flamelink as fl
+    from ltcplay import remote as RM
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "frame_stale_ms": 500})
+
+    def rig():
+        clk = [8000.0]
+        jl = _FlJournal()
+        lk = fl.FlameLink(cfg, clock=lambda: clk[0], journal=jl)
+        rm = RM.Remote(None, None, folder=tempfile.mkdtemp(),
+                       log=lambda t: None)
+        rm._journal = lambda *a, **k: None
+        alog = []
+        rm.alerts._journal = lambda text, **kw: alog.append((text, kw))
+        rm.flame_link_get = lambda: lk
+
+        def tick(gap, n=1):
+            for _ in range(n):
+                clk[0] += gap
+                lk._timing_add(gap, clk[0])
+        return clk, jl, lk, rm, tick, alog
+
+    def row(rm):
+        got = [x for x in rm.subsystems({}) if x["name"] == "Flame timing"]
+        return got[0] if got else None
+
+    # Idle (02:00, no show, nothing set): a 150 ms gap is counted and
+    # journaled, never an alert.
+    clk, jl, lk, rm, tick, alog = rig()
+    tick(0.025, 100)
+    tick(0.150)
+    tick(0.025, 10)
+    rm._frame_timing_work()
+    tv = lk.timing_view()
+    r = row(rm)
+    check(not rm.alerts.open(), f"idle: no alert "
+                                f"{[a.text for a in rm.alerts.open()]}")
+    check(tv["late_last_hour"] == 1 and tv["late_fire_last_hour"] == 0 and
+          r and r["state"] == "warn" and r["word"].startswith("1 frame(s)"),
+          f"idle: still counted on the Flame timing line: {tv} {r}")
+    clk[0] += fl.TIMING_HOUR_S
+    tick(0.025)
+    lk._timing_journal()
+    check(any(kw.get("outcome") == "frames_late" and
+              t.startswith("Flame frames late: 1 in the last hour")
+              for t, kw in jl.lines),
+          f"idle: still journaled: {[t for t, _ in jl.lines]}")
+
+    # In a show: an alert that says it clears itself, then clears itself
+    # once the hour has no late frame in a fire window.
+    clk, jl, lk, rm, tick, alog = rig()
+    tick(0.025, 20)
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 5)
+    tick(0.130)
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(len(al) == 1 and al[0].kind == "timing" and
+          al[0].text.startswith("Flame frames late, last hour: 1.") and
+          "Clears by itself after an hour." in al[0].text and
+          "acknowledge it" not in al[0].text and _op_shaped(al[0].full),
+          f"in a show: the alert, clearing itself: "
+          f"{[a.full for a in al]}")
+    lk._haze_live, lk._frame_tc = False, None
+    tick(0.025, 3)
+    clk[0] += fl.TIMING_HOUR_S - 1.0
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "still open inside the hour")
+    clk[0] += 2.0
+    rm._frame_timing_work()
+    check(not rm.alerts.open() and
+          any("Alert cleared (timing): Confirm by LTC Player" in t
+              for t, _kw in alog),
+          f"after the hour: cleared by itself, journaled: "
+          f"{[t for t, _ in alog]}")
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "and stays cleared")
+
+    # A gap over the big gap limit: it needs a click.
+    big = RM.Remote.TIMING_CLICK_MS
+    check(big == 250, f"the big gap limit is 250 ms: {big}")
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 5)
+    tick((big + 30) / 1000.0)
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(len(al) == 1 and f"A gap over {big} ms: acknowledge it." in
+          al[0].text and "Clears by itself" not in al[0].text and
+          _op_shaped(al[0].full),
+          f"a big gap: acknowledge it: {[a.full for a in al]}")
+    lk._haze_live, lk._frame_tc = False, None
+    tick(0.025, 3)
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a big gap stays open after the hour")
+    if al:
+        rm.alerts.clear(id=al[0].id, who="Andy", action="Acknowledge",
+                        screen="rack")
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "acknowledged: closed, stays closed")
+    lk._haze_live, lk._frame_tc = True, "00:00:02:00"
+    tick(0.025, 3)
+    tick(0.120)
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a new small gap in a show alerts")
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "and clears by itself again")
+
+    # A Hold (the show's timecode still there, nothing live) is the show.
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 3)
+    lk._haze_live = False
+    tick(0.025, 3)
+    tick(0.140)
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a Hold: alerts")
+
+    # Every other source of fire values is a fire window.
+    def other(name, setup):
+        clk, jl, lk, rm, tick, alog = rig()
+        tick(0.025, 20)
+        rm._frame_timing_work()
+        setup(lk)
+        tick(0.025)
+        tick(0.140)
+        rm._frame_timing_work()
+        check(len(rm.alerts.open()) == 1 and
+              lk.timing_view()["late_fire_last_hour"] == 1,
+              f"{name}: a late frame alerts")
+    other("a purge or a Morning test (the purge frame)",
+          lambda lk: lk.purge_set([0] * 3 + [200] + [0] * 508))
+
+    def fireball(lk):
+        lk.set_manual_slots([4])
+        lk.manual_set([0] * 3 + [255] + [0] * 508)
+    other("the Fireball page", fireball)
+    other("live flame programming", lambda lk: lk.program_begin())
+
+    def nonzero(lk):
+        lk.last_values_nonzero = True
+    other("any fire value in the frame", nonzero)
+
+    def unknown(lk):
+        lk._cue_kind = "state"
+    other("a show state that could not be read", unknown)
+
+    def broken(lk):
+        def boom():
+            raise RuntimeError("no")
+        lk.purge_active = boom
+    other("a fire window that cannot be worked out", broken)
+
+    # The window ends on the late frame itself: the pulse it cut short was
+    # in the frame before.
+    clk, jl, lk, rm, tick, alog = rig()
+    tick(0.025, 20)
+    lk.last_values_nonzero = True
+    tick(0.025)
+    lk.last_values_nonzero = False
+    tick(0.140)
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a late frame right after a fire "
+                                      "value: alerts")
+
+    # A link that cannot tell the fire window: every late frame alerts.
+    class OldLink:
+        def late_last_hour(self):
+            return 1, 140.0
+
+        def timing_view(self):
+            return {"limit_ms": 100}
+    clk, jl, lk, rm, tick, alog = rig()
+    rm.flame_link_get = lambda: OldLink()
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a link without the fire window: "
+                                      "alerts")
     print("  ok")
 
 
@@ -127916,6 +128106,7 @@ if __name__ == "__main__":
         test_flame_link_sender_not_held_by_other_threads,
         test_flame_link_encode_is_byte_for_byte_the_same,
         test_flame_frame_timing_alert_and_systems_line,
+        test_flame_timing_alert_only_in_a_fire_window,
         test_flame_serve_keeps_frames_on_time,
         test_flame_link_end_to_end_against_the_real_flamesafe,
         test_the_gpl_path_never_loads_the_flame_link,
