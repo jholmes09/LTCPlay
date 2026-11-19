@@ -7691,6 +7691,58 @@ def build():
   "        why = self.restart_refusal()\n        if why:\n            return why\n",
   "        why = \"\"\n"),
 
+ ("booth speaker: a channel the show audio uses is saved",
+  "ltcplay/boothcard.py",
+  "        if c in taken:",
+  "        if False:"),
+
+ ("booth speaker: a device whose show outputs are not known saves untick"
+  "ed", "ltcplay/boothcard.py",
+  "    if unsure and confirm is not True:",
+  "    if False:"),
+
+ ("booth speaker: the show file's stems reserve nothing",
+  "ltcplay/remote.py",
+  "                res.add(acfg.device, sorted(chans), why_show)",
+  "                pass"),
+
+ ("booth speaker: the default output, where MadMapper plays, is free",
+  "ltcplay/remote.py",
+  "                if d.get(\"default\"):",
+  "                if False:"),
+
+ ("booth speaker: no show folder means no show audio to keep off",
+  "ltcplay/remote.py",
+  "            if not folder or not os.path.isdir(folder):",
+  "            if False:"),
+
+ ("booth speaker: a show file whose audio cannot be read reserves nothing",
+  "ltcplay/remote.py",
+  "                        res.everywhere = res.everywhere or (\n"
+  "                            f\"{os.path.basename(path)} names show audio \"",
+  "                        res.everywhere = res.everywhere and (\n"
+  "                            f\"{os.path.basename(path)} names show audio \""),
+
+ ("booth speaker: a failed swap leaves the old player silent",
+  "ltcplay/remote.py",
+  "                if not swapped and player is not None and \\",
+  "                if False and player is not None and \\"),
+
+ ("booth speaker: the test note plays during the hazer test",
+  "ltcplay/remote.py",
+  "            if ht is not None and ht.on():",
+  "            if False:"),
+
+ ("booth speaker: the test note plays during cleaning",
+  "ltcplay/remote.py",
+  "            if cl is not None and cl.active():",
+  "            if False:"),
+
+ ("booth speaker: the test note plays with the fuel pump on",
+  "ltcplay/remote.py",
+  "            if pm is not None and pm.on():",
+  "            if False:"),
+
  ("booth notes: the status carries no note count",
   "ltcplay/remote.py",
   "                        \"notes\": self._booth_notes()}",

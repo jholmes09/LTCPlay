@@ -20,6 +20,66 @@ import json
 from . import boothaudio
 
 NOTHING = "Nothing was changed."
+# The confirm the card shows for a device whose show audio outputs the
+# engine cannot tell (Reserved.unsure): the operator's own check.
+CONFIRM_WORDS = ("These are the show mixer's own outputs: I checked the "
+                 "channel is free")
+
+
+class Reserved:
+    """The outputs a booth note must never play on (cold review of #280,
+    P2-1): the show audio's and the announcements', by device. `known`
+    channels are refused outright; a device in `unsure` (the engine cannot
+    tell which of its outputs the show audio uses) is refused unless the
+    operator ticks CONFIRM_WORDS; `everywhere` makes every device unsure.
+    A device is matched by its name, whatever the audio system, so the
+    same interface listed under MME and WASAPI is one device."""
+
+    def __init__(self):
+        self.known = {}        # name key -> {channel: "in use by ..."}
+        self.unsure = {}       # name key -> why it cannot be told
+        self.everywhere = ""   # why no device can be told
+
+    @staticmethod
+    def _key(name):
+        return str(name or "").strip().lower()
+
+    @staticmethod
+    def _same(a, b):
+        # Windows' MME cuts a name to 31 characters: a cut name is the
+        # same device (fails closed).
+        return bool(a) and bool(b) and (a == b or (
+            min(len(a), len(b)) >= 31 and (a.startswith(b) or
+                                           b.startswith(a))))
+
+    def add(self, device, channels, why):
+        k = self._key(device)
+        if not k:
+            return
+        got = self.known.setdefault(k, {})
+        for c in channels or ():
+            if isinstance(c, int) and not isinstance(c, bool) and c >= 1:
+                got.setdefault(int(c), why)
+
+    def unknown(self, device, why):
+        k = self._key(device)
+        if k:
+            self.unsure.setdefault(k, why)
+
+    def for_device(self, name):
+        """({channel: "in use by ..."}, why unsure or "") for one device."""
+        k = self._key(name)
+        taken, unsure = {}, self.everywhere
+        for dk, chans in self.known.items():
+            if self._same(dk, k):
+                for c, why in chans.items():
+                    taken.setdefault(c, why)
+        if not unsure:
+            for dk, why in self.unsure.items():
+                if self._same(dk, k):
+                    unsure = why
+                    break
+        return taken, unsure
 
 
 def _announce():
@@ -35,7 +95,7 @@ def revision(block):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def choices(outs, want="", host=""):
+def choices(outs, want="", host="", reserved=None):
     """Every output on this PC for the device picker: [{"name", "hostapi",
     "channels", "label", "same_name", "cannot_pick", "picked"}]. The same
     rules as announce.Announcer.outputs: a name listed more than once needs
@@ -52,6 +112,8 @@ def choices(outs, want="", host=""):
     host = (host or "").strip().lower()
     out = []
     for d in outs:
+        taken, unsure = (reserved.for_device(d["name"]) if reserved
+                         is not None else ({}, ""))
         k = d["name"].strip().lower()
         same = counts[k] > 1
         twin = per_api[(k, d["hostapi"].strip().lower())] > 1
@@ -61,16 +123,23 @@ def choices(outs, want="", host=""):
                         ", the same name twice here: rename one in "
                         "Windows Sound settings" if twin else ""),
                     "same_name": same, "cannot_pick": twin,
+                    "reserved": {str(c): w for c, w in sorted(
+                        taken.items())},
+                    "unsure": unsure,
                     "picked": bool(want) and k == want and (
                         not same or d["hostapi"].strip().lower() == host)})
     return out
 
 
-def validate(outs, device, hostapi, channels):
+def validate(outs, device, hostapi, channels, reserved=None,
+             confirm=False):
     """A pick checked against this PC's real outputs: (name, hostapi or "",
     (a,) or (a, b)) as the file will have them, or ValueError with a plain
     sentence ending "Nothing was changed.". device "" is the booth speaker
-    off: ("", "", ()) and the channels are not looked at."""
+    off: ("", "", ()) and the channels are not looked at. `reserved`
+    (Reserved) refuses a channel the show audio or the announcements use
+    on that device, and a device whose outputs cannot be told unless
+    `confirm` is the JSON word true."""
     A = _announce()
     if not isinstance(device, str):
         raise ValueError(f"Pick a device from the list. {NOTHING}")
@@ -113,6 +182,21 @@ def validate(outs, device, hostapi, channels):
             raise ValueError(f"{A._clean(dev['name'])} has only {have} "
                              f"outputs, so channel {c} is not there. "
                              f"{NOTHING}")
+    if reserved is None:
+        # Never saved without knowing what the show uses (fails closed).
+        raise ValueError(f"The outputs the show audio uses could not be "
+                         f"read. {NOTHING}")
+    taken, unsure = reserved.for_device(dev["name"])
+    for c in chans:
+        if c in taken:
+            raise ValueError(f"Output {c} of {A._clean(dev['name'])} is in "
+                             f"use by {taken[c]}. A booth note never plays "
+                             f"there: pick another channel. {NOTHING}")
+    if unsure and confirm is not True:
+        raise ValueError(f"LTC Player cannot tell which outputs of "
+                         f"{A._clean(dev['name'])} the show audio uses: "
+                         f"{unsure}. Check the channel is free on the mixer, "
+                         f"then tick \"{CONFIRM_WORDS}\" and Save. {NOTHING}")
     return dev["name"], host, chans
 
 

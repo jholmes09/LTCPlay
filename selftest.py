@@ -70995,6 +70995,18 @@ def test_booth_speaker_card_saves_checks_and_tests():
                                  "files": {"test": wav}, "response_s": 45}}
         with open(path, "w", encoding="utf-8") as fh:
             _json.dump(start, fh)
+        # The show file in the show folder plays its show audio on
+        # StudioLive 16R outputs 1, 2 (music) and 3 (sub), timecode on 18;
+        # the announcements' Main L/R are 1 and 2 of it too.
+        show_folder = R.httpd.control.folder
+        _am_ck = _am_clock_doc(
+            [{"file": "music.wav", "channels": [1, 2]},
+             {"file": "sub.wav", "channels": [3]},
+             {"file": "ltc.wav", "channels": [18]}],
+            device="StudioLive 16R", channels=18, ltc_output=18)
+        with open(os.path.join(show_folder, "show.json"), "w",
+                  encoding="utf-8") as fh:
+            _json.dump({"cues": [], "clock": _am_ck}, fh)
 
         def disk():
             with open(path, encoding="utf-8") as fh:
@@ -71038,6 +71050,16 @@ def test_booth_speaker_card_saves_checks_and_tests():
                                    "channel, then Save." and v["rev"],
               f"off to start: {st} {v}")
         by = {(o["name"], o["hostapi"]): o for o in v["outputs"]}
+        live = by[("StudioLive 16R", "Windows WASAPI")]
+        check(sorted(live["reserved"], key=int) == ["1", "2", "3", "18"] and
+              live["reserved"]["3"] == "the show audio" and
+              not live["unsure"] and
+              by[("Speakers (Realtek)", "MME")]["unsure"] and
+              not by[("Booth Box", "MME")]["reserved"] and
+              v["confirm_words"] == "These are the show mixer's own "
+                                    "outputs: I checked the channel is free",
+              f"the show audio's outputs are reserved, the default output "
+              f"is unsure: {v['outputs']}")
         check(by[("StudioLive 16R", "Windows WASAPI")]["channels"] == 18 and
               by[("Booth Box", "MME")]["same_name"] and
               by[("Speakers (Realtek)", "MME")]["channels"] == 2 and
@@ -71063,7 +71085,24 @@ def test_booth_speaker_card_saves_checks_and_tests():
                 ({"device": "StudioLive 16R", "channels": ["7"]},
                  "Pick Channel A"),
                 ({"device": "StudioLive 16R", "channels": [1, 2, 3]},
-                 "Pick Channel A")):
+                 "Pick Channel A"),
+                # The show's own outputs, even if the page sent them.
+                ({"device": "StudioLive 16R", "channels": [1]},
+                 "Output 1 of StudioLive 16R is in use by the show audio. "
+                 "A booth note never plays there: pick another channel. "
+                 "Nothing was changed."),
+                ({"device": "StudioLive 16R", "channels": [7, 3]},
+                 "Output 3 of StudioLive 16R is in use by the show audio."),
+                ({"device": "StudioLive 16R", "channels": [18]},
+                 "is in use by the show audio"),
+                ({"device": "StudioLive 16R", "channels": [2],
+                  "confirm": True}, "is in use by the show audio"),
+                # This PC's default output: not known, needs the tick.
+                ({"device": "Speakers (Realtek)", "channels": [1]},
+                 "LTC Player cannot tell which outputs of Speakers "
+                 "(Realtek) the show audio uses"),
+                ({"device": "Speakers (Realtek)", "channels": [1],
+                  "confirm": "true"}, "cannot tell which outputs")):
             st, _h, out = save(dict(body, rev=rev0))
             check(st == 409 and word in out.get("error", "") and
                   "Nothing was changed" in out["error"] and disk() == start,
@@ -71123,7 +71162,7 @@ def test_booth_speaker_card_saves_checks_and_tests():
         cw.add("rack screen settings", path, digest=CW.keys_hash(
             ("booth_alert", "alert_pixels", "flamesafe_config")))
         R.remote.config_watch = cw
-        st, _h, out = save({"device": "StudioLive 16R", "channels": [3],
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [5],
                             "rev": get()[2]["rev"]})
         check(st == 200 and not cw.engine_behind(path),
               f"the card's own save is not a change on disk: {st} {out}")
@@ -71132,12 +71171,57 @@ def test_booth_speaker_card_saves_checks_and_tests():
         with open(path, "w", encoding="utf-8") as fh:
             _json.dump(hand, fh)
         check(cw.engine_behind(path), "a hand edit is a change")
-        st, _h, out = save({"device": "StudioLive 16R", "channels": [4],
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [6],
                             "rev": get()[2]["rev"]})
         check(st == 200 and cw.engine_behind(path) and
               disk()["alert_pixels"]["count"] == 200,
               f"a save after a hand edit keeps it and never hides it: {st}")
         R.remote.config_watch = None
+        # The unsure default output, saved with the operator's tick.
+        st, _h, out = save({"device": "Speakers (Realtek)", "channels": [2],
+                            "confirm": True, "rev": get()[2]["rev"]})
+        rows = [r for r in R.svc.journal if r.get("action") ==
+                "booth speaker"]
+        check(st == 200 and disk()["booth_alert"]["channels"] == [2] and
+              "ticked that they checked the channel is free" in
+              rows[-1]["text"], f"with the tick: saved, said: {st} {out}")
+        # Fails closed: with no show folder, or a show file whose audio
+        # cannot be read, every device needs the tick.
+        keep_folder = R.httpd.control.folder
+        for how in ("gone", "broken"):
+            if how == "gone":
+                R.httpd.control.folder = os.path.join(notes, "nowhere")
+            else:
+                with open(os.path.join(show_folder, "bad.json"), "w",
+                          encoding="utf-8") as fh:
+                    _json.dump({"cues": [], "clock": {
+                        "source": "audio_master", "audio": {}}}, fh)
+            st, _h, out = save({"device": "Booth Box", "hostapi": "MME",
+                                "channels": [7], "rev": get()[2]["rev"]})
+            check(st == 409 and "cannot tell which outputs of Booth Box" in
+                  out.get("error", ""),
+                  f"{how}: the show audio not known: refused: {st} {out}")
+            R.httpd.control.folder = keep_folder
+        os.remove(os.path.join(show_folder, "bad.json"))
+        # A failure after the old player was retired never leaves it
+        # retired: the alerts keep their booth note.
+        old_p = R.remote.alerts.booth
+        keep_bp = BA.BoothPlayer
+
+        def _boom(*a, **k):
+            raise RuntimeError("the new player could not be made")
+        BA.BoothPlayer = _boom
+        try:
+            R.remote.booth_speaker_save(
+                {"device": "StudioLive 16R", "channels": [8],
+                 "rev": get()[2]["rev"]}, RM.Ctx(True, "127.0.0.1"))
+            check(False, "the failure must reach the caller")
+        except RuntimeError:
+            pass
+        finally:
+            BA.BoothPlayer = keep_bp
+        check(R.remote.alerts.booth is old_p and not old_p._retired,
+              "the old player plays again after a failed swap")
         # A two-output pair, and a name listed twice with its audio system.
         rev1 = get()[2]["rev"]
         st, _h, out = save({"device": "Booth Box", "hostapi": "MME",
@@ -71181,18 +71265,71 @@ def test_booth_speaker_card_saves_checks_and_tests():
         check(st == 409 and "A flame group is armed" in out.get("error", "")
               and len(sd.written) == 1, f"a group armed: refused: {out}")
         R.remote.flame_status.groups = [{"armed": "disarmed"}]
+        # Every other refusal of the Test note, one at a time.
+
+        class _On:
+            def __init__(self, on=True):
+                self.v = on
+
+            def on(self):
+                return self.v
+
+            def active(self):
+                return self.v
+
+        class _Morning:
+            def __init__(self, mv):
+                self.mv = mv
+
+            def status_view(self):
+                return self.mv
+
+        class _Ann:
+            playing = {"id": "delayed"}
+            options = {"show_outputs": (1, 2)}
+            device_name = ""
+        for attr, val, word in (
+                ("hazer_test", _On(), "The hazer test is on"),
+                ("cleaning", _On(), "Wave flamer cleaning is running"),
+                ("pump", _On(), "The fuel pump is on"),
+                ("morning", _Morning({"purge": {"group": 1}}),
+                 "A purge is selected or firing"),
+                ("morning", _Morning({"laser_tests_on": True}),
+                 "A laser test is on"),
+                ("morning", _Morning({"laser_arm": {"armed": True}}),
+                 "A laser is armed"),
+                ("announce", _Ann(), "An announcement is playing"),
+                ("live_flame", type("LF", (), {"on": True})(),
+                 "Live flame programming is on")):
+            keep = getattr(R.remote, attr, None)
+            setattr(R.remote, attr, val)
+            try:
+                st, _h, out = test()
+            finally:
+                setattr(R.remote, attr, keep)
+            check(st == 409 and word in out.get("error", "") and
+                  "Nothing was played" in out["error"] and
+                  len(sd.written) == 1,
+                  f"{attr}: the test note refused: {st} {out}")
+        st, _h, out = test()
+        for _ in range(200):
+            if R.remote.alerts.booth.playing == 0:
+                break
+            time.sleep(0.01)
+        check(st == 200 and len(sd.written) == 2,
+              f"with all of them off it plays again: {st} {out}")
         rev2 = get()[2]["rev"]
         for state in ("SHOW", "PAUSED", "HOLD"):
             R.remote._show_live_state = lambda st=state: st
             st, _h, out = save({"device": "StudioLive 16R",
-                                "channels": [1], "rev": rev2})
+                                "channels": [9], "rev": rev2})
             check(st == 409 and "between shows" in out.get("error", "") and
                   disk() == d, f"{state}: no save: {st} {out}")
             st, _h, out = test()
             check(st == 409 and "between shows" in out.get("error", "")
-                  and len(sd.written) == 1, f"{state}: no test note: {out}")
+                  and len(sd.written) == 2, f"{state}: no test note: {out}")
         R.remote._show_live_state = lambda: None
-        st, _h, out = save({"device": "StudioLive 16R", "channels": [1],
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [9],
                             "rev": rev2})
         check(st == 409 and "could not be read" in out.get("error", "") and
               disk() == d, f"the show state not known: no save: {out}")
@@ -71200,7 +71337,7 @@ def test_booth_speaker_card_saves_checks_and_tests():
         # A note playing: nothing changes under it.
         cur = R.remote.alerts.booth
         cur.playing = 1
-        st, _h, out = save({"device": "StudioLive 16R", "channels": [1],
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [9],
                             "rev": rev2})
         check(st == 409 and "A booth note is playing" in out.get("error", "")
               and disk() == d and R.remote.alerts.booth is cur,
@@ -71232,7 +71369,7 @@ def test_booth_speaker_card_saves_checks_and_tests():
         st, _h, out = get()
         check(st == 403 and "outputs" not in out,
               f"signed out: no card: {st} {out}")
-        st, _h, out = save({"device": "StudioLive 16R", "channels": [1],
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [9],
                             "rev": rev3})
         check(st == 403 and out.get("role_refused") and disk() == d2,
               f"signed out: no save: {st} {out}")
@@ -71245,7 +71382,7 @@ def test_booth_speaker_card_saves_checks_and_tests():
                                client=loop, headers=ck)
             check(st == 403 and "outputs" not in out,
                   f"{name}: no card: {st} {out}")
-            st, _h, out = save({"device": "StudioLive 16R", "channels": [1],
+            st, _h, out = save({"device": "StudioLive 16R", "channels": [9],
                                 "rev": rev3}, headers=ck)
             check(st == 403 and out.get("role_refused") and disk() == d2,
                   f"{name}: no save: {st} {out}")
@@ -71276,8 +71413,13 @@ def test_booth_speaker_card_saves_checks_and_tests():
                'id="booth-b"', 'id="booth-line"', 'id="booth-save"',
                'id="booth-test"', '"/api/remote/booth-speaker"',
                "None: booth speaker off",
-               "Channel B: none, one channel only"):
+               "Channel B: none, one channel only",
+               "Channel A: choose a channel", 'id="booth-ok"'):
         check(el in page, f"the page has {el}")
+    check("boothChannels(0, 0)" in page and
+          'boothChannels(ch[0] || 0, ch[1] || 0)' in page,
+          "no channel is picked for the operator: a new device starts on "
+          "choose a channel")
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "OPERATOR.md"), encoding="utf-8") as fh:
         op = " ".join(fh.read().split())
@@ -71286,6 +71428,9 @@ def test_booth_speaker_card_saves_checks_and_tests():
         src = fh.read()
     check("Settings tab, **Booth speaker, on this machine**" in op and
           "no screen has a button for it yet" not in op and
+          "is not read by an older build" in op and
+          "never plays on a PC without flamesafe" in op and
+          "silent until its next repeat" in op and
           "written by hand until the Settings screen" not in src,
           "OPERATOR.md and boothaudio.py say the Settings tab sets it")
     print("  ok")
@@ -127957,12 +128102,18 @@ def test_ui2_set_once_cards_are_on_settings_not_schedule():
                        "label": "Speakers (Realtek High Definition Audio "
                                 "Device With A Long Name) (Windows WASAPI, "
                                 "2 outputs)", "same_name": False,
-                       "cannot_pick": False, "picked": False},
+                       "cannot_pick": False, "picked": False,
+                       "reserved": {}, "unsure": "it is this PC's default "
+                       "output, where MadMapper's show audio plays"},
                       {"name": "Booth Box", "hostapi": "Windows WASAPI",
                        "channels": 8, "label": "Booth Box (Windows WASAPI, "
                                                "8 outputs)",
                        "same_name": False, "cannot_pick": False,
-                       "picked": True}]},
+                       "reserved": {"1": "the show audio",
+                                    "2": "the show audio"},
+                       "unsure": "", "picked": True}],
+                  "confirm_words": "These are the show mixer's own "
+                                   "outputs: I checked the channel is free"},
               "/api/remote/network": {"lines": ["Saved: nothing yet."],
                                       "url": "", "saved": "",
                                       "candidates": ["10.20.0.5"],
@@ -127986,11 +128137,21 @@ out.boothDev = g("booth-dev").selectedOptions[0].textContent;
 out.boothA = [...g("booth-a").options].map(o => o.value);
 out.boothPickA = g("booth-a").value;
 out.boothB = [...g("booth-b").options].map(o => o.textContent);
+out.boothOff = [...g("booth-a").options].filter(o => o.disabled).map(o => o.textContent);
+out.boothSave1 = g("booth-save").disabled;
+out.boothTick1 = g("booth-ok-l").hidden;
 out.boothDevs = [...g("booth-dev").options].map(o => o.textContent);
 g("booth-dev").selectedIndex = 1;
 g("booth-dev").dispatchEvent(new Event("change"));
 out.boothA2 = [...g("booth-a").options].map(o => o.value);
+out.boothPickA2 = g("booth-a").value;
 out.boothB2 = [...g("booth-b").options].map(o => o.value);
+out.boothSave2 = g("booth-save").disabled;
+out.boothTick2 = !g("booth-ok-l").hidden && vis(g("booth-ok"));
+g("booth-a").value = "2"; g("booth-a").dispatchEvent(new Event("change"));
+out.boothSave3 = g("booth-save").disabled;
+g("booth-ok").checked = true; g("booth-ok").dispatchEvent(new Event("change"));
+out.boothSave4 = g("booth-save").disabled;
 out.boothNarrow = [...document.querySelectorAll("#booth-card select, #booth-card .b")].filter(e => e.getBoundingClientRect().right > g("booth-card").getBoundingClientRect().right + 1).map(e => e.id);
 out.xs = document.scrollingElement.scrollWidth - innerWidth;
 out.wide = [...document.querySelectorAll("#t-settings .card")].filter(e => vis(e) && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.id || "card");
@@ -128013,18 +128174,28 @@ out.wide = [...document.querySelectorAll("#t-settings .card")].filter(e => vis(e
               "output 7, 23 of 23 notes found." and
               m["boothDev"] == "Booth Box (Windows WASAPI, 8 outputs)" and
               m["boothDevs"][0] == "None: booth speaker off" and
-              m["boothA"] == [str(i) for i in range(1, 9)] and
+              m["boothA"] == [str(i) for i in range(0, 9)] and
               m["boothPickA"] == "7" and
               m["boothB"][0] == "Channel B: none, one channel only" and
-              len(m["boothB"]) == 9 and not m["boothNarrow"],
+              len(m["boothB"]) == 9 and not m["boothNarrow"] and
+              m["boothOff"] == ["Channel A: 1 of 8, in use by the show "
+                                "audio", "Channel A: 2 of 8, in use by the "
+                                "show audio"] and
+              m["boothSave1"] is False and m["boothTick1"] is True,
               f"{w}x{h}: the Booth speaker card: the device, Channel A 1 "
               f"to 8 with 7 picked, Channel B none or 1 to 8, the check "
               f"line, nothing past its edge: {m.get('boothDev')} "
               f"{m.get('boothA')} {m.get('boothB')} {m.get('boothNarrow')}")
-        check(m["boothA2"] == ["1", "2"] and
-              m["boothB2"] == ["0", "1", "2"],
-              f"{w}x{h}: a device of 2 outputs offers 1 and 2 only: "
-              f"{m.get('boothA2')} {m.get('boothB2')}")
+        check(m["boothA2"] == ["0", "1", "2"] and m["boothPickA2"] == "0"
+              and m["boothB2"] == ["0", "1", "2"] and m["boothSave2"] and
+              m["boothTick2"] and m["boothSave3"] and
+              m["boothSave4"] is False,
+              f"{w}x{h}: a device of 2 outputs offers 1 and 2 only, starts "
+              f"on choose a channel with Save off, and its unsure outputs "
+              f"need the tick: {m.get('boothA2')} {m.get('boothPickA2')} "
+              f"{m.get('boothB2')} {m.get('boothSave2')} "
+              f"{m.get('boothTick2')} {m.get('boothSave3')} "
+              f"{m.get('boothSave4')}")
     print("  ok")
 
 

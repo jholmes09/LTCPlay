@@ -381,10 +381,21 @@ machine** (2026-11-19; nobody edits ltcplay_remote.json by hand any more):
   "None: booth speaker off". A name Windows lists more than once shows
   its audio system, the same as the Announcement output card.
 - **Channel A**: 1 up to that device's output count (a device with 8
-  outputs offers 1 to 8, one with 2 offers 1 and 2). **Channel B**: a
-  second output, or "none, one channel only". On one output a stereo note
-  is folded to one; on two, left plays on A and right on B. Every other
-  output stays silent.
+  outputs offers 1 to 8, one with 2 offers 1 and 2). Nothing is picked
+  for you: it starts on "choose a channel" and Save waits for it.
+  **Channel B**: a second output, or "none, one channel only". On one
+  output a stereo note is folded to one; on two, left plays on A and right
+  on B. Every other output stays silent.
+- Outputs the show audio or the announcements use are greyed, "in use by
+  the show audio", and the engine refuses them even if a page sends one:
+  every stem's and the timecode's output in the show files of the show
+  folder (and of the show running), the announcements' Main L/R
+  (show_outputs) on that device, and outputs 1 and 2 of the announcement
+  output. When LTC Player cannot tell which outputs a device's show audio
+  uses (this PC's default output, where MadMapper's show audio plays; no
+  show folder; a show file whose audio cannot be read), Save needs the
+  tick "These are the show mixer's own outputs: I checked the channel is
+  free", and the journal says it was ticked.
 - The line under the pickers checks the setting in use, the same way a
   note does: "Booth speaker: StudioLive 16R, output 7, 23 of 23 notes
   found.", or exactly what is wrong (the device is not attached, it has
@@ -392,16 +403,20 @@ machine** (2026-11-19; nobody edits ltcplay_remote.json by hand any more):
 - **Save** checks the device and channels against this PC's real outputs
   and writes only the booth_alert block of ltcplay_remote.json (every
   other setting, and the block's own "files" and "response_s", is kept).
-  It is used at once, no restart. It is refused while a show is live or
-  on Hold, while a booth note is playing, and when the card is older than
-  the file (someone saved since: the card shows the new setting, pick
-  again). Every refusal ends "Nothing was changed." The journal and the
+  It is used at once, no restart. An alert raised in the moment of a save
+  is silent until its next repeat (30 seconds, the booth's response_s). It
+  is refused while a show is live or on Hold, while a booth note is
+  playing, and when the card is older than the file (someone saved since:
+  the card shows the new setting, pick again). Every refusal ends "Nothing was changed." The journal and the
   audit log say who changed it, on which screen, from what to what.
 - **Test note** plays booth_test.wav on the booth speaker only, never the
   PA and never the show audio. It is refused while a show is running or
   on Hold, while any flame group is armed (or flamesafe's state is not
   known), during a purge, a laser or hazer test, cleaning or the fuel
-  pump, and when no booth speaker is set.
+  pump, and when no booth speaker is set. So Test note never plays on a PC
+  without flamesafe (fails closed).
+- A one-output setting (like [7]) is not read by an older build: after a
+  rollback the booth speaker is off until it is set to two outputs again.
 
 It is the "booth_alert" block in ltcplay_remote.json: `"device"` (the
 exact output name), `"hostapi"` (only when the name is listed more than

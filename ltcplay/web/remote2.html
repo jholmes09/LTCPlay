@@ -535,6 +535,8 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .pbar{display:flex;gap:var(--gap);flex-wrap:wrap;min-width:0}
 .pbar select.f,.pbar input.f{flex:2 1 14em;min-width:0;width:auto}
 .pbar .b{flex:1 1 9em}
+.booth-ok{display:flex;gap:10px;align-items:center;min-height:56px;color:var(--cream);line-height:1.3}
+.booth-ok input{width:28px;height:28px;flex:0 0 auto}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:var(--gap);min-width:0}
 .ptc{font-family:var(--mono);font-size:var(--tc-fs);font-weight:700;font-variant-numeric:tabular-nums}
 #p-mode .b.now{box-shadow:inset 0 -4px 0 var(--green)}
@@ -1267,10 +1269,11 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
            nobody edits ltcplay_remote.json by hand. On the show PC only,
            the Settings row, like the announcement output above. -->
       <div class="card col" id="booth-card" hidden>
-        <div class="t"><b>Booth speaker, on this machine</b><span>The short alert notes play here, on a private speaker in the booth. Never the PA. A save is used at once, between shows.</span></div>
+        <div class="t"><b>Booth speaker, on this machine</b><span>The short alert notes play here, on a private speaker in the booth. Never the PA: outputs the show audio or the announcements use cannot be picked. A save is used at once, between shows; an alert raised while you save sounds at its next repeat, within 30 seconds. Test note needs flamesafe connected and every flame group disarmed.</span></div>
         <div class="pbar"><select class="f" id="booth-dev" aria-label="Booth speaker device"></select></div>
         <div class="pbar"><select class="f" id="booth-a" aria-label="Booth speaker channel A"></select>
           <select class="f" id="booth-b" aria-label="Booth speaker channel B"></select></div>
+        <label class="booth-ok" id="booth-ok-l" hidden><input type="checkbox" id="booth-ok"> <span id="booth-ok-w"></span></label>
         <div class="pline" id="booth-line" role="status"></div>
         <div class="pbar"><button class="b green" id="booth-save"><svg class="i"><use href="#i-check"/></svg>Save</button>
           <button class="b" id="booth-test" title="Plays the test note on the booth speaker only. Never during a show, never with a flame group armed."><svg class="i"><use href="#i-mega"/></svg>Test note</button></div>
@@ -3582,19 +3585,41 @@ function boothPicked(){
   const v = $("booth-dev").value;
   try{ return v ? JSON.parse(v) : null; }catch(e){ return null; }
 }
+// No channel is ever picked for the operator (cold review of #280, P2-1):
+// Channel A starts as "choose a channel" and Save waits for it. An output
+// the show audio or the announcements use is shown greyed and cannot be
+// picked; a device whose outputs the engine cannot tell needs the tick.
 function boothChannels(keepA, keepB){
   const d = boothPicked();
   const n = d && d.device ? d.n : 0;
-  const a = keepA >= 1 && keepA <= n ? keepA : 1;
-  const b = keepB >= 1 && keepB <= n && keepB !== a ? keepB : 0;
-  let ha = "", hb = `<option value="0"${b ? "" : " selected"}>Channel B: none, one channel only</option>`;
+  const taken = (d && d.reserved) || {};
+  const free = i => !taken[String(i)];
+  const a = keepA >= 1 && keepA <= n && free(keepA) ? keepA : 0;
+  const b = keepB >= 1 && keepB <= n && keepB !== a && free(keepB) ? keepB : 0;
+  let ha = `<option value="0"${a ? "" : " selected"}>Channel A: choose a channel</option>`;
+  let hb = `<option value="0"${b ? "" : " selected"}>Channel B: none, one channel only</option>`;
   for(let i = 1; i <= n; i++){
-    ha += `<option value="${i}"${i === a ? " selected" : ""}>Channel A: ${i} of ${n}</option>`;
-    hb += `<option value="${i}"${i === b ? " selected" : ""}>Channel B: ${i} of ${n}</option>`;
+    const use = taken[String(i)] ? `, in use by ${esc(String(taken[String(i)]))}` : "";
+    const off = use ? " disabled" : "";
+    ha += `<option value="${i}"${i === a ? " selected" : ""}${off}>Channel A: ${i} of ${n}${use}</option>`;
+    hb += `<option value="${i}"${i === b ? " selected" : ""}${off}>Channel B: ${i} of ${n}${use}</option>`;
   }
   if(!n) ha = `<option value="0">Channel A: pick a device first</option>`;
   $("booth-a").innerHTML = ha; $("booth-b").innerHTML = hb;
   $("booth-a").disabled = $("booth-b").disabled = !n;
+  const unsure = !!(d && d.device && d.unsure);
+  $("booth-ok-l").hidden = !unsure;
+  if(!unsure) $("booth-ok").checked = false;
+  $("booth-ok-w").textContent = unsure ? String((BOOTH && BOOTH.confirm_words) || "") + ". (" + String(d.unsure) + ".)" : "";
+  boothSaveState();
+}
+function boothSaveState(){
+  const d = boothPicked();
+  const may = mayRow(ST, "settings");
+  const off = d && !d.device;
+  const chosen = Number($("booth-a").value) > 0;
+  const ticked = !(d && d.unsure) || $("booth-ok").checked;
+  $("booth-save").disabled = !may || !d || !(off || (chosen && ticked));
 }
 function boothDraw(v, keep){
   BOOTH = v;
@@ -3603,19 +3628,19 @@ function boothDraw(v, keep){
   let found = false;
   outs.forEach(o => {
     if(o.picked) found = true;
-    const val = JSON.stringify({device:String(o.name || ""), hostapi:o.same_name ? String(o.hostapi || "") : null, n:Number(o.channels) || 0});
+    const val = JSON.stringify({device:String(o.name || ""), hostapi:o.same_name ? String(o.hostapi || "") : null, n:Number(o.channels) || 0, reserved:o.reserved || {}, unsure:String(o.unsure || "")});
     opts.push(`<option value="${esc(val)}"${o.picked ? " selected" : ""}${o.cannot_pick ? " disabled" : ""}>${esc(String(o.label || o.name || ""))}</option>`);
   });
   if(v.device && !found) opts.unshift(`<option value="" selected>${esc(String(v.device))}: not on this PC now, choose an output</option>`);
   $("booth-dev").innerHTML = opts.join("");
   const ch = v.channels || [];
-  boothChannels(ch[0] || 1, ch[1] || 0);
+  boothChannels(ch[0] || 0, ch[1] || 0);
   const ln = v.line || {};
   $("booth-line").textContent = String(ln.text || "") + (v.outputs_error ? " " + v.outputs_error : "") + (v.error ? " " + v.error : "");
   $("booth-line").classList.toggle("warn", ln.ok === false || !!v.error);
   if(!keep) $("booth-msg").textContent = v.locked || "";
   const may = mayRow(ST, "settings");
-  $("booth-save").disabled = !may;
+  boothSaveState();
   $("booth-test").disabled = !may || !v.device;
 }
 async function loadBooth(keep){
@@ -3623,13 +3648,16 @@ async function loadBooth(keep){
   catch(e){ $("booth-msg").textContent = e.message; }
   $("booth-msg").title = $("booth-msg").textContent;
 }
-$("booth-dev").addEventListener("change", () => boothChannels(Number($("booth-a").value), Number($("booth-b").value)));
+$("booth-dev").addEventListener("change", () => boothChannels(0, 0));
 $("booth-a").addEventListener("change", () => boothChannels(Number($("booth-a").value), Number($("booth-b").value)));
+$("booth-b").addEventListener("change", boothSaveState);
+$("booth-ok").addEventListener("change", boothSaveState);
 $("booth-save").addEventListener("click", async () => {
   const d = boothPicked();
   if(!d || !BOOTH){ $("booth-msg").textContent = "Choose a device first. Nothing was changed."; return; }
   const a = Number($("booth-a").value), b = Number($("booth-b").value);
-  const body = {action:"save", device:d.device, hostapi:d.hostapi, channels:b ? [a, b] : [a], rev:BOOTH.rev};
+  if(d.device && !a){ $("booth-msg").textContent = "Choose Channel A first. Nothing was changed."; return; }
+  const body = {action:"save", device:d.device, hostapi:d.hostapi, channels:b ? [a, b] : [a], rev:BOOTH.rev, confirm:$("booth-ok").checked};
   try{
     const j = await post("/api/remote/booth-speaker", body);
     $("booth-msg").textContent = j.text;
