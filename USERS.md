@@ -67,7 +67,8 @@ pane: your own password, the users, who may do what and the audit log)
 and Sign out. The Users pane also opens from Settings, Users. The show
 screen itself has no sign-in form on it. The Settings tab is on the show
 PC only, for someone with the Settings row: the show network, the
-announcement output, pre-show audio, the play-from cues and Users.
+announcement output, the booth speaker, pre-show audio, the play-from cues
+and Users.
 
 - Five wrong passwords in a row lock that name for 30 seconds, then 60,
   doubling up to 5 minutes at most. It is never permanent, and an admin

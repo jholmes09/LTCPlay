@@ -340,6 +340,12 @@ SHOWS_POST_ROUTES = ("fuel-shows",)
 POST_ROUTES = POST_ROUTES + SHOWS_POST_ROUTES
 # End of night (Jeff, 2026-11-14), above with CONTROL_ROUTES.
 POST_ROUTES = POST_ROUTES + END_OF_NIGHT_ROUTES
+# The Booth speaker card (boothcard.py, Jeff 2026-11-19): GET the card,
+# POST {"action": "save"} or {"action": "test"}. The show PC only
+# (LOCAL_ONLY below), the Settings row (users.py).
+BOOTH_ROUTES = ("booth-speaker",)
+GET_ROUTES = GET_ROUTES + BOOTH_ROUTES
+POST_ROUTES = POST_ROUTES + BOOTH_ROUTES
 # The switch "Fire flames while scrubbing" is gone (Jeff, 2026-10-29: "as
 # long as I am armed, then jumping around timecode will work"). On a show
 # that plays from the show audio, Programming playback is the show's own
@@ -375,6 +381,9 @@ LOCAL_ONLY = frozenset(("network", "screen-arming", "announce-output",
 LOCAL_ONLY = LOCAL_ONLY | {"preshow-audio"}
 # Remote access over Tailscale (2026-11-12): switched on the show PC only.
 LOCAL_ONLY = LOCAL_ONLY | frozenset(("tailscale",))
+# The Booth speaker card (Jeff, 2026-11-19): the show PC only, like the
+# announcement output beside it.
+LOCAL_ONLY = LOCAL_ONLY | frozenset(("booth-speaker",))
 # Operator announcements (announce.py; Jeff, 2026-10-26): the rack screen's
 # three buttons and its Stop, and the Stream Deck's page 2 keys, which post
 # here from this machine. One press plays (no double tap). From the show
@@ -2271,6 +2280,11 @@ class Remote:
         # the announcements and the scheduler both run; None: its card says
         # it is not available here.
         self.preshow_audio = None
+        # The Booth speaker card (boothcard.py): the audio module the booth
+        # player uses (web.serve sets it; None imports sounddevice when it
+        # is needed), and one save or test at a time.
+        self.booth_sd = None
+        self._booth_lock = threading.Lock()
         # The Windows supervisor's word on the disk (housekeeping.py writes
         # disk-low.txt in the settings folder while it is low or critical,
         # and removes it when it is fine again). Read at most every 30 s.
@@ -2531,6 +2545,10 @@ class Remote:
             if not ctx.local:
                 return 403, {"error": "Only on the show machine itself."}
             return self.preshow_audio_get(ctx)
+        if name == "booth-speaker":
+            if not ctx.local:
+                return 403, {"error": "Only on the show machine itself."}
+            return self.booth_speaker_get(ctx)
         if name in MORNING_GET_ROUTES:
             return self.morning_get(name, query, ctx)
         if name in FUEL_GET_ROUTES:
@@ -2608,6 +2626,8 @@ class Remote:
                     if name == "announce-test-tone" else
                     "Pre-show audio is set"
                     if name == "preshow-audio" else
+                    "The booth speaker is set"
+                    if name == "booth-speaker" else
                     "The show network is set")
             return 403, {"error": f"{what} on the show machine itself, not "
                                   f"from here. Nothing was changed."}, {}
@@ -2627,6 +2647,8 @@ class Remote:
             return (*self.announce_test_tone(ctx),) + ({},)
         if name == "preshow-audio":
             return (*self.preshow_audio_post(body, ctx),) + ({},)
+        if name == "booth-speaker":
+            return (*self.booth_speaker_post(body, ctx),) + ({},)
         if name == "live-flame":
             return (*self.live_flame_post(body, ctx),) + ({},)
         if name in USER_POST_ROUTES:
@@ -4442,6 +4464,406 @@ class Remote:
         self._journal(who, screen, "pre-show audio", "saved",
                       f"{who} set pre-show audio on the {screen}. {text}")
         return 200, {"ok": True, "text": text, "preshow_audio": pa.view()}
+
+    # -- the Booth speaker card (boothcard.py, Jeff 2026-11-19) -------------
+    BOOTH_STATES_REFUSED = ("SHOW", "PAUSED", "HOLD")
+
+    def _booth_sd(self):
+        sd = self.booth_sd
+        if sd is None:
+            sd = getattr(self.alerts.booth, "_sd", None)
+        if sd is None:
+            from . import boothaudio
+            sd = boothaudio._import_sounddevice()
+        return sd
+
+    def _booth_block_on_disk(self):
+        """(the booth_alert block as ltcplay_remote.json has it now, or
+        None, and the file's path), or ValueError with a plain sentence."""
+        path = os.path.join(self.folder or settings_folder(), SETTINGS_FILE)
+        if not os.path.exists(path):
+            return None, path
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise ValueError(f"{path} could not be read ({e}). Nothing was "
+                             f"changed.")
+        if not isinstance(doc, dict):
+            raise ValueError(f"{path} is not a settings object. Nothing was "
+                             f"changed.")
+        return doc.get("booth_alert"), path
+
+    def _booth_show_refusal(self):
+        """Why the booth speaker may not be changed now, or "": while a
+        show is live or running, a Hold included, or when that cannot be
+        read (fails closed)."""
+        try:
+            if self.show_busy_for_reload():
+                return ("A show is running. Change the booth speaker "
+                        "between shows.")
+            if self.schedule is not None:
+                st = self._show_live_state()
+                if st is None:
+                    return ("The show's state could not be read, so the "
+                            "booth speaker was left as it is.")
+                if st in self.BOOTH_STATES_REFUSED:
+                    return ("A show is live or on Hold. Change the booth "
+                            "speaker between shows.")
+        except Exception as e:                   # noqa: BLE001
+            return (f"The show's state could not be read "
+                    f"({type(e).__name__}), so the booth speaker was left "
+                    f"as it is.")
+        return ""
+
+    def _booth_test_refusal(self):
+        """Why the Test note may not play now, or "": everything that
+        refuses Reload engine (a show running, an announcement, a flame
+        group armed or not known, live flame, the Fireball page, a purge, a
+        laser test or arm), a Hold, the hazer test, cleaning or the fuel
+        pump. Fails closed."""
+        why = self._booth_show_refusal()
+        if why:
+            return why
+        why = self.restart_refusal()
+        if why:
+            return why
+        try:
+            ht = self.hazer_test
+            if ht is not None and ht.on():
+                return "The hazer test is on. Turn it off first."
+            cl = self.cleaning
+            if cl is not None and cl.active():
+                return "Wave flamer cleaning is running. Stop it first."
+            pm = self.pump
+            if pm is not None and pm.on():
+                return "The fuel pump is on. Turn it off first."
+        except Exception as e:                   # noqa: BLE001
+            return (f"Whether a test is on could not be checked "
+                    f"({type(e).__name__}).")
+        return ""
+
+    def _booth_reserved(self, outs):
+        """boothcard.Reserved: the outputs a booth note must never play on
+        (cold review of #280, P2-1). The announcements' show_outputs (Main
+        L/R unless their file says otherwise) and every stem's and the
+        timecode's outputs on each show audio device, from the running
+        show and every show file in the show folder; outputs 1 and 2 of
+        the announcements' own output. This PC's default output is unsure
+        (MadMapper's show audio plays there), and so is every device when
+        the show folder or a show file's audio cannot be read. Never
+        raises: anything not known is unsure."""
+        from . import boothcard
+        res = boothcard.Reserved()
+        try:
+            ann = self.announce
+            show_outs = (1, 2)
+            if ann is not None:
+                show_outs = tuple((getattr(ann, "options", None) or {})
+                                  .get("show_outputs") or (1, 2))
+                own = getattr(ann, "device_name", "") or ""
+                if own:
+                    res.add(own, (1, 2), "the announcements' own output")
+            why_show = "the show audio"
+            why_ann = "the announcements (on the show audio)"
+
+            def add_audio(acfg):
+                chans = set()
+                for cue in (getattr(acfg, "cues", None) or {}).values():
+                    for st in getattr(cue, "stems", None) or ():
+                        chans |= set(getattr(st, "channels", None) or ())
+                ltc = getattr(acfg, "ltc_output", None)
+                if ltc:
+                    chans.add(ltc)
+                res.add(acfg.device, sorted(chans), why_show)
+                res.add(acfg.device, show_outs, why_ann)
+            sess = getattr(self.control, "session", None)
+            clk = getattr(sess, "clock", None) if sess is not None else None
+            if getattr(clk, "source", None) == "audio_master":
+                acfg = getattr(clk, "audio", None)
+                if acfg is not None:
+                    add_audio(acfg)
+                else:
+                    res.everywhere = ("the running show's audio could not "
+                                      "be read")
+            folder = self._show_folder()
+            if not folder or not os.path.isdir(folder):
+                res.everywhere = res.everywhere or (
+                    "no show folder is set here, so the show audio is not "
+                    "known")
+            else:
+                import glob
+                from .clock import ClockConfig
+                for path in sorted(glob.glob(os.path.join(
+                        glob.escape(folder), "*.json"))):
+                    try:
+                        with open(path, encoding="utf-8-sig") as fh:
+                            doc = json.load(fh)
+                    except (OSError, ValueError):
+                        continue
+                    if not (isinstance(doc, dict) and
+                            isinstance(doc.get("cues"), list)):
+                        continue
+                    ck = doc.get("clock")
+                    if not (isinstance(ck, dict) and
+                            ck.get("source") == "audio_master"):
+                        continue
+                    try:
+                        add_audio(ClockConfig.parse(ck, path).audio)
+                    except Exception:            # noqa: BLE001
+                        res.everywhere = res.everywhere or (
+                            f"{os.path.basename(path)} names show audio "
+                            f"that could not be read")
+            for d in outs or ():
+                if d.get("default"):
+                    res.unknown(d.get("name"),
+                                "it is this PC's default output, where "
+                                "MadMapper's show audio plays")
+        except Exception as e:                   # noqa: BLE001
+            res.everywhere = (f"the show audio could not be checked "
+                              f"({type(e).__name__})")
+        return res
+
+    def booth_speaker_view(self):
+        """The card: what the file says, the outputs to pick from, the check
+        line and the revision a save sends back. Never raises."""
+        from . import boothaudio, boothcard
+        out = {"device": "", "hostapi": "", "channels": [], "outputs": [],
+               "rev": None, "applies": "now",
+               "max_note_s": boothaudio.MAX_NOTE_S}
+        try:
+            block, _path = self._booth_block_on_disk()
+            out["rev"] = boothcard.revision(block)
+            cfg = boothaudio.parse_config(block)
+            out.update(device=cfg["device"], hostapi=cfg["hostapi"],
+                       channels=list(cfg["channels"]) if cfg["device"]
+                       else [])
+        except ValueError as e:
+            out["error"] = str(e)
+        sd = None
+        res = None
+        try:
+            from . import announce
+            sd = self._booth_sd()
+            if sd is None:
+                out["outputs_error"] = ("sounddevice is not installed here, "
+                                        "so the outputs cannot be listed.")
+            else:
+                outs = announce.list_outputs(sd)
+                res = self._booth_reserved(outs)
+                out["outputs"] = boothcard.choices(
+                    outs, out["device"], out["hostapi"], res)
+        except Exception as e:                   # noqa: BLE001
+            out["outputs_error"] = (f"The audio system could not list its "
+                                    f"outputs ({type(e).__name__}: {e}).")
+        out["line"] = boothcard.line(self.alerts.booth, sd)
+        out["confirm_words"] = boothcard.CONFIRM_WORDS
+        if res is not None and out["device"]:
+            # A setting written by hand on an output the show uses: said.
+            taken, _u = res.for_device(out["device"])
+            bad = [c for c in out["channels"] if c in taken]
+            if bad:
+                out["line"] = {"ok": False, "text": (
+                    out["line"]["text"] + f" Output {bad[0]} is in use by "
+                    f"{taken[bad[0]]}: pick another channel and Save.")}
+        why = self._booth_show_refusal()
+        out["locked"] = why
+        return out
+
+    def booth_speaker_get(self, ctx):
+        """GET booth-speaker: the card. The show PC only, and the Settings
+        row, as its POST: the outputs of this PC go to nobody else."""
+        if self.users_active():
+            me = getattr(ctx, "session", None) or {}
+            if not self.users.may(me.get("role"), "settings"):
+                return 403, {"error": "The booth speaker is set by someone "
+                                      "signed in who may change Settings.",
+                             "role_refused": True}
+        return 200, self.booth_speaker_view()
+
+    def booth_speaker_post(self, body, ctx):
+        """POST booth-speaker {"action": "save", "device", "hostapi",
+        "channels": [a] or [a, b], "rev"} or {"action": "test"}. The show
+        PC only (LOCAL_ONLY), the Settings row (users.py)."""
+        action = body.get("action")
+        if action == "save":
+            return self.booth_speaker_save(body, ctx)
+        if action == "test":
+            return self.booth_speaker_test(ctx)
+        return 400, {"error": "action has to be save or test. Nothing was "
+                              "changed."}
+
+    def booth_speaker_save(self, body, ctx):
+        """Save the booth speaker's device and channels to the booth_alert
+        block of ltcplay_remote.json (save_settings: every other key and
+        the block's own files and response_s kept, checked by parse_config
+        before anything is written, written whole), then put a new booth
+        player in place of the old one at once. Refused while a show is
+        live, a Hold, or a note playing; a page that read an older setting
+        is refused, never saved over."""
+        from . import announce, boothaudio, boothcard
+        who = ctx.user or "unsigned"
+        screen = ctx.screen or "Rack screen"
+        if not self._booth_lock.acquire(timeout=5.0):
+            return 409, {"error": "Another booth speaker change is under "
+                                  "way. Nothing was changed."}
+        try:
+            why = self._booth_show_refusal()
+            if why:
+                return 409, {"error": f"{why} Nothing was changed.",
+                             "booth": self.booth_speaker_view()}
+            try:
+                old_block, path = self._booth_block_on_disk()
+            except ValueError as e:
+                return 409, {"error": str(e)}
+            if body.get("rev") != boothcard.revision(old_block):
+                return 409, {"error": "The booth speaker was changed "
+                                      "somewhere else since this page read "
+                                      "it. The card shows the new setting "
+                                      "now; pick again. Nothing was "
+                                      "changed.",
+                             "booth": self.booth_speaker_view()}
+            try:
+                old = boothaudio.parse_config(old_block)
+            except ValueError as e:
+                return 409, {"error": f"{e} Fix it in the file first. "
+                                      f"Nothing was changed."}
+            device = body.get("device")
+            if device is None:
+                device = ""
+            sd = self._booth_sd()
+            outs = []
+            if isinstance(device, str) and device.strip():
+                if sd is None:
+                    return 409, {"error": "sounddevice is not installed "
+                                          "here, so the outputs cannot be "
+                                          "checked. Nothing was changed."}
+                try:
+                    outs = announce.list_outputs(sd)
+                except Exception as e:           # noqa: BLE001
+                    return 409, {"error": f"The audio system could not "
+                                          f"list its outputs ({e}). Nothing "
+                                          f"was changed."}
+            confirm = body.get("confirm") is True
+            try:
+                name, host, chans = boothcard.validate(
+                    outs, device, body.get("hostapi"), body.get("channels"),
+                    reserved=self._booth_reserved(outs) if outs else None,
+                    confirm=confirm)
+            except ValueError as e:
+                return 409, {"error": str(e)}
+            block = dict(old_block) if isinstance(old_block, dict) else {}
+            block["device"] = name
+            if name:
+                block["channels"] = list(chans)
+            else:
+                block["channels"] = list(old["channels"])
+            if host:
+                block["hostapi"] = host
+            else:
+                block.pop("hostapi", None)
+            try:
+                new_cfg = boothaudio.parse_config(block)
+            except ValueError as e:
+                return 409, {"error": f"{e} Nothing was changed."}
+            player = self.alerts.booth
+            if player is not None and hasattr(player, "retire") and \
+                    not player.retire():
+                return 409, {"error": "A booth note is playing. Save again "
+                                      "when it has finished. Nothing was "
+                                      "changed."}
+            cw = self.config_watch
+            behind = True
+            try:
+                behind = cw is None or cw.engine_behind(path)
+            except Exception:                    # noqa: BLE001
+                behind = True
+            # The old player is retired above: whatever fails from here on,
+            # it plays again unless the new one is in its place (cold review
+            # of #280, P3-2), so the alerts are never left silent.
+            swapped = False
+            try:
+                try:
+                    save_settings(self.folder, booth_alert=block)
+                except (ValueError, OSError) as e:
+                    return 409, {"error": f"{e} Nothing was changed."}
+                new = boothaudio.BoothPlayer(
+                    block, sd=self.booth_sd,
+                    journal=getattr(player, "_journal", None),
+                    folders=boothaudio.note_folders(
+                        self.folder or settings_folder()))
+                self.alerts.booth = new
+                swapped = True
+            finally:
+                if not swapped and player is not None and \
+                        hasattr(player, "unretire"):
+                    player.unretire()
+            if cw is not None and not behind:
+                try:
+                    cw.refresh(path)
+                except Exception:                # noqa: BLE001
+                    pass
+
+            def said(cfg):
+                if not cfg["device"]:
+                    return "off"
+                return (f"{cfg['device']}, "
+                        f"{boothaudio.outputs_words(cfg['channels'])}")
+            text = ("Booth speaker saved: " + said(new_cfg) + ". In use now."
+                    if name else "Booth speaker off. No booth notes play.")
+            checked = (" They ticked that they checked the channel is free "
+                       "on the mixer." if confirm and name else "")
+            self._journal(who, screen, "booth speaker", "saved",
+                          f"{who} changed the booth speaker on the {screen} "
+                          f"from {said(old)} to {said(new_cfg)}.{checked}")
+            # The audit log too: who, which screen, the old and the new
+            # device and channels. Nothing else from the file.
+            log = getattr(self, "audit", None)
+            if log is not None:
+                try:
+                    log.event(user=who, surface="web",
+                              action="booth-speaker changed",
+                              target=f"from {said(old)} to {said(new_cfg)}",
+                              result="accepted", source=screen)
+                except Exception:                # noqa: BLE001
+                    pass
+            return 200, {"ok": True, "text": text,
+                         "booth": self.booth_speaker_view()}
+        finally:
+            self._booth_lock.release()
+
+    def booth_speaker_test(self, ctx):
+        """The Test note: booth_test.wav through the booth player in use,
+        its device and channels only. Never the PA, never the show audio;
+        refused while a show is live or running, a Hold, a flame group
+        armed or not known, a purge or a test on, or no booth speaker."""
+        who = ctx.user or "unsigned"
+        screen = ctx.screen or "Rack screen"
+        player = self.alerts.booth
+        if player is None or not getattr(player, "enabled", False):
+            return 409, {"error": "The booth speaker is not set. Pick a "
+                                  "device and a channel, then Save. Nothing "
+                                  "was played."}
+        why = self._booth_test_refusal()
+        if why:
+            return 409, {"error": f"{why} Nothing was played."}
+        if getattr(player, "playing", 0):
+            return 409, {"error": "A booth note is playing. Try again when "
+                                  "it has finished. Nothing was played."}
+        if not self._booth_lock.acquire(timeout=5.0):
+            return 409, {"error": "The booth speaker is being changed. "
+                                  "Nothing was played."}
+        try:
+            ok, text = player.play("test")
+        finally:
+            self._booth_lock.release()
+        self._journal(who, screen, "booth speaker",
+                      "test" if ok else "test refused",
+                      f"{who} pressed Test note on the {screen}: {text}",
+                      fault=not ok)
+        if not ok:
+            return 409, {"error": text}
+        return 200, {"ok": True, "text": text}
 
     # -- presses -----------------------------------------------------------
     def _stale(self, body):

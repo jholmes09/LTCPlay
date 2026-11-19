@@ -131,7 +131,7 @@ disarmed, and nothing can arm until it is gone.
 **Alerts.** When something needs a person (the Stream Deck unplugged, a show
 that did not start), a banner appears at the top of the rack screen and on
 every remote page, in plain words, and a short note plays on the booth
-speaker if one is set up (ltcplay_remote.json, booth_alert; off until it
+speaker if one is set up (Settings tab, Booth speaker; off until it
 is), and plays again every 30 seconds (the booth's response_s) until
 someone acknowledges it. It stays until you press Acknowledge on the
 banner or any key on the Stream Deck. Acknowledge only clears the banner:
@@ -373,14 +373,59 @@ settings folder; kept over a restart.
 
 The **booth speaker** is separate from announcements: it plays the short
 alert notes (the Stream Deck unplugged, a show that did not start) to a
-private speaker in the booth, never the PA. It is the "booth_alert" block
-in ltcplay_remote.json: `"device"` (the exact output name) and
-`"channels"` (the output pair, like [15, 16]). That is all it needs: the
-notes Jeff recorded ship with the installer (2026-10-28). The first run
-writes the block with no device, so it is off; the Announcements line on
-the rack screen says "Booth speaker: not set" until it is set, and then
-how many notes it found, like "Booth speaker: StudioLive 16R, 23 of 23
-notes found", or which are missing. A missing note stays silent, the
+private speaker in the booth, never the PA. Set it on the show PC, signed
+in with the Settings row: Settings tab, **Booth speaker, on this
+machine** (2026-11-19; nobody edits ltcplay_remote.json by hand any more):
+
+- **Device**: every output on this PC, with how many outputs it has, or
+  "None: booth speaker off". A name Windows lists more than once shows
+  its audio system, the same as the Announcement output card.
+- **Channel A**: 1 up to that device's output count (a device with 8
+  outputs offers 1 to 8, one with 2 offers 1 and 2). Nothing is picked
+  for you: it starts on "choose a channel" and Save waits for it.
+  **Channel B**: a second output, or "none, one channel only". On one
+  output a stereo note is folded to one; on two, left plays on A and right
+  on B. Every other output stays silent.
+- Outputs the show audio or the announcements use are greyed, "in use by
+  the show audio", and the engine refuses them even if a page sends one:
+  every stem's and the timecode's output in the show files of the show
+  folder (and of the show running), the announcements' Main L/R
+  (show_outputs) on that device, and outputs 1 and 2 of the announcement
+  output. When LTC Player cannot tell which outputs a device's show audio
+  uses (this PC's default output, where MadMapper's show audio plays; no
+  show folder; a show file whose audio cannot be read), Save needs the
+  tick "These are the show mixer's own outputs: I checked the channel is
+  free", and the journal says it was ticked.
+- The line under the pickers checks the setting in use, the same way a
+  note does: "Booth speaker: StudioLive 16R, output 7, 23 of 23 notes
+  found.", or exactly what is wrong (the device is not attached, it has
+  only N outputs so a channel is not there, notes missing).
+- **Save** checks the device and channels against this PC's real outputs
+  and writes only the booth_alert block of ltcplay_remote.json (every
+  other setting, and the block's own "files" and "response_s", is kept).
+  It is used at once, no restart. An alert raised in the moment of a save
+  is silent until its next repeat (30 seconds, the booth's response_s). It
+  is refused while a show is live or on Hold, while a booth note is
+  playing, and when the card is older than the file (someone saved since:
+  the card shows the new setting, pick again). Every refusal ends "Nothing was changed." The journal and the
+  audit log say who changed it, on which screen, from what to what.
+- **Test note** plays booth_test.wav on the booth speaker only, never the
+  PA and never the show audio. It is refused while a show is running or
+  on Hold, while any flame group is armed (or flamesafe's state is not
+  known), during a purge, a laser or hazer test, cleaning or the fuel
+  pump, and when no booth speaker is set. So Test note never plays on a PC
+  without flamesafe (fails closed).
+- A one-output setting (like [7]) is not read by an older build: after a
+  rollback the booth speaker is off until it is set to two outputs again.
+
+It is the "booth_alert" block in ltcplay_remote.json: `"device"` (the
+exact output name), `"hostapi"` (only when the name is listed more than
+once) and `"channels"` (one output like [7], or two like [15, 16]). That
+is all it needs: the notes Jeff recorded ship with the installer
+(2026-10-28). The first run writes the block with no device, so it is
+off; the Announcements line on the rack screen says "Booth speaker: not
+set" until it is set, and then how many notes it found, like "Booth
+speaker: StudioLive 16R, 23 of 23 notes found", or which are missing. A missing note stays silent, the
 banner says so and the floor pulse runs instead; nothing else is played
 in its place.
 
@@ -404,7 +449,7 @@ differ) never sound. Every other alert repeats its note every 30 seconds
 | File | Plays when |
 |---|---|
 | booth_gate.wav, booth_audio.wav, booth_video.wav, booth_deck.wav, booth_start.wav, booth_flames.wav, booth_link.wav, booth_timecode.wav, booth_lasers.wav, booth_users.wav | an alert of that kind is open (lasers and users sound from 2026-10-28) |
-| booth_test.wav | a test of the booth speaker; no screen has a button for it yet |
+| booth_test.wav | Test note on the Settings tab's Booth speaker card |
 | booth_held.wav | once, when the schedule holds at showtime for an open alert, before that alert's own note |
 | booth_preroll_audio.wav, booth_preroll_video.wav, booth_preroll_timecode.wav, booth_preroll_lasers.wav, booth_preroll_flames.wav, booth_preroll_network.wav, booth_preroll_hold.wav, booth_preroll_ok.wav, booth_continue_anyway.wav | the pre-roll check, once it is built (PR #162); silent until then |
 | booth_clean_ready.wav, booth_clean_done.wav | the wave flamer cleaning routine, once it is built (PR #159); silent until then |
