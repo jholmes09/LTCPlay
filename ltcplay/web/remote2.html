@@ -316,12 +316,14 @@ main > #mini{padding:var(--gap) var(--pad) 0}
    nothing of it, its own Stop included, is under the banner. */
 #broken{position:fixed;left:0;right:0;top:0;z-index:90;display:flex;flex-direction:column;gap:10px;
   padding:calc(10px + env(safe-area-inset-top, 0px)) calc(14px + env(safe-area-inset-right, 0px)) 10px calc(14px + env(safe-area-inset-left, 0px));
-  max-height:60vh;max-height:60dvh;overflow:hidden;
+  overflow-x:hidden;
   background:var(--red-deep);border-bottom:4px solid var(--red-hi);color:#fff;font-size:calc(var(--fs) + 6px);font-weight:800}
-/* At most 60 percent of the window (a phone on its side): the words scroll
-   inside the banner, the two buttons always stay in it, and the page below
-   moves down by the whole banner, so the banner covers none of it. */
-#broken-top{display:flex;align-items:flex-start;gap:12px;min-width:0;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden}
+/* About 60 percent of the window at most (40 on a short one), never less
+   than one line of words and the buttons: the words scroll inside the
+   banner, the two buttons always stay in it, and the page below moves
+   down by the whole banner, so the banner covers none of it. */
+#broken-top{display:flex;align-items:flex-start;gap:12px;min-width:0;flex:0 1 auto;overflow-y:auto;overflow-x:hidden;
+  max-height:max(1.6em, calc(60vh - 96px));max-height:max(1.6em, calc(60dvh - 96px))}
 #broken-top > svg{width:40px;height:40px;flex:0 0 40px}
 #broken-words{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;line-height:1.2}
 #broken-t{display:block}
@@ -342,7 +344,8 @@ main > #mini{padding:var(--gap) var(--pad) 0}
      over its own Stop. */
   html.broken-on body{overflow-y:auto}
   html.broken-on #app{height:calc(100vh - var(--pad-bottom, 0px));height:calc(100dvh - var(--pad-bottom, 0px))}
-  #broken{max-height:40vh;max-height:40dvh;gap:6px;padding-top:calc(6px + env(safe-area-inset-top, 0px));padding-bottom:6px;font-size:var(--fs)}
+  #broken-top{max-height:max(1.6em, calc(40vh - 76px));max-height:max(1.6em, calc(40dvh - 76px))}
+  #broken{gap:6px;padding-top:calc(6px + env(safe-area-inset-top, 0px));padding-bottom:6px;font-size:var(--fs)}
   #broken-top > svg{width:28px;height:28px;flex-basis:28px}
 }
 @media (max-width:600px){
