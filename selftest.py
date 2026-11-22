@@ -118321,9 +118321,14 @@ out.g_posts = window.__posts.filter(p => p.route === "preroll-continue").slice(c
 // Two fingers (cold review of #292): finger 1 holds one button, finger 2
 // presses another hold, finger 1 slides 150 px off. Nothing arms or
 // continues, either way round.
+// The second pointer: a finger (not the first, so not primary), a mouse or
+// a pen (each the first of its own type, so primary).
+const SECOND = {finger:[8, "touch", false], mouse:[1, "mouse", true], pen:[9, "pen", true]};
+let P2 = SECOND.finger;
 const f2 = (el, type, x, y) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
-  pointerId:8, pointerType:"touch", isPrimary:false, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
-async function two(first, second){
+  pointerId:P2[0], pointerType:P2[1], isPrimary:P2[2], clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+async function two(first, second, kind){
+  P2 = SECOND[kind || "finger"];
   const [x, y] = mid(first), [x2, y2] = mid(second);
   const [xa, ya] = mid(first);
   const a0 = ARMED.length, r0 = n("arm-release"), b0 = n("arm-hold"), c0 = window.__posts.filter(p => p.route === "preroll-continue").length;
@@ -118344,6 +118349,33 @@ out.two_a = await two(g0(), q("al-act"));
 await h.sleep(300);
 out.two_b = await two(q("al-act"), g0());
 await h.sleep(300);
+out.mouse_a = await two(g0(), q("al-act"), "mouse");
+await h.sleep(300);
+out.mouse_b = await two(q("al-act"), g0(), "mouse");
+await h.sleep(300);
+out.pen_a = await two(g0(), q("al-act"), "pen");
+await h.sleep(300);
+out.pen_b = await two(q("al-act"), g0(), "pen");
+await h.sleep(300);
+// A finger resting on the page (not on a hold button), then a second
+// finger on Hold to arm: refused while the first is down.
+{
+  const [x, y] = mid(g0());
+  const a0 = ARMED.length, b0 = n("arm-hold");
+  pe(document.body, "pointerdown", 5, 5, "touch");
+  P2 = SECOND.finger;
+  f2(g0(), "pointerdown", x, y);
+  await h.sleep(2700);
+  f2(g0(), "pointerup", x, y); pe(document.body, "pointerup", 5, 5, "touch");
+  await h.sleep(400);
+  out.rest = {armed:ARMED.length - a0, beats:n("arm-hold") - b0};
+}
+// A finger whose lift never arrived (pointer 20, down, never up): the next
+// first finger drops it, so holds are not refused for good.
+pe(document.body, "pointerdown", 5, 5, "touch");
+document.body.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true, pointerId:20, pointerType:"touch", isPrimary:false, clientX:5, clientY:5, buttons:1}));
+pe(document.body, "pointerup", 5, 5, "touch");
+await h.sleep(200);
 // Every finger up: a hold works again.
 out.after_two = await hold(g0(), "touch", [], 2700);
 // The button moves under a still finger (a line above wraps): the hold ends.
@@ -118393,7 +118425,7 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
     r = _ui2_drive(chrome, page, _ui2_status_touch_holds(), _UI2_TOUCH_STEPS,
                    size=(412, 915), frag="?tour=0#day",
                    routes={"/api/remote/morning": _morning_view_pico()},
-                   budget_ms=70000)
+                   budget_ms=100000)
     where = "2.0 at 412x915, the holds pressed by touch"
     if not check(isinstance(r, dict) and "g_posts" in r and
                  not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
@@ -118460,8 +118492,26 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
           f"{where}: finger 1 on Hold to continue anyway, finger 2 on Hold "
           f"to arm: the continue ends with its begin only, and no arm hold "
           f"starts: {tb}")
+    for k in ("mouse", "pen"):
+        xa, xb = r[k + "_a"], r[k + "_b"]
+        check(xa["armed"] == 0 and xa["beats_before"] >= 1 and
+              xa["released"] >= 1 and xa["beats_after"] == 0 and
+              xa["cont"] == [],
+              f"{where}: a finger on Hold to arm, then a {k} on Hold to "
+              f"continue anyway: the arm hold ends, nothing continues, and "
+              f"the finger sliding off arms nothing: {xa}")
+        check(xb["armed"] == 0 and xb["cont"] == ["begin"] and
+              xb["beats_before"] == 0 and xb["beats_after"] == 0,
+              f"{where}: a finger on Hold to continue anyway, then a {k} on "
+              f"Hold to arm: the continue ends with its begin only, and no "
+              f"arm hold starts: {xb}")
+    check(r["rest"] == {"armed": 0, "beats": 0},
+          f"{where}: with a finger resting on the page, a second finger's "
+          f"Hold to arm starts nothing: {r['rest']}")
     check(r["after_two"]["armed"] == 1,
-          f"{where}: once every finger is up, a hold arms again: "
+          f"{where}: once every pointer is up (and a finger whose lift "
+          f"never arrived is dropped by the next first finger), a hold "
+          f"arms again: "
           f"{r['after_two']}")
     sh = r["shift"]
     check(sh["armed"] == 0 and sh["released"] == 1 and

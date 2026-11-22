@@ -2409,27 +2409,34 @@ window.addEventListener("pointermove", holdMoved, true);
 // The button moving under a still finger (a line above it wrapping, a
 // banner) is checked too: a finger no longer on its button ends the hold.
 setInterval(() => { const p = HOLD_PT; if(p) holdMoved({pointerId:p.id, clientX:p.lx, clientY:p.ly}); }, 100);
-// Two fingers (cold review of #292): the page follows one finger, so a
-// second finger pressing any hold button while a hold runs ends every
-// hold, and none starts until every finger on a hold button is up. It
-// fails safe: nothing is armed or continued.
-const HOLD_DOWN = new Set();
+// Two pointers (cold reviews of #292): the page follows one finger per
+// hold, so a hold that starts while any other pointer (a finger, a
+// mouse, a pen) is down, or while any hold runs, ends every running hold
+// (arm and Continue anyway) and starts nothing; holds stay refused until
+// every pointer is up. It fails safe: nothing is armed or continued.
+// Every pointer down on the page is counted, on the window, before the
+// button sees it. A pointer whose lift never arrived is dropped only by a
+// new first pointer of its own type (the browser's isPrimary: no other
+// pointer of that type is down then).
+const HOLD_PTRS = new Map();
 let HOLD_TWO = false;
+window.addEventListener("pointerdown", e => {
+  if(e.isPrimary) for(const [id, t] of [...HOLD_PTRS]) if(t === e.pointerType && id !== e.pointerId) HOLD_PTRS.delete(id);
+  HOLD_PTRS.set(e.pointerId, e.pointerType);
+}, true);
 function holdSecond(e){
-  if(e.isPrimary){ HOLD_DOWN.clear(); HOLD_TWO = false; }
-  const busy = HOLD_DOWN.size > 0 || HOLD_TWO;
-  HOLD_DOWN.add(e.pointerId);
-  if(!busy) return false;
+  const others = [...HOLD_PTRS.keys()].some(id => id !== e.pointerId);
+  if(!others && !HOLD_TWO && !HOLD && !PR_HOLD) return false;
   HOLD_TWO = true;
   HOLD_PT = null;
-  if(HOLD) armStop("two fingers on the hold buttons; nothing armed. Let go, then hold again");
-  if(PR_HOLD){ prHoldEnd(); say("Let go: nothing done.", "Two fingers on the hold buttons: nothing was done. Let go, then hold again.", "warn"); }
+  if(HOLD) armStop("two pointers on the screen; nothing armed. Let go, then hold again");
+  if(PR_HOLD){ prHoldEnd(); say("Let go: nothing done.", "Two pointers on the screen: nothing was done. Let go, then hold again.", "warn"); }
   return true;
 }
 ["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => {
   if(HOLD_PT && e.pointerId === HOLD_PT.id) HOLD_PT = null;
-  HOLD_DOWN.delete(e.pointerId);
-  if(!HOLD_DOWN.size) HOLD_TWO = false;
+  HOLD_PTRS.delete(e.pointerId);
+  if(!HOLD_PTRS.size) HOLD_TWO = false;
 }, true));
 // Continue anyway after a failed rig check: 1.0's hold, the same two
 // presses (begin, then done once it has filled; the engine times the hold
