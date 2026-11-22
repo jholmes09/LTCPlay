@@ -3437,6 +3437,88 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "  const others = [...HOLD_PTRS.keys()].some(id => id !== e.pointerId);\n",
   "  const others = false;\n"),
+ # Andy on 5G, 2026-11-22: a beat sent 100 ms after the last answer adds
+ # the round trip to every gap, and the engine lets go of a hold with no
+ # beat for 0.25 s; the beats go on a fixed timer, a few unanswered at
+ # most, and every way a hold ends stops the timer
+ ('ui 2.0 beats: a hold beats 100 ms after each answer again, so a slow link never arms',
+  'ltcplay/web/remote2.html',
+  "    if(!p.timer){ p.timer = setInterval(() => armBeat(h, p), HOLD_BEAT_MS); armBeat(h, p); }\n",
+  "    p.timer = setTimeout(() => armBeat(h, p), HOLD_BEAT_MS);\n"),
+
+ ('ui 2.0 beats: a hold that ends leaves its beat timer running',
+  'ltcplay/web/remote2.html',
+  "  for(const p of h.parts){\n    clearInterval(p.timer);\n    clearTimeout(p.wait);\n",
+  "  for(const p of h.parts){\n    clearTimeout(p.wait);\n"),
+
+ ('ui 2.0 beats: a stalled link piles up unanswered beats',
+  'ltcplay/web/remote2.html',
+  "  if(!beatRoom(h, p)){\n",
+  "  if(false){\n"),
+
+ # Cold review of #293: answers come back out of order, and the engine
+ # refuses every beat after the one it answered armed; a refusal that
+ # overtakes the armed answer must never say the hold stopped or let go of
+ # a group the engine armed. And one bound for the whole hold, the beats
+ # still out cancelled when it ends, so a let go never waits behind beats
+ # for one of a browser's six connections.
+ ('ui 2.0 beats: a refusal that overtakes the armed answer ends the hold at once',
+  'ltcplay/web/remote2.html',
+  "    if(!p.out) armResolve(h, p);\n    else if(!p.wait) p.wait = setTimeout(() => armResolve(h, p), HOLD_ANSWER_WAIT_MS);\n",
+  "    armResolve(h, p);\n"),
+
+ ('ui 2.0 beats: a refusal with no armed answer is not read against the engine state',
+  'ltcplay/web/remote2.html',
+  "  const now = await groupNow(p.group);\n",
+  "  const now = e.status === 409 && !e.code ? await groupNow(p.group) : {known:true, armed:false};\n"),
+
+ # Second review of #293: an armed answer that hangs, every answer lost, a
+ # state that cannot be read, a clear refusal overwritten by a later 409.
+ ('ui 2.0 beats: a refusal waits with no deadline for an armed answer that hangs',
+  'ltcplay/web/remote2.html',
+  "    else if(!p.wait) p.wait = setTimeout(() => armResolve(h, p), HOLD_ANSWER_WAIT_MS);\n",
+  ""),
+
+ ('ui 2.0 beats: a hold that ends after a refusal lets go without reading the engine state',
+  'ltcplay/web/remote2.html',
+  "    if(p.err){ doubt.push(p); continue; }\n",
+  ""),
+
+ ('ui 2.0 beats: an engine state that cannot be read is said as not armed',
+  'ltcplay/web/remote2.html',
+  "  if(now.armed || (!now.known && !clear)){\n",
+  "  if(now.armed){\n"),
+
+ ('ui 2.0 beats: Hold: arm flames with every group not known says nothing was armed',
+  'ltcplay/web/remote2.html',
+  "  return t.replace(/^Arm all: nothing was armed\\./, \"Arm all:\") + \" Not known: \"",
+  "  return t + \" Not known: \""),
+
+ ('ui 2.0 beats: a hold that ended lets go of its group after a new hold of it started',
+  'ltcplay/web/remote2.html',
+  "    if(!holding(p.group)) post(\"/api/remote/arm-release\", {group:p.group}).catch(() => {});\n",
+  "    post(\"/api/remote/arm-release\", {group:p.group}).catch(() => {});\n"),
+
+ ('ui 2.0 beats: a later plain 409 replaces the first refusal',
+  'ltcplay/web/remote2.html',
+  "    if(!p.err || (!p.err.status && e.status)) p.err = e;\n",
+  "    if(!p.err || (e.status === 409 && p.err.status !== 409)) p.err = e;\n"),
+
+ ('ui 2.0 beats: a hold of one group stops when its group shows asked for before the armed answer',
+  'ltcplay/web/remote2.html',
+  "    if((HOLD.all || p.id != null) && g && (g.armed",
+  "    if(HOLD.all && g && (g.armed"),
+
+ ('ui 2.0 beats: Hold: arm flames bounds its beats per group, not for the whole hold',
+  'ltcplay/web/remote2.html',
+  "  return (h.beats || 0) < HOLD_BEATS_OUT && (p.out || 0) < Math.max(1, Math.floor(HOLD_BEATS_OUT / live));\n",
+  "  return (p.out || 0) < HOLD_BEATS_OUT;\n"),
+
+ ('ui 2.0 beats: a hold that ends leaves its beats out, the let go queued behind them',
+  'ltcplay/web/remote2.html',
+  "  h.stop.abort();\n  const doubt = [];\n",
+  "  const doubt = [];\n"),
+
 
  # Cold review of #291: an alert raised again keeps its id with new words;
  # a page's Acknowledge must clear only the raise it showed
@@ -21387,8 +21469,8 @@ def build():
   '        b.addEventListener(ev, () => {}));'),
 
  ("ui2 page: the copied hold beats faster than 1.0's", "ltcplay/web/remote2.html",
-  "    p.timer = setTimeout(() => armBeat(h, p), 100);",
-  "    p.timer = setTimeout(() => armBeat(h, p), 50);"),
+  "{ p.timer = setInterval(() => armBeat(h, p), HOLD_BEAT_MS); armBeat(h, p); }",
+  "{ p.timer = setInterval(() => armBeat(h, p), 50); armBeat(h, p); }"),
 
  ("ui2 page: one system to check is not named", "ltcplay/web/remote2.html",
   "  const text = probs.length === 1 ?",
