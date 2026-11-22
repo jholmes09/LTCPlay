@@ -117947,7 +117947,8 @@ function measure(){
     page_w:Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
     banner_cut:b.scrollWidth > b.clientWidth + 1,
     why:q("broken-why").hidden ? "" : q("broken-why").textContent,
-    more:!q("broken-more").hidden, detail:q("broken-detail").hidden ? "" : q("broken-detail").textContent,
+    more:!q("broken-more").hidden, more_r:r(q("broken-more")), more_vis:!q("broken-more").hidden && vis(q("broken-more")),
+    detail:q("broken-detail").hidden ? "" : q("broken-detail").textContent,
     // where the page starts with the window scrolled to its top
     app_top:Math.round(q("app").getBoundingClientRect().top + scrollY)};
   return m;
@@ -118013,14 +118014,20 @@ def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
           "banner) never reaches the purge's fire key")
     # Broken on purpose: the rules' request refused, and a script error
     # after the Stop core (the first one the page meets).
+    # The browser's own ResizeObserver notice comes first: never taken
+    # for where the page stopped. The real error ends in a full stop, which
+    # the line drops before ", line N".
     page = two.replace('<script src="/remote-logic.js"></script>',
                        '<script src="/remote-logic.js"></script><script>'
-                       'throw new Error("test break");</script>', 1)
+                       'window.dispatchEvent(new ErrorEvent("error", {message:'
+                       '"ResizeObserver loop completed with undelivered '
+                       'notifications.", filename:"/remote", lineno:9}));'
+                       'throw new Error("test break.");</script>', 1)
     check(page != two, "the test page carries its break")
     refused = _RawRoute('{"error": "no"}', "application/json", code=404)
     got = _rack_screen_in_chromium(
         chrome, page, _ui2_status_running(),
-        ((360, 740), (412, 915), (740, 360), (2560, 1440)),
+        ((360, 740), (412, 915), (740, 360), (915, 412), (2560, 1440)),
         measure_js=_UI2_BANNER_MEASURE_JS, frag="?tour=0", budget_ms=8000,
         routes={"/remote-logic.js": refused})
     for (w, h), res in got.items():
@@ -118050,9 +118057,14 @@ def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
                       not m.get(cut),
                       f"{at}: {name} is 56 px or more, under the words, "
                       f"whole on the screen and on top: {b} {m}")
+            mr = m.get("more_r") or [0] * 4
+            check(m.get("more") and m.get("more_vis") and mr[1] >= 0 and
+                  mr[3] <= st[1] and mr[3] - mr[1] >= 44 and mr[2] <= W,
+                  f"{at}: Show detail (or Hide detail) is whole, above the "
+                  f"buttons, on top: {mr} {m}")
             check(abs(st[1] - go[1]) <= 2 and st[2] <= go[0],
                   f"{at}: Stop show first, Reload beside it: {st} {go}")
-            check(bn[3] - bn[1] <= max(0.6 * H, 120) + 1 and
+            check(bn[3] - bn[1] <= max(0.6 * H, 180) + 1 and
                   m.get("app_top", -1) >= bn[3] - 1,
                   f"{at}: the banner is at most 60 percent of the window "
                   f"(or one line and its buttons) "
@@ -118060,7 +118072,8 @@ def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
                   f"page: banner {bn}, page at {m.get('app_top')}, {H} high")
         f = res["first"]
         check("Stopped at: " in f.get("why", "") and
-              "test break" in f["why"] and ", line " in f["why"] and
+              "test break, line " in f["why"] and
+              "ResizeObserver" not in f["why"] and ".," not in f["why"] and
               f.get("more"),
               f"{where}: it says where the script stopped, with Show "
               f"detail: {f.get('why')!r}")

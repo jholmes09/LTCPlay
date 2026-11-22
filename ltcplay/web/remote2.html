@@ -320,15 +320,16 @@ main > #mini{padding:var(--gap) var(--pad) 0}
   background:var(--red-deep);border-bottom:4px solid var(--red-hi);color:#fff;font-size:calc(var(--fs) + 6px);font-weight:800}
 /* About 60 percent of the window at most (40 on a short one), never less
    than one line of words and the buttons: the words scroll inside the
-   banner, the two buttons always stay in it, and the page below moves
-   down by the whole banner, so the banner covers none of it. */
+   banner, Show detail and the two buttons always stay whole in it, and the
+   page below moves down by the whole banner, so the banner covers none of
+   it. */
 #broken-top{display:flex;align-items:flex-start;gap:12px;min-width:0;flex:0 1 auto;overflow-y:auto;overflow-x:hidden;
-  max-height:max(1.6em, calc(60vh - 96px));max-height:max(1.6em, calc(60dvh - 96px))}
+  max-height:max(1.6em, calc(60vh - 150px));max-height:max(1.6em, calc(60dvh - 150px))}
 #broken-top > svg{width:40px;height:40px;flex:0 0 40px}
 #broken-words{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;line-height:1.2}
 #broken-t{display:block}
 #broken-why{display:block;margin-top:4px;font-size:var(--fs);font-weight:700}
-#broken-more{min-height:44px;min-width:0;margin-top:6px;padding:0 14px;font-size:var(--fs);background:transparent;border-color:#fff;color:#fff}
+#broken-more{flex:0 0 auto;align-self:flex-start;margin-left:52px;min-height:44px;min-width:0;padding:0 14px;font-size:var(--fs);background:transparent;border-color:#fff;color:#fff}
 #broken-detail{display:block;margin-top:6px;font-size:calc(var(--fs) - 2px);font-weight:400;white-space:pre-wrap;
   -webkit-user-select:text;user-select:text}
 #broken-btns{display:flex;gap:10px;min-width:0;flex:0 0 auto}
@@ -336,20 +337,24 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 #broken-stop{flex-grow:3 !important}
 #broken-go{flex-grow:2 !important}
 #broken-stop.tap1{outline:3px solid #fff;outline-offset:-4px}
-/* A short window (a phone on its side): the banner takes at most 40
-   percent, so the page keeps the rest; its words scroll, its buttons stay. */
+/* A short window (a phone on its side): the banner takes about half (60
+   percent with its detail open), so the page keeps the rest; its words
+   scroll, Show detail and its buttons stay whole. */
 @media (max-height:500px){
   /* and the page keeps its whole height there, under the banner, the
      window scrolling to reach its foot: squeezed, its footer would lie
      over its own Stop. */
   html.broken-on body{overflow-y:auto}
   html.broken-on #app{height:calc(100vh - var(--pad-bottom, 0px));height:calc(100dvh - var(--pad-bottom, 0px))}
-  #broken-top{max-height:max(1.6em, calc(40vh - 76px));max-height:max(1.6em, calc(40dvh - 76px))}
+  #broken-top{max-height:max(1.6em, calc(50vh - 132px));max-height:max(1.6em, calc(50dvh - 132px))}
+  #broken.det #broken-top{max-height:max(1.6em, calc(60vh - 132px));max-height:max(1.6em, calc(60dvh - 132px))}
+  #broken-more{margin-left:40px}
   #broken{gap:6px;padding-top:calc(6px + env(safe-area-inset-top, 0px));padding-bottom:6px;font-size:var(--fs)}
   #broken-top > svg{width:28px;height:28px;flex-basis:28px}
 }
 @media (max-width:600px){
   #broken{font-size:calc(var(--fs) + 2px)}
+  #broken-more{margin-left:44px}
   #broken-btns .b{font-size:var(--fs)}
   #broken-top > svg{width:32px;height:32px;flex-basis:32px}
 }
@@ -1429,7 +1434,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      stopTapKind2 are 1.0's stopTapStep and stopTapKind, renamed;
      selftest.py checks they stay the same), 1.0's Stop route and headers.
      On a whole page the SHOW tab's Stop is the page's own (stopTap2). -->
-<div id="broken" hidden role="alert"><div id="broken-top"><svg class="i"><use href="#i-warn"/></svg><div id="broken-words"><span id="broken-t">Page not fully loaded. Reload it.</span><span id="broken-why" hidden></span><button class="b" id="broken-more" hidden>Show detail</button><span id="broken-detail" hidden></span></div></div><div id="broken-btns"><button data-safe class="b red" id="broken-stop"><svg class="i"><use href="#i-stop"/></svg><span id="broken-stop-l">Stop show: tap twice</span></button><button class="b red" id="broken-go"><svg class="i"><use href="#i-reset"/></svg>Reload</button></div></div>
+<div id="broken" hidden role="alert"><div id="broken-top"><svg class="i"><use href="#i-warn"/></svg><div id="broken-words"><span id="broken-t">Page not fully loaded. Reload it.</span><span id="broken-why" hidden></span><span id="broken-detail" hidden></span></div></div><button class="b" id="broken-more" hidden>Show detail</button><div id="broken-btns"><button data-safe class="b red" id="broken-stop"><svg class="i"><use href="#i-stop"/></svg><span id="broken-stop-l">Stop show: tap twice</span></button><button class="b red" id="broken-go"><svg class="i"><use href="#i-reset"/></svg>Reload</button></div></div>
 <script id="stop-core">
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -1444,7 +1449,11 @@ const coreCut = (t) => { t = String(t == null ? "" : t); return t.length > 160 ?
 window.addEventListener("error", e => {
   if(CORE_ERR || !e || !e.message) return;
   const f = String(e.filename || "").replace(location.origin, "");
-  CORE_ERR = {msg:coreCut(e.message), file:coreCut(f), line:Number(e.lineno) || 0, col:Number(e.colno) || 0};
+  // The browser's own layout notice is not the page's script stopping.
+  if(/^(Uncaught )?ResizeObserver loop/.test(String(e.message))) return;
+  // "...notifications., line 12" reads badly: the message's own end stop goes.
+  const msg = String(e.message).replace(/[\s.]+$/, "");
+  CORE_ERR = {msg:coreCut(msg), file:coreCut(f), line:Number(e.lineno) || 0, col:Number(e.colno) || 0};
   // Said at once, even while the page is still arriving (cold review of #290, 1).
   setTimeout(() => { try{ coreCheck(); }catch(e2){} }, 0);
 });
@@ -1598,6 +1607,7 @@ function coreCheck(){
 }
 $("broken-more").addEventListener("click", () => {
   CORE_DETAIL = !CORE_DETAIL;
+  $("broken").classList.toggle("det", CORE_DETAIL);
   $("broken-more").textContent = CORE_DETAIL ? "Hide detail" : "Show detail";
   coreWhy(); coreRoom();
 });
