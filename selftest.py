@@ -118570,8 +118570,10 @@ q("al-act").click(); await h.sleep(800); out.later = msg();
     steps = r"""
 const q = id => document.getElementById(id), b = q("al-act");
 const n = () => window.__posts.filter(p => p.route === "preroll-continue").length;
-const down = () => b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true, pointerType:"touch", isPrimary:true, pointerId:4}));
-const up = () => b.dispatchEvent(new PointerEvent("pointerup", {bubbles:true, cancelable:true, pointerType:"touch", isPrimary:true, pointerId:4}));
+// A finger on the button's middle (a touch hold ends off its button).
+const at = () => { const r = b.getBoundingClientRect(); return {clientX:r.left + r.width / 2, clientY:r.top + r.height / 2}; };
+const down = () => b.dispatchEvent(new PointerEvent("pointerdown", Object.assign({bubbles:true, cancelable:true, pointerType:"touch", isPrimary:true, pointerId:4}, at())));
+const up = () => b.dispatchEvent(new PointerEvent("pointerup", Object.assign({bubbles:true, cancelable:true, pointerType:"touch", isPrimary:true, pointerId:4}, at())));
 document.querySelector('.tab[data-tab="show"]').click();
 await h.sleep(1500);
 out.first = b.dataset.act;
