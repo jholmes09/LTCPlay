@@ -3348,8 +3348,8 @@ MUTATIONS = [
  # bring the next alert under the same finger
  ('ui 2.0 alert hold: off the Show tab the line has no way to Acknowledge',
   'ltcplay/web/remote2.html',
-  "  $(\"next-go\").hidden = !ns.go; if(ns.go)",
-  "  $(\"next-go\").hidden = true; if(ns.go)"),
+  "  $(\"next-go\").hidden = !ns.go || (ns.go === \"resume\" && TAB === \"show\");",
+  "  $(\"next-go\").hidden = true;"),
 
  ("ui 2.0 alert hold: the line's button stays on the tab it was pressed on",
   'ltcplay/web/remote2.html',

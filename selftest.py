@@ -118474,10 +118474,11 @@ out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
                      f"{where}: driven: {r!r}"[:900]):
             continue
         check(r["show"] == ["Show held after an alert. Press Resume.",
-                            False, "Go to Resume"] and
+                            True, "Go to Resume"] and
               r["day"] == ["Show held after an alert. Resume on Show.",
                            False, "Go to Resume"],
-              f"{where}: the line says Resume, and where it is: {r}")
+              f"{where}: the line says Resume, and where it is; on SHOW, "
+              f"where Resume is the big button, it keeps no button: {r}")
         check(r["went"] == ["show", "Resume", True] and r["routes"] == [],
               f"{where}: the button goes to SHOW's own Resume, in sight, "
               f"and presses nothing: {r}")

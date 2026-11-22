@@ -2495,7 +2495,10 @@ function renderStale(){
   // the next step and the state
   const ns = nextStep(ST, isSt, local, ALERTS);
   $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
-  $("next-go").hidden = !ns.go; if(ns.go) setText($("next-go-l"), ns.go === "ack" ? "Go to alert" : "Go to Resume");
+  // On SHOW, Resume is its own big button at the top of the pane: the line
+  // keeps no button for it, so on a short phone the pane has the room to
+  // show Resume whole (412x600: 64 px of pane with the button, Resume 72).
+  $("next-go").hidden = !ns.go || (ns.go === "resume" && TAB === "show"); if(ns.go) setText($("next-go-l"), ns.go === "ack" ? "Go to alert" : "Go to Resume");
   const pl = pillLook(ST, isSt, ALERTS);
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
