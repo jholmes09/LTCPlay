@@ -3489,6 +3489,16 @@ MUTATIONS = [
   "  if(now.armed || (!now.known && !clear)){\n",
   "  if(now.armed){\n"),
 
+ ('ui 2.0 beats: Hold: arm flames with every group not known says nothing was armed',
+  'ltcplay/web/remote2.html',
+  "  return t.replace(/^Arm all: nothing was armed\\./, \"Arm all:\") + \" Not known: \"",
+  "  return t + \" Not known: \""),
+
+ ('ui 2.0 beats: a hold that ended lets go of its group after a new hold of it started',
+  'ltcplay/web/remote2.html',
+  "    if(!holding(p.group)) post(\"/api/remote/arm-release\", {group:p.group}).catch(() => {});\n",
+  "    post(\"/api/remote/arm-release\", {group:p.group}).catch(() => {});\n"),
+
  ('ui 2.0 beats: a later plain 409 replaces the first refusal',
   'ltcplay/web/remote2.html',
   "    if(!p.err || (!p.err.status && e.status)) p.err = e;\n",

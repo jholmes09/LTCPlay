@@ -1455,6 +1455,8 @@
 "ui 2.0 beats: a hold that ends after a refusal lets go without reading the engine state": "test_ui2_arm_beats_on_a_fixed_timer",
 "ui 2.0 beats: an engine state that cannot be read is said as not armed": "test_ui2_arm_beats_on_a_fixed_timer",
 "ui 2.0 beats: a later plain 409 replaces the first refusal": "test_ui2_arm_beats_on_a_fixed_timer",
+"ui 2.0 beats: Hold: arm flames with every group not known says nothing was armed": "test_ui2_arm_beats_on_a_fixed_timer",
+"ui 2.0 beats: a hold that ended lets go of its group after a new hold of it started": "test_ui2_arm_beats_on_a_fixed_timer",
 "flame link: aim: a group without a safety_profile may aim": "test_flame_link_aim_slots_skip_the_seek_guard",
 "flame link: aim: a wave flamer may aim with any channel": "test_flame_link_aim_slots_skip_the_seek_guard",
 "flame link: aim: an aim slot after the last safety slot is taken": "test_flame_link_aim_slots_skip_the_seek_guard",

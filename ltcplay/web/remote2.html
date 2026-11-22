@@ -4562,6 +4562,7 @@ async function armBeat(h, p){
       // The Stream Deck took the hold: the engine says so and the hold is
       // over. Said as a success, never as "Hold stopped".
       clearInterval(p.timer);
+      clearTimeout(p.wait);
       holdFill(p.group, "0");
       if(!h.all){
         HOLD = null;
@@ -4672,7 +4673,9 @@ async function armRefused(h, p){
 function armAllText(h){
   const unk = h.parts.filter(p => p.end === "unknown");
   const t = armAllWords(h.parts.filter(p => p.end !== "unknown"), h.out, groupNames());
-  return unk.length ? t + " Not known: " + unk.map(p => groupNames()[p.group]).join(", ") + " (the engine's state could not be read; check the tiles before you hold again)." : t;
+  if(!unk.length) return t;
+  // A group not known may be armed: never "nothing was armed".
+  return t.replace(/^Arm all: nothing was armed\./, "Arm all:") + " Not known: " + unk.map(p => groupNames()[p.group]).join(", ") + " (the engine's state could not be read; check the tiles before you hold again).";
 }
 // A hold ended (armStop) while some of its groups had a refusal or a lost
 // answer and no armed answer: each is read against the engine's state
@@ -4682,7 +4685,9 @@ async function armDoubt(h, parts, why){
   parts.forEach((p, k) => {
     const n = nows[k];
     if(n.armed){ p.end = "armed"; return; }
-    post("/api/remote/arm-release", {group:p.group}).catch(() => {});
+    // A new hold of the same group started meanwhile: the engine lets go
+    // by device, so a release now would end that one.
+    if(!holding(p.group)) post("/api/remote/arm-release", {group:p.group}).catch(() => {});
     if(!n.known){ p.end = "unknown"; return; }
     p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped";
   });

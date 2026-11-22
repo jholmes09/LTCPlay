@@ -298,6 +298,7 @@ async function armBeat(h, p){
       // The Stream Deck took the hold: the engine says so and the hold is
       // over. Said as a success, never as "Hold stopped".
       clearInterval(p.timer);
+      clearTimeout(p.wait);
       holdFill(p.group, "0");
       if(!h.all){
         HOLD = null;
