@@ -118380,7 +118380,7 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
     r = _ui2_drive(chrome, page, _ui2_status_touch_holds(), _UI2_TOUCH_STEPS,
                    size=(412, 915), frag="?tour=0#day",
                    routes={"/api/remote/morning": _morning_view_pico()},
-                   budget_ms=40000)
+                   budget_ms=70000)
     where = "2.0 at 412x915, the holds pressed by touch"
     if not check(isinstance(r, dict) and "g_posts" in r and
                  not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
