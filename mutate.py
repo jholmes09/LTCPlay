@@ -3551,6 +3551,11 @@ MUTATIONS = [
   "  s.h.parts.forEach(p => { if(!p.end && !p.err) p.err = new Error(why || \"the slide ended\"); });\n",
   ""),
 
+ ('ui 2.0 slide: a pointerleave or lost capture during a slide lets go with no state read',
+  'ltcplay/web/remote2.html',
+  "  if(SLIDE && e.pointerId === SLIDE.id) e.stopPropagation();\n",
+  ""),
+
  ("ui 2.0 slide: a paused slide's lift says not armed without a read",
   'ltcplay/web/remote2.html',
   "  else if(s.paused && why) slideSaid(s.groups, why);\n",

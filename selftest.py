@@ -120080,6 +120080,8 @@ async function slide(el, moves, ms, cut, cutAt){
   res.ctx = {x:x, y:y, walk:walk, id:id, kn:kn};
   for(const [at, f, dy] of moves){
     while(performance.now() - t0 < at){ watch(); await nap(10); }
+    // A function: something that happens with the finger still down.
+    if(typeof f === "function"){ f(el, kn, x, y, id); continue; }
     await walk(x0 + f * travel, y0 + (dy || 0));
     if(f >= 1) maxKnob = kr(el);
     res.ctx.x = x; res.ctx.y = y;
@@ -120198,11 +120200,23 @@ if(PART === "main"){
   // Cold review of #295: the group shows asked for (the tile turns to
   // Disarm under the finger) before the engine's armed answer, 300 or 800
   // ms late: the slide waits for it, never lets go, never says stopped.
+  // 300: every answer 300 ms late. 800: only the armed answer late (the
+  // beats after it answered at once, refused as asked for).
   for(const d of [300, 800]){
-    ENG.asked = true; patchFor(4); ENG.down = b => b.hold_id == null ? 0 : d; await nap(700);
+    ENG.asked = true; patchFor(4);
+    ENG.down = d === 300 ? (b => b.hold_id == null ? 0 : 300) : ((b, a) => a && a[1] && a[1].armed ? 800 : 0);
+    await nap(700);
     out["late_asked_" + d] = await slide(g0(), [[300, 1]], 3500);
     reset(); await nap(800);
   }
+  // The same, 800 ms, and in that window the button gets a pointerleave
+  // and a lost capture with the finger still down (the handle hidden):
+  // still waits for the armed answer, lets go of nothing.
+  ENG.asked = true; patchFor(4); ENG.down = (b, a) => a && a[1] && a[1].armed ? 800 : 0; await nap(700);
+  out.late_asked_leave = await slide(g0(), [[300, 1], [2000, (el, kn, x, y, id) => {
+    out.leave_hidden = !kn.getClientRects().length;
+    pe(el, "pointerleave", x, y, id); pe(kn, "lostpointercapture", x, y, id); }]], 3500);
+  reset(); await nap(800);
   // Drifting under 90 percent at the moment the engine arms, then the lift:
   // the engine's state is read before anything is said.
   for(const [at, up] of [[1650, 1800], [1700, 2100], [1800, 2000]]){
@@ -120400,7 +120414,7 @@ def test_ui2_flame_slide_to_arm_on_a_phone():
         # armed or stopped, never let go, for a group the engine armed.
         for k in [k for k in r if k.startswith(("late_asked_", "drift_"))]:
             x = r[k]
-            if k == "late_asked_300":
+            if k in ("late_asked_300", "late_asked_800", "late_asked_leave"):
                 check(x["armed"] == 1 and x["released"] == 0 and
                       x["msg"] == "Armed.",
                       f"{where}: {k}: the tile turned to Disarm before the "
@@ -120418,7 +120432,12 @@ def test_ui2_flame_slide_to_arm_on_a_phone():
                   "not armed" not in (x["msg"] + x["full"]).lower()),
                   f"{where}: {k}: the engine armed it: never said not armed "
                   f"or stopped, never let go: {x}")
+        if "leave_hidden" in r:
+            check(r["leave_hidden"],
+                  f"{where}: the handle was hidden (the group asked for) "
+                  f"when the leave and the lost capture came")
         check(all(k in r for k in ("late_asked_300", "late_asked_800",
+                                   "late_asked_leave",
                                    "drift_1650_1800", "drift_1700_2100",
                                    "drift_1800_2000"))
               or size != (384, 800),

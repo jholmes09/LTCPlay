@@ -5011,8 +5011,9 @@ async function slideSaid(groups, why){
     return;
   }
   if(!on.length && !unk.length){ armSay("Hold stopped: " + why, why === "let go" ? 0 : 2); return; }
-  armSay("Arm all: " + (on.length ? on.map(n => n.name).join(", ") + " asked for." : "") +
-    (unk.length ? " Not known: " + unk.map(n => n.name).join(", ") + " (check the tiles before you hold again)." : ""), unk.length ? 2 : 1);
+  // armAllText's words for a group not known.
+  armSay("Arm all:" + (on.length ? " " + on.map(n => n.name).join(", ") + " asked for." : "") +
+    (unk.length ? " Not known: " + unk.map(n => n.name).join(", ") + " (the engine's state could not be read; check the tiles before you hold again)." : ""), unk.length ? 2 : 1);
 }
 function slideEnd(s){
   if(SLIDE !== s) return;
@@ -5026,6 +5027,14 @@ function slideEnd(s){
   }
 }
 window.addEventListener("pointermove", slideMove, true);
+// The buttons' own pointerleave and lostpointercapture let go of a hold at
+// once, with no state read. During a slide they never reach them (the
+// handle hidden while its group is asked for may lose the capture, or the
+// finger past the track's end leave the button): the slide ends only
+// through its own path, which reads the engine's state first.
+["pointerleave", "lostpointercapture"].forEach(t => window.addEventListener(t, e => {
+  if(SLIDE && e.pointerId === SLIDE.id) e.stopPropagation();
+}, true));
 // Arming switched off and Sign out (their own handlers are 1.0's copied
 // code, which lets go of the hold first).
 $("sa-off").addEventListener("click", () => slideCancel("arming from a screen was switched off"));
@@ -5034,7 +5043,7 @@ $("u-out").addEventListener("click", () => slideCancel("Signed out"));
 // A second pointer of any kind, anywhere: the slide ends, and no hold
 // starts until every pointer is up (holdSecond).
 window.addEventListener("pointerdown", e => {
-  if(SLIDE && e.pointerId !== SLIDE.id){ HOLD_TWO = true; slideCancel("two pointers on the screen; nothing armed. Let go, then hold again"); }
+  if(SLIDE && e.pointerId !== SLIDE.id){ HOLD_TWO = true; slideCancel("two touches at once. Lift, then slide again"); }
 }, true);
 window.addEventListener("popstate", () => {
   if(SLIDE_BACK){ clearTimeout(SLIDE_BACK); SLIDE_BACK = 0; return; }
