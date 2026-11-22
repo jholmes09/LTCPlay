@@ -2355,9 +2355,9 @@ $("al-act").addEventListener("click", async (e) => {
   if(it.act === "run") return runShowHere();   // the big button's own Run
   if(it.act === "ack"){
     // The raise it showed goes with it: the engine clears only that one.
-    const body = {id:it.id, action:"acknowledge"};
+    const body = actor({id:it.id, action:"acknowledge"});
     if(typeof it.rev === "number") body.rev = it.rev;
-    try{ await post("/api/remote/alert", actor(body)); AL_ACKED = {id:it.id, rev:it.rev}; say("Acknowledged.", "", "ok"); }
+    try{ await post("/api/remote/alert", body); AL_ACKED = {id:it.id, rev:it.rev}; say("Acknowledged.", "", "ok"); }
     catch(e){
       // A second tap before the next status: this page cleared it already.
       if(e.status === 409 && AL_ACKED && AL_ACKED.id === it.id && AL_ACKED.rev === it.rev) say("Acknowledged.", "", "ok");
