@@ -21365,12 +21365,12 @@ def build():
   '  const step = stopTapStep(CORE_TAP, monoNow(), kind, false);'),
 
  ("ui2 page: a page whose rules did not load says nothing", "ltcplay/web/remote2.html",
-  "document.addEventListener(\"DOMContentLoaded\", coreCheck);\nwindow.addEventListener(\"load\", coreCheck);\nwindow.addEventListener(\"resize\", coreRoom);\nsetInterval(coreCheck, 1000);",
-  "window.addEventListener(\"resize\", coreRoom);"),
+  "  if(ui2Whole()){\n    if((CORE_SAID === \"loading\" || CORE_SAID === \"early\")",
+  "  if(true){\n    if((CORE_SAID === \"loading\" || CORE_SAID === \"early\")"),
 
  ("ui2 page: a page that arrived broken is called still loading", "ltcplay/web/remote2.html",
-  "  if(document.readyState === \"loading\"){\n    if(CORE_SAID === \"\" && monoNow() - CORE_T0 >= CORE_WAIT_MS){",
-  "  if(true){\n    if(CORE_SAID === \"\" && monoNow() - CORE_T0 >= CORE_WAIT_MS){"),
+  "  if(document.readyState === \"loading\"){\n    // A script error while the page arrives",
+  "  if(true){\n    // A script error while the page arrives"),
 
  ("ui2 page: a running cleaning is not pinned", "ltcplay/web/remote2.html",
   "  if(wc && wc.state && wc.state !== \"idle\") out.push({key:\"wc\",",

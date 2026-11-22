@@ -117948,7 +117948,8 @@ function measure(){
     banner_cut:b.scrollWidth > b.clientWidth + 1,
     why:q("broken-why").hidden ? "" : q("broken-why").textContent,
     more:!q("broken-more").hidden, detail:q("broken-detail").hidden ? "" : q("broken-detail").textContent,
-    app_top:Math.round(q("app").getBoundingClientRect().top)};
+    // where the page starts with the window scrolled to its top
+    app_top:Math.round(q("app").getBoundingClientRect().top + scrollY)};
   return m;
 }
 async function go(){
@@ -117962,12 +117963,20 @@ async function go(){
     const e = q(id);
     if(!e || !e.offsetParent) continue;
     e.classList.remove("nostop");
-    e.scrollIntoView({block:"center"}); await wait(100);
+    // As a finger can: the page's own pane scrolls, the window never does.
+    e.scrollIntoView({block:"center"});
+    if(getComputedStyle(document.body).overflowY === "hidden") window.scrollTo(0, 0);
+    await wait(100);
     const a = e.getBoundingClientRect(), at = document.elementFromPoint(a.left + a.width / 2, a.top + a.height / 2);
-    res.own.push([id, vis(e), r(e), at ? (at.id || at.className || at.tagName) : null]);
+    const hit = at ? (at.closest("[id]") || at) : null;
+    res.own.push([id, vis(e), r(e), hit ? (hit.id || hit.tagName) : null]);
   }
   q("broken-more").click(); await wait(300);
   res.detail = measure();
+  // Its own Stop sent: the longer answer, and the page moved down with it.
+  q("broken-stop").click(); await wait(300); q("broken-stop").click(); await wait(800);
+  res.stopped = measure();
+  res.stopped.said = q("broken-t").textContent;
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(res);
   document.body.appendChild(pre);
@@ -117995,6 +118004,10 @@ def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
               "not drawn (set LTCPLAY_CHROME to one)")
         print("  ok")
         return
+    fk = two[two.find("const FIRE_KEY_NEVER"):][:500]
+    check("#broken-more," in fk and "#broken," in fk,
+          "Space or Enter on the banner's Show detail (or anything in the "
+          "banner) never reaches the purge's fire key")
     # Broken on purpose: the rules' request refused, and a script error
     # after the Stop core (the first one the page meets).
     page = two.replace('<script src="/remote-logic.js"></script>',
@@ -118004,7 +118017,7 @@ def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
     refused = _RawRoute('{"error": "no"}', "application/json", code=404)
     got = _rack_screen_in_chromium(
         chrome, page, _ui2_status_running(),
-        ((360, 740), (412, 915), (2560, 1440)),
+        ((360, 740), (412, 915), (740, 360), (2560, 1440)),
         measure_js=_UI2_BANNER_MEASURE_JS, frag="?tour=0", budget_ms=8000,
         routes={"/remote-logic.js": refused})
     for (w, h), res in got.items():
@@ -118012,9 +118025,9 @@ def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
         if not isinstance(res, dict):
             check(False, f"{where}: not drawn: {res!r}")
             continue
-        for k in ("first", "detail"):
+        for k in ("first", "detail", "stopped"):
             m = res.get(k) or {}
-            at = f"{where} ({'detail open' if k == 'detail' else 'as shown'})"
+            at = f"{where} ({k})"
             W, H = m.get("W", 0), m.get("H", 0)
             bn, ti = m.get("banner") or [0] * 4, m.get("title") or [0] * 4
             st, go = m.get("stop") or [0] * 4, m.get("go") or [0] * 4
@@ -118036,15 +118049,20 @@ def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
                       f"whole on the screen and on top: {b} {m}")
             check(abs(st[1] - go[1]) <= 2 and st[2] <= go[0],
                   f"{at}: Stop show first, Reload beside it: {st} {go}")
+            check(bn[3] - bn[1] <= 0.6 * H + 1 and
+                  m.get("app_top", -1) >= bn[3] - 1,
+                  f"{at}: the banner is at most 60 percent of the window "
+                  f"and the page starts under it, so it covers none of the "
+                  f"page: banner {bn}, page at {m.get('app_top')}, {H} high")
         f = res["first"]
         check("Stopped at: " in f.get("why", "") and
               "test break" in f["why"] and ", line " in f["why"] and
               f.get("more"),
               f"{where}: it says where the script stopped, with Show "
               f"detail: {f.get('why')!r}")
-        check(f.get("app_top", -1) >= f["banner"][3] - 1,
-              f"{where}: the page starts under the banner, so nothing of "
-              f"it is covered: {f.get('app_top')} {f['banner']}")
+        sp = res.get("stopped") or {}
+        check(sp.get("said", "").startswith("Stop "),
+              f"{where}: its Stop was sent and answered: {sp.get('said')!r}")
         check(res.get("own") and all(o[1] for o in res["own"]),
               f"{where}: the page's own Stop, where drawn, is reachable: "
               f"{res.get('own')}")
@@ -118060,10 +118078,15 @@ def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
 
 _UI2_ARRIVE_HEAD_JS = r"""
 <script>
-window.__seen = [];
+window.__seen = []; window.__first = null;
 new MutationObserver(() => {
   const b = document.getElementById("broken");
-  if(b && !b.hidden) window.__seen.push(document.getElementById("broken-t").textContent);
+  if(b && !b.hidden){
+    window.__seen.push(document.getElementById("broken-t").textContent);
+    const w = document.getElementById("broken-why");
+    if(!window.__first) window.__first = {ms:Math.round(performance.now()), state:document.readyState};
+    if(w && !w.hidden && w.textContent) window.__first.why = w.textContent;
+  }
 }).observe(document, {subtree:true, childList:true, attributes:true, attributeFilter:["hidden"]});
 </script>
 """
@@ -118078,6 +118101,7 @@ const res = {at_end:now()};
 setTimeout(() => {
   res.later = now();
   res.local = (typeof ME !== "undefined" && ME) ? ME.local : null;
+  res.first = window.__first;
   const pre = document.createElement("pre"); pre.id = "rack-measure";
   pre.textContent = JSON.stringify(res);
   document.body.appendChild(pre);
@@ -118164,6 +118188,47 @@ def test_ui2_slow_link_page_is_not_called_broken():
                                "it." for t in seen),
                   f"{where}: while the page was still arriving the banner "
                   f"said so, never that it was broken: {seen}")
+    # A script error while the page is still arriving (cold review of
+    # #290, 1): the banner and its Stop at once, saying where it stopped,
+    # not after the 10 s a page with no error is given; gone once the page
+    # turns out whole.
+    erred = page.replace('<script id="remote-logic">',
+                         '<script>throw new Error("early break");</script>'
+                         '<script id="remote-logic">', 1)
+    check(erred != page, "the early error is in the test page")
+    size = (412, 915)
+    got = _rack_screen_in_chromium(
+        chrome, erred, _ui2_status_running(), (size,),
+        measure_js=_UI2_ARRIVE_MEASURE_JS, head_js=_UI2_ARRIVE_HEAD_JS,
+        frag="?tour=0", budget_ms=8000, routes=routes, who=who,
+        stall=('<script id="remote-logic">', 5.0))
+    res = got.get(size)
+    where = f"a script error while the page arrives, {size}"
+    f = (res or {}).get("first") if isinstance(res, dict) else None
+    check(isinstance(f, dict) and f.get("state") == "loading" and
+          f.get("ms", 1e9) < 3500 and "early break" in f.get("why", "") and
+          (res.get("at_end") or {}).get("seen", [""])[0] ==
+          "Page not fully loaded. Reload it.",
+          f"{where}: the banner showed at once, while loading, with where "
+          f"it stopped: {res!r}")
+    check(isinstance(res, dict) and (res.get("later") or {}).get("broken")
+          is False and (res.get("later") or {}).get("whole") is True,
+          f"{where}: and went once the page was whole: {res!r}")
+    # A page that arrived and is not whole, with no script error at all:
+    # said as soon as it has arrived, never "still loading".
+    stuck = page.replace("\nUI2_READY = true;\n", "\n", 1)
+    check(stuck != page, "the test page never sets UI2_READY")
+    got = _rack_screen_in_chromium(
+        chrome, stuck, _ui2_status_running(), (size,),
+        measure_js=_UI2_ARRIVE_MEASURE_JS, head_js=_UI2_ARRIVE_HEAD_JS,
+        frag="?tour=0", budget_ms=8000, routes=routes, who=who)
+    res = got.get(size)
+    lt = (res or {}).get("later") if isinstance(res, dict) else None
+    check(isinstance(lt, dict) and lt.get("broken") is True and
+          lt.get("whole") is False and
+          lt.get("text") == "Page not fully loaded. Reload it.",
+          f"a page that arrived not whole, no error: the banner says so "
+          f"within 3 s: {res!r}")
     print("  ok")
 
 # The DAY tab's copies of 1.0's Startup page code: purge selection, open
