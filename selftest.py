@@ -118629,6 +118629,7 @@ out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
                            "will NOT start. Turn show control on, then "
                            "Resume.", "run_warning_urgent": True})
     ru["show"]["show_control_on"] = False
+    ru["me"]["may"]["show"] = True
     steps = r"""
 const q = id => document.getElementById(id);
 const went = [];
