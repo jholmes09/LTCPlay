@@ -3087,7 +3087,7 @@ $("tn-run").addEventListener("click", () => runShowHere());
 // Stop: the engine's complete halt (1.0's pressStop): the same body, the
 // same answer read the same way. No confirm: the double tap is its guard.
 async function pressStop(route){
-  slideCancel("Stop show was pressed");
+  if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
   HALT_SEQ++;
   // Any Stop ends every armed first tap (Stop show, the strip's, the Run
   // card's): none of them says "not sent" after it.
@@ -4176,7 +4176,6 @@ $("sa-on").addEventListener("click", async () => {
   $("sa-msg").title = $("sa-msg").textContent;
 });
 $("sa-off").addEventListener("click", async () => {
-  slideCancel("arming from a screen was switched off");
   armStop("arming from a screen was switched off");
   try{ const j = await post("/api/remote/screen-arming", {on: false}); $("sa-msg").textContent = j.text; }
   catch(e){ $("sa-msg").textContent = e.message; }
@@ -4929,25 +4928,49 @@ function slideHold(s){
   s.t0 = Date.now(); s.paused = false;
   if(s.i === "all") armAllStart(); else armStart(s.i);
   s.h = HOLD;
+  if(s.h) s.groups = s.h.parts.map(p => p.group);
   // Refused at once (armStart said why): nothing to slide.
   if(!s.h) slideEnd(s);
+}
+// Every group of the slide's hold still holding shows armed or asked for
+// in the status: the engine's armed answer is on its way.
+function slidePending(s){
+  if(s.paused || !s.h || HOLD !== s.h) return false;
+  const gs = ((ST && ST.flames) || {}).groups || [];
+  const live = s.h.parts.filter(p => !p.end);
+  return live.length > 0 && live.every(p => { const g = gs[p.group]; return !!g && (g.armed === "armed" || !!g.wanted); });
+}
+// A slide's hold stopped: each part still holding goes through #293's
+// doubt path (armStop reads the engine's state before it says anything or
+// lets go), so an armed answer cut off here is never said as not armed.
+function slideStop(s, why){
+  if(!s.h || HOLD !== s.h) return;
+  s.h.parts.forEach(p => { if(!p.end && !p.err) p.err = new Error(why || "the slide ended"); });
+  armStop(why);
 }
 function slideHeld(h){ return Math.max(0, ...h.parts.map(p => p.held || 0)); }
 function slideCheck(){
   const s = SLIDE;
   if(!s) return;
-  if(!s.el.isConnected || !s.knob.getClientRects().length){ slideCancel("the controls were drawn again"); return; }
+  // The hold ended by itself (armed, refused, lapsed), and said so.
+  if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }
+  if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
+  // The tile turned to Disarm under the finger: its group is asked for, so
+  // the engine's armed answer is on its way. The hold waits for it, as a
+  // press and hold does (holdLapsed); nothing is let go.
+  if(!s.knob.getClientRects().length && !slidePending(s)){ slideCancel("the controls were drawn again"); return; }
   if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
+  // Signed out (the sheet's Sign out, or the engine says view only).
+  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
   // A resize or a turn that has not fired its event yet.
   if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
   const r = s.el.getBoundingClientRect();
   if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("let go"); return; }
   if(!s.paused){
-    // The hold ended by itself (armed, refused, lapsed), and said so.
-    if(HOLD !== s.h){ slideEnd(s); return; }
-    // Under 90 percent: never as far as the engine's whole hold.
+    // Under 90 percent: never as far as the engine's whole hold. Let go
+    // through the doubt path: the engine may have armed it this instant.
     if(s.frac < SLIDE_ARM && (Date.now() - s.t0 >= SLIDE_GATE_MS || slideHeld(s.h) >= SLIDE_GATE_HELD_S)){
-      armStop("");
+      slideStop(s, "");
       s.h = null; s.paused = true; s.at = Date.now();
     }
   } else if(s.frac >= SLIDE_ARM && Date.now() - s.at >= SLIDE_AGAIN_MS) slideHold(s);
@@ -4970,9 +4993,26 @@ function slideMove(e){
 function slideCancel(why){
   const s = SLIDE;
   if(!s) return;
-  if(s.h && HOLD === s.h) armStop(why);
-  else if(s.paused && why) armSay("Hold stopped: " + why, why === "let go" ? 0 : 2);
+  if(s.h && HOLD === s.h) slideStop(s, why);
+  else if(s.paused && why) slideSaid(s.groups, why);
   slideEnd(s);
+}
+// A slide that ended while paused under 90 percent (its hold already let
+// go): the engine's state is read before anything is said, never "not
+// armed" without it.
+async function slideSaid(groups, why){
+  const nows = await Promise.all(groups.map(i => groupNow(i)));
+  if(HOLD) return;
+  const on = nows.filter(n => n.armed), unk = nows.filter(n => !n.known);
+  if(groups.length === 1){
+    if(on.length) armSay(ASKED_WORDS(on[0].name), 1);
+    else if(unk.length) armSay(UNKNOWN_WORDS(unk[0].name), 2);
+    else armSay("Hold stopped: " + why, why === "let go" ? 0 : 2);
+    return;
+  }
+  if(!on.length && !unk.length){ armSay("Hold stopped: " + why, why === "let go" ? 0 : 2); return; }
+  armSay("Arm all: " + (on.length ? on.map(n => n.name).join(", ") + " asked for." : "") +
+    (unk.length ? " Not known: " + unk.map(n => n.name).join(", ") + " (check the tiles before you hold again)." : ""), unk.length ? 2 : 1);
 }
 function slideEnd(s){
   if(SLIDE !== s) return;
@@ -4986,6 +5026,10 @@ function slideEnd(s){
   }
 }
 window.addEventListener("pointermove", slideMove, true);
+// Arming switched off and Sign out (their own handlers are 1.0's copied
+// code, which lets go of the hold first).
+$("sa-off").addEventListener("click", () => slideCancel("arming from a screen was switched off"));
+$("u-out").addEventListener("click", () => slideCancel("Signed out"));
 ["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => { if(SLIDE && e.pointerId === SLIDE.id) slideCancel("let go"); }, true));
 // A second pointer of any kind, anywhere: the slide ends, and no hold
 // starts until every pointer is up (holdSecond).
@@ -4998,7 +5042,11 @@ window.addEventListener("popstate", () => {
 });
 window.addEventListener("resize", () => slideCancel("the screen turned or changed size"));
 window.addEventListener("orientationchange", () => slideCancel("the screen turned or changed size"));
-SLIDE_MQ.addEventListener("change", () => { slideCancel("the screen changed"); try{ layoutGroups(); }catch(_e){} });
+{
+  const f = () => { slideCancel("the screen changed"); try{ layoutGroups(); }catch(_e){} };
+  // An older Safari has addListener only.
+  if(SLIDE_MQ.addEventListener) SLIDE_MQ.addEventListener("change", f); else if(SLIDE_MQ.addListener) SLIDE_MQ.addListener(f);
+}
 
 // What a group's tile says: an icon, a word, a short line.
 const LAMP_SHORT = {"dirty edge":"DIRTY EDGE", "chatter":"CHATTER", "arm input stale":"NO SIGNAL",
@@ -5859,7 +5907,6 @@ function renderUser(){
   const b = $("user");
   if(me.users_active === undefined && !("user" in me)){ b.hidden = true; return; }
   b.hidden = false;
-  if(me.view_only) slideCancel("Signed out: this screen is view only");
   if(me.view_only && HOLD) armStop("Signed out: this screen is view only");
   b.className = "hb " + (me.user ? "in" : (me.view_only ? "out" : ""));
   setText(b.querySelector("span"), me.user ? me.user : "Sign in");
@@ -5876,7 +5923,6 @@ async function openSignIn(){
     // hash calls showTab through hashchange; the same hash does not).
     if(v === "users"){ if(location.hash === "#users") showTab("users"); else location.hash = "users"; }
     if(v === "out"){
-      slideCancel("Signed out");
       if(HOLD) armStop("Signed out");
       // Signing out ends Arrange mode too (the engine refuses its presses anyway).
       if(ARRANGE) mapOff();
@@ -6098,7 +6144,6 @@ $("u-out").addEventListener("click", async () => {
   // Signing out ends the session at the engine and leaves nothing behind
   // here: a hold to arm is let go first, typed passwords are cleared, and
   // the chip reads View only at once (2026-10-28).
-  slideCancel("Signed out");
   if(HOLD) armStop("Signed out");
   try{ const r = await post("/api/remote/signout", {}); uMsg("u-msg", r.text); }catch(e){ uMsg("u-msg", e.message, true); }
   UNEED = false; $("u-newbox").hidden = true;

@@ -3530,13 +3530,31 @@ MUTATIONS = [
 
  ("ui 2.0 slide: a slide at 90 percent ends without waiting for the engine's armed answer, its hold left running",
   'ltcplay/web/remote2.html',
-  "    if(HOLD !== s.h){ slideEnd(s); return; }\n",
-  "    if(HOLD !== s.h || s.frac >= SLIDE_ARM){ slideEnd(s); return; }\n"),
+  "  if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }\n",
+  "  if(!s.paused && (HOLD !== s.h || s.frac >= SLIDE_ARM)){ slideEnd(s); return; }\n"),
 
  ('ui 2.0 slide: a cancelled slide springs back but does not let go of its hold',
   'ltcplay/web/remote2.html',
-  "  if(s.h && HOLD === s.h) armStop(why);\n",
-  "  if(false) armStop(why);\n"),
+  "  if(s.h && HOLD === s.h) slideStop(s, why);\n",
+  "  if(false) slideStop(s, why);\n"),
+
+ # Cold review of #295: the group asked for before the engine's armed
+ # answer, or a drift under 90 percent at the arm moment, must never be
+ # said as not armed or let go without the engine's state read (#293).
+ ('ui 2.0 slide: a slide whose tile turns to Disarm under the finger lets go before the armed answer',
+  'ltcplay/web/remote2.html',
+  "  if(!s.knob.getClientRects().length && !slidePending(s)){",
+  "  if(!s.knob.getClientRects().length){"),
+
+ ('ui 2.0 slide: a slide stopped under 90 percent lets go without reading the engine state',
+  'ltcplay/web/remote2.html',
+  "  s.h.parts.forEach(p => { if(!p.end && !p.err) p.err = new Error(why || \"the slide ended\"); });\n",
+  ""),
+
+ ("ui 2.0 slide: a paused slide's lift says not armed without a read",
+  'ltcplay/web/remote2.html',
+  "  else if(s.paused && why) slideSaid(s.groups, why);\n",
+  "  else if(s.paused && why) armSay(\"Hold stopped: \" + why, why === \"let go\" ? 0 : 2);\n"),
 
  ('ui 2.0 slide: every screen is a phone, so a desktop press and hold never arms',
   'ltcplay/web/remote2.html',

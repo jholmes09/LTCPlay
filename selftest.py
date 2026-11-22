@@ -120194,6 +120194,22 @@ if(PART === "main"){
   out.offhandle = {slide:!!SLIDE, sent:SENT.length - s0, armed:ARMED.length - a0};
   // A scroll that starts on the handle (straight up) leaves the band.
   out.scroll_on_handle = await slide(el, [[200, 0.1, -120]], 2400);
+} else if(PART === "races"){
+  // Cold review of #295: the group shows asked for (the tile turns to
+  // Disarm under the finger) before the engine's armed answer, 300 or 800
+  // ms late: the slide waits for it, never lets go, never says stopped.
+  for(const d of [300, 800]){
+    ENG.asked = true; patchFor(4); ENG.down = b => b.hold_id == null ? 0 : d; await nap(700);
+    out["late_asked_" + d] = await slide(g0(), [[300, 1]], 3500);
+    reset(); await nap(800);
+  }
+  // Drifting under 90 percent at the moment the engine arms, then the lift:
+  // the engine's state is read before anything is said.
+  for(const [at, up] of [[1650, 1800], [1700, 2100], [1800, 2000]]){
+    ENG.asked = true; patchFor(4); ENG.down = b => b.hold_id == null ? 0 : 300; await nap(700);
+    out["drift_" + at + "_" + up] = await slide(g0(), [[200, 1], [at, 0.85]], up);
+    reset(); await nap(800);
+  }
 } else if(PART === "cuts1"){
   await cutAll(["up", "pointercancel", "second_finger", "second_mouse", "second_pen", "jump", "band", "blur", "hidden", "pagehide"]);
 } else {
@@ -120280,7 +120296,7 @@ def test_ui2_flame_slide_to_arm_on_a_phone():
     morning = {"/api/remote/morning": _morning_view_pico()}
     # Every cancel at 384x800, the main ones at 412x600; each drive its
     # own browser (a draw that runs long is cut off).
-    for size, parts in (((384, 800), ("main", "cuts1", "cuts2")),
+    for size, parts in (((384, 800), ("main", "races", "cuts1", "cuts2")),
                         ((412, 600), ("main", "cuts_small"))):
         where = f"2.0 on a touch phone, {size[0]}x{size[1]}, the slide"
         r = {"cuts": {}}
@@ -120379,6 +120395,34 @@ def test_ui2_flame_slide_to_arm_on_a_phone():
                   c["released"] >= 1 and gone(c) and c["ended_ms"] <= 800,
                   f"{where}: a slide at 95 percent ended by {k}: let go, "
                   f"the handle back, no beat after, never armed: {c}")
+        # Cold review of #295: an armed answer late behind asked for, and a
+        # drift under 90 percent at the arm moment: never said as not
+        # armed or stopped, never let go, for a group the engine armed.
+        for k in [k for k in r if k.startswith(("late_asked_", "drift_"))]:
+            x = r[k]
+            if k == "late_asked_300":
+                check(x["armed"] == 1 and x["released"] == 0 and
+                      x["msg"] == "Armed.",
+                      f"{where}: {k}: the tile turned to Disarm before the "
+                      f"armed answer: the slide waited for that answer, "
+                      f"let go of nothing: {x}")
+            if k == "drift_1800_2000":
+                check(x["armed"] == 1 and x["released"] == 0 and
+                      "is asked for" in x["full"] + x["msg"],
+                      f"{where}: {k}: under 90 percent just after the "
+                      f"engine armed it: read, said asked for, not let go: "
+                      f"{x}")
+            check(x["armed"] != 1 or (
+                  x["released"] == 0 and
+                  not x["msg"].startswith(("Let go", "Hold stopped")) and
+                  "not armed" not in (x["msg"] + x["full"]).lower()),
+                  f"{where}: {k}: the engine armed it: never said not armed "
+                  f"or stopped, never let go: {x}")
+        check(all(k in r for k in ("late_asked_300", "late_asked_800",
+                                   "drift_1650_1800", "drift_1700_2100",
+                                   "drift_1800_2000"))
+              or size != (384, 800),
+              f"{where}: the races were driven: {sorted(r)}")
         for k, said in (("jump", "Hold stopped: the touch jumped"),
                         ("popstate", "Hold stopped: Back was pressed")):
             if k in r["cuts"]:
