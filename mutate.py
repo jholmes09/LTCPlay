@@ -3518,6 +3518,41 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "  h.stop.abort();\n  const doubt = [];\n",
   "  const doubt = [];\n"),
+ # Step 5 of the phone build (AUDIT P0 1, P1 7 to 9): on a touch phone a
+ # flame arm is a slide. The engine arms on its own once beats have lasted
+ # 1.0 s plus the deck's 0.6 s, so the beats must stop under 90 percent;
+ # every cancel lets go; the hold stays on until the engine's armed answer
+ # or the finger's lift; off a phone the arm is the hold as before.
+ ('ui 2.0 slide: a slide held under 90 percent beats on until the engine arms',
+  'ltcplay/web/remote2.html',
+  "    if(s.frac < SLIDE_ARM && (Date.now() - s.t0 >= SLIDE_GATE_MS || slideHeld(s.h) >= SLIDE_GATE_HELD_S)){\n",
+  "    if(false){\n"),
+
+ ("ui 2.0 slide: a slide at 90 percent ends without waiting for the engine's armed answer, its hold left running",
+  'ltcplay/web/remote2.html',
+  "    if(HOLD !== s.h){ slideEnd(s); return; }\n",
+  "    if(HOLD !== s.h || s.frac >= SLIDE_ARM){ slideEnd(s); return; }\n"),
+
+ ('ui 2.0 slide: a cancelled slide springs back but does not let go of its hold',
+  'ltcplay/web/remote2.html',
+  "  if(s.h && HOLD === s.h) armStop(why);\n",
+  "  if(false) armStop(why);\n"),
+
+ ('ui 2.0 slide: every screen is a phone, so a desktop press and hold never arms',
+  'ltcplay/web/remote2.html',
+  "function slidePhone(){ return SLIDE_MQ.matches; }",
+  "function slidePhone(){ return true; }"),
+
+ ('ui 2.0 slide: a second pointer off the arm buttons leaves the slide running',
+  'ltcplay/web/remote2.html',
+  "  if(SLIDE && e.pointerId !== SLIDE.id){ HOLD_TWO = true; slideCancel(",
+  "  if(false){ HOLD_TWO = true; slideCancel("),
+
+ ('ui 2.0 slide: Back during a slide leaves it running',
+  'ltcplay/web/remote2.html',
+  "  slideCancel(\"Back was pressed\");\n",
+  ""),
+
 
 
  # Andy's phone, 2026-11-22: on a touch phone the top line was capped and
