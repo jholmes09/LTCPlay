@@ -114767,7 +114767,10 @@ async function presses(){
   res.runoff_after_yes = n("/api/remote/run-off");
   window.__runon = false; await wait(2600);
   const arm = document.querySelector('[data-arm="0"]');
-  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
+  // A finger lands on the button, not at the window's corner: a touch hold
+  // ends when its finger is off its button (holdMoved).
+  const ar = arm.getBoundingClientRect();
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1, clientX:ar.left + ar.width / 2, clientY:ar.top + ar.height / 2};
   arm.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(450);
   res.arm_beats = n("/api/remote/arm-hold");
   res.arm_released_while_held = n("/api/remote/arm-release");
@@ -114813,7 +114816,10 @@ async function prPresses(){
   res.act = b.dataset.act; res.label = document.getElementById("al-act-l").textContent;
   // The slot's button waits a second after the slot changes (AL_LOCK_MS).
   await wait(1100);
-  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:2};
+  // A finger lands on the button, not at the window's corner: a touch hold
+  // ends when its finger is off its button (holdMoved).
+  const br = b.getBoundingClientRect();
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:2, clientX:br.left + br.width / 2, clientY:br.top + br.height / 2};
   b.click(); await wait(200);
   res.after_tap = posts.filter(p => /preroll-continue/.test(p.u)).length;
   b.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(300);
@@ -118590,6 +118596,284 @@ out.later = n();
               r["quick"][1].startswith("Nothing done") and r["later"] == 1,
               f"{where}: a hold begun within the second starts nothing and "
               f"says so; after it, the hold begins: {r}")
+    print("  ok")
+
+
+def _ui2_status_touch_holds():
+    """Between shows, every group disarmed and arming from screens on, the
+    rig check before show 4 failed (its Hold to continue anyway in the
+    alert slot): every hold on the SHOW tab can be pressed."""
+    st = _ui2_status_rigcheck()
+    st.pop("cleaning", None)
+    st["show"] = {"running": False, "show_control_on": True,
+                  "timecode": None}
+    st["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in st["flames"]["groups"]]
+    st["laser_arm"]["lasers"][0]["armed"] = False
+    return st
+
+
+_UI2_TOUCH_STEPS = r"""
+const q = id => document.getElementById(id);
+const T0 = {}, ARMED = [];
+window.__answer["arm-hold"] = b => {
+  if(!b.hold_id) T0[b.group] = performance.now();
+  const held = (performance.now() - T0[b.group]) / 1000;
+  if(held >= 2.0) ARMED.push(b.group);
+  return [200, {hold_id:"h" + b.group, held_s:held, needs_s:2.0, armed:held >= 2.0, text:held >= 2.0 ? "Group " + b.group + " ARMED." : "Keep holding"}];
+};
+window.__answer["preroll-continue"] = b => [200, {ok:true, text:"Continuing anyway."}];
+const pe = (el, type, x, y, kind) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
+  pointerId:kind === "mouse" ? 1 : 7, pointerType:kind, isPrimary:true, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+const mid = el => { el.scrollIntoView({block:"center"}); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r]; };
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+const n = r => window.__posts.filter(p => p.route === r).length;
+// One hold: down, then each [ms, dx, dy, on] move (on: the element the
+// move lands on, "btn" or "body"), held until `ms` from the down, then up.
+async function hold(el, kind, moves, ms, click, sx){
+  const [x0, y, rr] = mid(el), x = sx ? rr.right - sx : x0;
+  const a0 = ARMED.length, r0 = n("arm-release"), b0 = n("arm-hold");
+  const t0 = performance.now();
+  pe(el, "pointerdown", x, y, kind);
+  const res = {};
+  for(const [at, dx, dy, on] of moves){
+    while(performance.now() - t0 < at) await h.sleep(20);
+    pe(on === "body" ? document.body : el, "pointermove", x + dx, y + dy, kind);
+    if(on === "body") res.beats_at_off = n("arm-hold");
+  }
+  while(performance.now() - t0 < ms) await h.sleep(20);
+  res.msg_held = msg();
+  pe(el, "pointerup", x, y, kind);
+  if(click) el.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
+  await h.sleep(400);
+  Object.assign(res, {armed:ARMED.length - a0, released:n("arm-release") - r0, beats:n("arm-hold") - b0, msg:msg(),
+    beats_after_off:res.beats_at_off === undefined ? null : n("arm-hold") - res.beats_at_off});
+  await h.sleep(300);
+  return res;
+}
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1200);
+const g0 = () => document.querySelector('[data-arm="0"]');
+const cs = el => { const c = getComputedStyle(el); return [c.touchAction, c.userSelect || c.webkitUserSelect, c.webkitTouchCallout || ""]; };
+out.css = {group:cs(g0()), all:cs(q("b-armall")), cont:cs(q("al-act")), cont_cls:q("al-act").className,
+  html:getComputedStyle(document.documentElement).overscrollBehaviorY, body:getComputedStyle(document.body).overscrollBehaviorY,
+  group_label:g0().textContent.trim(), w:Math.round(g0().getBoundingClientRect().width), h:Math.round(g0().getBoundingClientRect().height)};
+const drift = []; for(let i = 1; i <= 20; i++) drift.push([i * 100, i, Math.round(i * 0.4), "btn"]);
+out.a = await hold(g0(), "touch", drift, 2700);
+out.b = await hold(g0(), "touch", [[400, 5, 0, "btn"], [800, 0, 150, "body"]], 2700);
+out.b2 = await hold(g0(), "touch", [[400, 15, 0, "btn"], [800, 30, 0, "btn"]], 2700);
+// 6 px in from its right edge, 12 px to the right: off the button after
+// a move well under the 24 px.
+out.b3 = await hold(g0(), "touch", [[800, 12, 0, "btn"]], 2700, false, 6);
+out.c = await hold(g0(), "touch", [], 90, true);
+out.d = await hold(g0(), "mouse", [[400, 20, 0, "btn"], [800, 40, 0, "btn"], [1200, 0, 0, "btn"]], 2700);
+out.e = await hold(q("b-armall"), "touch", [[500, 0, 150, "body"]], 2700);
+const c0 = n("preroll-continue");
+out.f = await hold(q("al-act"), "touch", [[400, 0, 150, "body"]], 1800);
+out.f_posts = window.__posts.filter(p => p.route === "preroll-continue").slice(c0).map(p => p.body.phase);
+const c1 = n("preroll-continue");
+out.g = await hold(q("al-act"), "touch", drift.slice(0, 12), 1500);
+out.g_posts = window.__posts.filter(p => p.route === "preroll-continue").slice(c1).map(p => p.body.phase);
+// Two fingers (cold review of #292): finger 1 holds one button, finger 2
+// presses another hold, finger 1 slides 150 px off. Nothing arms or
+// continues, either way round.
+// The second pointer: a finger (not the first, so not primary), a mouse or
+// a pen (each the first of its own type, so primary).
+const SECOND = {finger:[8, "touch", false], mouse:[1, "mouse", true], pen:[9, "pen", true]};
+let P2 = SECOND.finger;
+const f2 = (el, type, x, y) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
+  pointerId:P2[0], pointerType:P2[1], isPrimary:P2[2], clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+async function two(first, second, kind){
+  P2 = SECOND[kind || "finger"];
+  const [x, y] = mid(first), [x2, y2] = mid(second);
+  const [xa, ya] = mid(first);
+  const a0 = ARMED.length, r0 = n("arm-release"), b0 = n("arm-hold"), c0 = window.__posts.filter(p => p.route === "preroll-continue").length;
+  pe(first, "pointerdown", xa, ya, "touch");
+  await h.sleep(400);
+  const beats1 = n("arm-hold") - b0;
+  f2(second, "pointerdown", x2, y2);
+  await h.sleep(300);
+  const beats2 = n("arm-hold");
+  pe(document.body, "pointermove", xa, ya + 150, "touch");
+  await h.sleep(2300);
+  pe(first, "pointerup", xa, ya + 150, "touch"); f2(second, "pointerup", x2, y2);
+  await h.sleep(400);
+  return {armed:ARMED.length - a0, released:n("arm-release") - r0, beats_before:beats1, beats_after:n("arm-hold") - beats2,
+    cont:window.__posts.filter(p => p.route === "preroll-continue").slice(c0).map(p => p.body.phase), msg:msg()};
+}
+out.two_a = await two(g0(), q("al-act"));
+await h.sleep(300);
+out.two_b = await two(q("al-act"), g0());
+await h.sleep(300);
+out.mouse_a = await two(g0(), q("al-act"), "mouse");
+await h.sleep(300);
+out.mouse_b = await two(q("al-act"), g0(), "mouse");
+await h.sleep(300);
+out.pen_a = await two(g0(), q("al-act"), "pen");
+await h.sleep(300);
+out.pen_b = await two(q("al-act"), g0(), "pen");
+await h.sleep(300);
+// A finger resting on the page (not on a hold button), then a second
+// finger on Hold to arm: refused while the first is down.
+{
+  const [x, y] = mid(g0());
+  const a0 = ARMED.length, b0 = n("arm-hold");
+  pe(document.body, "pointerdown", 5, 5, "touch");
+  P2 = SECOND.finger;
+  f2(g0(), "pointerdown", x, y);
+  await h.sleep(2700);
+  f2(g0(), "pointerup", x, y); pe(document.body, "pointerup", 5, 5, "touch");
+  await h.sleep(400);
+  out.rest = {armed:ARMED.length - a0, beats:n("arm-hold") - b0};
+}
+// A finger whose lift never arrived (pointer 20, down, never up): the next
+// first finger drops it, so holds are not refused for good.
+pe(document.body, "pointerdown", 5, 5, "touch");
+document.body.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true, pointerId:20, pointerType:"touch", isPrimary:false, clientX:5, clientY:5, buttons:1}));
+pe(document.body, "pointerup", 5, 5, "touch");
+await h.sleep(200);
+// Every finger up: a hold works again.
+out.after_two = await hold(g0(), "touch", [], 2700);
+// The button moves under a still finger (a line above wraps): the hold ends.
+const lay = async () => {
+  const [x, y] = mid(g0());
+  const a0 = ARMED.length, r0 = n("arm-release");
+  pe(g0(), "pointerdown", x, y, "touch");
+  await h.sleep(500);
+  // The top line growing (a long line wrapping): the pane under it moves
+  // down. (A row added inside the pane would not: the browser keeps the
+  // scrolled content where it was.)
+  const y0 = g0().getBoundingClientRect().top;
+  const pad = document.createElement("div"); pad.style.cssText = "flex:1 1 100%;height:200px";
+  q("next").appendChild(pad);
+  await h.sleep(100);
+  moved = Math.round(g0().getBoundingClientRect().top - y0);
+  await h.sleep(2200);
+  pe(g0(), "pointerup", x, y, "touch");
+  await h.sleep(400);
+  pad.remove();
+  return {armed:ARMED.length - a0, released:n("arm-release") - r0, msg:msg(), moved:moved};
+};
+let moved = null;
+out.shift = await lay();
+"""
+
+
+def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
+    section("the holds on a phone (Andy's Galaxy, 2026-11-22: a finger "
+            "drifting 12 to 20 px during Hold to arm became a scroll, and "
+            "the browser cancelled the hold at about 0.75 s): every group's "
+            "Hold to arm, Hold: arm flames and Hold to continue anyway lock "
+            "touch scrolling and selection, as the purge and cleaning holds "
+            "do, and the page has no pull to refresh; a touch hold that "
+            "drifts 20 px arms after the whole hold; one that slides off "
+            "the button, or moves more than 24 px, ends at once and arms "
+            "nothing; a tap arms nothing; a mouse is as before")
+    page = _ui2_page_inline()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    r = _ui2_drive(chrome, page, _ui2_status_touch_holds(), _UI2_TOUCH_STEPS,
+                   size=(412, 915), frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico()},
+                   budget_ms=100000)
+    where = "2.0 at 412x915, the holds pressed by touch"
+    if not check(isinstance(r, dict) and "g_posts" in r and
+                 not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
+        print("  ok")
+        return
+    c = r["css"]
+    check(c["group_label"] == "Hold to arm" and c["w"] >= 60 and
+          c["h"] >= 44,
+          f"{where}: the first group's button is Hold to arm: {c}")
+    check(c["group"][:2] == ["none", "none"] and
+          c["all"][:2] == ["none", "none"] and
+          "hold" in c["cont_cls"].split() and
+          c["cont"][:2] == ["none", "none"],
+          f"{where}: Hold to arm, Hold: arm flames and Hold to continue "
+          f"anyway lock touch scrolling and selection: {c}")
+    check(c["html"] == "none" and c["body"] == "none",
+          f"{where}: no pull to refresh on the page: {c}")
+    a = r["a"]
+    check(a["armed"] == 1 and a["released"] == 0,
+          f"{where}: a whole touch hold that drifts 20 px arms: {a}")
+    b = r["b"]
+    check(b["armed"] == 0 and b["released"] == 1 and
+          b["beats_after_off"] == 0 and b["msg"] == "Let go: not armed.",
+          f"{where}: a touch hold that slides 150 px off the button ends "
+          f"there, arms nothing and says Not armed: {b}")
+    b2 = r["b2"]
+    check(b2["armed"] == 0 and b2["released"] == 1 and
+          b2["msg"] == "Let go: not armed.",
+          f"{where}: a touch hold that moves 30 px (a scroll starting on "
+          f"the button) ends and arms nothing: {b2}")
+    b3 = r["b3"]
+    check(b3["armed"] == 0 and b3["released"] == 1 and
+          b3["msg"] == "Let go: not armed.",
+          f"{where}: a touch hold that leaves the button by 6 px ends "
+          f"there and arms nothing: {b3}")
+    t = r["c"]
+    check(t["armed"] == 0 and t["released"] == 1,
+          f"{where}: a tap arms nothing: {t}")
+    d = r["d"]
+    check(d["armed"] == 1 and d["released"] == 0,
+          f"{where}: a mouse hold that moves 40 px on the button still "
+          f"arms, as before: {d}")
+    e = r["e"]
+    check(e["armed"] == 0 and e["released"] >= 1 and
+          e["beats_after_off"] == 0,
+          f"{where}: Hold: arm flames slid off by touch ends there and "
+          f"arms nothing: {e}")
+    check(r["f_posts"] == ["begin"] and
+          r["f"]["msg"].startswith("Let go too early"),
+          f"{where}: Hold to continue anyway slid off by touch sends only "
+          f"its begin, and says so: {r['f']} {r['f_posts']}")
+    check(r["g_posts"] == ["begin", "done"],
+          f"{where}: Hold to continue anyway held by touch with a drift "
+          f"continues, after its whole hold: {r['g']} {r['g_posts']}")
+    ta, tb = r["two_a"], r["two_b"]
+    check(ta["armed"] == 0 and ta["beats_before"] >= 1 and
+          ta["released"] >= 1 and ta["beats_after"] == 0 and
+          ta["cont"] == [],
+          f"{where}: finger 1 on Hold to arm, finger 2 on Hold to continue "
+          f"anyway: the arm hold ends at once, nothing continues, and "
+          f"finger 1 sliding off arms nothing: {ta}")
+    check(tb["armed"] == 0 and tb["cont"] == ["begin"] and
+          tb["beats_before"] == 0 and tb["beats_after"] == 0,
+          f"{where}: finger 1 on Hold to continue anyway, finger 2 on Hold "
+          f"to arm: the continue ends with its begin only, and no arm hold "
+          f"starts: {tb}")
+    for k in ("mouse", "pen"):
+        xa, xb = r[k + "_a"], r[k + "_b"]
+        check(xa["armed"] == 0 and xa["beats_before"] >= 1 and
+              xa["released"] >= 1 and xa["beats_after"] == 0 and
+              xa["cont"] == [],
+              f"{where}: a finger on Hold to arm, then a {k} on Hold to "
+              f"continue anyway: the arm hold ends, nothing continues, and "
+              f"the finger sliding off arms nothing: {xa}")
+        check(xb["armed"] == 0 and xb["cont"] == ["begin"] and
+              xb["beats_before"] == 0 and xb["beats_after"] == 0,
+              f"{where}: a finger on Hold to continue anyway, then a {k} on "
+              f"Hold to arm: the continue ends with its begin only, and no "
+              f"arm hold starts: {xb}")
+    check(r["rest"] == {"armed": 0, "beats": 0},
+          f"{where}: with a finger resting on the page, a second finger's "
+          f"Hold to arm starts nothing: {r['rest']}")
+    check(r["after_two"]["armed"] == 1,
+          f"{where}: once every pointer is up (and a finger whose lift "
+          f"never arrived is dropped by the next first finger), a hold "
+          f"arms again: "
+          f"{r['after_two']}")
+    sh = r["shift"]
+    check(sh["armed"] == 0 and sh["released"] == 1 and
+          (sh["moved"] or 0) >= 100,
+          f"{where}: the button moving out from under a still finger ends "
+          f"the hold and arms nothing: {sh}")
     print("  ok")
 
 
@@ -133261,6 +133545,7 @@ if __name__ == "__main__":
         test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
         test_ui2_alert_hold_acknowledge_from_every_tab,
+        test_ui2_touch_holds_lock_scrolling_and_end_off_the_button,
         test_ui2_broken_banner_fits_a_phone_and_a_2k_screen,
         test_ui2_slow_link_page_is_not_called_broken,
         test_ui2_day_makes_only_1_0_presses,
