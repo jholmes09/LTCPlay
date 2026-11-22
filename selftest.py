@@ -114094,7 +114094,7 @@ def test_ui2_page_makes_only_1_0_presses():
     fns = "\n".join(_js_function(two, n) or "" for n in (
         "isHeld", "isLive", "runIsOn", "isRehearsal", "pinItems", "signWhy",
         "goLook", "nextStep", "pillLook", "runWarnWords", "runHereShown",
-        "alertItems", "showTimes", "cdLength"))
+        "alertItems", "showTimes", "cdLength", "alertHoldStep"))
     # alertItems' words and the page's own state it reads.
     for c in ("ALERT_WHAT", "ALERT_DO"):
         m = re.search(r"^const " + c + r" = \{.*?\};$", two, re.M | re.S)
@@ -114408,7 +114408,7 @@ def test_ui2_time_elapsed_and_left():
     fns = "\n".join(_js_function(two, n) or "" for n in (
         "showTimes", "cdLength", "isHeld", "isLive", "runIsOn",
         "isRehearsal", "pinItems", "signWhy", "goLook", "nextStep",
-        "alertItems", "short8"))
+        "alertItems", "short8", "alertHoldStep"))
     check("function showTimes(" in fns and "function cdLength(" in fns,
           "showTimes and cdLength are found")
     for c in ("ALERT_WHAT", "ALERT_DO"):
@@ -118445,6 +118445,9 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
     one = _ui2_status_alert_hold(0)
     one["alert_hold"]["text"] = ("Held: the alert was acknowledged. Press "
                                  "Resume when ready.")
+    # Signed in as someone who may Resume: a disabled button takes no
+    # finger (elementFromPoint passes over it).
+    one["me"]["may"]["show"] = True
     steps = r"""
 const q = id => document.getElementById(id);
 const seen = el => { const r = el.getBoundingClientRect(), m = document.querySelector("main").getBoundingClientRect();
@@ -118490,7 +118493,7 @@ await h.sleep(1500);
 out.before = [q("al-what").textContent, q("al-n").textContent, q("next-go-l").textContent, q("next-go").hidden];
 q("next-go").click();
 await h.sleep(600);
-out.after = [document.body.dataset.tab, q("al-what").textContent, q("al-n").textContent, seen(q("alert"))];
+out.after = [document.body.dataset.tab, q("al-what").textContent, q("al-n").textContent, seen(q("al-text"))];
 out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
 """
     for size in ((412, 600), (1366, 768)):
