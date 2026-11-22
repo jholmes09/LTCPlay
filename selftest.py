@@ -119091,9 +119091,41 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
 # reaches the page ENG.down ms later (a phone's round trip, split).
 _UI2_BEAT_STEPS = r"""
 const q = id => document.getElementById(id);
-const ENG = {up:0, down:0, stale:250, needs:1.0, deck:0.6, holds:{}, ids:0, force:null};
+const ENG = {up:0, down:0, stale:250, needs:1.0, deck:0.6, holds:{}, ids:0, force:null, asked:false, wanted:{}, lose:false};
 const SENT = [], REL = [], ARMED = [], DELIVERED = [], REFUSED = [];
-let INFL = 0, MAXINFL = 0;
+// What reached the stand-in engine, in its order: {t, g, rel} (a release)
+// or {t, g} (a beat); how long each release and status read waited for a
+// connection; how many beats the page cancelled.
+const ARR = [], RELWAIT = [], STWAIT = [];
+let INFL = 0, MAXINFL = 0, ABORTED = 0;
+// A browser's connections to one host (Chrome: six). Infinity unless a
+// step sets it: a request waits for a free one, in order; a request the
+// page cancels while it waits is never sent, and one cancelled while out
+// frees its connection at once (it reached the engine all the same).
+const POOL = {n:Infinity, busy:0, q:[]};
+const aborted = () => new DOMException("The operation was aborted.", "AbortError");
+function slot(signal){
+  return new Promise((res, rej) => {
+    if(signal && signal.aborted){ rej(aborted()); return; }
+    if(POOL.busy < POOL.n){ POOL.busy++; res(); return; }
+    const w = {go:() => { POOL.busy++; res(); }};
+    POOL.q.push(w);
+    if(signal) signal.addEventListener("abort", () => {
+      const i = POOL.q.indexOf(w);
+      if(i >= 0){ POOL.q.splice(i, 1); ABORTED++; rej(aborted()); }
+    }, {once:true});
+  });
+}
+function free(){ POOL.busy--; const w = POOL.q.shift(); if(w) w.go(); }
+function abortable(work, signal){
+  if(!signal) return work;
+  return new Promise((res, rej) => {
+    if(signal.aborted){ ABORTED++; rej(aborted()); return; }
+    signal.addEventListener("abort", () => { ABORTED++; rej(aborted()); }, {once:true});
+    work.then(res, rej);
+  });
+}
+const NAMES = ["front row", "cat-walk", "wave flamer", "fireball"];
 // Every timer the hold loop starts, and whether it is still running.
 const LIVE = new Set();
 const si = window.setInterval.bind(window), st = window.setTimeout.bind(window);
@@ -119107,6 +119139,9 @@ window.clearTimeout = id => { LIVE.delete(id); return ct(id); };
 const nap = ms => new Promise(r => st(r, ms));
 function engine(b, now){
   const g = b.group, hd = ENG.holds[g];
+  // The real engine (remote.py arm_hold): once it has answered one beat
+  // armed and dropped the hold, every later beat is refused.
+  if(ENG.asked && ENG.wanted[g]) return [409, {error:NAMES[g] + " is already armed or asked for.", let_go:true}];
   if(b.hold_id == null){
     if(hd && now - hd.beat <= ENG.stale) return [409, {error:"Someone is already holding it. Only one hold at a time.", let_go:true}];
     const id = ++ENG.ids;
@@ -119122,6 +119157,7 @@ function engine(b, now){
   const held = (now - hd.start) / 1000;
   if(held >= ENG.needs + ENG.deck){
     delete ENG.holds[g]; ARMED.push(g);
+    if(ENG.asked) ENG.wanted[g] = true;
     return [200, {ok:true, armed:true, hold_id:hd.id, held_s:held, needs_s:ENG.needs, text:"Armed."}];
   }
   return [200, {ok:true, hold_id:hd.id, held_s:held, needs_s:ENG.needs}];
@@ -119129,25 +119165,49 @@ function engine(b, now){
 const hf = window.fetch;
 window.fetch = async (url, opt) => {
   const u = String(url);
-  if(!(opt && opt.method === "POST" && /\/api\/remote\/arm-(hold|release)$/.test(u))) return hf(url, opt);
+  const signal = opt && opt.signal;
+  if(!(opt && opt.method === "POST" && /\/api\/remote\/arm-(hold|release)$/.test(u))){
+    const t0 = performance.now();
+    await slot(signal);
+    if(/\/api\/remote\/status/.test(u)) STWAIT.push(performance.now() - t0);
+    try{ return await hf(url, opt); } finally { free(); }
+  }
   const body = JSON.parse(opt.body || "{}");
   const t = performance.now();
   if(/arm-release$/.test(u)){
     REL.push({t:t, g:body.group});
+    await slot(signal);
+    RELWAIT.push(performance.now() - t);
     await nap(ENG.up);
+    ARR.push({t:performance.now(), g:body.group, rel:true});
     delete ENG.holds[body.group];
+    if(POOL.n !== Infinity) await nap(typeof ENG.down === "function" ? 0 : ENG.down);
+    free();
     return new Response('{"ok":true}', {status:200, headers:{"Content-Type":"application/json"}});
   }
   SENT.push({t:t, id:body.hold_id, g:body.group});
+  await slot(signal);
   INFL++; MAXINFL = Math.max(MAXINFL, INFL);
   const up = typeof ENG.up === "function" ? ENG.up(body) : ENG.up;
-  const down = typeof ENG.down === "function" ? ENG.down(body) : ENG.down;
-  await nap(up);
-  let a = engine(body, performance.now());
-  if(ENG.force && body.hold_id != null) a = ENG.force(body);
-  await nap(down);
-  INFL--;
-  if(a[1].armed) DELIVERED.push(performance.now());
+  const work = (async () => {
+    await nap(up);
+    const now = performance.now();
+    ARR.push({t:now, g:body.group});
+    let a = engine(body, now);
+    if(ENG.force && body.hold_id != null) a = ENG.force(body);
+    // The answer's way back, which may depend on the answer itself (an
+    // armed answer held back, so a later refusal overtakes it).
+    await nap(typeof ENG.down === "function" ? ENG.down(body, a) : ENG.down);
+    return a;
+  })();
+  let a;
+  try{ a = await abortable(work, signal); }
+  finally { INFL--; free(); }
+  if(a[1].armed){
+    // An armed answer lost on the way (ENG.lose): the page never gets it.
+    if(ENG.lose) throw new TypeError("Failed to fetch");
+    DELIVERED.push(performance.now());
+  }
   return new Response(JSON.stringify(a[1]), {status:a[0], headers:{"Content-Type":"application/json"}});
 };
 const msg = () => q("msg-t") ? q("msg-t").textContent : "";
@@ -119155,7 +119215,14 @@ const pe = (el, type, x, y, id, prim) => el.dispatchEvent(new PointerEvent(type,
   pointerId:id || 7, pointerType:"touch", isPrimary:prim !== false, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
 const mid = el => { el.scrollIntoView({block:"center"}); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
 const g0 = () => document.querySelector('[data-arm="0"]');
-const reset = () => { ENG.up = 0; ENG.down = 0; ENG.force = null; ENG.holds = {}; MAXINFL = 0; };
+const reset = () => { ENG.up = 0; ENG.down = 0; ENG.force = null; ENG.holds = {}; MAXINFL = 0;
+  ENG.asked = false; ENG.wanted = {}; ENG.lose = false; POOL.n = Infinity; window.__patch = null; };
+// The status as the real engine reports it: a group asked for once the
+// engine has answered armed (ENG.asked), and the first `n` groups only
+// (Hold: arm flames is Disarm all while any group is armed).
+const patchFor = n => { window.__patch = st => {
+  st.flames.groups = st.flames.groups.slice(0, n).map((g, i) => ENG.wanted[i] ? Object.assign({}, g, {wanted:true}) : g);
+  return st; }; };
 // One hold of `el` for `ms` (or until `cut` ends it at `at` ms): what was
 // sent, the gaps between the beats after the first answer, whether the
 // page said Armed before the engine's armed answer reached it.
@@ -119248,10 +119315,73 @@ for(const k of Object.keys(ways)){
   await nap(200);
 }
 // 8. Hold: arm flames, every group: the same timer, ended by the lift.
-ENG.down = b => b.hold_id == null ? 0 : 300;
+// Four groups share the hold's four beats out, one each, so each beats
+// once a round trip: answers 120 ms late (300 ms with four groups is over
+// the engine's 0.25 s, the limit of a browser's six connections).
+ENG.down = b => b.hold_id == null ? 0 : 120;
 out.all = await hold(q("b-armall"), 800);
 out.all_cut = await hold(q("b-armall"), 600, ways.blur, 600);
+ENG.down = b => b.hold_id == null ? 0 : 120;
 out.all_armed = await hold(q("b-armall"), 2600);
+reset();
+// 9. Out of order (cold review of #293): the engine answers one beat armed
+// and refuses every later one, and a refusal overtakes the armed answer.
+// The page waits for the beats still out: it ends Armed and lets go of
+// nothing.
+const settle = async () => { await nap(700); };
+const relFor = (r0, gs) => REL.slice(r0).filter(r => gs.indexOf(r.g) >= 0).length;
+async function reorder(el, ms, gs){
+  const r0 = REL.length;
+  const res = await hold(el, ms);
+  res.rel_mine = relFor(r0, gs);
+  res.full = MSG_FULL; res.cls = q("msg").className;
+  return res;
+}
+ENG.asked = true; patchFor(4); await settle();
+ENG.down = (b, a) => b.hold_id == null ? 0 : (a[1].armed ? 600 : 30);
+out.ooo = await reorder(g0(), 2600, [0]);
+reset(); await settle();
+// The armed answer never arrives (lost): every beat answered, the refusal
+// is read against the engine's state, which says asked for.
+ENG.asked = true; patchFor(4); await settle();
+ENG.lose = true;
+ENG.down = (b, a) => b.hold_id == null ? 0 : (a[1].armed ? 200 : 30);
+out.lost = await reorder(g0(), 2600, [0]);
+reset(); await settle();
+// Hold: arm flames with two groups, the same overtaking for both.
+ENG.asked = true; patchFor(2); await settle();
+ENG.down = (b, a) => b.hold_id == null ? 0 : (a[1].armed ? 600 : 30);
+out.ooo_all = await reorder(q("b-armall"), 2600, [0, 1]);
+out.ooo_all.groups = ARMED.slice(-2);
+reset(); await settle();
+// 10. Hold: arm flames, three groups, a 200 ms round trip, a browser's six
+// connections: at most four beats out for the whole hold, the status read
+// never waits, and on the lift the beats still out are cancelled and the
+// releases go at once, no beat reaching the engine after its group's
+// release.
+patchFor(3); await settle();
+POOL.n = 6; ENG.up = 100; ENG.down = 100;
+{
+  const a0 = ARR.length, rw0 = RELWAIT.length, ab0 = ABORTED;
+  const el = q("b-armall"), [x, y] = mid(el);
+  MAXINFL = INFL;
+  const sw0 = STWAIT.length;
+  pe(el, "pointerdown", x, y);
+  await nap(900);
+  const held = {out:INFL, st_wait:Math.round(Math.max(0, ...STWAIT.slice(sw0))), st_reads:STWAIT.length - sw0};
+  pe(el, "pointerup", x, y);
+  await nap(5);
+  const outAfter = INFL;
+  await nap(600);
+  const arr = ARR.slice(a0);
+  const relAt = {};
+  arr.forEach(e => { if(e.rel && relAt[e.g] === undefined) relAt[e.g] = e.t; });
+  out.three = Object.assign(held, {max_out:MAXINFL, out_after_lift:outAfter, aborted:ABORTED - ab0,
+    rel_wait:Math.round(Math.max(0, ...RELWAIT.slice(rw0))), released:RELWAIT.length - rw0,
+    late:arr.filter(e => !e.rel && relAt[e.g] !== undefined && e.t > relAt[e.g]).length,
+    groups:[...new Set(arr.filter(e => !e.rel).map(e => e.g))].sort()});
+}
+reset(); await settle();
 out.live_end = LIVE.size;
 out.vt = Math.round(performance.now());
 """
@@ -119265,7 +119395,11 @@ def test_ui2_arm_beats_on_a_fixed_timer():
             "every hold over about 150 ms of round trip). At most four "
             "beats unanswered at once; an answer after the hold ended does "
             "nothing; every way a hold ends stops the timer at once; the "
-            "page says Armed only on the engine's armed answer")
+            "page says Armed only on the engine's armed answer. Out of "
+            "order answers (cold review of #293): a refusal that overtakes "
+            "the armed answer never says the hold stopped or lets go; one "
+            "bound for the whole hold, so the release and the status read "
+            "never wait behind beats")
     page = _ui2_page_inline()
     chrome = _find_chromium()
     if not chrome:
@@ -119281,7 +119415,7 @@ def test_ui2_arm_beats_on_a_fixed_timer():
     r = _ui2_drive(chrome, page, _ui2_status_touch_holds(), _UI2_BEAT_STEPS,
                    size=(412, 915), frag="?tour=0#day",
                    routes={"/api/remote/morning": _morning_view_pico()},
-                   budget_ms=60000)
+                   budget_ms=90000)
     where = "2.0 at 412x915, the arm holds' beats"
     if not check(isinstance(r, dict) and "live_end" in r and
                  not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
@@ -119350,8 +119484,50 @@ def test_ui2_arm_beats_on_a_fixed_timer():
           f"at once: {ac}")
     aa = r["all_armed"]
     check(aa["armed"] >= 1 and clean(aa) and r["live_end"] == 0,
-          f"{where}: Hold: arm flames with every answer 300 ms late arms, "
+          f"{where}: Hold: arm flames with every answer 120 ms late arms, "
           f"and no timer is left running: {aa} {r['live_end']}")
+    # Cold review of #293, 1: answers out of order. The engine answers one
+    # beat armed and refuses every beat after it, and a refusal can reach
+    # the page first: the page never says the hold stopped for a group the
+    # engine armed, and never lets go of it.
+    o = r["ooo"]
+    check(o["armed"] == 1 and o["msg"] == "Armed." and o["cls"] == "ok" and
+          o["rel_mine"] == 0 and o["released"] == 0 and clean(o),
+          f"{where}: a refusal that overtakes the engine's armed answer: "
+          f"the page waits for it and says Armed (only on that answer), "
+          f"and lets go of nothing: {o}")
+    lo = r["lost"]
+    check(lo["armed"] == 1 and lo["rel_mine"] == 0 and
+          lo["cls"] == "ok" and not lo["msg"].startswith("Hold stopped") and
+          not lo["msg"].startswith("Let go") and lo["msg"] != "Armed." and
+          "is asked for" in lo["full"] + lo["msg"] and clean(lo),
+          f"{where}: the armed answer lost, the refusal only: the page "
+          f"reads the engine's state, says the group is asked for (not "
+          f"Armed, not Hold stopped) and lets go of nothing: {lo}")
+    oa = r["ooo_all"]
+    check(oa["armed"] == 2 and oa["rel_mine"] == 0 and
+          oa["full"].startswith("Arm all: front row, cat-walk are asked "
+                                "for") and
+          "Hold stopped" not in oa["full"] and
+          "already armed or asked for" not in oa["full"] and clean(oa),
+          f"{where}: Hold: arm flames with two groups, each group's "
+          f"refusal overtaking its armed answer: both said asked for, "
+          f"neither let go of: {oa}")
+    # Cold review of #293, 2: one bound for the whole hold, so the let go
+    # and the status read never wait behind beats for one of a browser's
+    # six connections.
+    th = r["three"]
+    check(th["groups"] == [0, 1, 2] and th["max_out"] <= 4 and
+          th["st_reads"] >= 2 and th["st_wait"] <= 5 and
+          th["released"] == 3 and th["rel_wait"] <= 5 and th["late"] == 0,
+          f"{where}: Hold: arm flames with three groups over a 200 ms round "
+          f"trip and six connections: at most four beats out for the whole "
+          f"hold, the status read never waits, the three releases go at "
+          f"once on the lift and no beat reaches the engine after its "
+          f"group's release: {th}")
+    check(th["out_after_lift"] == 0 and th["aborted"] >= 1,
+          f"{where}: on the lift the beats still out are cancelled at "
+          f"once: {th}")
     print("  ok")
 
 

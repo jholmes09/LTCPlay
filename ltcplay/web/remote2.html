@@ -1661,9 +1661,9 @@ async function getJSON(p, ms){
     return j;
   } finally { clearTimeout(t); }
 }
-async function post(p, body){
+async function post(p, body, signal){
   const r = await fetch(p, {method:"POST", credentials:"same-origin", cache:"no-store",
-    headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(body || {})});
+    headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(body || {}), signal:signal});
   const j = await r.json().catch(() => ({}));
   if(!r.ok){ const e = new Error(refusedWords(j, r.statusText)); e.status = r.status; e.code = j.code || ""; throw e; }
   return j;
@@ -4475,6 +4475,10 @@ let HOLD = null;
 // to arrive later), and the engine lets go of the hold by itself. An
 // answer that comes after the hold ended is ignored. Every way a hold ends
 // clears the timer at once.
+// HOLD_BEATS_OUT is for the whole hold, Hold: arm flames' groups shared
+// out between them (cold review of #293): a browser opens six connections
+// to the engine at most, and the let go and the status read must never
+// wait behind beats. A hold that ends cancels its beats still waiting.
 const HOLD_BEAT_MS = 100, HOLD_BEATS_OUT = 4;
 const REARM_SEEN = {}, REARM_REFUSED_AT = {};
 function rearmWaitFor(i){
@@ -4491,7 +4495,10 @@ function holdLapsed(){
     const as = armState(ST, Date.now(), LAST_OK, p.group);
     if(as.ok) continue;
     const g = gs[p.group];
-    if(HOLD.all && g && (g.armed === "armed" || g.wanted) && as.why === "Already armed or asked for.") continue;
+    // Its group asked for once the hold is under way (the Stream Deck took
+    // it): the engine's armed answer is on its way, so the hold waits for
+    // it, one group or all, never "Hold stopped" (cold review of #293).
+    if((HOLD.all || p.id != null) && g && (g.armed === "armed" || g.wanted) && as.why === "Already armed or asked for.") continue;
     return as.why;
   }
   return "";
@@ -4506,7 +4513,7 @@ function armStart(i){
   delete REARM_REFUSED_AT[i];
   const as = armState(ST, Date.now(), LAST_OK, i);
   if(!as.ok){ armSay("Not armed: " + as.why, 2); return; }
-  HOLD = {all:false, parts:[{group:i, id:null}]};
+  HOLD = {all:false, parts:[{group:i, id:null}], beats:0, stop:new AbortController()};
   armBeat(HOLD, HOLD.parts[0]);
 }
 function armAllStart(){
@@ -4520,24 +4527,33 @@ function armAllStart(){
     return;
   }
   plan.go.forEach(i => { delete REARM_REFUSED_AT[i]; });
-  HOLD = {all:true, parts:plan.go.map(i => ({group:i, id:null})), out:plan.out};
+  HOLD = {all:true, parts:plan.go.map(i => ({group:i, id:null})), out:plan.out, beats:0, stop:new AbortController()};
   armSay("Keep holding: arming " + plan.go.map(i => groupNames()[i]).join(", ") + "...", 0);
   HOLD.parts.forEach(p => armBeat(HOLD, p));
 }
+// Room for one more beat: HOLD_BEATS_OUT for the whole hold, shared out
+// between its groups still holding (one each at least).
+function beatRoom(h, p){
+  const live = h.parts.filter(x => !x.end).length || 1;
+  return (h.beats || 0) < HOLD_BEATS_OUT && (p.out || 0) < Math.max(1, Math.floor(HOLD_BEATS_OUT / live));
+}
 async function armBeat(h, p){
-  if(HOLD !== h || p.end) return;
-  if(!h.all){
-    const as = armState(ST, Date.now(), LAST_OK, p.group);
-    if(!as.ok){ armStop(as.why); return; }
-  } else {
-    const why = holdLapsed();
-    if(why){ armStop(why); return; }
+  if(HOLD !== h || p.end || p.err) return;
+  const why = holdLapsed();
+  if(why){ armStop(why); return; }
+  // The first press: one only, its answer (the hold id) awaited.
+  if(p.id == null && p.out) return;
+  if(!beatRoom(h, p)){
+    // No room: this beat goes as soon as an answer makes room.
+    p.owed = true;
+    if(!p.timer) p.timer = setInterval(() => armBeat(h, p), HOLD_BEAT_MS);
+    return;
   }
-  if((p.out || 0) >= HOLD_BEATS_OUT) return;
-  p.out = (p.out || 0) + 1;
+  p.owed = false;
+  p.out = (p.out || 0) + 1; h.beats++;
   try{
-    const j = await post("/api/remote/arm-hold", {group:p.group, seen: ST ? ST.served_at : null, hold_id:p.id});
-    p.out--;
+    const j = await post("/api/remote/arm-hold", {group:p.group, seen: ST ? ST.served_at : null, hold_id:p.id}, h.stop.signal);
+    p.out--; h.beats--;
     if(HOLD !== h || p.end) return;
     p.id = j.hold_id;
     if(j.armed){
@@ -4547,6 +4563,7 @@ async function armBeat(h, p){
       holdFill(p.group, "0");
       if(!h.all){
         HOLD = null;
+        h.stop.abort();
         armSay(j.text || "Armed.", 1);
         return;
       }
@@ -4554,38 +4571,75 @@ async function armBeat(h, p){
       armAllSettle(h);
       return;
     }
+    // A refusal came back first: its answer waits for the beats still out.
+    if(p.err){ if(!p.out) armRefused(h, p); return; }
     p.held = Math.max(p.held || 0, j.held_s); p.needs = j.needs_s || 1;
     holdFill(p.group, Math.min(100, 100 * p.held / (j.needs_s || 1)) + "%");
     if(!h.all) armSay(p.held >= j.needs_s ? "Keep holding: the Stream Deck arms it in a moment, and says so here." : "Keep holding...", 0);
     else armAllProgress(h);
     // The first answer (the hold id): the next beat at once, then the timer.
     if(!p.timer){ p.timer = setInterval(() => armBeat(h, p), HOLD_BEAT_MS); armBeat(h, p); }
+    else if(p.owed) armBeat(h, p);
   }catch(e){
-    p.out--;
+    p.out--; h.beats--;
     if(HOLD !== h || p.end) return;
-    // The Stream Deck's re-arm refractory window refused it (its own
-    // code), or the hold ended while a re-arm wait was still running:
-    // said plainly (Jeff, 2026-10-26).
-    const fl = (ST && ST.flames) || {};
-    const g = (fl.groups || [])[p.group];
-    const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms));
-    if(said) REARM_REFUSED_AT[p.group] = {at:Date.now(), text:said};
-    if(!h.all){
-      if(said){
-        armStop("");
-        armSay(said, 2);
+    // Answers come back out of order (several beats out, the engine's
+    // threads): the engine answers one beat armed and refuses every beat
+    // after it ("already armed or asked for"), and that refusal can reach
+    // the page first. So a refusal sends no more beats and waits for the
+    // beats still out: an armed answer among them wins. The engine's own
+    // refusal is kept over a lost answer.
+    if(!p.err || (e.status === 409 && p.err.status !== 409)) p.err = e;
+    clearInterval(p.timer);
+    if(!p.out) armRefused(h, p);
+  }
+}
+// A hold's group refused, every beat answered and none of them armed. A
+// plain refusal (409, not the Stream Deck's own code) may still be the
+// engine saying this hold armed it, its armed answer lost: the engine's
+// state is read first, and a group armed or asked for is said so (never
+// "Hold stopped") and not let go of.
+async function armRefused(h, p){
+  const e = p.err;
+  if(e.status === 409 && !e.code){
+    let g = null;
+    try{ const s = await getJSON("/api/remote/status", 1500); g = (((s && s.flames) || {}).groups || [])[p.group]; }catch(_e){}
+    if(HOLD !== h || p.end) return;
+    if(g && (g.armed === "armed" || g.wanted)){
+      holdFill(p.group, "0");
+      if(!h.all){
+        HOLD = null;
+        h.stop.abort();
+        armSay((g.name || groupNames()[p.group] || "The group") + " is asked for. flamesafe's lamp shows when it is armed.", 1);
         return;
       }
-      armStop(e.message);
+      p.end = "armed";
+      armAllSettle(h);
       return;
     }
-    // Arm all: this group stays out, named; the others carry on.
-    p.end = "out"; p.why = said || e.message;
-    clearInterval(p.timer);
-    holdFill(p.group, "0");
-    post("/api/remote/arm-release", {group:p.group}).catch(() => {});
-    armAllSettle(h);
   }
+  // The Stream Deck's re-arm refractory window refused it (its own
+  // code), or the hold ended while a re-arm wait was still running:
+  // said plainly (Jeff, 2026-10-26).
+  const fl = (ST && ST.flames) || {};
+  const g = (fl.groups || [])[p.group];
+  const said = holdRefusalWords(e.code, rearmLeftMs(g, LAST_OK === null ? 0 : Date.now() - LAST_OK, fl.age_ms));
+  if(said) REARM_REFUSED_AT[p.group] = {at:Date.now(), text:said};
+  if(!h.all){
+    if(said){
+      armStop("");
+      armSay(said, 2);
+      return;
+    }
+    armStop(e.message);
+    return;
+  }
+  // Arm all: this group stays out, named; the others carry on.
+  p.end = "out"; p.why = said || e.message;
+  clearInterval(p.timer);
+  holdFill(p.group, "0");
+  post("/api/remote/arm-release", {group:p.group}).catch(() => {});
+  armAllSettle(h);
 }
 function armAllProgress(h){
   const live = h.parts.filter(p => !p.end);
@@ -4596,6 +4650,7 @@ function armAllProgress(h){
 function armAllSettle(h){
   if(HOLD !== h || h.parts.some(p => !p.end)) return;
   HOLD = null;
+  h.stop.abort();
   const f = $("b-armall").querySelector(".fill");
   if(f) f.style.width = "0";
   armSay(armAllWords(h.parts, h.out, groupNames()), h.out.length || h.parts.some(p => p.end !== "armed") ? 2 : 1);
@@ -4604,6 +4659,9 @@ function armStop(why){
   const h = HOLD;
   HOLD = null;
   if(!h) return;
+  // The beats still out or waiting for a connection cancelled first, so
+  // the let go never waits behind them.
+  h.stop.abort();
   for(const p of h.parts){
     clearInterval(p.timer);
     holdFill(p.group, "0");

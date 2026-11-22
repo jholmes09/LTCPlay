@@ -3453,8 +3453,39 @@ MUTATIONS = [
 
  ('ui 2.0 beats: a stalled link piles up unanswered beats',
   'ltcplay/web/remote2.html',
-  "  if((p.out || 0) >= HOLD_BEATS_OUT) return;\n",
-  ""),
+  "  if(!beatRoom(h, p)){\n",
+  "  if(false){\n"),
+
+ # Cold review of #293: answers come back out of order, and the engine
+ # refuses every beat after the one it answered armed; a refusal that
+ # overtakes the armed answer must never say the hold stopped or let go of
+ # a group the engine armed. And one bound for the whole hold, the beats
+ # still out cancelled when it ends, so a let go never waits behind beats
+ # for one of a browser's six connections.
+ ('ui 2.0 beats: a refusal that overtakes the armed answer ends the hold at once',
+  'ltcplay/web/remote2.html',
+  "    if(!p.out) armRefused(h, p);\n  }\n}\n",
+  "    armRefused(h, p);\n  }\n}\n"),
+
+ ('ui 2.0 beats: a refusal with no armed answer is not read against the engine state',
+  'ltcplay/web/remote2.html',
+  "  if(e.status === 409 && !e.code){\n",
+  "  if(false){\n"),
+
+ ('ui 2.0 beats: a hold of one group stops when its group shows asked for before the armed answer',
+  'ltcplay/web/remote2.html',
+  "    if((HOLD.all || p.id != null) && g && (g.armed",
+  "    if(HOLD.all && g && (g.armed"),
+
+ ('ui 2.0 beats: Hold: arm flames bounds its beats per group, not for the whole hold',
+  'ltcplay/web/remote2.html',
+  "  return (h.beats || 0) < HOLD_BEATS_OUT && (p.out || 0) < Math.max(1, Math.floor(HOLD_BEATS_OUT / live));\n",
+  "  return (p.out || 0) < HOLD_BEATS_OUT;\n"),
+
+ ('ui 2.0 beats: a hold that ends leaves its beats out, the let go queued behind them',
+  'ltcplay/web/remote2.html',
+  "  h.stop.abort();\n  for(const p of h.parts){\n",
+  "  for(const p of h.parts){\n"),
 
 
  # Cold review of #291: an alert raised again keeps its id with new words;
