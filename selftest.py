@@ -114767,7 +114767,10 @@ async function presses(){
   res.runoff_after_yes = n("/api/remote/run-off");
   window.__runon = false; await wait(2600);
   const arm = document.querySelector('[data-arm="0"]');
-  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1};
+  // A finger lands on the button, not at the window's corner: a touch hold
+  // ends when its finger is off its button (holdMoved).
+  const ar = arm.getBoundingClientRect();
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:1, clientX:ar.left + ar.width / 2, clientY:ar.top + ar.height / 2};
   arm.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(450);
   res.arm_beats = n("/api/remote/arm-hold");
   res.arm_released_while_held = n("/api/remote/arm-release");
@@ -114811,7 +114814,10 @@ async function prPresses(){
   posts.length = 0;
   const b = document.getElementById("al-act");
   res.act = b.dataset.act; res.label = document.getElementById("al-act-l").textContent;
-  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:2};
+  // A finger lands on the button, not at the window's corner: a touch hold
+  // ends when its finger is off its button (holdMoved).
+  const br = b.getBoundingClientRect();
+  const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:2, clientX:br.left + br.width / 2, clientY:br.top + br.height / 2};
   b.click(); await wait(200);
   res.after_tap = posts.filter(p => /preroll-continue/.test(p.u)).length;
   b.dispatchEvent(new PointerEvent("pointerdown", o)); await wait(300);
