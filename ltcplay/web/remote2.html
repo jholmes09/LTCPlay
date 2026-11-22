@@ -2345,8 +2345,8 @@ $("al-act").addEventListener("click", async (e) => {
   }
 });
 // The line's button while an alert holds the show: to SHOW (as a tab
-// press), with the alert slot (its Acknowledge, when the alert it shows
-// has one) or SHOW's Resume scrolled into sight. It never changes which
+// press), with the alert slot's Acknowledge (or, when the alert it shows
+// has none, its words) or SHOW's Resume scrolled into sight. It never changes which
 // alert the slot shows: the worst stays first (cold review of #291, 1),
 // and the operator pages to the others. Only the slot's own Acknowledge
 // and SHOW's own Resume act, with their own checks.
@@ -2357,7 +2357,7 @@ $("next-go").addEventListener("click", () => {
   // The line says SHOW's words now, before the scroll: its height can
   // change, and the pane under it with it.
   try{ renderStale(); }catch(e){}
-  const el = ns.go === "ack" ? ($("al-act").hidden ? $("alert") : $("al-act")) : $("b-go");
+  const el = ns.go === "ack" ? ($("al-act").hidden ? $("al-text") : $("al-act")) : $("b-go");
   try{ el.scrollIntoView({block:"center", inline:"nearest"}); }catch(e){}
 });
 // A Disarm, or a live mode's Stop, that was refused or did not arrive:
