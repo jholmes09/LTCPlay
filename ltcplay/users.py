@@ -168,7 +168,7 @@ PERMS = (
                  "iPad while flames follow it, the timecode input, the "
                  "announcement output, idle sign out, "
                  "sign out after the last show, the play-from cues, the "
-                 "fireball timeline"),
+                 "fireball timeline, the haze fluid settings"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
 )
@@ -286,6 +286,9 @@ REMOTE_ROUTES = {
     "announce-output": "settings", "announce-test-tone": "settings",
     # Pre-show audio's On/Off and file (remote.preshow_audio_post).
     "preshow-audio": "settings",
+    # The Booth speaker card's Save and Test note (remote.booth_speaker_post,
+    # Jeff 2026-11-19): set once, on the show PC.
+    "booth-speaker": "settings",
     "live-flame": "settings",
     # The nightly upload: the SuperUser's alone (UPLOAD, is_upload_route).
     "audit-settings": UPLOAD,
@@ -316,6 +319,10 @@ REMOTE_ROUTES = {
     # Haze fluid (fuelhaze.py): the same, a refill of a hazer's tank and
     # its undo (the route itself needs an operator or admin, an admin).
     "haze-refill": None, "haze-undo": None,
+    # The Settings tab's Haze fluid card (fuelhaze.route_fluid, 2026-11-19):
+    # litres, tank, Set level now and Reset learning; records only, the
+    # Settings row (admin by default), on the show machine itself.
+    "haze-fluid": "settings",
     # The Fireball page (fireball.py): All off only takes risk away.
     "fireball-off": "safety",
     # Wave flamer cleaning (cleaning.py): Stop only takes risk away.

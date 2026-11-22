@@ -616,7 +616,7 @@ function refusedWords(j, statusText){
 // tap, Jeff 2026-10-30).
 const STOP_TITLE = "Tap twice. Disarms every flame group and every laser, ends the fireball, cleaning and Programming playback, ends a live show and fades it to dark, and puts the schedule on Hold. Nothing is fired. Show control stays on: Resume releases the Hold, and each group has to be armed again.";
 // Run off (2026-10-30): Stop no longer turns Run off, so the Run card does.
-const RUN_OFF_CONFIRM = "Stops everything, as Stop does, then ends playback. No show starts until show control is on again.";
+const RUN_OFF_CONFIRM = "Stops everything Stop stops, then ends playback, but does not put the schedule on Hold. No show starts while show control is off.";
 // The Show screen's Start now button, or Stop in its place while a show is
 // live (Jeff, 2026-10-28: the Play button becomes Stop, same position). A
 // live show is the scheduler in SHOW or PAUSED (on Hold), or, with no

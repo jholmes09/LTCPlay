@@ -43694,6 +43694,919 @@ def _fi_show_cue(n):
     return clk
 
 
+def _run_off_night():
+    """A Fire & Ice night (_fi_night, show control on, no laser armed,
+    the show's own 120 s late limit) with a real Remote on its scheduler,
+    as web.serve wires it, whose control.stop() turns show control off
+    (the session goes)."""
+    import tempfile
+    from ltcplay import remote as remote_mod
+    from ltcplay import schedule_service as SV
+    work = tempfile.mkdtemp()
+    SV.save_rule(os.path.join(work, SV.RULE_FILE), _sched_doc(
+        weekly={"sat": {"first_start": "18:00", "interval_min": 20,
+                        "last_end": "22:00"}}, exceptions={},
+        late_grace_s=120))
+    n = _fi_night(armed=False, work=work)
+    if n.S is None:
+        return None
+
+    def stop():
+        n.control.session = None
+        return True
+    n.control.stop = stop
+    n.rm = remote_mod.Remote(n.control, n.svc, folder=tempfile.mkdtemp(),
+                             log=lambda t: None)
+    return n
+
+
+def test_show_control_off_ends_the_show_without_a_hold():
+    section("Show control off (Jeff, 2026-11-19: \"Show Control Off should "
+            "do everything it does now except put the schedule on Hold\"): "
+            "a live show ends as a Stop ends it, the night is left between "
+            "shows (not HOLD, not PAUSED), no Stop's Hold is kept, a Hold "
+            "already standing is left as it was, the journal says show "
+            "control was turned off; a plain Stop still holds; with show "
+            "control off and no Hold every way to start a show is refused "
+            "in words and journaled, and nothing reaches the rig")
+    n = _run_off_night()
+    if n is None:
+        return
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+          f"setup: show 1 is live: {svc.machine.state}")
+    n.now[0] = _den(S, 18, 5)
+    code, out = rm.run_off("Andy", "Rack screen")
+    m = svc.machine
+    s1 = m.slot(1)
+    check(code == 200 and out.get("run_on") is False and
+          out.get("stopped") is True and not out.get("failed") and
+          n.control.session is None,
+          f"show control is off: {code} {out}")
+    check(out.get("flames", {}).get("disarmed") is True and
+          out.get("lasers_blank", {}).get("ok") is True and
+          out.get("show", {}).get("ok") is True and
+          out.get("hold") is None,
+          f"every flame group disarmed, the lasers blanked, the live show "
+          f"ended, and no Hold claimed: {out}")
+    check(m.state == S.STANDBY and m.state not in (S.HOLD, S.PAUSED) and
+          m.running == 0 and not m.stop_hold and m.dark and
+          svc._stop_carry is None,
+          f"the show ended and the night waits between shows, dark, with "
+          f"no Hold and no Stop's Hold kept: {m.state} {m.stop_hold} "
+          f"{m.dark} {svc._stop_carry}")
+    check(s1.status == S.ABORTED and
+          s1.reason == "STOPPED (show control turned off)" and
+          m.slot(2).status == S.PENDING,
+          f"show 1 is ended, never resumed; show 2 still waits: {s1}")
+    check(not rm.show_busy_for_reload() and not rm._show_live(),
+          f"nothing counts as a live show, so an engine Restart is not "
+          f"refused for a show: {svc.state_view().get('state')}")
+    rows = list(svc.journal)
+    stop_rows = [r for r in rows if r.get("action") == "stop"]
+    check(len(stop_rows) >= 2 and
+          "pressed Show control off on the Rack screen: everything a Stop "
+          "stops is stopped" in stop_rows[-2]["text"] and
+          "show control is off, and the schedule was not put on Hold" in
+          stop_rows[-1]["text"] and
+          not any("pressed Stop" in r["text"] or "is on Hold" in r["text"]
+                  for r in stop_rows[-2:]),
+          f"the journal says the halt was done, then that show control is "
+          f"off; never Stop, and it claims no Hold: {stop_rows[-2:]}")
+    ended = [r for r in rows if r.get("action") == S.STOP_SHOW]
+    check(ended and "turned show control off" in ended[-1]["text"] and
+          "The schedule is not on Hold" in ended[-1]["text"] and
+          "Resume" not in ended[-1]["text"],
+          f"the scheduler's line says the same: {ended[-1:]}")
+    sent = [r for r in rows if r.get("action") == "conductor" and
+            "Stop:" in r.get("text", "")]
+    check(sent, f"the show ended through the conductor's Stop (Abort's "
+                f"sequence): {[r['text'] for r in rows][-6:]}")
+    said = out["show"]["text"] + stop_rows[-1]["text"]
+    check(chr(0x2014) not in said and chr(0x2013) not in said,
+          f"no em or en dash in what the operator reads: {said}")
+    # The fade finishes (MadMapper's worker emptied too); from here
+    # nothing may reach the rig.
+    _fi_walk(n, 18, 10, start=(18, 6))
+    n.link._submit(lambda: None)
+    k = len(n.calls)
+    j0 = len(list(svc.journal))
+    # Every start path with show control off and no Hold.
+    from ltcplay import schedule_service as SV
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is False and "Show control is off" in r["text"],
+          f"Start now is refused in words: {r}")
+    r = svc.operator_press("resume", "Andy", "Rack screen")
+    check(r["ok"] is False and svc.machine.state == S.STANDBY,
+          f"Resume finds nothing held and starts nothing: {r}")
+    r = svc.operator_press("start-now", "Andy", "Rack screen",
+                           surface=True, start_at=_pf_start_at())
+    check(r["ok"] is False and "Show control is off" in r["text"],
+          f"a Start at a cue is refused in words: {r}")
+    start_at, why = rm.start_at_cue({"cue_id": "x"})
+    check(start_at is None and "Turn show control on" in why,
+          f"the page's Start at a cue is refused before it reaches the "
+          f"scheduler: {why}")
+
+    class _Pre:
+        continued = None
+
+        def last_failed(self):
+            return object()
+
+        def skip(self):
+            return False
+    keep = svc.preroll
+    svc.preroll = _Pre()
+    try:
+        r = svc.continue_anyway("Andy", "Rack screen")
+    finally:
+        svc.preroll = keep
+    check(r["ok"] is False and "show control is off" in r["text"],
+          f"Continue anyway after a failed rig check is refused: {r}")
+    check(svc._preroll_applies() is False,
+          "no rig check runs (so none can release a start) while show "
+          "control is off")
+    started = [x for x in list(svc.journal)[j0:]
+               if x.get("action") == "start-now" and
+               x.get("outcome") == "refused"]
+    check(len(started) >= 2,
+          f"the refused starts are journaled: {started}")
+    # The scheduler's own start at show time: refused, said, journaled.
+    _fi_walk(n, 18, 21, start=(18, 11))
+    s2 = svc.machine.slot(2)
+    autos = [x for x in list(svc.journal)[j0:]
+             if x.get("action") == "automatic start"]
+    check(s2.status == S.FAULT and "Show control is off" in s2.reason and
+          autos and autos[-1]["outcome"] == "refused",
+          f"show 2 came due with show control off: tried, refused in "
+          f"words, journaled: {s2} {autos[-1:]}")
+    check(_fi_rig_touched(n.calls, k) == [],
+          f"nothing reached the rig (no flame, laser, video, music or "
+          f"pixel command) while show control was off: "
+          f"{_fi_rig_touched(n.calls, k)[:6]}")
+    check(svc.machine.state == S.STANDBY,
+          f"and the night carries on to the next show: "
+          f"{svc.machine.state}")
+    n.c.close()
+    n.link.close()
+
+    # A late show inside the 120 s limit, show control off; show control
+    # on again inside the limit and past it.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _fi_walk(n, 18, 4, start=(18, 2))
+    n.now[0] = _den(S, 18, 5)
+    svc._apply(S.Event(S.SHOW_ENDED, "madmapper", show=1))
+    _settle(svc, c)
+    _fi_walk(n, 18, 18, start=(18, 6))
+    n.now[0] = _den(S, 18, 19)
+    code, out = rm.run_off("Andy", "Rack screen")
+    check(code == 200 and svc.machine.state == S.STANDBY and
+          out.get("hold") is None and svc._stop_carry is None,
+          f"between shows show control off holds nothing: "
+          f"{svc.machine.state} {out}")
+    _fi_walk(n, 18, 19, start=(18, 19))
+    n.link._submit(lambda: None)
+    k = len(n.calls)
+    n.now[0] = _den(S, 18, 21, 30)          # show 2 (18:20) 90 s late
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    s2 = svc.machine.slot(2)
+    check(s2.status == S.FAULT and "Show control is off" in s2.reason and
+          _fi_rig_touched(n.calls, k) == [],
+          f"a show inside its 120 s limit is tried, refused, sends "
+          f"nothing: {s2} {_fi_rig_touched(n.calls, k)[:4]}")
+    rm.alerts.clear()          # its alert seen, so no alert Hold below
+    n.control.session = n.sess              # show control on again
+    autos0 = len([x for x in svc.journal
+                  if x.get("action") == "automatic start"])
+    n.now[0] = _den(S, 18, 21, 45)
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    autos = [x for x in svc.journal if x.get("action") == "automatic start"]
+    check(len(autos) == autos0 and svc.machine.state == S.STANDBY and
+          svc.machine.slot(2).status == S.FAULT,
+          f"show control on again: the refused show is NOT started late: "
+          f"{svc.machine.state} {autos[-1:]}")
+    # Show 3 at 18:40, show control off at its time and on at 18:42:30
+    # with no tick between (a stalled engine): more than 120 s late, MISSED.
+    n.control.session = None
+    n.now[0] = _den(S, 18, 39, 50)
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    n.control.session = n.sess
+    n.now[0] = _den(S, 18, 42, 30)
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    s3 = svc.machine.slot(3)
+    check(s3.status == S.MISSED and svc.machine.state == S.STANDBY,
+          f"show control on with a show more than 120 s late: MISSED, "
+          f"never started: {s3} {svc.machine.state}")
+    # With show control on, the night carries on: show 4 starts on time.
+    _fi_walk(n, 19, 0, start=(18, 43))
+    check(svc.machine.state == S.SHOW and svc.machine.running == 4,
+          f"the night carried on, with no Hold to Resume: "
+          f"{svc.machine.state} {svc.machine.running}")
+    n.c.close()
+    n.link.close()
+
+    # A Hold that already stands is left as it is: an operator's Hold
+    # stays an operator's Hold, a Stop's Hold stays a Stop's Hold.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+    n.w.runner.poll()
+    _settle(svc, c)
+    r = svc.operator_press("hold", "Andy", "Rack screen")
+    check(r["ok"] and svc.machine.state == S.HOLD and
+          not svc.machine.stop_hold, f"setup: an operator's Hold: {r}")
+    code, out = rm.run_off("Andy", "Rack screen")
+    check(svc.machine.state == S.HOLD and not svc.machine.stop_hold and
+          svc._stop_carry is None and svc.machine.dark,
+          f"show control off leaves the operator's Hold as it was, and the "
+          f"night dark (the conductor's Stop took the look down): "
+          f"{svc.machine.state} {svc.machine.stop_hold} {svc._stop_carry} "
+          f"{svc.machine.dark}")
+    n.control.session = n.sess
+    code, out = rm.stop_press("Andy", "Rack screen")
+    check(svc.machine.stop_hold and svc._stop_carry is not None,
+          f"setup: a Stop's Hold: {svc.machine}")
+    code, out = rm.run_off("Andy", "Rack screen")
+    check(svc.machine.state == S.HOLD and svc.machine.stop_hold and
+          svc._stop_carry is not None,
+          f"show control off leaves a Stop's Hold standing: "
+          f"{svc.machine.state} {svc._stop_carry}")
+    n.c.close()
+    n.link.close()
+
+    # A plain Stop is unchanged: a live show ends and the schedule holds.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    n.now[0] = _den(S, 18, 5)
+    code, out = rm.stop_press("Andy", "Rack screen")
+    check(code == 200 and out.get("run_on") is True and
+          svc.machine.state == S.HOLD and svc.machine.stop_hold and
+          svc._stop_carry is not None and
+          out.get("hold", {}).get("ok") is True and
+          svc.machine.slot(1).reason == "STOPPED (operator Stop)",
+          f"a plain Stop still ends the show and holds the schedule: "
+          f"{svc.machine.state} {out}")
+    rows = [r for r in svc.journal if r.get("action") == "stop"]
+    check(rows and "pressed Stop on the Rack screen: a complete halt" in
+          rows[-1]["text"], f"and is journaled as the Stop: {rows[-1:]}")
+    n.c.close()
+    n.link.close()
+
+    # Show control off that could not turn show control off (its stop
+    # raised before letting go of the show file): the Stop's Hold after
+    # all, so no show starts by itself, and the answer says it failed.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+
+    def stuck():
+        raise OSError("the audio device is wedged")
+    n.control.stop = stuck
+    code, out = rm.run_off("Andy", "Rack screen")
+    check(code == 500 and out.get("run_on") is True and
+          "playback stop" in out.get("failed", []) and
+          svc.machine.state == S.HOLD and svc.machine.stop_hold and
+          svc._stop_carry is not None,
+          f"show control still on after Show control off: the schedule "
+          f"is held as a Stop holds it, and the press says it failed: "
+          f"{code} {svc.machine.state} {out}")
+    rows = [r for r in svc.journal if r.get("action") == "stop"]
+    check(rows and "show control did NOT turn off, so the schedule was "
+          "put on Hold" in rows[-1]["text"] and rows[-1].get("fault") and
+          not any("show control is off" in r["text"] for r in rows) and
+          len(rows) >= 2 and "pressed Show control off on the Rack screen: "
+          "everything a Stop stops is stopped" in rows[-2]["text"],
+          f"and the journal says so, true to what happened: the halt's "
+          f"line first, then the failure, and no line claiming show "
+          f"control went off: {rows[-2:]}")
+    n.c.close()
+    n.link.close()
+
+    # The fail-safe's line, true to what the Stop's Hold step answered.
+    def _failsafe(when, stop, broken_hold=False):
+        n = _run_off_night()
+        S, svc, c, rm = n.S, n.svc, n.c, n.rm
+        n.now[0] = _den(S, *when)
+        svc.tick()
+        _settle(svc, c)
+        svc.tick()
+        _settle(svc, c)
+        n.control.stop = stop
+        if broken_hold:
+            def broken(*a, **kw):
+                raise RuntimeError("the schedule file is locked")
+            svc.halt_schedule = broken
+        code, out = rm.run_off("Andy", "Rack screen")
+        if broken_hold:
+            del svc.halt_schedule
+        last = [r for r in svc.journal if r.get("action") == "stop"][-1]
+        st = svc.machine.state
+        n.c.close()
+        n.link.close()
+        return code, out, last, st, S
+
+    # stop() answers False without letting the show file go: show control
+    # is still on, so the same fail-safe as a raise.
+    code, out, last, st, S = _failsafe((17, 57), lambda: False)
+    check(code == 500 and out.get("run_on") is True and
+          out.get("stopped") is False and st == S.HOLD and
+          "did NOT turn off, so the schedule was put on Hold" in
+          last["text"] and last.get("fault"),
+          f"a stop that answers False and leaves show control on is a "
+          f"failure, held, and said: {code} {st} {last['text']}")
+    # The Stop's Hold step itself fails: said, never claimed.
+    code, out, last, st, S = _failsafe((17, 57), lambda: False,
+                                       broken_hold=True)
+    check(code == 500 and st != S.HOLD and
+          "could NOT be put on Hold either" in last["text"] and
+          "was put on Hold" not in last["text"],
+          f"the Hold failing too is said, never claimed: {st} "
+          f"{last['text']}")
+    # The night already over: nothing can be held now; the line says what
+    # the Stop's Hold step said, not that the schedule is on Hold.
+    code, out, last, st, S = _failsafe((22, 30), lambda: False)
+    check(st != S.HOLD and "the Stop's Hold was asked for instead" in
+          last["text"] and "was put on Hold" not in last["text"],
+          f"with the night over the line is true to it: {st} "
+          f"{last['text']}")
+    # Show control already off (stop() answers False, nothing running):
+    # not a failure, and said as it is.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+    n.control.session = None
+    n.control.stop = lambda: False
+    code, out = rm.run_off("Andy", "Rack screen")
+    last = [r for r in svc.journal if r.get("action") == "stop"][-1]
+    check(code == 200 and svc.machine.state == S.STANDBY and
+          "show control was already off" in last["text"] and
+          not last.get("fault"),
+          f"show control already off: said so, no Hold: {code} "
+          f"{last['text']}")
+    n.c.close()
+    n.link.close()
+
+    # Show control off whose stop wedges (an audio device that never
+    # answers): the halt's own line is already in the journal while it
+    # waits.
+    import threading as _th
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+    gate = _th.Event()
+    sess = n.control.session
+
+    def wedged():
+        n.control.session = None
+        gate.wait(10)
+        return True
+    n.control.stop = wedged
+    t = _th.Thread(target=rm.run_off, args=("Andy", "Rack screen"),
+                   daemon=True)
+    t.start()
+    seen = []
+    for _ in range(100):
+        seen = [r for r in svc.journal if r.get("action") == "stop" and
+                "pressed Show control off" in r.get("text", "")]
+        if seen:
+            break
+        time.sleep(0.05)
+    gate.set()
+    t.join(10)
+    check(seen and "everything a Stop stops is stopped" in seen[-1]["text"],
+          f"the halt's line is written before show control is turned off, "
+          f"so a stop that never returns still leaves it: {seen}")
+    n.c.close()
+    n.link.close()
+
+    # The scheduler's no-Hold step raising while a show is live: the show
+    # is reported as not ended, not only the schedule.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+
+    def broken(*a, **kw):
+        raise RuntimeError("the schedule file is locked")
+    svc.halt_schedule = broken
+    n.now[0] = _den(S, 18, 5)
+    code, out = rm.run_off("Andy", "Rack screen")
+    del svc.halt_schedule
+    check(code == 500 and "show" in out.get("failed", []) and
+          out.get("show", {}).get("ok") is False,
+          f"a live show the scheduler could not end is said as such: "
+          f"{code} {out}")
+    rows = [r for r in svc.journal if r.get("action") == "stop" and
+            "pressed Show control off" in r.get("text", "")]
+    check(rows and rows[-1].get("fault") and
+          rows[-1].get("outcome") == "fault" and
+          "These did NOT work: show" in rows[-1]["text"] and
+          "everything a Stop stops is stopped" not in rows[-1]["text"] and
+          "was asked to stop" in rows[-1]["text"],
+          f"and the halt's line says which step did NOT work, never that "
+          f"everything stopped: {rows[-1:]}")
+    last = [r for r in svc.journal if r.get("action") == "stop"][-1]
+    check("show control is off" in last["text"] and
+          "The halt did not complete: show did NOT work" in last["text"]
+          and last.get("fault"),
+          f"and the outcome line says the halt did not complete: {last}")
+    n.c.close()
+    n.link.close()
+
+    # A show PAUSED by an operator's Hold, then Show control off: the
+    # show ends onto that Hold, which stays the operator's (never a
+    # Stop's), dark; the server decides it, whatever the page showed.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    n.now[0] = _den(S, 18, 3)
+    r = svc.operator_press("hold", "Andy", "Rack screen")
+    _settle(svc, c)
+    check(r["ok"] and svc.machine.state == S.PAUSED,
+          f"setup: show 1 paused by an operator's Hold: {r}")
+    n.now[0] = _den(S, 18, 4)
+    code, out = rm.run_off("Andy", "Rack screen")
+    m = svc.machine
+    check(code == 200 and m.state == S.HOLD and not m.stop_hold and
+          m.dark and m.running == 0 and svc._stop_carry is None and
+          m.slot(1).reason == "STOPPED (show control turned off)",
+          f"the paused show ends, the operator's Hold stays on, dark, and "
+          f"no Stop's Hold is made: {m.state} {m.stop_hold} {m.dark} "
+          f"{svc._stop_carry} {out}")
+    ended = [x for x in svc.journal if x.get("action") == S.STOP_SHOW]
+    check(ended and "The Hold that was on stays on" in ended[-1]["text"],
+          f"and the line says the Hold stays on: {ended[-1:]}")
+    # Resume on it with show control still off: back between shows, and
+    # nothing reaches the rig (the conductor's look is the Stop's dark,
+    # so its intermission only says the rig is already dark).
+    _fi_walk(n, 18, 10, start=(18, 5))
+    n.link._submit(lambda: None)
+    k = len(n.calls)
+    n.now[0] = _den(S, 18, 11)
+    r = svc.operator_press("resume", "Andy", "Rack screen")
+    _settle(svc, c)
+    n.link._submit(lambda: None)
+    check(r["ok"] and svc.machine.state == S.STANDBY and
+          _fi_rig_touched(n.calls, k) == [],
+          f"Resume with show control off sends nothing to the rig: {r} "
+          f"{_fi_rig_touched(n.calls, k)[:6]}")
+    n.c.close()
+    n.link.close()
+
+    # Between shows Show control off leaves the night dark, as a Stop
+    # does, and an operator's Hold dark too, still the operator's.
+    n = _run_off_night()
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    n.now[0] = _den(S, 17, 57)
+    svc.tick()
+    _settle(svc, c)
+    check(not svc.machine.dark, "setup: the intermission look is up")
+    rm.run_off("Andy", "Rack screen")
+    check(svc.machine.state == S.STANDBY and svc.machine.dark,
+          f"between shows: STANDBY, dark: {svc.machine.state} "
+          f"{svc.machine.dark}")
+    n.c.close()
+    n.link.close()
+
+
+def _run_on_rig():
+    """_run_off_night with show control's own turn-on wired as web.Control
+    does it: on(h, m, s, us) turns show control on at that moment (the
+    turn-on count and the scheduler's stamp, at the source), off() turns it
+    off; at(h, m, s, us) is the engine looking then (a tick, the runner)."""
+    n = _run_off_night()
+    if n is None:
+        return None
+    S, svc, c = n.S, n.svc, n.c
+    n.control.run_gen = 0
+    sess = n.sess
+
+    def at(h, mi, s=0, us=0):
+        n.now[0] = _den(S, h, mi, s, us)
+        svc.tick()
+        _settle(svc, c)
+        n.w.runner.poll()
+        _settle(svc, c)
+
+    def on(h, mi, s=0, us=0, tell=True, running_at=None):
+        # As web.Control does it: counted and told first, then the show
+        # file runs (running_at: later, the audio device slow to open).
+        n.now[0] = _den(S, h, mi, s, us)
+        n.control.run_gen += 1
+        if tell:
+            n.control.on_show_control_on()
+        if running_at is not None:
+            n.now[0] = _den(S, *running_at)
+        n.control.session = sess
+
+    def off():
+        n.control.session = None
+
+    def autos(show):
+        return [r for r in svc.journal if r.get("action") ==
+                "automatic start" and r.get("show") == show]
+    n.at, n.on, n.off, n.autos = at, on, off, autos
+    return n
+
+
+def test_show_control_on_late_never_starts_a_passed_show():
+    section("Show control turned on late (Jeff, 2026-11-19: \"When you turn "
+            "show control back on, if it's past the start time by even a "
+            "second, it should not start\"): stamped when show control "
+            "really comes on; a show 1 s or more past its start then is "
+            "MISSED in words, never started, never alerted, even inside the "
+            "120 s late rule; a show still to come starts at its time; with "
+            "show control on all along the 120 s rule is unchanged; off and "
+            "on twice uses the last on")
+    n = _run_on_rig()
+    if n is None:
+        return
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    at, on, off, autos = n.at, n.on, n.off, n.autos
+    check(callable(getattr(n.control, "on_show_control_on", None)) and
+          svc.run_gen() == 0,
+          "fire_ice.attach wires show control's turn-on to the scheduler")
+    off()
+    _fi_walk(n, 17, 58)
+    at(17, 59, 50)
+    # The engine busy over 18:00; show control comes on 1.5 s after show
+    # 1's time and the engine looks a moment later.
+    on(18, 0, 1, 500000)
+    at(18, 0, 2)
+    s1 = svc.machine.slot(1)
+    check(s1.status == S.MISSED and s1.reason == S.RUN_OFF_AT_START and
+          not autos(1) and svc.machine.state != S.SHOW,
+          f"1 s past its start when show control came on: MISSED, never "
+          f"started, inside the 120 s rule too: {s1} {svc.machine.state}")
+    said = [r for r in svc.journal if r.get("show") == 1 and
+            r.get("outcome") == "missed"]
+    check(said and "show control was off at its start time" in
+          said[-1]["text"] and "Start now is still there" in
+          said[-1]["text"],
+          f"the journal says why, in words: {said[-1:]}")
+    row = [r for r in svc.tonight_view()["slots"] if r.get("show") == 1]
+    check(row and row[0]["status"] == S.MISSED and
+          "show control was off at its start time" in row[0]["reason"],
+          f"the schedule list says it in plain words: {row}")
+    check(not rm.alerts.open(),
+          f"and it raises no alert (an open alert would hold a later "
+          f"show): {[a.text for a in rm.alerts.open()]}")
+    _fi_walk(n, 18, 19, start=(18, 1))
+    check(svc.machine.slot(1).status == S.MISSED and not autos(1),
+          "and it is never started later")
+    # A show still to come starts at its time.
+    _fi_walk(n, 18, 20, start=(18, 20))
+    check(svc.machine.state == S.SHOW and svc.machine.running == 2 and
+          autos(2) and autos(2)[-1]["outcome"] == "done",
+          f"show 2, due after show control came on, starts on time: "
+          f"{svc.machine.state} {svc.machine.running}")
+    n.now[0] = _den(S, 18, 28)
+    svc._apply(S.Event(S.SHOW_ENDED, "madmapper", show=2))
+    _settle(svc, c)
+    # Show control on all along: the 120 s rule is unchanged. The engine
+    # busy until 18:41:30 (90 s late): show 3 still starts, late.
+    _fi_walk(n, 18, 39, start=(18, 29))
+    at(18, 41, 30)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 3,
+          f"with show control on all along a show 90 s late still starts: "
+          f"{svc.machine.state} {svc.machine.slot(3)}")
+    n.now[0] = _den(S, 18, 48)
+    svc._apply(S.Event(S.SHOW_ENDED, "madmapper", show=3))
+    _settle(svc, c)
+    _fi_walk(n, 18, 59, start=(18, 49))
+    at(19, 2, 30)
+    s4 = svc.machine.slot(4)
+    check(s4.status == S.MISSED and s4.reason != S.RUN_OFF_AT_START and
+          "late by" in s4.reason,
+          f"and more than 120 s late is MISSED by the late rule, as "
+          f"before: {s4}")
+    # Off and on twice with no look in between (the engine stalled): the
+    # last on is what counts, stamped where show control came on.
+    _fi_walk(n, 19, 15, start=(19, 3))
+    off()
+    at(19, 16)
+    on(19, 17)
+    at(19, 17, 1)
+    off()
+    on(19, 20, 1, 500000)
+    at(19, 20, 2)
+    s5 = svc.machine.slot(5)
+    check(s5.status == S.MISSED and s5.reason == S.RUN_OFF_AT_START and
+          not autos(5),
+          f"off at 19:17 and on again 1.5 s after show 5's time, with no "
+          f"look between: MISSED, never started: {s5}")
+    # The same with no word from the source (its turn-on count alone).
+    _fi_walk(n, 19, 38, start=(19, 21))
+    off()
+    on(19, 40, 1, 500000, tell=False)
+    at(19, 40, 2)
+    s6 = svc.machine.slot(6)
+    check(s6.status == S.MISSED and not autos(6),
+          f"off and on again unseen, only the turn-on count changed: "
+          f"stamped at the first look, MISSED: {s6}")
+    # The boundary: 0.999 s past is not yet a second, 1.000 s is.
+    _fi_walk(n, 19, 59, start=(19, 41))
+    off()
+    at(19, 59, 59)
+    on(20, 0, 0, 999000)
+    at(20, 0, 0, 999500)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 7,
+          f"show control on 0.999 s after show 7's time: it starts: "
+          f"{svc.machine.state} {svc.machine.slot(7)}")
+    n.now[0] = _den(S, 20, 8)
+    svc._apply(S.Event(S.SHOW_ENDED, "madmapper", show=7))
+    _settle(svc, c)
+    _fi_walk(n, 20, 19, start=(20, 9))
+    off()
+    at(20, 19, 59)
+    on(20, 20, 1)
+    at(20, 20, 1, 500)
+    s8 = svc.machine.slot(8)
+    check(s8.status == S.MISSED and s8.reason == S.RUN_OFF_AT_START and
+          not autos(8),
+          f"show control on 1.000 s after show 8's time: MISSED: {s8}")
+    n.c.close()
+    n.link.close()
+
+    # Dated from the press, not from when the show file opened: told at
+    # 17:59:58, the audio device slow, running only at 18:00:01.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 58)
+    n.at(17, 59, 50)
+    n.on(17, 59, 58, running_at=(18, 0, 1))
+    n.at(18, 0, 1, 500000)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+          f"show control pressed before show 1's time, its audio slow to "
+          f"open: it starts, as the 120 s rule says: {svc.machine.state} "
+          f"{svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
+    # With no turn-on count to read (run_gen None), a look that sees show
+    # control off forgets the old stamp, so the next on is stamped anew.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    svc.run_gen = None
+    n.on(17, 56, tell=False)
+    n.at(17, 56, 1)
+    n.off()
+    n.at(17, 59, 59)
+    n.on(18, 0, 2, tell=False)
+    n.at(18, 0, 2, 500000)
+    check(svc.machine.slot(1).status == S.MISSED and not n.autos(1),
+          f"off seen, then on 2 s after show 1's time: MISSED: "
+          f"{svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
+    # Busy while show control was ON keeps the 120 s rule: on at
+    # 17:59:59.5, the engine's first look 1.5 s after 18:00.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 58)
+    n.at(17, 59, 50)
+    n.on(17, 59, 59, 500000)
+    n.at(18, 0, 1, 500000)
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1 and
+          n.autos(1) and n.autos(1)[-1]["outcome"] == "done",
+          f"show control came on before show 1's time and the engine was "
+          f"busy over it: it starts, late, as the 120 s rule says: "
+          f"{svc.machine.state} {svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
+    # The press is the moment only if the show file runs within 10 s of
+    # it (Jeff, 2026-11-19); later than that, the moment it was seen
+    # running counts (the later time).
+    def _press_case(press, running, look=None):
+        n = _run_on_rig()
+        S, svc, c = n.S, n.svc, n.c
+        n.off()
+        _fi_walk(n, 17, 58)
+        n.at(17, 59, 40)
+        n.on(*press, running_at=running)
+        n.at(*(look or running))
+        got = (svc.machine.state, svc.machine.running,
+               svc.machine.slot(1).status, svc.machine.slot(1).reason)
+        n.c.close()
+        n.link.close()
+        return got, S
+    got, S = _press_case((17, 59, 59), (18, 0, 2))
+    check(got[0] == S.SHOW and got[1] == 1,
+          f"pressed 17:59:59, the show file running 3 s later: the 18:00 "
+          f"show starts: {got}")
+    got, S = _press_case((17, 59, 59), (18, 0, 11))
+    check(got[2] == S.MISSED and got[3] == S.RUN_OFF_AT_START,
+          f"pressed 17:59:59, the show file running only 12 s later "
+          f"(18:00:11): MISSED, never started: {got}")
+    got, S = _press_case((17, 59, 51), (18, 0, 1))
+    check(got[0] == S.SHOW and got[1] == 1,
+          f"the show file running exactly 10.0 s after the press: the "
+          f"press counts, so the show starts: {got}")
+    got, S = _press_case((17, 59, 51), (18, 0, 1, 1000))
+    check(got[2] == S.MISSED and got[3] == S.RUN_OFF_AT_START,
+          f"10.001 s after the press: the later time counts, MISSED: {got}")
+    # The show runner's own check agrees, before any tick has looked.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 58)
+    n.at(17, 59, 40)
+    n.on(17, 59, 59, running_at=(18, 0, 11))
+    check("show control was off at its start time" in
+          svc.run_on_refusal(1),
+          f"the show runner refuses it too, the file running 12 s after "
+          f"the press: {svc.run_on_refusal(1)!r}")
+    n.now[0] = _den(S, 18, 0, 2)
+    check(svc.run_on_refusal(1) == "",
+          "and agrees when it ran 3 s after the press")
+    n.c.close()
+    n.link.close()
+
+    # The clock stepped back after show control came on: the stamp never
+    # stays ahead of the clock, so the next show still starts.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    _fi_walk(n, 17, 56)
+    n.on(18, 10)
+    n.at(17, 58)                            # the clock stepped back
+    check(svc._run_on_since <= n.now[0],
+          f"the stamp is brought back to the clock: {svc._run_on_since}")
+    _fi_walk(n, 18, 0, start=(17, 59))
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+          f"show 1 starts at its time after the clock stepped back: "
+          f"{svc.machine.state} {svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
+    # A press told ahead of the clock (the clock stepped back between the
+    # press and the first look): the press is not taken; the look is.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 56)
+    n.on(18, 10, running_at=(17, 58))
+    n.at(17, 58)
+    check(svc._run_on_since is not None and
+          svc._run_on_since <= n.now[0],
+          f"a press ahead of the clock is never the stamp: "
+          f"{svc._run_on_since} {n.now[0]}")
+    _fi_walk(n, 18, 0, start=(17, 59))
+    check(svc.machine.state == S.SHOW and svc.machine.running == 1,
+          f"and show 1 still starts at its time: {svc.machine.state} "
+          f"{svc.machine.slot(1)}")
+    n.c.close()
+    n.link.close()
+
+    # A start decided while show control was off reaches the show runner
+    # after show control came on (the line was behind): refused at the
+    # start itself, in words, nothing sent.
+    n = _run_on_rig()
+    S, svc, c = n.S, n.svc, n.c
+    n.off()
+    _fi_walk(n, 17, 59)
+    runner = n.w.runner
+    real = runner.start_show
+    k = [0]
+
+    def late_on(*a, **kw):
+        n.on(18, 0, 3)
+        k[0] = len(n.calls)
+        return real(*a, **kw)
+    runner.start_show = late_on
+    n.at(18, 0)
+    runner.start_show = real
+    s1 = svc.machine.slot(1)
+    autos = n.autos(1)
+    check(autos and autos[-1]["outcome"] == "refused" and
+          "show control was off at its start time" in autos[-1]["text"] and
+          s1.status != S.RUNNING and svc.machine.state != S.SHOW,
+          f"the start is refused at the show runner, in words: "
+          f"{autos[-1:]} {s1}")
+    check(not [x for x in _fi_rig_touched(n.calls, k[0])
+               if x[0] in ("pixels",) or x[0].startswith("music_")],
+          f"no music or pixels went out for it: "
+          f"{_fi_rig_touched(n.calls, k[0])[:6]}")
+    check(svc.run_on_refusal(2) == "",
+          "a show still to come is not refused")
+    r = svc.operator_press("start-now", "Andy", "Rack screen")
+    check(r["ok"] is True, f"Start now is unchanged and starts it: {r}")
+    # A stamp left ahead of the clock (it stepped back) is pulled back at
+    # the start's own check too, so a show due now is not refused.
+    n.now[0] = _den(S, 18, 20)
+    svc._set_run_on(_den(S, 18, 30), svc._read_run_gen())
+    check(svc.run_on_refusal(2) == "",
+          f"the start's check pulls a stamp ahead of the clock back: "
+          f"{svc.run_on_refusal(2)!r}")
+    n.c.close()
+    n.link.close()
+
+
+def test_show_control_on_is_stamped_at_the_source():
+    section("Show control on tells the scheduler the moment it came on "
+            "(Jeff, 2026-11-19): web.Control counts each turn-on and calls "
+            "its hook before the start work (opening the show file and the "
+            "audio device), so it is never dated later than the press, and "
+            "before the show file can read as running")
+    import tempfile
+    from ltcplay import web as web_mod
+    folder = tempfile.mkdtemp()
+    open(os.path.join(folder, "x.json"), "w").close()
+    seen = []
+
+    class _S:
+        wav = None
+
+        def __init__(self, path, **kw):
+            self.running = False
+            self.fail = False
+
+        def open(self):
+            pass
+
+        def start(self):
+            if _S.fail_next:
+                raise RuntimeError("the audio device is wedged")
+            self.running = True
+
+        def stop(self):
+            self.running = False
+    _S.fail_next = False
+    real = web_mod.Session
+    web_mod.Session = _S
+    try:
+        c = web_mod.Control(folder, sd=object())
+        c.on_show_control_on = lambda: seen.append(
+            (c.run_gen, c.session is not None and
+             bool(getattr(c.session, "running", False)), _S.made))
+        _S.made = 0
+        real_init = _S.__init__
+
+        def counted(self, path, **kw):
+            _S.made += 1
+            real_init(self, path, **kw)
+        _S.__init__ = counted
+        check(c.run_gen == 0, "nothing counted before show control is on")
+        c.start("x.json", auto_reload=False)
+        check(c.run_gen == 1 and seen == [(1, False, 0)] and
+              c.session.running,
+              f"one turn-on counted and told before the show file was "
+              f"even made, so before it could read as running: "
+              f"{c.run_gen} {seen}")
+        c.stop()
+        _S.fail_next = True
+        try:
+            c.start("x.json", auto_reload=False)
+        except Exception:                        # noqa: BLE001
+            pass
+        check(seen[-1][:2] == (2, False) and c.session is None,
+              f"a start that then failed was counted too, and never read "
+              f"as running: {seen}")
+        _S.fail_next = False
+        c.start("x.json", auto_reload=False)
+        check(seen[-1][:2] == (3, False) and c.session.running,
+              f"the next turn-on is counted and told: {seen}")
+    finally:
+        web_mod.Session = real
+    print("  ok")
+
+
 def test_refused_starts_say_why_and_what_to_press():
     section("Jeff's field report (2026-10-28), refusals: a show refused with "
             "Run off says so on its slot and in its alert, with what to "
@@ -44099,7 +45012,7 @@ def test_reset_says_how_the_rig_stands():
     import types
     from ltcplay import righealth as RH
     from ltcplay import madmapper as MM, madmapperwatch as MW
-    lamps = [{"name": "Audio", "state": "ok", "word": "ok"},
+    lamps = [{"name": "Show audio", "state": "ok", "word": "ok"},
              {"name": "Pixels", "state": "ok", "word": "sending"},
              {"name": "Lasers", "state": "ok", "word": "black"},
              {"name": "Laser arm", "state": "off", "word": "disarmed"}]
@@ -44131,7 +45044,7 @@ def test_reset_says_how_the_rig_stands():
           RH.summary(lamps, clk, mm_ok, None, fl, None)[0],
           "a fresh heartbeat is said")
     # Unhealthy: each in capitals with what to do, then the list.
-    bad_lamps = [{"name": "Audio", "state": "bad", "word": "lost"},
+    bad_lamps = [{"name": "Show audio", "state": "bad", "word": "lost"},
                  {"name": "Pixels", "state": "off", "word": "stopped"},
                  {"name": "Lasers", "state": "bad", "word": "LINK LOST"}]
     text, items = RH.summary(
@@ -44258,6 +45171,63 @@ def test_reset_says_how_the_rig_stands():
               f"and the journal says it: {rows[-1:]}")
     finally:
         R.close()
+    print("  ok")
+
+
+def test_rig_health_reads_the_engines_own_lamp_names():
+    section("The audio sentence Resume says is read from the lamp the "
+            "engine really draws (remote.Remote.subsystems: 'Show audio' "
+            "since 2026-10-28; righealth looked for 'Audio' and always "
+            "said 'Audio: not known.', review 2026-11-19): ready, NOT READY "
+            "for a missing or lost interface, no show audio, not known; "
+            "and every lamp righealth reads is a name subsystems() draws")
+    import inspect
+    import re as _re
+    import tempfile
+    import types
+    from ltcplay import righealth as RH
+    from ltcplay import remote as RM
+    ctl = types.SimpleNamespace(state=lambda: {}, session=None)
+    rm = RM.Remote(ctl, None, folder=tempfile.gettempdir())
+
+    def said(cs, missing=False):
+        rm.audio_interface_view = (lambda: {"missing": True}) if missing \
+            else (lambda: None)
+        lamps = rm.subsystems(cs)
+        _t, items = RH.summary(lamps, None, None, None, None, None)
+        a = [i for i in items if i["name"] == "audio"]
+        return (a[0]["ok"], a[0]["text"]) if a else (None, ""), lamps
+    (ok, t), lamps = said({"clock": {"audio": {"connected": True}}})
+    check(ok is True and t == "Audio ready.",
+          f"the engine's ok audio lamp reads ready: {ok} {t!r} {lamps}")
+    (ok, t), _l = said({"clock": {"audio": {"connected": False}}})
+    check(ok is False and t.startswith("Audio NOT READY (lost): check the "
+                                       "show audio interface"),
+          f"a lost interface is NOT READY: {ok} {t!r}")
+    _no_dashes(t, "the audio NOT READY sentence")
+    (ok, t), _l = said({"clock": {"audio": {"connected": True}}},
+                       missing=True)
+    check(ok is False and t.startswith("Audio NOT READY (not attached)"),
+          f"a missing interface is NOT READY: {ok} {t!r}")
+    (ok, t), _l = said({"clock": {}})
+    check(ok is None and t == "Audio: no show audio is running.",
+          f"no show audio is said: {ok} {t!r}")
+    # Not known: an engine whose strip has no show audio lamp at all.
+    _t, items = RH.summary([], None, None, None, None, None)
+    a = [i for i in items if i["name"] == "audio"]
+    check(a and a[0]["ok"] is None and a[0]["text"] == "Audio: not known.",
+          f"no lamp at all is not known: {a}")
+    # A rename can never silently break it again: each name righealth
+    # reads is one subsystems() draws.
+    rh = inspect.getsource(RH)
+    names = _re.findall(r'_lamp\(lamps, "([^"]+)"\)', rh)
+    src = inspect.getsource(RM.Remote.subsystems)
+    check(set(names) >= {"Show audio", "Pixels", "Lasers", "Laser arm"},
+          f"righealth's lamp names found: {names}")
+    for n in names:
+        check(f'add("{n}"' in src or f'("{n}", ' in src,
+              f"righealth reads the lamp {n!r}, which subsystems() never "
+              f"draws")
     print("  ok")
 
 
@@ -52136,6 +53106,7 @@ def test_flame_frame_timing_alert_and_systems_line():
     rm._frame_timing_work()
     check(not rm.alerts.open(), "no flame link: no alert")
     rm.flame_link_get = lambda: lk
+    lk._haze_live = True             # a show cue playing: a fire window
     for _ in range(100):
         clk[0] += 0.025
         lk._timing_add(0.025, clk[0])
@@ -52174,6 +53145,271 @@ def test_flame_frame_timing_alert_and_systems_line():
     check(len(al) == 1 and al[0].text.startswith(
         "Flame frames late, last hour: 2.") and "worst 178 ms" in al[0].text,
           f"a new late frame raises it again: {[a.text for a in al]}")
+    print("  ok")
+
+
+def test_flame_timing_alert_only_in_a_fire_window():
+    section("flame link timing (Jeff, 2026-11-18): a late frame is an alert "
+            "only in a fire window (a show, a Hold, a purge or test, "
+            "Programming, the Fireball page, an unreadable state); outside "
+            "one it is still counted and journaled. The alert clears by "
+            "itself after its hour, unless a gap was over the big gap limit")
+    import tempfile
+    from ltcplay import flamelink as fl
+    from ltcplay import remote as RM
+    cfg = fl.FlameLinkConfig.parse({"port": 5571, "universe": 1,
+                                    "key": _fl_key(), "frame_stale_ms": 500})
+
+    def rig():
+        clk = [8000.0]
+        jl = _FlJournal()
+        lk = fl.FlameLink(cfg, clock=lambda: clk[0], journal=jl)
+        rm = RM.Remote(None, None, folder=tempfile.mkdtemp(),
+                       log=lambda t: None)
+        rm._journal = lambda *a, **k: None
+        alog = []
+        rm.alerts._journal = lambda text, **kw: alog.append((text, kw))
+        rm.flame_link_get = lambda: lk
+
+        def tick(gap, n=1):
+            for _ in range(n):
+                clk[0] += gap
+                lk._timing_add(gap, clk[0])
+        return clk, jl, lk, rm, tick, alog
+
+    def row(rm):
+        got = [x for x in rm.subsystems({}) if x["name"] == "Flame timing"]
+        return got[0] if got else None
+
+    # Idle (02:00, no show, nothing set): a 150 ms gap is counted and
+    # journaled, never an alert.
+    clk, jl, lk, rm, tick, alog = rig()
+    tick(0.025, 100)
+    tick(0.150)
+    tick(0.025, 10)
+    rm._frame_timing_work()
+    tv = lk.timing_view()
+    r = row(rm)
+    check(not rm.alerts.open(), f"idle: no alert "
+                                f"{[a.text for a in rm.alerts.open()]}")
+    check(tv["late_last_hour"] == 1 and tv["late_fire_last_hour"] == 0 and
+          r and r["state"] == "warn" and r["word"].startswith("1 frame(s)"),
+          f"idle: still counted on the Flame timing line: {tv} {r}")
+    clk[0] += fl.TIMING_HOUR_S
+    tick(0.025)
+    lk._timing_journal()
+    check(any(kw.get("outcome") == "frames_late" and
+              t.startswith("Flame frames late: 1 in the last hour")
+              for t, kw in jl.lines),
+          f"idle: still journaled: {[t for t, _ in jl.lines]}")
+
+    # In a show: an alert that says it clears itself, then clears itself
+    # once the hour has no late frame in a fire window.
+    clk, jl, lk, rm, tick, alog = rig()
+    tick(0.025, 20)
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 5)
+    tick(0.130)
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(len(al) == 1 and al[0].kind == "timing" and
+          al[0].text.startswith("Flame frames late, last hour: 1.") and
+          "Clears by itself after an hour." in al[0].text and
+          "acknowledge it" not in al[0].text and _op_shaped(al[0].full),
+          f"in a show: the alert, clearing itself: "
+          f"{[a.full for a in al]}")
+    lk._haze_live, lk._frame_tc = False, None
+    tick(0.025, 3)
+    clk[0] += fl.TIMING_HOUR_S - 1.0
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "still open inside the hour")
+    clk[0] += 2.0
+    rm._frame_timing_work()
+    check(not rm.alerts.open() and
+          any("Alert cleared (timing): Confirm by LTC Player" in t
+              for t, _kw in alog),
+          f"after the hour: cleared by itself, journaled: "
+          f"{[t for t, _ in alog]}")
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "and stays cleared")
+
+    # A gap over the big gap limit: it needs a click.
+    big = RM.Remote.TIMING_CLICK_MS
+    check(big == 250, f"the big gap limit is 250 ms: {big}")
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 5)
+    tick((big + 30) / 1000.0)
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(len(al) == 1 and f"A gap over {big} ms: acknowledge it." in
+          al[0].text and "Clears by itself" not in al[0].text and
+          _op_shaped(al[0].full),
+          f"a big gap: acknowledge it: {[a.full for a in al]}")
+    lk._haze_live, lk._frame_tc = False, None
+    tick(0.025, 3)
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a big gap stays open after the hour")
+    if al:
+        rm.alerts.clear(id=al[0].id, who="Andy", action="Acknowledge",
+                        screen="rack")
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "acknowledged: closed, stays closed")
+    lk._haze_live, lk._frame_tc = True, "00:00:02:00"
+    tick(0.025, 3)
+    tick(0.120)
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a new small gap in a show alerts")
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "and clears by itself again")
+
+    # A Hold (the show's timecode still there, nothing live) is the show.
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 3)
+    lk._haze_live = False
+    tick(0.025, 3)
+    tick(0.140)
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a Hold: alerts")
+
+    # Every other source of fire values is a fire window.
+    def other(name, setup):
+        clk, jl, lk, rm, tick, alog = rig()
+        tick(0.025, 20)
+        rm._frame_timing_work()
+        setup(lk)
+        tick(0.025)
+        tick(0.140)
+        rm._frame_timing_work()
+        check(len(rm.alerts.open()) == 1 and
+              lk.timing_view()["late_fire_last_hour"] == 1,
+              f"{name}: a late frame alerts")
+    other("a purge or a Morning test (the purge frame)",
+          lambda lk: lk.purge_set([0] * 3 + [200] + [0] * 508))
+
+    def fireball(lk):
+        lk.set_manual_slots([4])
+        lk.manual_set([0] * 3 + [255] + [0] * 508)
+    other("the Fireball page", fireball)
+    other("live flame programming", lambda lk: lk.program_begin())
+
+    def nonzero(lk):
+        lk.last_values_nonzero = True
+    other("any fire value in the frame", nonzero)
+
+    def unknown(lk):
+        lk._cue_kind = "state"
+    other("a show state that could not be read", unknown)
+
+    def broken(lk):
+        def boom():
+            raise RuntimeError("no")
+        lk.purge_active = boom
+    other("a fire window that cannot be worked out", broken)
+
+    # The window ends on the late frame itself: the pulse it cut short was
+    # in the frame before.
+    clk, jl, lk, rm, tick, alog = rig()
+    tick(0.025, 20)
+    lk.last_values_nonzero = True
+    tick(0.025)
+    lk.last_values_nonzero = False
+    tick(0.140)
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a late frame right after a fire "
+                                      "value: alerts")
+
+    # A steady rate (review of #276, P2): one late frame every 20 minutes,
+    # so the hour's count stays at 3 as old ones leave. Each new one is
+    # still new: acknowledged, it comes back; a big one while it is open
+    # keeps it open past the hour.
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    for k in range(3):
+        tick(0.025, 3)
+        tick(0.130)
+        if k < 2:
+            clk[0] += 1200.0
+    rm._frame_timing_work()
+    check(lk.late_fire_hour()[0] == 3 and len(rm.alerts.open()) == 1,
+          f"steady rate: 3 in the hour, open: {lk.late_fire_hour()}")
+    for a in rm.alerts.open():
+        rm.alerts.clear(id=a.id, who="Andy", action="Acknowledge",
+                        screen="rack")
+    clk[0] += 1200.0
+    tick(0.025, 3)
+    tick(0.130)
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(lk.late_fire_hour()[0] == 3 and len(al) == 1,
+          f"steady rate: the count stayed 3, the new one alerts again: "
+          f"{lk.late_fire_hour()} {[a.text for a in al]}")
+    clk[0] += 1200.0
+    tick(0.025, 3)
+    tick((big + 30) / 1000.0)
+    rm._frame_timing_work()
+    al = rm.alerts.open()
+    check(lk.late_fire_hour()[0] == 3 and len(al) == 1 and
+          f"A gap over {big} ms: acknowledge it." in al[0].text,
+          f"steady rate: a big gap while open asks for a click: "
+          f"{[a.text for a in al]}")
+    lk._haze_live, lk._frame_tc = False, None
+    tick(0.025, 3)
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "steady rate: the big gap stays open")
+
+    # Unreadable (review of #276, P3): never taken for "none late".
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 3)
+    tick(0.130)
+    rm._frame_timing_work()
+    lk._haze_live, lk._frame_tc = False, None
+    tick(0.025, 3)
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+
+    class Busy:
+        def __iter__(self):
+            raise RuntimeError("deque mutated during iteration")
+    keep = lk._timing_late_fire
+    lk._timing_late_fire = Busy()
+    check(lk.late_fire_hour() is None, "a copy that keeps failing: None")
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "unreadable: the alert stays open")
+    lk._timing_late_fire = keep
+    rm._frame_timing_work()
+    check(not rm.alerts.open(), "readable again: it clears by itself")
+
+    # Another link object (review of #276, P3): its empty counts never
+    # clear the alert the first one raised.
+    clk, jl, lk, rm, tick, alog = rig()
+    lk._haze_live, lk._frame_tc = True, "00:00:01:00"
+    tick(0.025, 3)
+    tick(0.130)
+    rm._frame_timing_work()
+    lk2 = fl.FlameLink(cfg, clock=lambda: clk[0])
+    rm.flame_link_get = lambda: lk2
+    clk[0] += fl.TIMING_HOUR_S + 5.0
+    rm._frame_timing_work()
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "another link: the alert stays open")
+
+    # A link that cannot tell the fire window: every late frame alerts.
+    class OldLink:
+        def late_last_hour(self):
+            return 1, 140.0
+
+        def timing_view(self):
+            return {"limit_ms": 100}
+    clk, jl, lk, rm, tick, alog = rig()
+    rm.flame_link_get = lambda: OldLink()
+    rm._frame_timing_work()
+    check(len(rm.alerts.open()) == 1, "a link without the fire window: "
+                                      "alerts")
     print("  ok")
 
 
@@ -56219,7 +57455,7 @@ def test_tailscale_session_idle_and_binding():
 
 
 def test_tailscale_card_on_the_show_pc():
-    section("remote access over Tailscale: the Schedule tab card on the "
+    section("remote access over Tailscale: the Settings tab card on the "
             "show PC only says on or off, the address to type, listening "
             "and the firewall rule, in a headline and short bullets; on and "
             "off for a SuperUser on the show PC only (everyone else: no such "
@@ -56258,6 +57494,12 @@ def test_tailscale_card_on_the_show_pc():
         check(_ts_words_ok(out.get("head", ""), out.get("bullets", [])),
               f"its words keep the rules: {out.get('head')!r} "
               f"{out.get('bullets')}")
+        # Problems first, then info, three lines in all (2026-11-19).
+        fx, nf = out.get("problems"), out.get("info")
+        check(isinstance(fx, list) and isinstance(nf, list) and
+              out["bullets"] == fx + nf and len(fx + nf) <= 3 and
+              not (set(fx) & set(nf)),
+              f"every line is a problem or info, problems first: {out}")
         return out
     try:
         for who, door, client in (("an iPad", R.httpd, ("10.20.0.44", 5)),
@@ -56302,6 +57544,9 @@ def test_tailscale_card_on_the_show_pc():
         check(c["head"] == "On: restart the engine" and
               c["restart"]["needed"] and c["listening"] is None,
               f"on, found, not listening yet: Restart the engine: {c}")
+        check("Restart the engine to start listening." in c["problems"] and
+              RM.TAILSCALE_RESTART_WHEN not in c["problems"],
+              f"the restart to do is a problem; when to do it is info: {c}")
         rm.listen = {"addresses": ["127.0.0.1", _TS_ADDR], "port": 7878,
                      "why": "", "tailscale": _TS_ADDR, "tailscale_why": ""}
         c = card()
@@ -56315,8 +57560,10 @@ def test_tailscale_card_on_the_show_pc():
         rm._firewall_run = _TsRun(rc=1)
         c = card()
         check(c["firewall"]["state"] == "missing" and
-              any("installer" in b for b in c["bullets"]),
-              f"the rule missing: said, with what to do: {c}")
+              any("installer" in b for b in c["problems"]),
+              f"the rule missing: a problem, with what to do: {c}")
+        check(not any(c["url"] in b for b in c["problems"]),
+              f"the address to type is info, never a problem: {c}")
         other = rm.tailscale_setup_other
         env = {"PROGRAMDATA": "/pd", "LOCALAPPDATA": r"C:\Users\show\AppData\Local"}
         check(other(read=lambda p: "C:\\Users\\admin\\AppData\\Local\r\noff\r\n",
@@ -56337,8 +57584,26 @@ def test_tailscale_card_on_the_show_pc():
         rm._tailscale_routes = lambda: True
         rm._ts_routes_cache = None
         c = card()
-        check(c["bullets"][0] == "This PC shares routes: turn that off.",
-              f"this PC sharing routes: said first: {c}")
+        check(c["bullets"][0] == RM.TAILSCALE_ROUTES_FIX and
+              c["problems"][0] == RM.TAILSCALE_ROUTES_FIX and
+              c["head"] == RM.TAILSCALE_ROUTES_HEAD and
+              "Security" in c["head"] and
+              "Edit route settings" in c["detail"] and
+              "--advertise-routes= --advertise-exit-node=false" in
+              c["detail"] and _cfg_dashes(c["detail"]),
+              f"this PC sharing routes: a security problem, said first, "
+              f"with how to turn it off: {c}")
+        rm._firewall_run = _TsRun(rc=1)
+        rm._ts_firewall_cache = None
+        c = card()
+        check(c["problems"][0] == RM.TAILSCALE_ROUTES_FIX and
+              any("Firewall rule missing" in b for b in c["problems"]) and
+              (c["info"] == [] if len(c["problems"]) == 3 else
+               len(c["problems"] + c["info"]) <= 3),
+              f"an info line never pushes a problem out: {c}")
+        rm._firewall_run = _TsRun(out="Enabled: Yes\nRemoteIP: "
+                                      "100.64.0.0/10\n")
+        rm._ts_firewall_cache = None
         rm._tailscale_routes = lambda: None
         rm._ts_routes_cache = None
         c = card()
@@ -56351,6 +57616,15 @@ def test_tailscale_card_on_the_show_pc():
               "Tailscale Serve and HTTPS stay refused." in str(js),
               "the card's script, for the SuperUser: passwords matter, "
               "Serve and HTTPS refused")
+        check('<use href="#i-warn"/></svg> <b style="color:#FFD08A">Fix:'
+              '</b> ${esc(b)}</li>' in str(js) and
+              ' More: <span id="ts-info"></span>' in str(js) and
+              "Nothing to fix." in str(js) and
+              'id="ts-restart-why"' in str(js) and
+              "V.problems" in str(js) and "V.info" in str(js),
+              "the card marks a problem (a warning sign, amber, Fix:) "
+              "apart from info (the More line), and says when nothing "
+              "needs fixing")
         page = _ui2_pages()[1]
         check("Remote access over Tailscale" not in page and
               "ts-logins" not in page,
@@ -56360,7 +57634,19 @@ def test_tailscale_card_on_the_show_pc():
         c = card()
         check(c["name_url"] ==
               "http://ignite-player.tail342a0a.ts.net:7878/",
-              f"the URL to type, by its MagicDNS name: {c}")
+              f"the URL by its MagicDNS name: {c}")
+        # The number address leads (2026-11-19): Chrome tries HTTPS first
+        # on a name and refuses it, LTC Player answers plain HTTP. The
+        # name stays visible, second and labelled.
+        jt = str(js)
+        a = jt.find("`Type this: <b>${esc(V.url)}</b>`")
+        b = jt.find("`Name: ${esc(V.name_url)} ")
+        check(0 < a < b and "(needs HTTPS: Chrome refuses it for now)" in
+              jt[b:b + 200] and "by its Tailscale name" not in jt and
+              any(c["url"] in x for x in c["info"]) and
+              not any(c["name_url"] in x for x in c["bullets"]),
+              f"the number address first, the name second and labelled "
+              f"needs HTTPS: {a} {b} {c}")
         st, _h, out = _ask(R.httpd, "POST", "/api/remote/tailscale",
                            {"on": False}, client=loop, headers=su)
         c = card()
@@ -56372,9 +57658,10 @@ def test_tailscale_card_on_the_show_pc():
               f"removes the rule: {c}")
         # During a show Restart the engine is refused (the same rule as
         # the show network's).
-        rm.show_busy_for_reload = lambda: True
+        rm.show_busy_reason = lambda: "A show is running."
         check(rm.restart_refusal().startswith("A show is running"),
               "a restart is refused during a show")
+        del rm.show_busy_reason
         # Nobody but a SuperUser on the rack screen: no such route, not
         # even the card's script; and audited (#251's pattern).
         _o, _w, atok, _n = us.sign_in("Andy", "andy-own-pw-1", True,
@@ -58405,6 +59692,10 @@ def _rack_status_pico(many=True):
             ("Show", "ok", "ready"), ("Timecode", "bad", "fault"),
             ("flamesafe", "ok", "live"), ("Stream Deck", "bad", "missing"),
             ("Lasers", "ok", "dark"), ("Audio", "ok", "ready"))],
+        # The 2.0 Systems badge and sheet read these (systems_view).
+        "systems": [{"name": n, "state": s, "word": w} for n, s, w in (
+            ("Timecode", "bad", "fault"), ("Deck", "bad", "missing"),
+            ("BEYOND", "ok", "running"), ("Show audio", "ok", "attached"))],
         "laser_arm": {"lasers": [{"id": "L1", "name": "Laser 1",
                                   "armed": False},
                                  {"id": "L2", "name": "Laser 2",
@@ -65319,7 +66610,7 @@ def test_stop_halt_order_hooks_and_programming():
             calls.append(("lasers", why))
             return True, "Every laser disarmed."
 
-        def stop_hooks(self, who, screen):
+        def stop_hooks(self, who, screen, what="Stop"):
             calls.append(("stop hooks", who, screen))
 
     class _M:
@@ -65339,7 +66630,7 @@ def test_stop_halt_order_hooks_and_programming():
                 return {"ok": True, "text": "held"}
             return {"ok": False, "text": "?"}
 
-        def halt_begin(self):
+        def halt_begin(self, why="Stop was pressed"):
             calls.append(("halt_begin",))
 
         def halt_end(self):
@@ -65394,6 +66685,8 @@ def test_stop_halt_order_hooks_and_programming():
     check(kinds.index("press_end") > kinds.index("press") and
           kinds[-1] == "halt_end",
           f"the laser arm's press ends after the schedule's step: {kinds}")
+    stop_kinds = list(kinds)
+    stop_calls = list(calls)
     import shutil as _shu
     _shu.rmtree(_fold, ignore_errors=True)
     # Run off: the same halt, then playback stops.
@@ -65405,6 +66698,27 @@ def test_stop_halt_order_hooks_and_programming():
           kinds.index("control.stop") > kinds.index("flames") and
           out.get("run_on") is False and out.get("stopped") is True,
           f"Run off is the halt, then playback stopped: {out} {kinds}")
+    # Show control off (Jeff, 2026-11-19): every step of the Stop, in the
+    # Stop's order, except the schedule's Hold; then playback stops.
+    check([k for k in kinds if k != "control.stop"] ==
+          [k for k in stop_kinds if k != "press"] and
+          kinds.index("control.stop") > kinds.index("press_end") and
+          kinds[-1] == "halt_end",
+          f"show control off runs every step of the Stop in its order, "
+          f"with no Hold: {kinds} against {stop_kinds}")
+    check(not any(c_[0] == "press" for c_ in calls) and
+          rm.schedule.machine.state == "STANDBY" and
+          out.get("hold") is None and code == 200,
+          f"and the schedule is not put on Hold: {calls} {out}")
+    for step in ("cancel wait", "flames", "lasers", "stop hooks",
+                 "purge clear", "laser tests off", "playback stop",
+                 "holds"):
+        check(step in kinds, f"show control off still does {step}: "
+                             f"{kinds}")
+    check(("lasers", "Show control turned off by Andy on the Rack "
+           "screen") in calls and
+          ("lasers", "Stop held by Andy on the Rack screen") in stop_calls,
+          f"the laser disarm says what did it: {calls}")
     # press("stop") tells the laser arm too, around the whole press.
     del calls[:]
     rm._press = lambda name, body, ctx: (calls.append(("pressing", name)),
@@ -70750,7 +72064,8 @@ def test_boothaudio_never_holds_and_never_uses_the_pa():
     q = BA.BoothPlayer(dict(cfg, device="Speakers (Realtek)"), sd=_SD(),
                        opener=opener)
     ok, why = q.play("deck")
-    check(not ok and "has 2 outputs" in why and len(opened) == 1,
+    check(not ok and "has only 2 outputs" in why and
+          "channels 15 and 16 are not there" in why and len(opened) == 1,
           f"a device without the pair is refused, not folded down: {why}")
     ok, why = p.play("audio")
     check(not ok and "No booth note file is set for audio" in why,
@@ -70813,6 +72128,626 @@ def test_boothaudio_never_holds_and_never_uses_the_pa():
             check(RM.SETTINGS_FILE in str(e), f"refused at load: {e}")
     print("  ok")
 
+
+
+class _BoothSD:
+    """A stand-in sounddevice for the Booth speaker card: three outputs,
+    one listed twice under two audio systems, and a stream that records
+    what it was given (the device index, its width and the block)."""
+
+    def __init__(self):
+        self.devices = [
+            {"name": "Speakers (Realtek)", "max_output_channels": 2,
+             "default_samplerate": 48000, "hostapi": 0},
+            {"name": "StudioLive 16R", "max_output_channels": 18,
+             "default_samplerate": 48000, "hostapi": 1},
+            {"name": "Booth Box", "max_output_channels": 8,
+             "default_samplerate": 48000, "hostapi": 0},
+            {"name": "Booth Box", "max_output_channels": 8,
+             "default_samplerate": 48000, "hostapi": 1}]
+        self.written = []
+        sd = self
+
+        class default:
+            device = (0, 0)
+        self.default = default
+
+        class _Stream:
+            def __init__(self, **kw):
+                self.kw = kw
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def write(self, block):
+                sd.written.append((self.kw, block))
+        self._Stream = _Stream
+
+    def query_devices(self):
+        return self.devices
+
+    def query_hostapis(self):
+        return [{"name": "MME"}, {"name": "Windows WASAPI"}]
+
+    def OutputStream(self, **kw):
+        return self._Stream(**kw)
+
+
+def test_booth_speaker_channels_one_or_two_only_the_named_carry_it():
+    section("booth speaker: channels may be one output or two different "
+            "ones; duplicates, zero, negative numbers and non-integers are "
+            "refused in a plain sentence; the note is only on the named "
+            "outputs, zero on every other; the two-output config is "
+            "unchanged")
+    import numpy as np
+    from ltcplay import boothaudio as BA
+    for ch, want in (([7], (7,)), ([15, 16], (15, 16)), ((3, 1), (3, 1))):
+        got = BA.parse_config({"device": "x", "channels": ch})["channels"]
+        check(got == want, f"{ch} is taken as {want}: {got}")
+    check(BA.parse_config({"device": "x"})["channels"] == (1, 2),
+          "no channels: the old default pair")
+    for bad in ([7, 7], [0], [-1], [0, 1], [-3, 4], [1.5], [7.0], ["7"],
+                [True], [1, True], [], [1, 2, 3], 7, None, "15,16"):
+        try:
+            BA.parse_config({"device": "x", "channels": bad})
+            check(False, f"channels {bad!r} must be refused")
+        except ValueError as e:
+            check("channels has to be one output number, or two different "
+                  "output numbers, counted from 1, like [7] or [15, 16]."
+                  in str(e), f"{bad!r}: a plain sentence: {e}")
+            _no_dashes(str(e), "the booth channels refusal")
+    for bad in ({"device": "x", "hostapi": 3},):
+        try:
+            BA.parse_config(bad)
+            check(False, f"{bad} must be refused")
+        except ValueError as e:
+            check("hostapi" in str(e), f"{bad}: {e}")
+    n = 480
+    left = np.linspace(-0.5, 0.5, n, dtype=np.float32)
+    right = np.full(n, 0.25, dtype=np.float32)
+    pcm = np.stack([left, right], axis=1).reshape(-1)
+    one = BA.BoothPlayer._block(pcm, 2, (7,), 7)
+    check(one.shape == (n, 7) and not np.any(one[:, :6]) and
+          np.allclose(one[:, 6], (left + right) / 2),
+          f"one output: the note folded onto output 7 only, zero on 1 to "
+          f"6: {np.abs(one).max(axis=0)}")
+    two = BA.BoothPlayer._block(pcm, 2, (3, 5), 5)
+    check(two.shape == (n, 5) and np.allclose(two[:, 2], left) and
+          np.allclose(two[:, 4], right) and not np.any(two[:, [0, 1, 3]]),
+          f"two outputs: left on 3, right on 5, zero elsewhere: "
+          f"{np.abs(two).max(axis=0)}")
+    rev = BA.BoothPlayer._block(pcm, 2, (16, 15), 16)
+    check(np.allclose(rev[:, 15], left) and np.allclose(rev[:, 14], right)
+          and not np.any(rev[:, :14]),
+          "a pair written high first keeps left on the first named")
+    mono = BA.BoothPlayer._block(left, 1, (2,), 2)
+    check(np.allclose(mono[:, 1], left) and not np.any(mono[:, 0]),
+          "a mono note on one output is the note itself")
+    # Through a player, on a device of 8 outputs.
+    import tempfile
+    import shutil
+    work = tempfile.mkdtemp()
+    try:
+        wav = _booth_wav(os.path.join(work, "t.wav"))
+        sd = _BoothSD()
+        p = BA.BoothPlayer({"device": "Booth Box", "hostapi": "MME",
+                            "channels": [7], "files": {"test": wav}}, sd=sd)
+        ok, why = p.play("test")
+        for _ in range(200):
+            if p.playing == 0:
+                break
+            time.sleep(0.01)
+        check(ok and "output 7 (" in why and len(sd.written) == 1,
+              f"one output plays: {ok} {why}")
+        kw, block = sd.written[0]
+        check(kw["device"] == 2 and kw["channels"] == 7 and
+              not np.any(block[:, :6]) and np.abs(block[:, 6]).max() > 0.1,
+              f"Booth Box on MME (index 2), 7 wide, only output 7: "
+              f"{kw} {np.abs(block).max(axis=0)}")
+        q = BA.BoothPlayer({"device": "Booth Box", "hostapi": "MME",
+                            "channels": [7, 12]}, sd=sd)
+        ok, why = q.check()
+        check(not ok and why.endswith("has only 8 outputs, so channel 12 "
+                                      "is not there."),
+              f"a channel the device does not have: said: {why}")
+        q = BA.BoothPlayer({"device": "Booth Box", "channels": [7]}, sd=sd)
+        ok, why = q.check()
+        check(not ok and "pick one" in why,
+              f"a name listed twice with no audio system: said: {why}")
+        check(p.retire() and p.play("test")[0] is False and
+              "just changed" in p.play("test")[1],
+              "a retired player plays nothing")
+        r = BA.BoothPlayer({"device": "Booth Box", "hostapi": "MME",
+                            "channels": [7], "files": {"test": wav}}, sd=sd)
+        r.playing = 1
+        check(not r.retire(), "a player with a note playing is not retired")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
+def test_booth_speaker_card_saves_checks_and_tests():
+    section("the Settings tab's Booth speaker card: the show PC only and "
+            "the Settings row; saves only the booth_alert block (every other "
+            "key kept), checked against this PC's real outputs; refused "
+            "while a show is live or on Hold, while a note plays, or from a "
+            "page that read an older setting; used at once with no restart; "
+            "Test note only on the booth speaker, refused during a show, "
+            "with a flame group armed or not known, or with no speaker set")
+    import json as _json
+    import shutil
+    import tempfile
+    import numpy as np
+    from ltcplay import boothaudio as BA
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    S = _sched()
+    if S is None:
+        return
+    check(U.classify("/api/remote/booth-speaker", {"action": "save"}) ==
+          "settings" and U.classify("/api/remote/booth-speaker",
+                                    {"action": "test"}) == "settings" and
+          "booth-speaker" in RM.LOCAL_ONLY and
+          "booth-speaker" in RM.GET_ROUTES and
+          "booth-speaker" in RM.POST_ROUTES,
+          "the Settings row, the show PC only, a GET and a POST")
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    notes = tempfile.mkdtemp()
+    try:
+        wav = _booth_wav(os.path.join(notes, "my test.wav"))
+        sd = _BoothSD()
+        R.remote.booth_sd = sd
+        path = os.path.join(R.work, RM.SETTINGS_FILE)
+        start = {"show_network_address": None, "screen_arming": False,
+                 "purge_timed_s": 20,
+                 "alert_pixels": {"start": 1, "count": 300, "order": "GRB"},
+                 "booth_alert": {"device": "", "channels": [15, 16],
+                                 "files": {"test": wav}, "response_s": 45}}
+        with open(path, "w", encoding="utf-8") as fh:
+            _json.dump(start, fh)
+        # The show file in the show folder plays its show audio on
+        # StudioLive 16R outputs 1, 2 (music) and 3 (sub), timecode on 18;
+        # the announcements' Main L/R are 1 and 2 of it too.
+        show_folder = R.httpd.control.folder
+        _am_ck = _am_clock_doc(
+            [{"file": "music.wav", "channels": [1, 2]},
+             {"file": "sub.wav", "channels": [3]},
+             {"file": "ltc.wav", "channels": [18]}],
+            device="StudioLive 16R", channels=18, ltc_output=18)
+        with open(os.path.join(show_folder, "show.json"), "w",
+                  encoding="utf-8") as fh:
+            _json.dump({"cues": [], "clock": _am_ck}, fh)
+
+        def disk():
+            with open(path, encoding="utf-8") as fh:
+                return _json.load(fh)
+
+        def get():
+            return _ask(R.httpd, "GET", "/api/remote/booth-speaker",
+                        client=loop)
+
+        def save(body, **kw):
+            return _ask(R.httpd, "POST", "/api/remote/booth-speaker",
+                        dict(body, action="save"), client=loop, **kw)
+
+        def test(**kw):
+            return _ask(R.httpd, "POST", "/api/remote/booth-speaker",
+                        {"action": "test"}, client=loop, **kw)
+        # Never from the network.
+        st, _h, out = R.ask("GET", "/api/remote/booth-speaker")
+        check(st == 403 and "outputs" not in out,
+              f"the card is the show PC's only: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/booth-speaker",
+                            {"action": "save", "device": "StudioLive 16R",
+                             "channels": [7]})
+        check(st == 403 and "Nothing was changed" in out.get("error", "")
+              and disk() == start, f"never saved from the network: {st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/booth-speaker",
+                            {"action": "test"})
+        check(st == 403 and not sd.written, f"never tested from there: {st}")
+        for m, b in (("GET", None), ("POST", {"action": "save"})):
+            st, _h, out = _ask(R.httpd, m, "/api/remote/booth-speakers", b,
+                               client=loop)
+            check(st == 404, f"{m} a route next to it that is not there: "
+                             f"the same 404 as any: {st} {out}")
+        st, _h, out = _ask(R.httpd, "POST", "/api/remote/booth-speaker",
+                           {"action": "play"}, client=loop)
+        check(st == 400 and disk() == start, f"an unknown action: {st}")
+        # The card.
+        st, _h, v = get()
+        check(st == 200 and v["device"] == "" and v["channels"] == [] and
+              v["line"]["text"] == "Booth speaker: off. Pick a device and a "
+                                   "channel, then Save." and v["rev"],
+              f"off to start: {st} {v}")
+        by = {(o["name"], o["hostapi"]): o for o in v["outputs"]}
+        live = by[("StudioLive 16R", "Windows WASAPI")]
+        check(sorted(live["reserved"], key=int) == ["1", "2", "3", "18"] and
+              live["reserved"]["3"] == "the show audio" and
+              not live["unsure"] and
+              by[("Speakers (Realtek)", "MME")]["unsure"] and
+              not by[("Booth Box", "MME")]["reserved"] and
+              v["confirm_words"] == "These are the show mixer's own "
+                                    "outputs: I checked the channel is free",
+              f"the show audio's outputs are reserved, the default output "
+              f"is unsure: {v['outputs']}")
+        check(by[("StudioLive 16R", "Windows WASAPI")]["channels"] == 18 and
+              by[("Booth Box", "MME")]["same_name"] and
+              by[("Speakers (Realtek)", "MME")]["channels"] == 2 and
+              len(v["outputs"]) == 4,
+              f"every output with its output count and audio system: "
+              f"{v['outputs']}")
+        rev0 = v["rev"]
+        # Refusals that leave the file as it was.
+        for body, word in (
+                ({"device": "Not Here", "channels": [1]},
+                 "Not Here is not an output on this PC. Nothing was "
+                 "changed."),
+                ({"device": "Speakers (Realtek)", "channels": [3]},
+                 "Speakers (Realtek) has only 2 outputs, so channel 3 is "
+                 "not there. Nothing was changed."),
+                ({"device": "Speakers (Realtek)", "channels": [1, 3]},
+                 "has only 2 outputs, so channel 3 is not there."),
+                ({"device": "Booth Box", "channels": [1]}, "pick one"),
+                ({"device": "StudioLive 16R", "channels": [4, 4]},
+                 "the same output"),
+                ({"device": "StudioLive 16R", "channels": [0]},
+                 "counted from 1"),
+                ({"device": "StudioLive 16R", "channels": ["7"]},
+                 "Pick Channel A"),
+                ({"device": "StudioLive 16R", "channels": [1, 2, 3]},
+                 "Pick Channel A"),
+                # The show's own outputs, even if the page sent them.
+                ({"device": "StudioLive 16R", "channels": [1]},
+                 "Output 1 of StudioLive 16R is in use by the show audio. "
+                 "A booth note never plays there: pick another channel. "
+                 "Nothing was changed."),
+                ({"device": "StudioLive 16R", "channels": [7, 3]},
+                 "Output 3 of StudioLive 16R is in use by the show audio."),
+                ({"device": "StudioLive 16R", "channels": [18]},
+                 "is in use by the show audio"),
+                ({"device": "StudioLive 16R", "channels": [2],
+                  "confirm": True}, "is in use by the show audio"),
+                # This PC's default output: not known, needs the tick.
+                ({"device": "Speakers (Realtek)", "channels": [1]},
+                 "LTC Player cannot tell which outputs of Speakers "
+                 "(Realtek) the show audio uses"),
+                ({"device": "Speakers (Realtek)", "channels": [1],
+                  "confirm": "true"}, "cannot tell which outputs")):
+            st, _h, out = save(dict(body, rev=rev0))
+            check(st == 409 and word in out.get("error", "") and
+                  "Nothing was changed" in out["error"] and disk() == start,
+                  f"{body}: refused, nothing written: {st} {out}")
+            _no_dashes(out.get("error", ""), "a booth speaker refusal")
+        # A save: one output, used at once.
+        before = R.remote.alerts.booth
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [7],
+                            "rev": rev0})
+        d = disk()
+        check(st == 200 and out["text"] == "Booth speaker saved: StudioLive "
+              "16R, output 7. In use now.", f"saved: {st} {out}")
+        check(d["booth_alert"] == {"device": "StudioLive 16R",
+                                   "channels": [7], "files": {"test": wav},
+                                   "response_s": 45} and
+              {k: v for k, v in d.items() if k != "booth_alert"} ==
+              {k: v for k, v in start.items() if k != "booth_alert"},
+              f"only the device and channels changed; files, response_s "
+              f"and every other key kept: {d}")
+        check(os.path.isfile(path + ".bak") and not [
+                  f for f in os.listdir(R.work) if f.endswith(".tmp")],
+              "written whole beside a .bak, no temp file left")
+        now = R.remote.alerts.booth
+        check(now is not before and now.device_name == "StudioLive 16R" and
+              now.config["channels"] == (7,) and
+              now.config["response_s"] == 45,
+              "a new booth player in place at once, no restart")
+        rows = [r for r in R.svc.journal if r.get("action") ==
+                "booth speaker"]
+        check(rows and rows[-1]["text"] == "unsigned changed the booth "
+              "speaker on the Rack screen from off to StudioLive 16R, "
+              "output 7." and wav not in rows[-1]["text"],
+              f"journaled: who, screen, old and new: {rows[-1:]}")
+        st, _h, v = get()
+        check(v["device"] == "StudioLive 16R" and v["channels"] == [7] and
+              v["line"]["text"].startswith(
+                  "Booth speaker: StudioLive 16R, output 7, ") and
+              f"of {len(BA.NOTE_NAMES)} notes found." in v["line"]["text"]
+              and by and v["rev"] != rev0,
+              f"the check line says it in plain words: {v['line']}")
+        # A stale page: the rev it read is not the file's.
+        st, _h, out = save({"device": "Speakers (Realtek)", "channels": [1],
+                            "rev": rev0})
+        check(st == 409 and "changed somewhere else" in out.get("error", "")
+              and disk() == d and out.get("booth", {}).get("device") ==
+              "StudioLive 16R",
+              f"a page that read an older setting never saves over it: "
+              f"{st} {out}")
+        st, _h, out = save({"device": "Speakers (Realtek)",
+                            "channels": [1]})
+        check(st == 409 and disk() == d, f"no rev at all: refused: {st}")
+        # The settings notice (configwatch): the card's own save is the
+        # engine's copy, but a hand edit of another key of the same file
+        # is never hidden by it.
+        from ltcplay import configwatch as CW
+        cw = CW.ConfigWatch()
+        cw.add("rack screen settings", path, digest=CW.keys_hash(
+            ("booth_alert", "alert_pixels", "flamesafe_config")))
+        R.remote.config_watch = cw
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [5],
+                            "rev": get()[2]["rev"]})
+        check(st == 200 and not cw.engine_behind(path),
+              f"the card's own save is not a change on disk: {st} {out}")
+        hand = disk()
+        hand["alert_pixels"]["count"] = 200
+        with open(path, "w", encoding="utf-8") as fh:
+            _json.dump(hand, fh)
+        check(cw.engine_behind(path), "a hand edit is a change")
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [6],
+                            "rev": get()[2]["rev"]})
+        check(st == 200 and cw.engine_behind(path) and
+              disk()["alert_pixels"]["count"] == 200,
+              f"a save after a hand edit keeps it and never hides it: {st}")
+        R.remote.config_watch = None
+        # The unsure default output, saved with the operator's tick.
+        st, _h, out = save({"device": "Speakers (Realtek)", "channels": [2],
+                            "confirm": True, "rev": get()[2]["rev"]})
+        rows = [r for r in R.svc.journal if r.get("action") ==
+                "booth speaker"]
+        check(st == 200 and disk()["booth_alert"]["channels"] == [2] and
+              "ticked that they checked the channel is free" in
+              rows[-1]["text"], f"with the tick: saved, said: {st} {out}")
+        # Fails closed: with no show folder, or a show file whose audio
+        # cannot be read, every device needs the tick.
+        keep_folder = R.httpd.control.folder
+        for how in ("gone", "broken"):
+            if how == "gone":
+                R.httpd.control.folder = os.path.join(notes, "nowhere")
+            else:
+                with open(os.path.join(show_folder, "bad.json"), "w",
+                          encoding="utf-8") as fh:
+                    _json.dump({"cues": [], "clock": {
+                        "source": "audio_master", "audio": {}}}, fh)
+            st, _h, out = save({"device": "Booth Box", "hostapi": "MME",
+                                "channels": [7], "rev": get()[2]["rev"]})
+            check(st == 409 and "cannot tell which outputs of Booth Box" in
+                  out.get("error", ""),
+                  f"{how}: the show audio not known: refused: {st} {out}")
+            R.httpd.control.folder = keep_folder
+        os.remove(os.path.join(show_folder, "bad.json"))
+        # A failure after the old player was retired never leaves it
+        # retired: the alerts keep their booth note.
+        old_p = R.remote.alerts.booth
+        keep_bp = BA.BoothPlayer
+
+        def _boom(*a, **k):
+            raise RuntimeError("the new player could not be made")
+        BA.BoothPlayer = _boom
+        try:
+            R.remote.booth_speaker_save(
+                {"device": "StudioLive 16R", "channels": [8],
+                 "rev": get()[2]["rev"]}, RM.Ctx(True, "127.0.0.1"))
+            check(False, "the failure must reach the caller")
+        except RuntimeError:
+            pass
+        finally:
+            BA.BoothPlayer = keep_bp
+        check(R.remote.alerts.booth is old_p and not old_p._retired,
+              "the old player plays again after a failed swap")
+        # A two-output pair, and a name listed twice with its audio system.
+        rev1 = get()[2]["rev"]
+        st, _h, out = save({"device": "Booth Box", "hostapi": "MME",
+                            "channels": [7, 8], "rev": rev1})
+        d = disk()
+        check(st == 200 and d["booth_alert"]["hostapi"] == "MME" and
+              d["booth_alert"]["channels"] == [7, 8] and
+              R.remote.alerts.booth.check() == (True, ""),
+              f"a pair on a name listed twice, with its audio system: "
+              f"{st} {out} {d}")
+        # The Test note: refused until the engine knows no flame group is
+        # armed (fails closed), then only on the booth speaker.
+        st, _h, out = test()
+        check(st == 409 and "flamesafe's status is not connected" in
+              out.get("error", "") and "Nothing was played" in out["error"]
+              and not sd.written,
+              f"flame state not known: refused: {st} {out}")
+
+        class _FS:
+            groups = [{"armed": "disarmed"}]
+
+            def view(self):
+                return {"groups": self.groups, "stale": False}
+        R.remote.flame_status = _FS()
+        st, _h, out = test()
+        for _ in range(200):
+            if R.remote.alerts.booth.playing == 0:
+                break
+            time.sleep(0.01)
+        check(st == 200 and "Booth note for test playing on Booth Box, "
+              "outputs 7 and 8" in out.get("text", "") and
+              len(sd.written) == 1, f"the test note plays: {st} {out}")
+        kw, block = sd.written[-1]
+        check(kw["device"] == 2 and kw["channels"] == 8 and
+              not np.any(block[:, :6]) and np.abs(block[:, 6]).max() > 0.1
+              and np.abs(block[:, 7]).max() > 0.1,
+              f"on the booth device and its outputs 7 and 8 only: {kw} "
+              f"{np.abs(block).max(axis=0)}")
+        R.remote.flame_status.groups = [{"armed": "armed"}]
+        st, _h, out = test()
+        check(st == 409 and "A flame group is armed" in out.get("error", "")
+              and len(sd.written) == 1, f"a group armed: refused: {out}")
+        R.remote.flame_status.groups = [{"armed": "disarmed"}]
+        # Every other refusal of the Test note, one at a time.
+
+        class _On:
+            def __init__(self, on=True):
+                self.v = on
+
+            def on(self):
+                return self.v
+
+            def active(self):
+                return self.v
+
+        class _Morning:
+            def __init__(self, mv):
+                self.mv = mv
+
+            def status_view(self):
+                return self.mv
+
+        class _Ann:
+            playing = {"id": "delayed"}
+            options = {"show_outputs": (1, 2)}
+            device_name = ""
+        for attr, val, word in (
+                ("hazer_test", _On(), "The hazer test is on"),
+                ("cleaning", _On(), "Wave flamer cleaning is running"),
+                ("pump", _On(), "The fuel pump is on"),
+                ("morning", _Morning({"purge": {"group": 1}}),
+                 "A purge is selected or firing"),
+                ("morning", _Morning({"laser_tests_on": True}),
+                 "A laser test is on"),
+                ("morning", _Morning({"laser_arm": {"armed": True}}),
+                 "A laser is armed"),
+                ("announce", _Ann(), "An announcement is playing"),
+                ("live_flame", type("LF", (), {"on": True})(),
+                 "Live flame programming is on")):
+            keep = getattr(R.remote, attr, None)
+            setattr(R.remote, attr, val)
+            try:
+                st, _h, out = test()
+            finally:
+                setattr(R.remote, attr, keep)
+            check(st == 409 and word in out.get("error", "") and
+                  "Nothing was played" in out["error"] and
+                  len(sd.written) == 1,
+                  f"{attr}: the test note refused: {st} {out}")
+        st, _h, out = test()
+        for _ in range(200):
+            if R.remote.alerts.booth.playing == 0:
+                break
+            time.sleep(0.01)
+        check(st == 200 and len(sd.written) == 2,
+              f"with all of them off it plays again: {st} {out}")
+        rev2 = get()[2]["rev"]
+        for state in ("SHOW", "PAUSED", "HOLD"):
+            R.remote._show_live_state = lambda st=state: st
+            st, _h, out = save({"device": "StudioLive 16R",
+                                "channels": [9], "rev": rev2})
+            check(st == 409 and "between shows" in out.get("error", "") and
+                  disk() == d, f"{state}: no save: {st} {out}")
+            st, _h, out = test()
+            check(st == 409 and "between shows" in out.get("error", "")
+                  and len(sd.written) == 2, f"{state}: no test note: {out}")
+        R.remote._show_live_state = lambda: None
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [9],
+                            "rev": rev2})
+        check(st == 409 and "could not be read" in out.get("error", "") and
+              disk() == d, f"the show state not known: no save: {out}")
+        del R.remote._show_live_state
+        # A note playing: nothing changes under it.
+        cur = R.remote.alerts.booth
+        cur.playing = 1
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [9],
+                            "rev": rev2})
+        check(st == 409 and "A booth note is playing" in out.get("error", "")
+              and disk() == d and R.remote.alerts.booth is cur,
+              f"a note playing: no save: {st} {out}")
+        st, _h, out = test()
+        check(st == 409 and "A booth note is playing" in out.get("error", ""),
+              f"and no second test note: {out}")
+        cur.playing = 0
+        # Off: the channels stay as they were, the test is refused.
+        st, _h, out = save({"device": "", "channels": [1], "rev": rev2})
+        d2 = disk()
+        check(st == 200 and d2["booth_alert"]["device"] == "" and
+              d2["booth_alert"]["channels"] == [7, 8] and
+              "hostapi" not in d2["booth_alert"] and
+              d2["booth_alert"]["files"] == {"test": wav} and
+              not R.remote.alerts.booth.enabled and
+              cur.play("test")[0] is False,
+              f"None: booth speaker off, the old player plays nothing: "
+              f"{st} {out} {d2}")
+        st, _h, out = test()
+        check(st == 409 and "The booth speaker is not set" in
+              out.get("error", ""), f"off: no test note: {out}")
+        # The Settings row: signed out, an operator and a viewer refused.
+        us = U.Users(tempfile.mkdtemp(), hash_params=_U_FAST)
+        us.seed([("Jeff", "admin"), ("Ollie", "operator"),
+                 ("Vera", "viewer")])
+        R.remote.users = us
+        rev3 = get()[2].get("rev")
+        st, _h, out = get()
+        check(st == 403 and "outputs" not in out,
+              f"signed out: no card: {st} {out}")
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [9],
+                            "rev": rev3})
+        check(st == 403 and out.get("role_refused") and disk() == d2,
+              f"signed out: no save: {st} {out}")
+        for name in ("Ollie", "Vera"):
+            ok, why, tok, _n = us.sign_in(name, "", True, "rack",
+                                          new_password=f"{name}-pw-1234")
+            check(ok, f"setup: {name} signs in: {why}")
+            ck = {"Cookie": f"{U.COOKIE}={tok}"}
+            st, _h, out = _ask(R.httpd, "GET", "/api/remote/booth-speaker",
+                               client=loop, headers=ck)
+            check(st == 403 and "outputs" not in out,
+                  f"{name}: no card: {st} {out}")
+            st, _h, out = save({"device": "StudioLive 16R", "channels": [9],
+                                "rev": rev3}, headers=ck)
+            check(st == 403 and out.get("role_refused") and disk() == d2,
+                  f"{name}: no save: {st} {out}")
+            st, _h, out = test(headers=ck)
+            check(st == 403 and out.get("role_refused"),
+                  f"{name}: no test note: {st} {out}")
+            us.sign_out(tok, "rack", local=True)
+        ok, why, tok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        ck = {"Cookie": f"{U.COOKIE}={tok}"}
+        st, _h, v = _ask(R.httpd, "GET", "/api/remote/booth-speaker",
+                         client=loop, headers=ck)
+        check(st == 200 and v["outputs"], f"an admin sees the card: {st}")
+        st, _h, out = save({"device": "StudioLive 16R", "channels": [15, 16],
+                            "rev": v["rev"]}, headers=ck)
+        rows = [r for r in R.svc.journal if r.get("action") ==
+                "booth speaker"]
+        check(st == 200 and disk()["booth_alert"]["channels"] == [15, 16]
+              and rows[-1]["who"] == "Jeff" and rows[-1]["text"].endswith(
+                  "from off to StudioLive 16R, outputs 15 and 16."),
+              f"an admin saves; journaled as Jeff: {st} {rows[-1:]}")
+        us.sign_out(tok, "rack", local=True)
+    finally:
+        R.close()
+        shutil.rmtree(notes, ignore_errors=True)
+    page = screen_text()
+    for el in ('id="booth-card"', 'id="booth-dev"', 'id="booth-a"',
+               'id="booth-b"', 'id="booth-line"', 'id="booth-save"',
+               'id="booth-test"', '"/api/remote/booth-speaker"',
+               "None: booth speaker off",
+               "Channel B: none, one channel only",
+               "Channel A: choose a channel", 'id="booth-ok"'):
+        check(el in page, f"the page has {el}")
+    check("boothChannels(0, 0)" in page and
+          'boothChannels(ch[0] || 0, ch[1] || 0)' in page,
+          "no channel is picked for the operator: a new device starts on "
+          "choose a channel")
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "OPERATOR.md"), encoding="utf-8") as fh:
+        op = " ".join(fh.read().split())
+    with open(os.path.join(here, "ltcplay", "boothaudio.py"),
+              encoding="utf-8") as fh:
+        src = fh.read()
+    check("Settings tab, **Booth speaker, on this machine**" in op and
+          "no screen has a button for it yet" not in op and
+          "is not read by an older build" in op and
+          "never plays on a PC without flamesafe" in op and
+          "silent until its next repeat" in op and
+          "written by hand until the Settings screen" not in src,
+          "OPERATOR.md and boothaudio.py say the Settings tab sets it")
+    print("  ok")
 
 # Jeff's recorded booth notes (2026-10-28), in the order he listed them.
 _BOOTH_NOTE_FILES = (
@@ -83068,7 +85003,8 @@ def test_config_watch_on_the_status_and_reload_engine():
                               "flamesafe": True},
               f"between shows, nothing armed: offered: {v}")
         code, body = rm.get("/api/remote/restart-check", rack)[:2]
-        check(code == 200 and body == {"refusal": ""},
+        check(code == 200 and body["refusal"] == "" and
+              body["page"] == "" and body["engine"] == RM.ENGINE_ID,
               f"the supervisor's check agrees: {code} {body}")
         code, body = rm.get("/api/remote/restart-check", ipad)[:2]
         check(code == 403, f"never from the network: {code}")
@@ -83102,9 +85038,9 @@ def test_config_watch_on_the_status_and_reload_engine():
         rm.flame_status = _ty.SimpleNamespace(view=lambda: 1 / 0)
         refused("could not be checked", "when the check itself fails")
         rm.flame_status = fs_was
-        rm.show_busy_for_reload = lambda: True
+        rm.show_busy_reason = lambda: "A show is running."
         refused("show is running", "while a show runs")
-        del rm.show_busy_for_reload
+        del rm.show_busy_reason
         rm.announce = _ty.SimpleNamespace(playing="delayed")
         refused("announcement", "while an announcement plays")
         rm.announce = None
@@ -83129,6 +85065,7 @@ def test_config_watch_on_the_status_and_reload_engine():
         code, body = rm.reload_engine({})
         check(code == 200 and os.path.exists(
                   os.path.join(d, RM.RESTART_ENGINE_FILE)) and
+              body.get("engine") == RM.ENGINE_ID and
               "flamesafe" in body["text"] and _cfg_dashes(body["text"]),
               f"pressed: the supervisor is asked to restart the engine: "
               f"{code} {body}")
@@ -83161,6 +85098,330 @@ def test_config_watch_on_the_status_and_reload_engine():
     finally:
         RM.settings_folder = real_folder
         _sh.rmtree(d, ignore_errors=True)
+    print("  ok")
+
+
+def test_restart_engine_between_shows_on_hold():
+    section("Restart the engine (2026-11-19): the schedule on Hold with no "
+            "show running restarts (a Show ctrl off ends on Hold); a show "
+            "running or held mid-run refuses, and so does show control on, "
+            "a start under way, a schedule that cannot be read and a state "
+            "not known, each with a true sentence that says what to do; "
+            "the supervisor's restart-check says the same; the rack screen "
+            "says why in words beside the button and waits for the engine "
+            "after a press")
+    import shutil
+    import types as _ty
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    R = _RemoteRig(S)
+    rm = R.remote
+    rack = RM.Ctx(True, "127.0.0.1")
+    rm.flame_status = _ty.SimpleNamespace(view=lambda: {
+        "stale": False, "groups": [{"name": "wave flamer",
+                                    "armed": "disarmed", "wanted": False}]})
+
+    def said(what, word=None):
+        why = rm.restart_refusal()
+        code, body = rm.get("/api/remote/restart-check", rack)[:2]
+        ok = code == 200 and body.get("refusal") == why and \
+            body.get("engine") == RM.ENGINE_ID and _cfg_dashes(why)
+        if word is None:
+            check(ok and why == "", f"{what}: a restart may go: {why!r}")
+        else:
+            check(ok and word in why, f"{what}: refused, {word!r}: {why!r}")
+        return why
+    try:
+        said("between shows, show control off")
+        _live_show(R)
+        said("a show running", "A show is running")
+        R.svc.operator_press("hold", "Andy", "iPad", confirmed=True)
+        R.settle()
+        check(R.svc.machine.state == S.PAUSED, "setup: show 1 held mid-run")
+        why = said("a show held mid-run", "held mid-run")
+        check("running" not in why.split(".")[0],
+              f"and it is not called running: {why!r}")
+        # Show ctrl off: every step of a Stop but no Hold of its own (#277):
+        # the held show ends onto the operator's Hold that was on (not a
+        # Stop's Hold), then show control off.
+        code, out = rm.run_off("Andy", "Rack screen")
+        R.settle()
+        check(code == 200 and R.svc.machine.state == S.HOLD and
+              not R.svc.machine.stop_hold and not R.svc.machine.running,
+              f"setup: Show ctrl off ends on Hold: {code} "
+              f"{R.svc.machine.state}")
+        said("on Hold after Show ctrl off, no show running")
+        # Show control on (a show file playing all night) refuses, with
+        # the true reason: not "a show is running".
+        rm.control.session = _ty.SimpleNamespace(running=True)
+        why = said("on Hold with show control on", "Show control is on")
+        check("Show ctrl off" in why and "show is running" not in why,
+              f"it says what to press: {why!r}")
+        rm.control.session = None
+        rm.control._starting = True
+        said("a show file starting", "starting")
+        rm.control._starting = False
+        said("clear again")
+        # Fail closed: a schedule that cannot be read, a state not known,
+        # a HOLD that still names a running show.
+        real = R.svc.state_view
+        R.svc.state_view = lambda *a, **k: 1 / 0
+        said("a schedule that cannot be read", "could not be read")
+        R.svc.state_view = lambda *a, **k: {"ok": True, "state": "WEIRD"}
+        said("a state not known", "WEIRD")
+        R.svc.state_view = lambda *a, **k: {"ok": True, "state": None}
+        said("no state from a loaded schedule", "not one")
+        R.svc.state_view = lambda *a, **k: {"ok": True, "state": "HOLD",
+                                            "running": 2}
+        said("a Hold that names a running show", "held mid-run")
+        R.svc.state_view = lambda *a, **k: {"ok": False, "state": None}
+        said("no schedule loaded at all")
+        R.svc.state_view = real
+        check(rm.show_busy_for_reload() is False,
+              "the announcements' own check agrees")
+        # The press itself at a moment it is refused: said, nothing asked.
+        d = tempfile.mkdtemp()
+        real_folder = RM.settings_folder
+        RM.settings_folder = lambda: d
+        try:
+            with open(os.path.join(d, RM.SHOWPC_FILE), "w") as fh:
+                fh.write("{}")
+            rm.control.session = _ty.SimpleNamespace(running=True)
+            code, body = rm.reload_engine({})
+            check(code == 409 and "Show control is on" in body["error"] and
+                  not os.path.exists(os.path.join(d,
+                                                  RM.RESTART_ENGINE_FILE)),
+                  f"pressed with show control on: refused, said, nothing "
+                  f"asked: {code} {body}")
+            code, ck = rm.get("/api/remote/restart-check", rack)[:2]
+            check(ck["page"] == body["error"].split("Not reloaded: ")[1]
+                  .split(" Nothing was")[0],
+                  f"the page's reason is the press's: {ck}")
+            rm.control.session = None
+            code, body = rm.reload_engine({})
+            check(code == 200 and body["engine"] == RM.ENGINE_ID and
+                  os.path.exists(os.path.join(d, RM.RESTART_ENGINE_FILE)),
+                  f"on Hold, show control off: asked: {code} {body}")
+        finally:
+            RM.settings_folder = real_folder
+            shutil.rmtree(d, ignore_errors=True)
+    finally:
+        R.close()
+    # The rack screen: the reason in words beside each button, never only
+    # a tooltip, and a press that waits for the engine to answer again.
+    two = _ui2_pages()[1]
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "ltcplay", "web", "tailscale_card.js"),
+              encoding="utf-8") as fh:
+        card = fh.read()
+    check('<div class="pline warn" id="net-restart-why" role="status" '
+          'hidden></div>' in two and
+          '<div class="pline warn" id="ts-restart-why" role="status" '
+          'hidden></div>' in card and
+          'restartWhy("ts-restart", "ts-restart-why", r.offered, r.why);'
+          in card and
+          'pressRestart(t => setText($("ts-msg"), t), loadTailscale);'
+          in card and
+          'pressRestart(t => { $("cfg-msg").textContent = t; }, () => {});'
+          in two and
+          '" Reload engine is not offered now: " + r.why' in two,
+          "each Restart the engine and Reload engine says why it waits in "
+          "words, and every press waits for the engine")
+    import shutil as _sh2
+    node = _sh2.which("node")
+    fns = [_js_function(two, n) for n in ("restartWhy", "restartCheck",
+                                          "pressRestart")]
+    if not node or not all(fns):
+        check(not IN_CI and all(fns), "node is missing on this CI runner")
+        print("  ok")
+        return
+    js = r"""
+let NOW = 0; Date.now = () => NOW;
+const setTimeout = (f, ms) => { NOW += ms; f(); };
+const els = {};
+function El(){ this.hidden = false; this._t = ""; this.dataset = {}; this.title = ""; }
+Object.defineProperty(El.prototype, "textContent", {get(){ return this._t; }, set(v){ this._t = String(v); }});
+El.prototype.insertAdjacentHTML = function(){ this.icon = true; };
+const $ = id => els[id] || (els[id] = new El());
+let CHECKS = [], POST = null;
+async function getJSON(){ const c = CHECKS.shift(); if(c === undefined || c === null) throw new Error("down"); return c; }
+async function post(){ if(POST instanceof Error) throw POST; return POST; }
+let RESTART_WAIT = false;
+""" + "\n".join(fns) + r"""
+(async () => {
+  const out = {};
+  $("b").hidden = false;
+  restartWhy("b", "w", false, "Show control is on. Turn show control off first (Show ctrl off), then restart.");
+  out.why = [$("w").hidden, $("w").textContent, !!$("w").icon];
+  restartWhy("b", "w", true, "");
+  out.clear = [$("w").hidden, $("w").textContent];
+  restartWhy("b", "w", true, "", false);
+  out.perm = $("w").textContent;
+  const says = [];
+  let redrawn = 0;
+  POST = new Error("Not reloaded: A show is held mid-run. Nothing was changed.");
+  await pressRestart(t => says.push(t), () => redrawn++);
+  out.refused = [says.slice(), redrawn];
+  says.length = 0; redrawn = 0; NOW = 0;
+  POST = {ok:true, engine:"old", text:"LTC Player restarts the engine now."};
+  CHECKS = [null, null, {engine:"old", page:""}, null, {engine:"new", page:""}];
+  await pressRestart(t => says.push(t), () => redrawn++);
+  out.restarted = [says.slice(), redrawn];
+  says.length = 0; redrawn = 0; NOW = 0;
+  CHECKS = Array(30).fill({engine:"old", page:"A flame group is armed. Disarm every group first."});
+  await pressRestart(t => says.push(t), () => redrawn++);
+  out.notDone = [says.slice(), redrawn];
+  console.log(JSON.stringify(out));
+})();
+"""
+    import subprocess as _sp
+    p = _sp.run([node, "-e", js], capture_output=True, text=True,
+                timeout=60)
+    try:
+        m = json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception:                            # noqa: BLE001
+        check(False, f"the page's restart words ran: {p.stdout!r} "
+                     f"{p.stderr!r}")
+        print("  ok")
+        return
+    check(m["why"] == [False, "Not now: Show control is on. Turn show "
+                              "control off first (Show ctrl off), then "
+                              "restart.", True],
+          f"refused: the reason in words, a warning sign beside it: "
+          f"{m['why']}")
+    check(m["clear"] == [True, ""] and "Settings permission" in m["perm"],
+          f"offered: no line; no permission: said: {m}")
+    check(m["refused"] == [["Not reloaded: A show is held mid-run. Nothing "
+                            "was changed."], 1],
+          f"a press refused at press time says why and redraws: "
+          f"{m['refused']}")
+    check(m["restarted"][1] == 1 and
+          m["restarted"][0][-1] == "The engine restarted and answers again.",
+          f"a press that went waits for a new engine, then redraws: "
+          f"{m['restarted']}")
+    check(m["notDone"][1] == 1 and
+          m["notDone"][0][-1].startswith("The engine did not restart.") and
+          "Disarm every group" in m["notDone"][0][-1],
+          f"a restart that never happened is said, with why: "
+          f"{m['notDone']}")
+    for t in sum((m[k][0] for k in ("refused", "restarted", "notDone")),
+                 []) + [m["why"][1], m["perm"]]:
+        check(_cfg_dashes(t), f"no dashes: {t!r}")
+    print("  ok")
+
+
+def test_show_ctrl_off_mid_show_then_restart_and_booth_test_note():
+    section("Show ctrl off during a running show (#277 with #279 and #280): "
+            "the schedule is left between shows with no Hold, then Restart "
+            "the engine and the booth speaker's Test note are both allowed "
+            "(every group disarmed); with show control on, a show running "
+            "or the schedule unreadable both are refused with the true "
+            "reason, the booth's said for the booth press, never a "
+            "restart's words")
+    import types as _ty
+    n = _run_off_night()
+    if n is None:
+        return
+    S, svc, c, rm = n.S, n.svc, n.c, n.rm
+    rm.flame_status = _ty.SimpleNamespace(view=lambda: {
+        "stale": False, "groups": [{"name": "wave flamer",
+                                    "armed": "disarmed", "wanted": False}]})
+
+    def booth():
+        return rm._booth_show_refusal(), rm._booth_test_refusal()
+
+    def plain(t, where):
+        _no_dashes(t, where)
+        check("restart" not in t.lower(),
+              f"{where}: no restart words for a booth press: {t!r}")
+    _fi_walk(n, 18, 1)
+    _confirm(S, svc)
+    _settle(svc, c)
+    check(svc.machine.state == S.SHOW, f"setup: show 1 is live: "
+                                       f"{svc.machine.state}")
+    # A show running: both refused, the true reason.
+    why = rm.restart_refusal()
+    save, test = booth()
+    check(why.startswith("A show is running.") and
+          save == "A show is running. Change the booth speaker between "
+                  "shows, after it ends." and
+          test == "A show is running. Play the Test note between shows, "
+                  "after it ends.",
+          f"a show running: refused, said for each press: {why!r} "
+          f"{save!r} {test!r}")
+    plain(save, "booth save, show running")
+    plain(test, "booth test, show running")
+    n.now[0] = _den(S, 18, 5)
+    code, out = rm.run_off("Andy", "Rack screen")
+    m = svc.machine
+    check(code == 200 and m.state == S.STANDBY and not m.stop_hold and
+          m.running == 0 and n.control.session is None,
+          f"Show ctrl off: between shows, no Hold, no Stop's Hold: {code} "
+          f"{m.state} {m.stop_hold}")
+    check(rm.restart_refusal() == "" and booth() == ("", ""),
+          f"between shows, show control off, all disarmed: a restart and "
+          f"the Test note may go: {rm.restart_refusal()!r} {booth()}")
+    # Show control on again (a show file playing): both refused, Show
+    # control is on, never "a show is running".
+    n.control.session = _ty.SimpleNamespace(running=True)
+    try:
+        why = rm.restart_refusal()
+        save, test = booth()
+        check(why == "Show control is on. Turn show control off first "
+                     "(Show ctrl off), then restart." and
+              save == "Show control is on. Turn show control off first "
+                      "(Show ctrl off), then change the booth speaker." and
+              test == "Show control is on. Turn show control off first "
+                      "(Show ctrl off), then play the Test note.",
+              f"show control on: the true reason for each press: {why!r} "
+              f"{save!r} {test!r}")
+        plain(save, "booth save, show control on")
+        plain(test, "booth test, show control on")
+    finally:
+        n.control.session = None
+    # The schedule unreadable: fails closed, said as it is.
+    real = svc.state_view
+    svc.state_view = lambda *a, **k: 1 / 0
+    try:
+        save, test = booth()
+        check(save.startswith("The schedule could not be read "
+                              "(ZeroDivisionError)") and
+              save == test and "show is running" in save and
+              not save.startswith("A show is running"),
+              f"the schedule unreadable: refused, and said so (not 'a "
+              f"show is running'): {save!r} {test!r}")
+    finally:
+        svc.state_view = real
+    # A flame group armed: the Test note refused in words for it.
+    rm.flame_status = _ty.SimpleNamespace(view=lambda: {
+        "stale": False, "groups": [{"name": "wave flamer",
+                                    "armed": "armed", "wanted": True}]})
+    save, test = booth()
+    check(save == "" and test == "A flame group is armed. Disarm every "
+                                 "group first.",
+          f"a group armed: the save is fine, the Test note refused: "
+          f"{save!r} {test!r}")
+    # Every restart sentence, said for each booth press.
+    for w in ("A show is held mid-run. Restart the engine only after that "
+              "show has ended.",
+              "The schedule's state (WEIRD) is not one a restart is known "
+              "to be safe in. Try again in a moment.",
+              "A show file is starting. Wait, then turn show control off "
+              "before you restart.",
+              "A show file is playing. Stop it first, then restart.",
+              "A rehearsal is on. Press End rehearsal first, then restart.",
+              "Whether the engine may restart could not be checked "
+              "(KeyError). Try again in a moment.",
+              "Something new. Restarting waits."):
+        for act in ("change the booth speaker", "play the Test note"):
+            t = rm._booth_words(w, act)
+            plain(t, f"{w[:30]} for {act}")
+            check(t.split(".")[0] == w.split(".")[0] or
+                  t.startswith("Whether you may") or
+                  t.startswith("The schedule's state"),
+                  f"the reason is kept: {w!r} -> {t!r}")
     print("  ok")
 
 
@@ -83272,8 +85533,9 @@ def test_config_watch_supervisor_and_rack_screen_note():
             _get(self)
         _H.do_GET = do_get
         busy, why = SUP.engine_restart_blocked(port)
-        check(busy and "show is running" in why,
-              f"a show running is refused first: {busy} {why!r}")
+        check(busy and "show control" in why and _cfg_dashes(why),
+              f"a show file running (show control on) is refused first: "
+              f"{busy} {why!r}")
         state[0] = b'{"starting": true}'
         check(SUP.engine_restart_blocked(port)[0], "and one starting")
         state[0] = b'{}'
@@ -84811,6 +87073,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/announce-stop", "/api/remote/announce-test-tone",
     "/api/remote/arm-hold", "/api/remote/arm-release",
     "/api/remote/arrangement", "/api/remote/audit-verify", "/api/remote/awc",
+    "/api/remote/booth-speaker",
     "/api/remote/awc:", "/api/remote/checklist-",
     "/api/remote/checklist-export", "/api/remote/checklist-note",
     "/api/remote/checklist-pdf", "/api/remote/checklist-tally-retry",
@@ -84827,6 +87090,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/fuel-pump", "/api/remote/fuel-refill",
     "/api/remote/fuel-shows",
     "/api/remote/fuel-undo", "/api/remote/group-disarm",
+    "/api/remote/haze-fluid",
     "/api/remote/haze-refill", "/api/remote/haze-undo", "/api/remote/hazer",
     "/api/remote/hazer-level", "/api/remote/hazer-test",
     "/api/remote/hazers-arm-all", "/api/remote/hazers-off",
@@ -100037,7 +102301,10 @@ def test_haze_fluid_refill_settings_and_the_record():
               v["big"] == "99% left" and v["color"] == "green" and
               v["words"] == ("60 s of haze (60 s at full output) and 0 "
                              "shows since the refill. About 2.49 L left of "
-                             "2.5 L (99 percent)."),
+                             "2.5 L (99 percent). Estimating from the set "
+                             "numbers until a tank is learned.") and
+              v["basis"] == "estimating" and
+              v["sub"] == "Estimating (from the set numbers)",
               f"flow and tank set: litres and percent: {v['big']} "
               f"{v['words']!r}")
         R.write_fluid({"Hazer 1": {"litres_per_hour": 0.6}})
@@ -100566,6 +102833,790 @@ def test_haze_fluid_routes_wiring_and_audit():
     print("  ok")
 
 
+def _hzl_burn(R, name, full_s, unsure_s=0.0):
+    """`full_s` seconds of haze at full output on hazer `name` (and
+    `unsure_s` not sure), straight into the record: the counting itself
+    is the tests above."""
+    u = R.tr._unit(name)
+    u["on"]["other"] += full_s
+    u["full"]["other"] += full_s
+    u["unsure_s"] += unsure_s
+
+
+def _hzl_tanks(R, name, tanks):
+    """A refill, then each of `tanks` (full output seconds) and a refill."""
+    R.tr.refill(name, "Andy", "operator")
+    for t in tanks:
+        _hzl_burn(R, name, t)
+        R.tr.refill(name, "Andy", "operator")
+
+
+def test_haze_fluid_learns_the_tank_like_flame_fuel():
+    section("haze fluid learns how long each hazer's tank lasts (Jeff, "
+            "2026-11-19), the flame fuel learner's rules: the full output "
+            "seconds between two refills is a tank; 0 tanks: the set numbers "
+            "(estimating) or haze time only; under 3 the SMALLEST; from 3 "
+            "the median of the last 5 with every far off one left out (and "
+            "'Learned from N tanks' counts only those used); a tank much "
+            "longer than the rest is said; percent left never above 100 or "
+            "below 0; not sure counts at full output; an Undo takes back "
+            "what its refill taught; Reset learning keeps the refills; shows "
+            "left from the last full shows (3 first)")
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        # 0 tanks, nothing set: haze time only, as before.
+        R.tr.refill("Hazer 1", "Andy")
+        _hzl_burn(R, "Hazer 1", 600)
+        v = R.h("Hazer 1")
+        check(v["basis"] == "" and v["tank_s"] is None and
+              v["percent"] is None and v["sub"] == "" and
+              v["big"] == "10.0 min haze" and v["tanks_learned"] == 0,
+              f"0 tanks, nothing set: haze time only: {v['big']} "
+              f"{v['basis']!r}")
+        # 0 tanks, the set numbers: estimating (2.5 L at 0.6 L an hour is
+        # 15000 s at full output).
+        R.write_fluid({"Hazer 1": {"litres_per_hour": 0.6,
+                                   "tank_litres": 2.5}})
+        v = R.h("Hazer 1")
+        check(v["basis"] == "estimating" and v["tank_s"] == 15000.0 and
+              v["percent"] == 96 and v["big"] == "96% left" and
+              v["sub"] == "Estimating (from the set numbers)" and
+              "Estimating from the set numbers" in v["words"],
+              f"0 tanks with the set numbers: estimating: {v['percent']} "
+              f"{v['sub']!r}")
+        # 1 tank: learned, still learning, over the set numbers.
+        R.tr.refill("Hazer 1", "Andy")
+        v = R.h("Hazer 1")
+        check(v["basis"] == "learned" and v["tank_s"] == 600.0 and
+              v["tanks_learned"] == 1 and v["learn_firm"] is False and
+              v["percent"] == 100 and
+              v["sub"] == "Learned from 1 tank, still learning" and
+              v["tank_litres_learned"] == 0.1 and
+              "Learned from 1 tank, still learning." in v["words"],
+              f"1 tank: learned from it, still learning: {v['tank_s']} "
+              f"{v['sub']!r} {v['words']!r}")
+        # 2 tanks: the SMALLEST, never the newest or the bigger.
+        _hzl_burn(R, "Hazer 1", 1300)
+        R.tr.refill("Hazer 1", "Andy")
+        v = R.h("Hazer 1")
+        check(v["tank_s"] == 600.0 and v["tanks_learned"] == 2 and
+              not v["learn_firm"],
+              f"2 tanks (600, then 1300): the smallest, 600: {v['tank_s']}")
+        # 3 tanks: the median, firm.
+        _hzl_burn(R, "Hazer 1", 1100)
+        R.tr.refill("Hazer 1", "Andy")
+        v = R.h("Hazer 1")
+        check(v["tank_s"] == 1100.0 and v["tanks_learned"] == 3 and
+              v["learn_firm"] is True and
+              v["sub"] == "Learned from 3 tanks" and not v["suspect"],
+              f"3 tanks (600, 1300, 1100): the median, 1100: {v['tank_s']} "
+              f"{v['sub']!r}")
+        # 6 tanks: the median of the last 5, the one far off left out,
+        # and said as a probably missed refill.
+        for t in (900, 1200, 5000):
+            _hzl_burn(R, "Hazer 1", t)
+            R.tr.refill("Hazer 1", "Andy")
+        v = R.h("Hazer 1")
+        check(v["tank_s"] == 1150.0 and v["tanks_learned"] == 4 and
+              v["sub"].startswith("Learned from 4 tanks") and
+              v["learn_firm"] and v["suspect"] and
+              "a Refilled press was probably missed" in v["words"],
+              f"6 tanks (600, 1300, 1100, 900, 1200, 5000): the last 5 "
+              f"without 5000, median 1150, learned from the 4 used (not "
+              f"6), and the long one said: {v['tank_s']} "
+              f"{v['tanks_learned']} {v['suspect']}")
+        # Percent left: 100 less the haze since the refill over the tank,
+        # floored, never below 0.
+        _hzl_burn(R, "Hazer 1", 575)
+        v = R.h("Hazer 1")
+        check(v["percent"] == 50 and v["color"] == "green",
+              f"575 s of a 1150 s tank: 50 percent: {v['percent']}")
+        # Not sure seconds count at full output: emptier, never fuller.
+        _hzl_burn(R, "Hazer 1", 0, unsure_s=115)
+        v = R.h("Hazer 1")
+        check(v["percent"] == 40 and v["unsure_s"] == 115.0,
+              f"115 s not sure takes 10 percent more: {v['percent']}")
+        _hzl_burn(R, "Hazer 1", 5000)
+        v = R.h("Hazer 1")
+        check(v["percent"] == 0 and v["color"] == "red" and
+              v["refill_soon"] and v["big"] == "0% left",
+              f"more than a tank: 0 percent, never below: {v['percent']}")
+        # An Undo of a refill takes back the tanks it taught: the refill
+        # between 1200 and 5000 undone, they are one tank of 6200, far
+        # off, so the median of 600, 1300, 1100 and 900.
+        u = R.u("Hazer 1")
+        live = [r for r in u["refills"] if not r.get("undone")]
+        ok, _t = R.tr.undo(live[-2]["id"], "Jeff")
+        v = R.h("Hazer 1")
+        check(ok and v["tanks_learned"] == 4 and v["tank_s"] == 1000.0,
+              f"Undo of a refill: the two tanks it split are one again "
+              f"(1200 + 5000): {v['tanks_learned']} {v['tank_s']}")
+        check(all(0 <= (R.h(n)["percent"] or 0) <= 100
+                  for n in ("Hazer 1", "Hazer 2")),
+              "percent left is always 0 to 100")
+        # Reset learning: the refills stay; learning starts at the next.
+        n_ref = len(R.u("Hazer 1")["refills"])
+        ok, text, had = R.tr.reset_learning("Hazer 1", "Jeff")
+        v = R.h("Hazer 1")
+        check(ok and had == 4 and len(R.u("Hazer 1")["refills"]) == n_ref
+              and v["basis"] == "estimating" and v["tank_s"] == 15000.0 and
+              text == ("Hazer 1: learning starts again from the next "
+                       "refill. The refills are kept."),
+              f"Reset learning keeps every refill and goes back to the set "
+              f"numbers: {text} {v['basis']}")
+        R.tr.refill("Hazer 1", "Andy")
+        v = R.h("Hazer 1")
+        check(v["basis"] == "estimating",
+              "one refill after a reset: still nothing learned (the tank "
+              "before the reset is never a tank)")
+        _hzl_burn(R, "Hazer 1", 800)
+        R.tr.refill("Hazer 1", "Andy")
+        v = R.h("Hazer 1")
+        check(v["basis"] == "learned" and v["tanks_learned"] == 1 and
+              v["tank_s"] == 800.0, f"then learned again: {v['tank_s']}")
+        R.reopen()
+        v = R.h("Hazer 1")
+        check(v["tanks_learned"] == 1 and v["tank_s"] == 800.0,
+              "the reset is on disk: the same after a restart")
+        # A double press (under MIN_TANK_S) is never a tank.
+        _hzl_burn(R, "Hazer 1", FH.MIN_TANK_S - 1)
+        R.tr.refill("Hazer 1", "Andy")
+        check(R.h("Hazer 1")["tank_s"] == 800.0,
+              "a refill pressed twice is never learned as a tiny tank")
+        # Shows left: the average full output haze of the last full shows
+        # (a show is full at 90 percent of the longest), 3 first.
+        u = R.u("Hazer 1")
+        u["show_burns"] = [[400.0, 80.0], [400.0, 80.0]]
+        check(R.h("Hazer 1")["shows_left"] is None,
+              "2 full shows: no shows left yet")
+        u["show_burns"] += [[100.0, 10.0], [390.0, 80.0]]
+        v = R.h("Hazer 1")
+        check(v["shows_left"] == 10 and v["avg_show_full_s"] == 80.0 and
+              v["sub"] == "Learned from 1 tank, still learning. 10 shows "
+                          "left" and "About 10 shows left." in v["words"],
+              f"3 full shows of 80 s (a short one left out), 800 s left: "
+              f"10 shows left: {v['shows_left']} {v['sub']!r}")
+        _hzl_burn(R, "Hazer 1", 790)
+        v = R.h("Hazer 1")
+        check(v["shows_left"] == 0 and v["refill_soon"],
+              f"under one show left: 0, and a refill is due: "
+              f"{v['shows_left']} {v['refill_soon']}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_set_level_is_a_correction():
+    section("haze fluid: Set level now (an admin, after looking at the "
+            "tank) re-bases the level as a CORRECTION: who, the old and the "
+            "new percent are kept and said; it is never a refill, never "
+            "usage and never teaches the learner a tank; a whole percent 0 "
+            "to 100 only; refused with no tank size; kept across a restart")
+    from ltcplay import fuelhaze as FH
+    R = _HazeRig()
+    try:
+        _hzl_tanks(R, "Hazer 1", [1000])
+        _hzl_burn(R, "Hazer 1", 200)
+        u = R.u("Hazer 1")
+        used = dict(u["full"])
+        n_ref = len(u["refills"])
+        check(R.h("Hazer 1")["percent"] == 80, "80 percent before")
+        ok, text, ch = R.tr.set_level("Hazer 1", 50, "Jeff", "admin",
+                                      "Rack screen")
+        v = R.h("Hazer 1")
+        c = u["corrections"][-1]
+        check(ok and ch == (80, 50) and
+              text == "Hazer 1: level set to 50 percent." and
+              v["percent"] == 50 and v["level_set"]["who"] == "Jeff" and
+              c["who"] == "Jeff" and c["old_pct"] == 80 and
+              c["new_pct"] == 50 and c["screen"] == "Rack screen",
+              f"set to 50: the level is 50, who and old and new kept: "
+              f"{text} {ch} {c}")
+        check(("Haze: Jeff set the level of Hazer 1 from 80 percent to 50 "
+               "percent (a correction, not a refill).", False) in R.lines,
+              "journaled with who, old and new")
+        check(len(u["refills"]) == n_ref and u["full"] == used and
+              v["tank_s"] == 1000.0 and v["tanks_learned"] == 1 and
+              v["refills"] == n_ref,
+              f"never a refill, never usage, never a tank: {v['tank_s']} "
+              f"{v['refills']}")
+        _hzl_burn(R, "Hazer 1", 100)
+        check(R.h("Hazer 1")["percent"] == 40,
+              "the level counts down from the correction")
+        R.tr.refill("Hazer 1", "Andy")
+        v = R.h("Hazer 1")
+        check(v["percent"] == 100 and v["tanks_learned"] == 2 and
+              v["tank_s"] == 300.0 and v["level_set"] is None,
+              f"the next refill: 100 percent, and the tank it taught is "
+              f"the whole 300 s between the two refills, never split at "
+              f"the correction: {v['tank_s']} {v['tanks_learned']}")
+        for bad in (101, -1, 50.5, True, "50", None, float("nan")):
+            ok, text, _c = R.tr.set_level("Hazer 1", bad, "Jeff")
+            check(not ok and text == ("The level is a whole percent, 0 to "
+                                      "100. Nothing was changed."),
+                  f"{bad!r}: refused: {text}")
+        ok, text, _c = R.tr.set_level("Hazer 2", 50, "Jeff")
+        check(not ok and "no tank size yet" in text and
+              "Nothing was changed." in text and
+              not R.u("Hazer 2")["corrections"],
+              f"no tank size: refused, nothing kept: {text}")
+        ok, text, _c = R.tr.set_level("Hazer 9", 50, "Jeff")
+        check(not ok and "no hazer called" in text, text)
+        # Before any refill, with the set numbers: a correction gives a
+        # level where there was none.
+        R.write_fluid({"Hazer 3": {"litres_per_hour": 1.0,
+                                   "tank_litres": 1.0}})
+        check(R.h("Hazer 3")["percent"] is None, "no refill: no level")
+        ok, text, ch = R.tr.set_level("Hazer 3", 70, "Jeff")
+        check(ok and ch == (None, 70) and R.h("Hazer 3")["percent"] == 70
+              and R.h("Hazer 3")["big"] == "70% left",
+              f"Set level now with no refill: from not known to 70: {ch}")
+        R.tr.set_level("Hazer 1", 100, "Jeff")
+        check(R.h("Hazer 1")["percent"] == 100, "100 is 100, never over")
+        R.reopen()
+        u = R.u("Hazer 1")
+        check(u["corrections"][-1]["new_pct"] == 100 and
+              R.h("Hazer 3")["percent"] == 70 and
+              len(u["corrections"]) == 2,
+              "the corrections are on disk")
+        check(FH.read_record({"haze_format": 1, "hazers": {}})
+              ["next_id"] == 1, "an empty record reads")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_settings_card_route():
+    section("haze fluid: the Settings tab's Haze fluid card (POST "
+            "haze-fluid): the Settings row (an admin; an operator, a viewer "
+            "and nobody signed in are refused), the show PC only; numbers "
+            "checked with plain refusals and 'Nothing was changed.'; saved "
+            "into the fluid block with the hazer levels and other keys "
+            "kept, and a level save keeps the fluid block; a stale card is "
+            "refused; every change audit logged with who and the screen; "
+            "records only: the frames are byte for byte the same")
+    import json as _j
+    from ltcplay import fuelhaze as FH
+    from ltcplay import hazers as HZ
+    from ltcplay import remote as RM
+    from ltcplay import users as U
+    check("haze-fluid" in RM.POST_ROUTES and "haze-fluid" in RM.LOCAL_ONLY
+          and FH.FLUID_ROUTES == ("haze-fluid",) and
+          U.REMOTE_ROUTES["haze-fluid"] == "settings" and
+          U.classify("/api/remote/haze-fluid", {"action": "level"}) ==
+          "settings" and "the haze fluid settings" in
+          dict(U.PERMS)["settings"],
+          "the route: the Settings row, the show PC only")
+    check(U.DEFAULT_MATRIX["admin"]["settings"] and
+          not U.DEFAULT_MATRIX["operator"]["settings"] and
+          not U.DEFAULT_MATRIX["viewer"]["settings"],
+          "admin by default")
+    httpd, http, cookie_of, work = _accounts_engine(
+        seed=(("Jeff", "admin"), ("Vic", "viewer"), ("Ola", "operator")))
+    rem = httpd.remote
+    FR, R = _FuelRig(), _HazeRig()
+    lp = os.path.join(R.work, HZ.LEVELS_FILE)
+    try:
+        with open(lp, "w", encoding="utf-8") as fh:
+            _j.dump({"hazers_format": 1,
+                     "levels": {"Hazer 1": {"haze": 140, "fan": 255}},
+                     "notes": "kept"}, fh)
+        rem.fuel, rem.haze = FR.tr, R.tr
+        st, out, _h = http("/api/remote/fuel")
+        stamp = out["haze"]["stamp"]
+        check(st == 200 and isinstance(stamp, str) and len(stamp) == 16,
+              f"the fuel GET carries the card's stamp: {stamp!r}")
+        body = {"action": "save", "hazer": "Hazer 1",
+                "litres_per_hour": 0.6, "tank_litres": 2.5, "stamp": stamp}
+        st, out, _h = http("/api/remote/haze-fluid", body)
+        check(st == 403 and "Sign in" in out["error"] and
+              "fluid" not in _j.load(open(lp, encoding="utf-8")),
+              f"signed out: refused, nothing written: {out}")
+        ck = {}
+        for name in ("Vic", "Ola", "Jeff"):
+            st, out, h = http("/api/remote/signin", {
+                "name": name, "password": "",
+                "new_password": name.lower() + "-pw-123"})
+            ck[name] = cookie_of(h)
+        for name in ("Vic", "Ola"):
+            st, out, _h = http("/api/remote/haze-fluid", body,
+                               cookie=ck[name])
+            check(st == 403 and "fluid" not in _j.load(
+                open(lp, encoding="utf-8")),
+                  f"{name}: refused, nothing written: {st} {out}")
+        st, out, _h = http("/api/remote/haze-fluid", body, cookie=ck["Jeff"])
+        doc = _j.load(open(lp, encoding="utf-8"))
+        check(st == 200 and out["text"] == ("Hazer 1: haze fluid settings "
+                                            "saved.") and
+              doc["fluid"] == {"Hazer 1": {"litres_per_hour": 0.6,
+                                           "tank_litres": 2.5}} and
+              doc["levels"] == {"Hazer 1": {"haze": 140, "fan": 255}} and
+              doc["notes"] == "kept" and doc["hazers_format"] == 1,
+              f"an admin saves; the levels and other keys are kept: {doc}")
+        check(R.h("Hazer 1")["basis"] == "estimating" and
+              out["stamp"] != stamp, "and it is used at once")
+        # A stale card: drawn before that save.
+        st, out, _h = http("/api/remote/haze-fluid", dict(
+            body, litres_per_hour=9), cookie=ck["Jeff"])
+        check(st == 409 and out["error"] == (
+            "The haze fluid settings changed since this page drew them. "
+            "Look again. Nothing was changed.") and
+              _j.load(open(lp, encoding="utf-8"))["fluid"]["Hazer 1"]
+              ["litres_per_hour"] == 0.6,
+              f"a stale card never writes over a newer change: {out}")
+        # Haze on a hazer never seen before does not make the card stale;
+        # a hand edit of the file since it was drawn does.
+        stamp = R.tr.stamp()
+        R.frames(1)
+        R.frames(40, haze=((84, 255),))
+        check(R.u("Hazer 3") is not None and R.tr.stamp() == stamp,
+              "a hazer hazing for the first time: the card is not stale")
+        doc = _j.load(open(lp, encoding="utf-8"))
+        doc["fluid"]["Hazer 1"]["tank_litres"] = 3.0
+        with open(lp, "w", encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        st, out, _h = http("/api/remote/haze-fluid", dict(
+            body, stamp=stamp, tank_litres=4.0), cookie=ck["Jeff"])
+        check(st == 409 and _j.load(open(lp, encoding="utf-8"))["fluid"]
+              ["Hazer 1"]["tank_litres"] == 3.0,
+              f"a hand edit since the card was drawn: refused: {out}")
+        doc["fluid"]["Hazer 1"]["tank_litres"] = 2.5
+        with open(lp, "w", encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        R.tr._fluid_stamp = None
+        R.tr._reload_fluid()
+        stamp = R.tr.stamp()
+        for bad, said in (({"litres_per_hour": 0}, "over 0 and up to 50"),
+                          ({"litres_per_hour": 51}, "over 0 and up to 50"),
+                          ({"tank_litres": 501}, "over 0 and up to 500"),
+                          ({"tank_litres": "two"}, "are numbers"),
+                          ({"litres_per_hour": True}, "are numbers")):
+            st, out, _h = http("/api/remote/haze-fluid", dict(
+                body, stamp=stamp, **bad), cookie=ck["Jeff"])
+            check(st == 400 and said in out["error"] and
+                  out["error"].endswith("Nothing was changed.") and
+                  _j.load(open(lp, encoding="utf-8"))["fluid"] ==
+                  {"Hazer 1": {"litres_per_hour": 0.6, "tank_litres": 2.5}},
+                  f"{bad}: refused in plain words: {out}")
+        st, out, _h = http("/api/remote/haze-fluid", {
+            "action": "save", "hazer": "Hazer 1", "litres_per_hour": None,
+            "tank_litres": "", "stamp": stamp}, cookie=ck["Jeff"])
+        check(st == 200 and "fluid" not in _j.load(open(lp, encoding="utf-8"))
+              and R.h("Hazer 1")["basis"] == "",
+              f"both blank: cleared (the block goes when empty): {out}")
+        stamp = R.tr.stamp()
+        st, out, _h = http("/api/remote/haze-fluid", dict(
+            body, stamp=stamp), cookie=ck["Jeff"])
+        # A level set keeps the fluid block, and the card's save kept the
+        # level set before it (both through hazers.Levels).
+        lv = HZ.Levels(R.work, ["Hazer 1", "Hazer 2"])
+        lv.set("Hazer 2", haze=64)
+        doc = _j.load(open(lp, encoding="utf-8"))
+        check(doc["fluid"]["Hazer 1"]["tank_litres"] == 2.5 and
+              doc["levels"]["Hazer 2"] == {"haze": 64, "fan": 0} and
+              doc["levels"]["Hazer 1"] == {"haze": 140, "fan": 255},
+              f"a hazer level save keeps the fluid block: {doc}")
+        lv.set_other("fluid", {"Hazer 2": {"tank_litres": 1.0}})
+        doc = _j.load(open(lp, encoding="utf-8"))
+        check(doc["levels"]["Hazer 2"] == {"haze": 64, "fan": 0} and
+              lv.levels["Hazer 2"] == (64, 0),
+              "a fluid save keeps the levels on disk and in use")
+        lv.set_other("fluid", {"Hazer 1": {"litres_per_hour": 0.6,
+                                           "tank_litres": 2.5}})
+        bad = HZ.Levels(R.work, ["Hazer 1"])
+        with open(lp, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        try:
+            bad.set_other("fluid", {})
+            said = ""
+        except ValueError as e:
+            said = str(e)
+        check("could not be read" in said and
+              open(lp, encoding="utf-8").read() == "{not json",
+              f"a levels file that cannot be read is never written over: "
+              f"{said}")
+        with open(lp, "w", encoding="utf-8") as fh:
+            _j.dump({"hazers_format": 1,
+                     "levels": {"Hazer 1": {"haze": 140, "fan": 255}},
+                     "fluid": {"Hazer 1": {"litres_per_hour": 0.6,
+                                           "tank_litres": 2.5}}}, fh)
+        # Set level now and Reset learning.
+        R.tr.refill("Hazer 1", "Andy")
+        stamp = R.tr.stamp()
+        st, out, _h = http("/api/remote/haze-fluid", {
+            "action": "level", "hazer": "Hazer 1", "percent": 101,
+            "stamp": stamp}, cookie=ck["Jeff"])
+        check(st == 400 and "Nothing was changed." in out["error"],
+              f"101 percent: refused: {out}")
+        st, out, _h = http("/api/remote/haze-fluid", {
+            "action": "level", "hazer": "Hazer 1", "percent": 60,
+            "stamp": stamp}, cookie=ck["Jeff"])
+        check(st == 200 and R.h("Hazer 1")["percent"] == 60 and
+              R.u("Hazer 1")["corrections"][-1]["who"] == "Jeff",
+              f"an admin's Set level now: {out}")
+        st, out, _h = http("/api/remote/haze-fluid", {
+            "action": "level", "hazer": "Hazer 1", "percent": 30,
+            "stamp": stamp}, cookie=ck["Jeff"])
+        check(st == 409 and R.h("Hazer 1")["percent"] == 60,
+              f"a second Set level now from the same stale card: refused: "
+              f"{out}")
+        st, out, _h = http("/api/remote/haze-fluid", {
+            "action": "reset", "hazer": "Hazer 1",
+            "stamp": R.tr.stamp()}, cookie=ck["Jeff"])
+        check(st == 400 and "confirm" in out["error"], f"{out}")
+        st, out, _h = http("/api/remote/haze-fluid", {
+            "action": "reset", "hazer": "Hazer 1", "confirm": True,
+            "stamp": R.tr.stamp()}, cookie=ck["Jeff"])
+        check(st == 200 and R.u("Hazer 1")["learn_from"] > 0, f"{out}")
+        for name in ("Vic", "Ola"):
+            for act in ({"action": "level", "percent": 10},
+                        {"action": "reset", "confirm": True}):
+                st, out, _h = http("/api/remote/haze-fluid", dict(
+                    act, hazer="Hazer 1", stamp=R.tr.stamp()),
+                    cookie=ck[name])
+                check(st == 403, f"{name} {act['action']}: refused {st}")
+        rem.audit.flush(5.0)
+        lines = _audit_lines(rem.audit.folder)
+        mine = [l for l in lines if l["action"].startswith("haze-fluid-")]
+        check([l["action"] for l in mine] ==
+              ["haze-fluid-save", "haze-fluid-save", "haze-fluid-save",
+               "haze-fluid-level", "haze-fluid-reset"] and
+              all(l["user"] == "Jeff" and l["target"] == "hazer=Hazer 1" and
+                  l.get("screen") for l in mine) and
+              mine[3]["old"] == 100 and mine[3]["new"] == 60 and
+              mine[3]["correction"] is True,
+              f"every change audit logged with who, the screen, old and "
+              f"new: {mine}")
+        # From the show network: the show PC only, whoever signs in.
+        code, out, _x = rem.post("/api/remote/haze-fluid", {
+            "action": "level", "hazer": "Hazer 1", "percent": 10,
+            "stamp": R.tr.stamp()},
+            RM.Ctx(False, "10.20.0.44",
+                   session={"name": "Jeff", "role": "admin"}))
+        check(code == 403 and "show machine itself" in out["error"] and
+              R.h("Hazer 1")["percent"] == 60,
+              f"from an iPad: refused: {out}")
+        check(FH.route_fluid(None, {}, RM.Ctx(True, "127.0.0.1"),
+                             None)[0] == 404, "no tracker: 404")
+        # The route's own check, whatever the page or web.py let through.
+        for sess in ({"name": "Ola", "role": "operator"},
+                     {"name": "Vic", "role": "viewer"}, None):
+            code, out = FH.route_fluid(R.tr, {
+                "action": "level", "hazer": "Hazer 1", "percent": 10,
+                "stamp": R.tr.stamp()},
+                RM.Ctx(True, "127.0.0.1", session=sess), rem.users)
+            check(code == 403 and R.h("Hazer 1")["percent"] == 60 and
+                  "Nothing was changed." in out["error"],
+                  f"the route itself refuses {sess}: {out}")
+    finally:
+        rem.fuel = rem.haze = None
+        httpd.server_close()
+        FR.close()
+        R.close()
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    # Records only: the card's every action, between frames, leaves every
+    # frame byte for byte the frame of a link with no tracker at all.
+    R = _HazeRig()
+    try:
+        def mk():
+            link = _hz_link()
+            link.hazer_levels_set({"Hazer 1": (140, 255),
+                                   "Hazer 2": (64, 0)})
+            link.hazers_set({"Hazer 1", "Hazer 2"})
+            return link
+        plain, watched = mk(), mk()
+        R.tr._clock = watched._clock
+        R.tr.attach(watched)
+        here = RM.Ctx(True, "127.0.0.1")
+        acts = [{"action": "save", "hazer": "Hazer 1",
+                 "litres_per_hour": 0.6, "tank_litres": 2.5},
+                {"action": "level", "hazer": "Hazer 1", "percent": 40},
+                {"action": "reset", "hazer": "Hazer 1", "confirm": True}]
+        codes = []
+        for a in acts:
+            for _ in range(5):
+                watched.send_frame()
+                plain.send_frame()
+            R.tr.pump()
+            R.tr.refill("Hazer 1", "Andy")
+            codes.append(FH.route_fluid(R.tr, dict(a, stamp=R.tr.stamp()),
+                                        here, None)[0])
+        for _ in range(5):
+            watched.send_frame()
+            plain.send_frame()
+
+        def sent(link):
+            return [_j.loads(d)["values"] for d, _a in link._sock.sent
+                    if _j.loads(d)["t"] == "flame"]
+        check(codes == [200, 200, 200] and sent(plain) == sent(watched) and
+              sent(watched)[-1][79:83] == [140, 255, 64, 0],
+              f"the card's save, Set level now and Reset learning change "
+              f"no frame: {codes}")
+        src = open(FH.__file__, encoding="utf-8").read()
+        check("flamelink" not in src.split("def route_view")[1] and
+              "hazer_levels_set" not in src and "push_levels" not in src
+              and "hazers_set" not in src,
+              "the haze record never sets a hazer level or arms one")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def test_haze_fluid_card_saves_are_safe():
+    section("haze fluid card (review of 2026-11-19): a number is checked as "
+            "it is written, rounded (0.0004 is refused, never written as 0 "
+            "and locking every later save out); a save keeps 'notes' in the "
+            "fluid block; a hazer gone from flamesafe is said on the card "
+            "and its entry can be removed (logged); two posts from one card "
+            "never both pass, even at once; a levels file fixed by hand "
+            "takes a save without a level set first; build() saves through "
+            "the engine's own levels (its lock) and Reset learning is on "
+            "disk at once")
+    import json as _j
+    import threading as _th
+    import types
+    from ltcplay import fuelhaze as FH
+    from ltcplay import hazers as HZ
+    from ltcplay import remote as RM
+    here = RM.Ctx(True, "127.0.0.1")
+    R = _HazeRig()
+    lp = os.path.join(R.work, HZ.LEVELS_FILE)
+
+    def disk():
+        with open(lp, encoding="utf-8") as fh:
+            return _j.load(fh)
+
+    def post(body, **kw):
+        return FH.route_fluid(R.tr, dict(body, stamp=R.tr.stamp()), here,
+                              None, **kw)
+    try:
+        R.write_fluid({"notes": "pump B is the slow one",
+                       "Hazer 2": {"litres_per_hour": 1.0}})
+        # P2-1: rounded first, then checked.
+        for v in (0.0004, 50.0005):
+            ok, text, _c = R.tr.save_fluid("Hazer 1", v, None)
+            check(not ok and "Nothing was changed." in text and
+                  "Hazer 1" not in disk()["fluid"],
+                  f"{v} is refused as it would be written "
+                  f"({round(v, 3)}): {text}")
+        st, out = post({"action": "save", "hazer": "Hazer 1",
+                        "litres_per_hour": 0.0004, "tank_litres": None})
+        check(st == 400 and "Hazer 1" not in disk()["fluid"] and
+              not R.tr.config_error, f"the route refuses 0.0004: {out}")
+        for v, want in ((0.0005, 0.001), (0.001, 0.001), (50.0004, 50.0)):
+            ok, text, _c = R.tr.save_fluid("Hazer 1", v, 2.5)
+            check(ok and disk()["fluid"]["Hazer 1"] ==
+                  {"litres_per_hour": want, "tank_litres": 2.5} and
+                  not R.tr.config_error and
+                  R.tr.fluid["Hazer 1"]["litres_per_hour"] == want,
+                  f"{v} is saved as {want} and the file still reads: "
+                  f"{text} {R.tr.config_error!r}")
+        ok, text, _c = R.tr.save_fluid("Hazer 3", 0.5, None)
+        check(ok, f"and a later save of another hazer works: {text}")
+        # P3-2: 'notes' in the block is kept.
+        check(disk()["fluid"]["notes"] == "pump B is the slow one" and
+              disk()["fluid"]["Hazer 2"] == {"litres_per_hour": 1.0},
+              f"a card save keeps the notes and the other hazers: "
+              f"{disk()['fluid']}")
+        # P3-4: two posts drawn from the same card.
+        stamp = R.tr.stamp()
+        a = FH.route_fluid(R.tr, {"action": "save", "hazer": "Hazer 1",
+                                  "litres_per_hour": 0.6,
+                                  "tank_litres": 2.5, "stamp": stamp},
+                           here, None)
+        b = FH.route_fluid(R.tr, {"action": "save", "hazer": "Hazer 1",
+                                  "litres_per_hour": 0.7,
+                                  "tank_litres": 2.5, "stamp": stamp},
+                           here, None)
+        check(a[0] == 200 and b[0] == 409 and
+              b[1]["error"].endswith("Look again. Nothing was changed.") and
+              disk()["fluid"]["Hazer 1"]["litres_per_hour"] == 0.6,
+              f"one after the other: the second is refused: {a} {b}")
+        real = R.tr._write_fluid
+        lv = HZ.Levels(R.work, [n for n, _h, _f in R.hz])
+
+        def slow(block):
+            import time as _t
+            _t.sleep(0.3)
+            lv.set_other("fluid", block)
+        R.tr._fluid_writer = slow
+        stamp = R.tr.stamp()
+        go = _th.Barrier(2)
+        codes = []
+
+        def one(lph):
+            go.wait()
+            codes.append(FH.route_fluid(R.tr, {
+                "action": "save", "hazer": "Hazer 1",
+                "litres_per_hour": lph, "tank_litres": 2.5,
+                "stamp": stamp}, here, None)[0])
+        ts = [_th.Thread(target=one, args=(x,)) for x in (0.8, 0.9)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(10)
+        check(sorted(codes) == [200, 409],
+              f"at once (the write stalled 0.3 s): exactly one passes, the "
+              f"other is refused: {codes}")
+        R.tr._fluid_writer = None
+        del real
+        # P3-3: a hazer renamed or removed in flamesafe.
+        doc = disk()
+        doc["fluid"]["Hazer 9"] = {"tank_litres": 3.0}
+        with open(lp, "w", encoding="utf-8") as fh:
+            _j.dump(doc, fh)
+        R.tr._fluid_stamp = None
+        v = R.tr.view()
+        check(v["config_error"] and "Hazer 9" in v["config_error"] and
+              v["fluid_gone"] == ["Hazer 9"],
+              f"the fuel GET says why and which hazer is gone: "
+              f"{v['config_error']!r} {v.get('fluid_gone')}")
+        st, out = post({"action": "save", "hazer": "Hazer 1",
+                        "litres_per_hour": 0.6, "tank_litres": 2.5})
+        check(st == 400 and "Fix the file first" in out["error"],
+              f"a save is refused while it is there: {out}")
+        st, out = post({"action": "remove", "hazer": "Hazer 1"})
+        check(st == 400 and "Nothing was changed." in out["error"] and
+              "Hazer 1" in disk()["fluid"],
+              f"Remove never takes out a hazer that is still there: {out}")
+
+        class Users:
+            def active(self):
+                return True
+
+            def may(self, role, row):
+                return role == "admin"
+        st, out = FH.route_fluid(R.tr, {
+            "action": "remove", "hazer": "Hazer 9", "stamp": R.tr.stamp()},
+            RM.Ctx(True, "127.0.0.1",
+                   session={"name": "Ola", "role": "operator"}), Users())
+        check(st == 403 and "Hazer 9" in disk()["fluid"],
+              f"an operator may not remove it: {out}")
+        events = []
+        audit = types.SimpleNamespace(
+            event=lambda **k: events.append(k))
+        st, out = FH.route_fluid(R.tr, {
+            "action": "remove", "hazer": "Hazer 9", "stamp": R.tr.stamp()},
+            RM.Ctx(True, "127.0.0.1",
+                   session={"name": "Jeff", "role": "admin"}), Users(),
+            audit)
+        d = disk()
+        check(st == 200 and "Hazer 9" not in d["fluid"] and
+              d["fluid"]["notes"] == "pump B is the slow one" and
+              d["fluid"]["Hazer 1"]["litres_per_hour"] in (0.8, 0.9) and
+              d["levels"] == {"Hazer 1": {"haze": 140, "fan": 255}} and
+              not R.tr.config_error and R.tr.fluid_gone == [],
+              f"an admin removes it; the rest is kept and read again: "
+              f"{out} {d}")
+        check([e["action"] for e in events] == ["haze-fluid-remove"] and
+              events[0]["user"] == "Jeff" and
+              events[0]["target"] == "hazer=Hazer 9" and
+              any("Jeff removed the haze fluid settings of Hazer 9" in t
+                  for t, _f in R.lines),
+              f"audit logged and journaled with who: {events}")
+        # P3-7: a levels file that could not be read at start.
+        with open(lp, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        lv = HZ.Levels(R.work, ["Hazer 1", "Hazer 2"])
+        check(lv.fault and lv.levels["Hazer 1"] == (0, 0), "a bad file")
+        try:
+            lv.set_other("fluid", {"Hazer 1": {"tank_litres": 2.0}})
+            said = ""
+        except ValueError as e:
+            said = str(e)
+        check(said and open(lp, encoding="utf-8").read() == "{not json",
+              f"still bad: refused, never written over: {said}")
+        with open(lp, "w", encoding="utf-8") as fh:
+            _j.dump({"hazers_format": 1,
+                     "levels": {"Hazer 1": {"haze": 140, "fan": 255}}}, fh)
+        R.tr._fluid_writer = lambda b: lv.set_other("fluid", b)
+        R.tr._fluid_stamp = None
+        R.tr._reload_fluid()             # the card drawn again after the fix
+        st, out = post({"action": "save", "hazer": "Hazer 1",
+                        "litres_per_hour": 0.6, "tank_litres": 2.5})
+        d = disk()
+        check(st == 200 and d["fluid"] == {"Hazer 1": {
+            "litres_per_hour": 0.6, "tank_litres": 2.5}} and
+              d["levels"] == {"Hazer 1": {"haze": 140, "fan": 255}} and
+              lv.levels["Hazer 1"] == (0, 0),
+              f"fixed by hand: the next save works with no level set "
+              f"first, the levels on disk kept and the ones in use not "
+              f"changed: {out} {d} {lv.levels}")
+    finally:
+        R.close()
+    # P3-8: build()'s own writer, the engine's hazers.Levels.
+    work = tempfile.mkdtemp()
+    try:
+        lv = HZ.Levels(work, ["Hazer 1", "Hazer 2"])
+        lv.set("Hazer 1", haze=140, fan=255)
+        link = types.SimpleNamespace(
+            haze_observer=None, rehearse_on=False,
+            cfg=types.SimpleNamespace(hazers=(("Hazer 1", (80, 81)),
+                                              ("Hazer 2", (82, 83)))))
+        remote = types.SimpleNamespace(
+            folder=work, programming=lambda: (False, ""),
+            hazers=types.SimpleNamespace(levels=lv))
+        tr = FH.build(remote, link, threaded=False)
+        body = {"action": "save", "hazer": "Hazer 2",
+                "litres_per_hour": 1.0, "tank_litres": 2.0}
+        lv._lock.acquire()
+        res = []
+        t = _th.Thread(target=lambda: res.append(FH.route_fluid(
+            tr, dict(body, stamp=tr.stamp()), here, None)))
+        try:
+            t.start()
+            t.join(0.3)
+            waited = t.is_alive()
+        finally:
+            lv._lock.release()
+        t.join(10)
+        with open(os.path.join(work, HZ.LEVELS_FILE), encoding="utf-8") as fh:
+            d = _j.load(fh)
+        check(waited and res and res[0][0] == 200 and
+              lv.other.get("fluid") == {"Hazer 2": {"litres_per_hour": 1.0,
+                                                    "tank_litres": 2.0}} and
+              d["levels"]["Hazer 1"] == {"haze": 140, "fan": 255} and
+              lv.levels["Hazer 1"] == (140, 255) and
+              tr.fluid["Hazer 2"]["tank_litres"] == 2.0,
+              f"build() saves through the engine's own levels, under its "
+              f"lock (it waited for a level set): {waited} {res} {d}")
+        lv.set("Hazer 2", haze=64)
+        with open(os.path.join(work, HZ.LEVELS_FILE), encoding="utf-8") as fh:
+            d = _j.load(fh)
+        check(d["fluid"]["Hazer 2"]["tank_litres"] == 2.0 and
+              d["levels"]["Hazer 2"] == {"haze": 64, "fan": 0},
+              f"and a level set after it keeps it: {d}")
+        tr.refill("Hazer 2", "Andy")
+        st, out = FH.route_fluid(tr, {"action": "reset", "hazer": "Hazer 2",
+                                      "confirm": True,
+                                      "stamp": tr.stamp()}, here, None)
+        again = FH.HazeTracker(work, tr.hazers, threaded=False)
+        check(st == 200 and again.units["Hazer 2"]["learn_from"] > 0 and
+              again.units["Hazer 2"]["learn_from"] ==
+              tr.units["Hazer 2"]["learn_from"],
+              f"Reset learning is on disk at once (no save tick): {out}")
+        bare = types.SimpleNamespace(folder=work,
+                                     programming=lambda: (False, ""))
+        tr2 = FH.build(bare, link, threaded=False)
+        st, out = FH.route_fluid(tr2, {"action": "save", "hazer": "Hazer 1",
+                                       "litres_per_hour": 0.5,
+                                       "tank_litres": None,
+                                       "stamp": tr2.stamp()}, here, None)
+        with open(os.path.join(work, HZ.LEVELS_FILE), encoding="utf-8") as fh:
+            d = _j.load(fh)
+        check(st == 200 and d["fluid"]["Hazer 1"] == {"litres_per_hour": 0.5}
+              and d["fluid"]["Hazer 2"]["tank_litres"] == 2.0 and
+              d["levels"]["Hazer 2"] == {"haze": 64, "fan": 0},
+              f"an engine with no hazer levels of its own: a Levels on the "
+              f"same file, everything kept: {out} {d}")
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    print("  ok")
+
+
 def test_haze_fluid_in_the_docs_and_the_page():
     section("haze fluid: OPERATOR.md and FUEL.md say it in plain words; the "
             "Fuel step's Hazers section: a headline of 6 words or fewer, "
@@ -100584,7 +103635,7 @@ def test_haze_fluid_in_the_docs_and_the_page():
     check(head == ["Haze fluid"] and len(bullets) == 3 and
           all(len(b.split()) <= 8 for b in bullets) and
           bullets == ["Counts haze time, never fan time.",
-                      "Litres show once flow and tank are set.",
+                      "Percent left learns from each refill.",
                       "Not sure time counts as full output."],
           f"the text rule: {head} {bullets}")
     check(_re.findall(r"<b>([^<]*)</b>", blk)[1:] ==
@@ -100609,6 +103660,21 @@ def test_haze_fluid_in_the_docs_and_the_page():
         check(i > 0 and "haze.json" in part and "fan" in part and
               "Refilled" in part and "—" not in part and "–" not in part,
               f"{name} says how haze fluid is counted and refilled")
+    # The learning and the Settings card (2026-11-19).
+    fuel = open(os.path.join(here, "FUEL.md"), encoding="utf-8").read()
+    part = " ".join(fuel[fuel.find("## Haze fluid"):].split())
+    for need in ("**smallest**", "middle value of the last 5",
+                 "**Estimating (from the set numbers)**",
+                 "**Learned from N tanks**", "**Set level now**",
+                 "never a refill, never usage", "**Reset learning**",
+                 "keeps every refill", "**To calibrate.**",
+                 "never change, slow or hold back what goes to a hazer"):
+        check(need in part, f"FUEL.md's Haze fluid says {need!r}")
+    _no_dashes(part, "FUEL.md's Haze fluid")
+    op = " ".join(open(os.path.join(here, "OPERATOR.md"),
+                       encoding="utf-8").read().split())
+    check("**Haze fluid settings (Settings tab, the show PC" in op and
+          "**Set level now**" in op, "OPERATOR.md names the card")
     print("  ok")
 
 
@@ -109873,7 +112939,7 @@ def test_ui2_systems_rows_say_each_word_once():
         check(f is not None, f"{n} is found")
         fns += "\n" + (f or "")
     check("const r = sysRow(x);" in two and
-          "<b>${esc(r.head)}</b>${esc(r.rest)}</li>" in two,
+          "<span><b>${esc(r.head)}</b>${esc(r.rest)}</span></li>" in two,
           "the Systems sheet draws each row with sysRow, escaped")
     import shutil
     node = shutil.which("node")
@@ -109884,8 +112950,16 @@ def test_ui2_systems_rows_say_each_word_once():
     cases = [
         (["Deck", "ok", "ok"], "Stream Deck: OK"),
         (["Flamesafe", "ok", "linked"], "Flames: OK"),
-        (["Laser arm", "warn", "disarmed"], "Laser arm: Off, not in use here."),
-        (["Video", "warn", "not set up"], "Video: Off, not in use here."),
+        (["Pixels", "idle", "checked when a show starts"],
+         "Pixels: Checked when a show starts"),
+        (["Video", "warn", "not set up"], "Video: Checked when a show starts"),
+        (["BEYOND", "bad", "not running"],
+         "BEYOND: FAULT. Not running. Start BEYOND."),
+        (["MadMapper", "ok", "running"], "MadMapper: OK"),
+        (["Show audio", "bad", "not attached"],
+         "Show audio: FAULT. Not attached. Plug in the audio interface."),
+        (["Flamesafe", "bad", "not connected"],
+         "Flames: FAULT. Not connected. Start flamesafe."),
         (["Laser arm", "ok", "ARMED"], "Laser arm: All armed"),
         (["Lasers", "bad", "LINK LOST"],
          "Laser output: FAULT. BEYOND not answering. Check laser PC."),
@@ -109913,6 +112987,163 @@ def test_ui2_systems_rows_say_each_word_once():
     check(r.returncode == 0 and got == want,
           f"each Systems row says its state once: {bad or got} "
           f"{r.stderr.strip()[:600]}")
+    print("  ok")
+
+
+def test_ui2_systems_idle_row_is_one_phrase():
+    section("2.0's Systems sheet (Jeff, 2026-11-19: 'Show audio: Off , not "
+            "in use here.' was excess prose with a stray space, and Off read "
+            "as not OK): a row that is only idle reads its name and "
+            "'Checked when a show starts' and nothing else, with a grey "
+            "clock, never Off; no row has a space before a comma (the row's "
+            "flex gap split the bold head from the rest)")
+    two = _ui2_pages()[1]
+    fns = ""
+    for c in ("SYS_LABEL", "SYS_OFF", "SYS_SAY", "SYS_WORD"):
+        m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+        check(m is not None, f"{c} is found")
+        fns += "\n" + (m.group(0) if m else "")
+    for n in ("short8", "sysItem", "sysRow"):
+        f = _js_function(two, n)
+        check(f is not None, f"{n} is found")
+        fns += "\n" + (f or "")
+    # The row is a flex box with a gap: the bold head and the rest must be
+    # one flex item, or the gap draws as a space before ", ...".
+    check("<span><b>${esc(r.head)}</b>${esc(r.rest)}</span></li>" in two,
+          "the Systems row's head and rest are one flex item")
+    check('idle:"clock"' in two and "li.sys-idle svg{color:var(--grey)}" in two,
+          "an idle row has the grey clock icon")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  ok")
+        return
+    names = ["Deck", "Flamesafe", "Show audio", "Announcements", "Disk",
+             "Audit", "Laser arm", "Lasers", "Pixels", "Video", "Timecode",
+             "BEYOND", "MadMapper", "MadMapper output", "Somethingnew"]
+    offs = ["none", "none set up", "not set up", "stopped", "disarmed",
+            "Not Set Up"]
+    offs.append("checked when a show starts")
+    rows = [[n, st, w] for n in names for st in ("warn", "ok", "off", "idle")
+            for w in offs]
+    others = [[n, st, w] for n in names for st in ("ok", "warn", "bad")
+              for w in ("ok", "linked", "ARMED", "late 1.2 s", "LINK LOST",
+                        "not running", "not attached", "not connected",
+                        "no heartbeat", "OFF", "running", "attached",
+                        "2 of 4 armed", "fault", "lost", "pick an output",
+                        "critical", "not sending", "3 retries")]
+    js = fns + "\nconst offs = " + json.dumps(rows) + ";\n" \
+        "const others = " + json.dumps(others) + ";\n" \
+        "const row = x => { const i = sysItem({name:x[0], state:x[1], " \
+        "word:x[2]}); const r = sysRow(i); return [i.state, r.head + r.rest]; };\n" \
+        "console.log(JSON.stringify({offs: offs.map(row), " \
+        "others: others.map(row)}));\n"
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip() or "null")
+    except ValueError:
+        got = None
+    check(r.returncode == 0 and got is not None,
+          f"the Systems rows were built: {r.stderr.strip()[:600]}")
+    if got is None:
+        return
+    label = {"Deck": "Stream Deck", "Flamesafe": "Flames", "Audit": "Audit log",
+             "Lasers": "Laser output", "MadMapper output": "MadMapper window"}
+    bad = [(x, g) for x, g in zip(rows, got["offs"])
+           if g != ["idle", label.get(x[0], x[0]) +
+                    ": Checked when a show starts"]]
+    check(not bad, f"an idle row reads only its name and 'Checked when a "
+          f"show starts': {bad[:6]}")
+    off = [g[1] for g in got["offs"] + got["others"]
+           if re.search(r": Off\b", g[1])]
+    check(not off, f"no Systems row says Off: {off[:6]}")
+    spaced = [g[1] for g in got["offs"] + got["others"]
+              if re.search(r"\s[,.:]|\s\s|^\s|\s$", g[1])]
+    check(not spaced, f"no Systems row has a space before a comma or "
+          f"stop, or a double space: {spaced[:6]}")
+    print("  ok")
+
+
+def test_systems_sheet_rows_are_outside_programs():
+    section("the Systems sheet's rows (remote.systems_view, Jeff, "
+            "2026-11-19: 'the whole point of this page is for things we "
+            "can't see otherwise, like is BEYOND software even on and "
+            "talking to us, just like MadMapper'): no Laser arm row (the "
+            "main page has it), BEYOND and MadMapper say whether they run, "
+            "Show audio says whether the show's interface is attached, an "
+            "idle row is never Off, and the lamps the Resume rig check "
+            "reads are unchanged")
+    from ltcplay import remote as RM
+    from ltcplay import beyondwatch as BW
+    from ltcplay import madmapperwatch as MW
+    import types
+    t = [1000.0]
+    snap = {"applied": {"video": "unknown", "lasers": "unknown"},
+            "look": "BETWEEN"}
+    cond = types.SimpleNamespace(
+        snapshot=lambda: snap,
+        devices=types.SimpleNamespace(beyond=types.SimpleNamespace(
+            fault="")), _ver={"lasers": 0, "video": 0})
+    sched = types.SimpleNamespace(conductor=cond, state_dir=None)
+    r = RM.Remote(types.SimpleNamespace(session=None), sched,
+                  folder=tempfile.gettempdir(), clock=lambda: t[0])
+    arm = types.SimpleNamespace(status_view=lambda: {
+        "armed": [], "total": 4, "output_permitted": False,
+        "output_fault": ""})
+    r.morning = types.SimpleNamespace(laser_arm=arm)
+    by, mm = [True], [True]
+    r.beyond_watch = BW.BeyondWatch(lambda: by[0], clock=lambda: t[0])
+    r.madmapper_watch = MW.MadMapperWatch(lambda: mm[0], clock=lambda: t[0])
+    aw = [{"missing": [], "outputs": ["PreSonus"], "checked_ago_s": 3.0,
+           "skipped": "", "error": "", "wanted": {"PreSonus": "show.json"}}]
+    r.audio_watch = types.SimpleNamespace(view=lambda: aw[0])
+
+    def rows(cs=None):
+        r.beyond_watch.check_once()
+        r.madmapper_watch.check_once()
+        return {x["name"]: (x["state"], x["word"])
+                for x in r.systems_view(cs or {})}
+    got = rows()
+    check("Laser arm" in [x["name"] for x in r.subsystems({})] and
+          "Laser arm" not in got,
+          f"the laser arm is a lamp still, and not a Systems row: {got}")
+    check(got.get("BEYOND") == ("ok", "running") and
+          got.get("MadMapper") == ("ok", "running"),
+          f"BEYOND and MadMapper running read OK, show or no show: {got}")
+    check(got.get("Show audio") == ("ok", "attached"),
+          f"the show's interface attached reads OK before Run: {got}")
+    check(got.get("Pixels") == ("idle", "checked when a show starts"),
+          f"pixels with no show: checked when a show starts: {got}")
+    check(not [n for n, (st, _w) in got.items() if st == "off"],
+          f"no Systems row is off: {got}")
+    by[0], mm[0] = False, False
+    aw[0] = dict(aw[0], missing=["PreSonus"])
+    got = rows()
+    check(got.get("BEYOND") == ("bad", "not running") and
+          got.get("MadMapper") == ("bad", "not running") and
+          got.get("Show audio") == ("bad", "not attached"),
+          f"BEYOND or MadMapper not running, the interface not attached: "
+          f"each a fault: {got}")
+    aw[0] = dict(aw[0], missing=[], checked_ago_s=None)
+    got = rows()
+    check(got.get("Show audio") == ("idle", "checked when a show starts"),
+          f"the interface not looked for yet: idle: {got}")
+    got = rows({"running": True, "since_ok": 0.1,
+                "clock": {"audio": {"connected": True}}})
+    check(got.get("Pixels") == ("ok", "sending") and
+          got.get("Show audio") == ("ok", "ok"),
+          f"while a show runs: pixels sending, show audio OK: {got}")
+    cond.devices.beyond.fault = "not set up"
+    check(rows().get("BEYOND") == ("bad", "blanking not set up"),
+          "BEYOND blanking not set up is a fault")
+    cond.devices.beyond.fault = ""
+    r.beyond_watch = r.madmapper_watch = r.audio_watch = None
+    got = {x["name"]: (x["state"], x["word"]) for x in r.systems_view({})}
+    check("BEYOND" not in got and "MadMapper" not in got and
+          not [n for n, (st, _w) in got.items() if st == "off"],
+          f"a rig without BEYOND or MadMapper has no rows for them, and "
+          f"nothing reads off: {got}")
     print("  ok")
 
 
@@ -110247,6 +113478,9 @@ _UI2_ROUTES = {
     # map's Arrange row; its beat saves nothing (None by its body).
     "/api/remote/arrangement": "show_files",
     "/api/remote/audit-verify": None,
+    # The Booth speaker card (boothcard.py, Jeff 2026-11-19): its GET and
+    # its Save and Test note POST, the Settings row.
+    "/api/remote/booth-speaker": "settings",
     "/api/remote/checklist-export": None,
     "/api/remote/cleaning": None,
     "/api/remote/cleaning-beat": "arm",
@@ -110267,6 +113501,9 @@ _UI2_ROUTES = {
     "/api/remote/fuel": None,
     "/api/remote/fuel-pump": "arm",
     "/api/remote/group-disarm": "safety",
+    # The Settings tab's Haze fluid card (fuelhaze.route_fluid, Jeff
+    # 2026-11-19): records only, the Settings row, the show PC only.
+    "/api/remote/haze-fluid": "settings",
     "/api/remote/hazer": "arm",
     "/api/remote/hazer-level": "arm",
     "/api/remote/hazers-off": "safety",
@@ -110305,6 +113542,9 @@ _UI2_ROUTES = {
     "/api/remote/purge-stop": "safety",
     "/api/remote/purge-timed": "arm",
     "/api/remote/reload-engine": "settings",
+    # Read by Restart the engine and Reload engine for why they wait, and
+    # whether the engine restarted (2026-11-19). The show PC only.
+    "/api/remote/restart-check": None,
     "/api/remote/resume": "show",
     "/api/remote/role-matrix": "users",
     "/api/remote/run-off": "show",
@@ -110697,11 +113937,12 @@ t(L.text === "Lasers: fault" && /BEYOND not answering/.test(L.first) && L.cls ==
 L = sysLook([{name:"Deck", state:"warn", word:"late 1.2 s"}, {name:"Pixels", state:"bad", word:"not sending"}], false);
 t(L.text === "2 to check" && /^First: Pixels\./.test(L.first), "several: the count, and the worst first: " + L.first);
 L = sysLook([{name:"Announcements", state:"warn", word:"pick an output"}, {name:"Laser arm", state:"warn", word:"ARMED"}, {name:"Deck", state:"off", word:"not heard"}], false);
-t(L.text === "Announce: check" && L.items.map(i => i.state).join(",") === "warn,on,off" && /Pick one in Settings/.test(L.first),
-  "announcements with no output picked are a problem, all armed reads On, not set up reads Off: " + L.text + " " + L.items.map(i => i.state));
+t(L.text === "Announce: check" && L.items.map(i => i.state).join(",") === "warn,on,idle" && /Pick one in Settings/.test(L.first),
+  "announcements with no output picked are a problem, all armed reads On, not set up is idle (never Off): " + L.text + " " + L.items.map(i => i.state));
 t(sysLook([{name:"Disk", state:"bad", word:"critical"}], true).text === "No contact", "no contact: said");
-for(const [n, w] of [["Video", "not set up"], ["Show audio", "none"], ["Pixels", "stopped"], ["Flamesafe", "not connected"]])
-  t(sysItem({name:n, state:"warn", word:w}).state === "off", "a warn that is only not set up here reads Off: " + n + " " + w);
+for(const [n, w] of [["Video", "not set up"], ["Show audio", "none"], ["Pixels", "stopped"], ["Pixels", "checked when a show starts"]])
+  t(sysItem({name:n, state:"warn", word:w}).state === "idle", "a warn that is only idle here reads Checked when a show starts: " + n + " " + w);
+t(sysItem({name:"Flamesafe", state:"warn", word:"not connected"}).state === "warn", "flamesafe not connected is a problem, not idle");
 for(const w of ["not heard", "missing", "late 1.2 s", "USB slow 2.0 s", "default keys: ltcplay_deck.json not used", "USB 3 write(s) failed", "not known", "no status", "fault",
                 "not attached", "lost", "show audio not open", "output not attached", "pick one output", "file problem", "low", "critical", "not writing", "2 of 4 armed",
                 "LINK LOST", "blanking not set up", "BEYOND restarted: dark until lit again", "lit? link unknown", "not sending", "a long engine sentence with many words in it here"])
@@ -113643,6 +116884,215 @@ out.undo = since(n).filter(p => p.route !== "morning-open" && p.route !== "fuel"
     print("  ok")
 
 
+def test_ui2_haze_fluid_settings_card_driven():
+    section("2.0's Haze fluid card on the Settings tab of the show PC, "
+            "pressed in a real browser at phone width (360x740) and on the "
+            "2K touch monitor (2560x1440): per hazer the learned tank or "
+            "the estimate, litres per hour and tank litres, Set level now "
+            "and Reset learning, each asking first and posting haze-fluid "
+            "with the stamp it was drawn from; a bad number is said and "
+            "nothing is sent; no sideways scroll, 56 px targets; signed in "
+            "without Settings everything is off; an iPad gets no card; the "
+            "Fuel step's tiles say learned or estimating and shows left")
+    chrome = _find_chromium()
+    page = _ui2_page_inline()
+    card = page[page.find('id="hzs-card"'):]
+    card = card[:card.find('id="hzs-msg"')]
+    head = re.findall(r"<b>([^<]*)</b>", card)
+    lines = re.findall(r"<li>([^<]*)</li>", card)
+    check(head == ["Haze fluid"] and 1 <= len(lines) <= 3 and
+          all(len(t.split()) <= 8 for t in lines) and
+          not re.search(r"\bRun\b", card),
+          f"the card's words keep the rules: {head} {lines}")
+    i = page.find("// The Settings tab's Haze fluid card")
+    _no_dashes(card + page[i:page.find("// Shows per refill", i)],
+               "the Haze fluid card")
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    hz = [{"name": "Hazer 1", "big": "62% left", "color": "green",
+           "refill_soon": False, "not_sure": False, "words": "w",
+           "sub": "Learned from 3 tanks. 4 shows left", "basis": "learned",
+           "tank_s": 15300.0, "tanks_learned": 3, "learn_firm": True,
+           "tank_litres_learned": 2.55, "percent": 62,
+           "litres_per_hour": 0.6, "tank_litres": 2.5},
+          {"name": "Hazer 2", "big": "88% left", "color": "green",
+           "refill_soon": False, "not_sure": False, "words": "w",
+           "sub": "Estimating (from the set numbers)",
+           "basis": "estimating", "tank_s": 7200.0, "tanks_learned": 0,
+           "learn_firm": False, "tank_litres_learned": None, "percent": 88,
+           "litres_per_hour": 1.0, "tank_litres": 2.0},
+          {"name": "Hazer 3", "big": "12.4 min haze", "color": None,
+           "refill_soon": False, "not_sure": False, "words": "w", "sub": "",
+           "basis": "", "tank_s": None, "tanks_learned": 0,
+           "learn_firm": False, "tank_litres_learned": None,
+           "percent": None, "litres_per_hour": None, "tank_litres": None}]
+    fu = {"units": [], "unit_ids": [], "may_refill": True,
+          "may_undo": True, "refill_why": "", "undo_why": "", "fault": "",
+          "config_error": "", "notes": [], "recent_refills": [],
+          "haze": {"available": True, "hazers": hz, "notes": [],
+                   "config_error": "", "fault": "", "may_undo": True,
+                   "recent_refills": [], "stamp": "abc123stamp00000"}}
+    steps = r"""
+const mark = () => window.__posts.length;
+const since = n => window.__posts.slice(n).filter(p => p.route === "haze-fluid").map(p => p.body);
+const q = id => document.getElementById(id);
+const row = n => document.querySelector('#hzs-rows [data-hz="' + n + '"]');
+const yes = async () => { await h.sleep(300); const b = document.querySelector('#sh-row [data-i="1"]'); out.sheets.push(document.getElementById("sh-h").textContent); if(b) b.click(); await h.sleep(500); };
+out.sheets = [];
+const stp = document.querySelector('#d-steps [data-step="fuel"]');
+if(stp){ stp.click(); await h.sleep(2500); }
+out.tiles = [...document.querySelectorAll("#d-hzf-g [data-hrefill]")].map(b => [...b.querySelectorAll("small")].map(s => s.textContent));
+document.querySelector('.tab[data-tab="settings"]').click();
+await h.sleep(2500);
+out.shown = !q("hzs-card").hidden && q("hzs-card").getClientRects().length > 0;
+out.rows = [...document.querySelectorAll("#hzs-rows [data-hz]")].map(r => [r.querySelector("b").textContent, r.querySelector(".dim").textContent, r.querySelector('[data-k="lph"]').value, r.querySelector('[data-k="tank"]').value]);
+q("hzs-card").scrollIntoView();
+out.layout = {xs:document.scrollingElement.scrollWidth - innerWidth,
+  wide:[...document.querySelectorAll("#hzs-card *")].filter(e => e.getClientRects().length && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.tagName + "." + e.className).slice(0, 5),
+  small:[...document.querySelectorAll("#hzs-card .b, #hzs-card input.f")].filter(e => e.getClientRects().length && e.getBoundingClientRect().height < 55.5).length};
+let n = mark();
+row("Hazer 3").querySelector('[data-k="lph"]').value = "0.5";
+row("Hazer 3").querySelector('[data-k="tank"]').value = "2";
+row("Hazer 3").querySelector('[data-a="save"]').click();
+await h.sleep(600);
+out.save = since(n);
+n = mark();
+row("Hazer 1").querySelector('[data-k="lph"]').value = "lots";
+row("Hazer 1").querySelector('[data-a="save"]').click();
+await h.sleep(300);
+out.bad = {posts:since(n).length, msg:q("hzs-msg").textContent};
+row("Hazer 1").querySelector('[data-k="pct"]').value = "140";
+row("Hazer 1").querySelector('[data-a="level"]').click();
+await h.sleep(300);
+out.bad_pct = {posts:since(n).length, msg:q("hzs-msg").textContent};
+await h.sleep(2500);
+n = mark();
+row("Hazer 1").querySelector('[data-k="pct"]').value = "40";
+row("Hazer 1").querySelector('[data-a="level"]').click();
+out.level_before = since(n).length;
+await yes();
+out.level = since(n);
+n = mark();
+row("Hazer 2").querySelector('[data-a="reset"]').click();
+out.reset_before = since(n).length;
+await yes();
+out.reset = since(n);
+// One post at a time: every button off until it is answered.
+window.__delay["haze-fluid"] = 1500;
+n = mark();
+row("Hazer 3").querySelector('[data-k="lph"]').value = "0.7";
+row("Hazer 3").querySelector('[data-a="save"]').click();
+await h.sleep(150);
+out.busy = [...document.querySelectorAll("#hzs-rows button")].every(b => b.disabled);
+row("Hazer 3").querySelector('[data-a="save"]').click();
+row("Hazer 3").querySelector('[data-a="save"]').dispatchEvent(new MouseEvent("click", {bubbles:true}));
+await h.sleep(2200);
+out.inflight = since(n).length;
+out.after = [...document.querySelectorAll("#hzs-rows button")].every(b => !b.disabled);
+window.__delay["haze-fluid"] = 0;
+// A level moving during a show never wipes numbers being typed.
+const lph1 = row("Hazer 1").querySelector('[data-k="lph"]');
+lph1.value = "0.9"; lph1.dispatchEvent(new Event("input", {bubbles:true})); lph1.blur();
+const pct2 = row("Hazer 2").querySelector('[data-k="pct"]');
+pct2.focus(); pct2.value = "33";
+HZS.haze.hazers[0].percent = 55; HZS.haze.hazers[1].percent = 70; hzsRender();
+out.typed = [lph1.isConnected, row("Hazer 1").querySelector('[data-k="lph"]').value, row("Hazer 2").querySelector('[data-k="pct"]').value, row("Hazer 1").querySelector("b").textContent, row("Hazer 2").querySelector("b").textContent];
+pct2.blur(); delete lph1.dataset.edited;
+// The file's problem said on the card; a hazer gone from flamesafe removed.
+HZS.haze.config_error = "ltcplay_hazers.json: fluid.Hazer 9: there is no hazer called 'Hazer 9' here (the hazers are Hazer 1, Hazer 2, Hazer 3).";
+HZS.haze.fluid_gone = ["Hazer 9"]; hzsRender();
+out.err = [q("hzs-err").hidden, q("hzs-err").textContent];
+out.gone = [...document.querySelectorAll("#hzs-rows [data-gone]")].map(r => r.dataset.gone);
+n = mark();
+document.querySelector('#hzs-rows [data-gone="Hazer 9"] [data-a="remove"]').click();
+await yes();
+out.remove = since(n);
+await h.sleep(800);
+out.err_after = q("hzs-err").hidden;
+window.__patch = s => Object.assign(s, {me:{users_active:true, user:"Ola", may:{show:true, arm:true, settings:false}}});
+await h.sleep(1500);
+out.nosettings = [...document.querySelectorAll("#hzs-card .b, #hzs-card input.f")].every(e => e.disabled);
+window.__patch = null; await h.sleep(600);
+ME.local = false; await h.sleep(1500);
+out.ipad = !q("hzs-card").hidden;
+ME.local = true;
+"""
+    for size in ((360, 740), (2560, 1440)):
+        m = _ui2_drive(chrome, page, _ui2_status_day(), steps, size=size,
+                       frag="?tour=0#day",
+                       routes={"/api/remote/morning": _morning_view_pico(),
+                               "/api/remote/fuel": fu,
+                               "/api/timelines": {"timelines": []}},
+                       budget_ms=40000)
+        if not check(isinstance(m, dict) and not m.get("problems"),
+                     f"{size}: the Haze fluid card, pressed: {m!r}"[:1500]):
+            continue
+        check(m["tiles"] == [["62% left", "Learned from 3 tanks. 4 shows "
+                                          "left"],
+                             ["88% left", "Estimating (from the set "
+                                          "numbers)"],
+                             ["12.4 min haze"]],
+              f"{size}: the Fuel step's tiles: the headline, then learned "
+              f"or estimating and shows left: {m['tiles']}")
+        check(m["shown"] and m["rows"] == [
+            ["Hazer 1: 62% left", "Learned tank: 4.3 h at full output, "
+             "about 2.55 L. From 3 tanks.", "0.6", "2.5"],
+            ["Hazer 2: 88% left", "Not learned yet. Estimating 2.0 h at "
+             "full output from the set numbers.", "1", "2"],
+            ["Hazer 3", "Not learned yet. Haze time only until set or "
+             "learned.", "", ""]],
+              f"{size}: a row per hazer, learned or estimating, the set "
+              f"numbers: {m['rows']}")
+        lay = m["layout"]
+        check(lay["xs"] <= 0 and not lay["wide"] and lay["small"] == 0,
+              f"{size}: no sideways scroll, 56 px targets: {lay}")
+        check(m["save"] == [{"action": "save", "hazer": "Hazer 3",
+                             "stamp": "abc123stamp00000",
+                             "litres_per_hour": 0.5, "tank_litres": 2}],
+              f"{size}: Save posts the numbers and the stamp: {m['save']}")
+        check(m["bad"]["posts"] == 0 and "are numbers" in m["bad"]["msg"]
+              and m["bad_pct"]["posts"] == 0 and
+              "0 to 100" in m["bad_pct"]["msg"],
+              f"{size}: a bad number is said, nothing sent: {m['bad']} "
+              f"{m['bad_pct']}")
+        check(m["level_before"] == 0 and m["reset_before"] == 0 and
+              m["sheets"] == ["Set Hazer 1 to 40 percent?",
+                              "Reset learning for Hazer 2?",
+                              "Remove the haze fluid numbers of Hazer 9?"]
+              and
+              m["level"] == [{"action": "level", "hazer": "Hazer 1",
+                              "stamp": "abc123stamp00000", "percent": 40}]
+              and m["reset"] == [{"action": "reset", "hazer": "Hazer 2",
+                                  "stamp": "abc123stamp00000",
+                                  "confirm": True}],
+              f"{size}: Set level now and Reset learning ask first: "
+              f"{m['sheets']} {m['level']} {m['reset']}")
+        check(m["busy"] is True and m["inflight"] == 1 and
+              m["after"] is True,
+              f"{size}: every button is off while a post is in flight, so "
+              f"a repeated Save sends once: {m['busy']} {m['inflight']} "
+              f"{m['after']}")
+        check(m["typed"] == [True, "0.9", "33", "Hazer 1: 55% left",
+                             "Hazer 2: 70% left"],
+              f"{size}: a level that moves redraws the line, never the "
+              f"numbers typed (edited or focused): {m['typed']}")
+        check(m["err"][0] is False and "Hazer 9" in m["err"][1] and
+              "Press Remove below" in m["err"][1] and
+              m["gone"] == ["Hazer 9"] and
+              m["remove"] == [{"action": "remove", "hazer": "Hazer 9",
+                               "stamp": "abc123stamp00000"}] and
+              m["err_after"] is True,
+              f"{size}: the file's problem is said with what to do, and a "
+              f"gone hazer is removed after asking: {m['err']} {m['gone']} "
+              f"{m['remove']}")
+        check(m["nosettings"] is True and m["ipad"] is False,
+              f"{size}: without Settings all off; an iPad gets no card")
+    print("  ok")
+
+
 def _ui2_shows_fuel(may=True):
     def g(i, name, cd=None):
         u = {"id": i, "name": name, "kind": "gflame", "shows_left": 3,
@@ -115387,7 +118837,8 @@ def test_fireball_timeline_routes():
     here = os.path.dirname(os.path.abspath(__file__))
     users_md = open(os.path.join(here, "USERS.md"), encoding="utf-8").read()
     check("sign out after the last show, the play-from cues, the fireball "
-          "timeline) | always | yes | no | no | never |" in users_md,
+          "timeline, the haze fluid settings) | always | yes | no | no | "
+          "never |" in users_md,
           "USERS.md's matrix row")
     work = tempfile.mkdtemp()
     journal = []
@@ -120772,7 +124223,7 @@ ME.local = true;
 
 def test_ui2_preshow_audio_card_driven():
     section("2.0's Pre-show audio card pressed in a real browser: on the "
-            "Schedule tab of the show PC, the chosen file's name shown, its "
+            "Settings tab of the show PC, the chosen file's name shown, its "
             "list from the engine; Turn on and Save file post the one "
             "setting; signed in without Settings both are off; an iPad gets "
             "no card; its words: a headline of 6 words or fewer, up to 3 "
@@ -120780,7 +124231,7 @@ def test_ui2_preshow_audio_card_driven():
     chrome = _find_chromium()
     page = _ui2_page_inline()
     card = page[page.find('id="psa-card"'):]
-    card = card[:card.find("</div>\n        <!--")]
+    card = card[:card.find('id="psa-msg"')]
     head = re.findall(r"<b>([^<]*)</b>", card)
     lines = re.findall(r"<li>([^<]*)</li>", card)
     check(head == ["Pre-show audio"] and len(head[0].split()) <= 6 and
@@ -120812,9 +124263,9 @@ const mark = () => window.__posts.length;
 const since = n => window.__posts.slice(n);
 const q = id => document.getElementById(id);
 const bare = b => { const o = Object.assign({}, b); delete o.seen; return o; };
-document.querySelector('.tab[data-tab="schedule"]').click();
+document.querySelector('.tab[data-tab="settings"]').click();
 await h.sleep(1200);
-out.card = {shown:!q("psa-card").hidden, now:q("psa-now").textContent,
+out.card = {shown:!q("psa-card").hidden && q("psa-card").getClientRects().length > 0, now:q("psa-now").textContent,
   opts:[...q("psa-pick").options].map(o => o.textContent + (o.disabled ? " (off)" : "")),
   picked:q("psa-pick").value, on_dis:q("psa-on").disabled, off_dis:q("psa-off").disabled};
 // A file chosen but not saved: Turn on still uses the SAVED file.
@@ -120994,7 +124445,8 @@ def test_ui2_show_machine_switches_driven():
             "Turn off posts on false at once; Live flame On asks first and "
             "posts on true and confirmed, its On on the show PC only, Off "
             "only while on; both On buttons off for a sign-in without "
-            "Settings; the announcement output's list, Save and Test tone; "
+            "Settings; the announcement output's list, Save and Test tone "
+            "on the Settings tab; "
             "an iPad gets neither show PC card")
     chrome = _find_chromium()
     if not chrome:
@@ -121019,10 +124471,10 @@ const yes = async () => { const b = document.querySelector('#sh-row [data-i="1"]
 const bare = b => { const o = Object.assign({}, b); delete o.seen; return o; };
 document.querySelector('.tab[data-tab="schedule"]').click();
 await h.sleep(1200);
-out.cards = {arming:!q("arming-card").hidden, lf:!q("lf-card").hidden, ann:!q("annout-card").hidden,
+const seen = id => q(id).getClientRects().length > 0;
+out.cards = {arming:seen("arming-card"), lf:seen("lf-card"), ann:seen("annout-card"),
   sa_now:q("sa-now").textContent, sa_on_dis:q("sa-on").disabled, sa_off_dis:q("sa-off").disabled,
-  lf_now:q("lf-now").textContent, lf_on:!q("lf-on").hidden && !q("lf-on").disabled, lf_off_dis:q("lf-off").disabled,
-  opts:[...q("annout-pick").options].map(o => o.textContent)};
+  lf_now:q("lf-now").textContent, lf_on:!q("lf-on").hidden && !q("lf-on").disabled, lf_off_dis:q("lf-off").disabled};
 let n = mark();
 q("sa-on").click(); await h.sleep(300);
 out.sa_sheet = {open:!q("sheet").hidden, h:q("sh-h").textContent, posts:since(n).filter(p => p.route === "screen-arming").length};
@@ -121043,7 +124495,11 @@ q("lf-on").click(); await h.sleep(300);
 out.lf_sheet = {open:!q("sheet").hidden, h:q("sh-h").textContent, posts:since(n).filter(p => p.route === "live-flame").length};
 await yes();
 out.lf_on = since(n).filter(p => p.route === "live-flame").map(p => bare(p.body));
-// The announcement output: Speakers, Save; Test tone.
+// The announcement output, on the Settings tab: Speakers, Save; Test tone.
+document.querySelector('.tab[data-tab="settings"]').click();
+await h.sleep(1200);
+out.annTab = {ann:seen("annout-card"), arming:seen("arming-card"), lf:seen("lf-card"),
+  opts:[...q("annout-pick").options].map(o => o.textContent)};
 n = mark();
 q("annout-pick").selectedIndex = 2; q("annout-save").click(); await h.sleep(400);
 q("annout-tone").click(); await h.sleep(400);
@@ -121068,13 +124524,18 @@ ME.local = true;
         print("  ok")
         return
     c = m["cards"]
-    check(c["arming"] and c["lf"] and c["ann"] and c["sa_now"] == "OFF" and
+    check(c["arming"] and c["lf"] and not c["ann"] and
+          c["sa_now"] == "OFF" and
           not c["sa_on_dis"] and c["sa_off_dis"] and c["lf_now"] == "OFF"
-          and c["lf_on"] and c["lf_off_dis"] and
-          c["opts"][:1] == ["None: only through the show audio"] and
-          "MOTU M4 (WASAPI, 4 ch), picked now" in c["opts"],
-          f"the show PC: the three cards, both off, 1.0's outputs list: "
-          f"{c}")
+          and c["lf_on"] and c["lf_off_dis"],
+          f"the show PC's Schedule tab: Arming from a screen and Live "
+          f"flame, both off; no announcement output there: {c}")
+    a = m["annTab"]
+    check(a["ann"] and not a["arming"] and not a["lf"] and
+          a["opts"][:1] == ["None: only through the show audio"] and
+          "MOTU M4 (WASAPI, 4 ch), picked now" in a["opts"],
+          f"the show PC's Settings tab: the announcement output with "
+          f"1.0's outputs list, and neither switch: {a}")
     check(m["sa_sheet"]["open"] and
           m["sa_sheet"]["h"] == "Turn on arming from a screen?" and
           m["sa_sheet"]["posts"] == 0 and m["sa_on"] == [{"on": True}],
@@ -124734,7 +128195,7 @@ def test_start_at_cue_fireball_stages_run_whole_or_not_at_all():
                 encoding="utf-8").read()
     body = rsrc[rsrc.find("    def halt(self, who, screen"):]
     body = body[:body.find("\n    def ", 10)]
-    i_fl = body.find("self._disarm_now(who, screen, \"Stop\")")
+    i_fl = body.find("self._disarm_now(who, screen, what)")
     i_no = body.find('"note_stop"')
     i_lf = body.find("self.timed_purge_cut(")
     check(0 <= i_fl < i_no < i_lf,
@@ -125676,8 +129137,9 @@ def test_ui2_programming_tab_makes_1_0_presses():
     # reviews of #239): the Show file card's tooltip and question, the
     # SHOW tab's button and its question; the card's heading claims no
     # state it may not be in.
-    check('const REHEARSAL_END_CONFIRM = "Stops everything, as Stop does, '
-          'and ends the rehearsal.";' in two and
+    check('const REHEARSAL_END_CONFIRM = "Stops everything Stop stops and '
+          'ends the rehearsal, but does not put the schedule on Hold.";'
+          in two and
           'reh ? confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
           '"Yes, end it", "red")' in two and
           '? await confirmBox("End rehearsal?", REHEARSAL_END_CONFIRM, '
@@ -126170,8 +129632,8 @@ def test_ui2_schedule_tab_makes_1_0_presses():
           "the Open in 1.0 link for tonight's shows is gone")
     check("/remote1#programming" not in two and
           '<div class="card col" id="folders" hidden>' in two,
-          "the rest of Programming (the show folder, the network) is on "
-          "the Schedule tab, not in 1.0")
+          "the rest of Programming (the show folder) is on the Schedule "
+          "tab, not in 1.0")
     for p in ('getJSON("/api/remote/schedule-file", 3000)',
               'post("/api/remote/schedule-file", {doc:readSchedule()})'):
         check(p in one and p in two, f"1.0 and 2.0 both press {p}")
@@ -126905,8 +130367,19 @@ def _ui2_tools_copies(one):
     fit = "  try{ fitSetup(); }catch(e){}\n"
     out = [(n, fn(n)) for n in (
         "fill", "makeOffered", "checkWords", "loadDeckOp",
-        "renderNetwork", "loadNetwork", "saveNetwork", "cfgNote",
-        "setWarn")]
+        "loadNetwork", "saveNetwork", "cfgNote", "setWarn")]
+    # A named difference (2026-11-19): why Restart the engine waits is
+    # said in words beside it, not only in a tooltip; and a press waits
+    # for the engine to answer again (pressRestart).
+    tip = '  $("net-restart").title = r.why || "";\n'
+    out += [("renderNetwork", sub(fn("renderNetwork"), tip, tip +
+             '  restartWhy("net-restart", "net-restart-why", r.offered, '
+             'r.why, mayRow(ST, "settings"));\n'))]
+    press = ('  try{ const j = await post("/api/remote/reload-engine", {}); '
+             '$("{m}").textContent = j.text; }\n'
+             '  catch(e){ $("{m}").textContent = e.message; }\n')
+    pressed = '  pressRestart(t => { $("{m}").textContent = t; }, {r});\n'
+
     # A named difference (Jeff, 2026-11-11: less prose): the show folder
     # problem keeps its line breaks (headline, bullets, More).
     out += [("loadFolders", sub(fn("loadFolders"),
@@ -126942,7 +130415,7 @@ def _ui2_tools_copies(one):
             # Less prose (Jeff, 2026-11-11): the confirms are shorter,
             # every condition kept.
             ("Restart the engine",
-             sub(sub(blk('$("net-restart").addEventListener('),
+             sub(sub(sub(blk('$("net-restart").addEventListener('),
                      '"Yes, restart", "start"', '"Yes, restart", "green"'),
                  '"LTC Player restarts the show engine so it listens on the '
                  'saved show network address. It is refused while a show '
@@ -126950,9 +130423,12 @@ def _ui2_tools_copies(one):
                  'Deck program keep running."',
                  '"Restarts the show engine on the saved address. Refused '
                  'while a show runs or a group is armed. flamesafe and the '
-                 'Stream Deck keep running."')),
+                 'Stream Deck keep running."'),
+                 press.replace("{m}", "net-msg"),
+                 pressed.replace("{m}", "net-msg").replace(
+                     "{r}", "loadNetwork"))),
             ("Reload engine",
-             sub(sub(sub(blk('$("cfg-reload").addEventListener('),
+             sub(sub(sub(sub(blk('$("cfg-reload").addEventListener('),
                          '"Yes, reload", "start"', '"Yes, reload", "green"'),
                      '$("ctl-msg")', '$("cfg-msg")', 2),
                  '"LTC Player restarts the show engine so it reads the '
@@ -126961,7 +130437,10 @@ def _ui2_tools_copies(one):
                  'program keep running."',
                  '"Restarts the show engine to read the changed files. '
                  'Refused while a show runs or a group is armed. flamesafe '
-                 'and the Stream Deck keep running."')),
+                 'and the Stream Deck keep running."'),
+                 press.replace("{m}", "cfg-msg"),
+                 pressed.replace("{m}", "cfg-msg").replace(
+                     "{r}", "() => {}"))),
             ("Check the rig", blk('$("rc-run").addEventListener(')),
             ("Close this window", blk('$("info-exit").addEventListener('))]
     for ln in ('$("net-pick").addEventListener("change", () => { '
@@ -127117,10 +130596,12 @@ def test_ui2_show_pc_tools_are_1_0s():
           "saves them; a home screen app opens them in Safari)")
     # Where they are, and who sees them.
     st_ = _js_function(two, "showTab") or ""
-    check('if(t === "schedule" && ME && ME.local){ loadNetwork(); '
-          'loadDeckOp(); loadFolders(); }' in st_,
-          "the Schedule tab reads the network, the deck operator and the "
-          "folder on the show PC, as 1.0's Programming screen")
+    check('if(t === "schedule" && ME && ME.local){ loadDeckOp(); '
+          'loadFolders(); }' in st_ and
+          'if(t === "settings" && ME && ME.local) loadNetwork();' in st_,
+          "the Schedule tab reads the deck operator and the folder on the "
+          "show PC, as 1.0's Programming screen; the Settings tab reads "
+          "the network")
     rs = _js_function(two, "renderStale") or ""
     wh = _js_function(two, "whoami") or ""
     check("try{ renderTools(isSt); }catch(e){}" in rs and
@@ -127189,6 +130670,7 @@ def test_ui2_show_pc_tools_driven():
     section("2.0's show PC tools pressed in a real browser (P12, P14, P15, "
             "P16): the checklist's Verify records posts 1.0's body and "
             "the PDF link carries today's show date; on the Schedule tab "
+            "(the Show network on the Settings tab) "
             "Getting started says 1 of 3 done and offers Make a show file; "
             "Check the show file posts /api/check {timeline}; Use this "
             "folder asks, then posts show-folder {path}; Open the show "
@@ -127255,7 +130737,7 @@ out.daySmall = small("#d-ctl .b");
 // The Schedule tab: Getting started and the show PC's cards.
 location.hash = "schedule";
 await h.sleep(900);
-out.cards = ["setup", "folders", "deck-op", "admin", "rigcheck", "cfg-card"].filter(id => !g(id).hidden);
+out.cards = ["setup", "folders", "deck-op", "admin", "rigcheck", "cfg-card"].filter(id => vis(g(id)));
 out.sum = g("su-sum").textContent; out.make = !g("su-make").hidden;
 out.fo = g("fo-now").textContent;
 out.deckPick = [...g("deck-op-pick").options].map(o => o.textContent);
@@ -127269,13 +130751,21 @@ out.folder = await yes(g("fo-save"), "Yes, use it");
 out.open = await press(document.querySelector('#folders [data-open="show"]'));
 g("deck-op-pick").value = "Sam";
 out.deck = await press(g("b-deck-op"));
+out.small = small("#t-schedule .b, #t-schedule input.f, #t-schedule select.f");
+// The Settings tab: the show network (Jeff, 2026-11-19: off Schedule).
+location.hash = "settings";
+await h.sleep(900);
+out.setCards = ["admin", "folders", "deck-op", "rigcheck"].filter(id => vis(g(id)));
 out.restart = await yes(g("net-restart"), "Yes, restart");
 const use = g("net-uses").querySelector("button[data-addr]");
 out.use = use ? await press(use) : null;
+out.small = out.small.concat(small("#t-settings .b, #t-settings input.f, #t-settings select.f"));
+out.xs = document.scrollingElement.scrollWidth - innerWidth;
+location.hash = "schedule";
+await h.sleep(600);
 out.reload = await yes(g("cfg-reload"), "Yes, reload");
 out.rig = await press(g("rc-run"));
-out.small = small("#t-schedule .b, #t-schedule input.f, #t-schedule select.f");
-out.xs = document.scrollingElement.scrollWidth - innerWidth;
+out.xs = Math.max(out.xs, document.scrollingElement.scrollWidth - innerWidth);
 // P16: Help, This LTC Player.
 g("help").click();
 await h.sleep(300);
@@ -127300,15 +130790,17 @@ out.closed = g("info").hidden;
           f"the checklist: Verify records posts 1.0's body, the PDF and "
           f"Export all download from 1.0's addresses: {m['pdf']} "
           f"{m['dl']} {m['verify']} {m['daySmall']}")
-    check(m["cards"] == ["setup", "folders", "deck-op", "admin",
+    check(m["cards"] == ["setup", "folders", "deck-op",
                          "rigcheck", "cfg-card"] and
+          m["setCards"] == ["admin"] and
           m["sum"] == "1 of 3 done" and m["make"] and
           "C:\\Shows\\Fire" in m["fo"] and
           m["deckPick"] == ["Jeff", "Sam"] and
           m["rc"] == "Last check passed" and
           m["cfg"][0].startswith("flamesafe.json changed on disk.") and
           m["cfg"][1],
-          f"the show PC's cards, read and drawn: {m['cards']} {m['sum']!r} "
+          f"the show PC's cards, read and drawn (the Show network on "
+          f"Settings): {m['cards']} {m['setCards']} {m['sum']!r} "
           f"{m['fo']!r} {m['deckPick']} {m['rc']!r} {m['cfg']}")
     check(m["check"] == [["/api/check", {"timeline": "Fire.json"}]] and
           m["checked"].startswith("Check of Fire.json: 1 cue(s)."),
@@ -127339,6 +130831,435 @@ out.closed = g("info").hidden;
           m["close"] == [["screen", {"action": "close"}]] and m["closed"],
           f"Help opens the info panel; Close this window posts 1.0's body; "
           f"Back closes it: {i} {m['close']}")
+    print("  ok")
+
+
+# The cards that are set once (Jeff, 2026-11-19: "a lot of things on the
+# Schedule tab (like this Tailscale thing) really make more sense in
+# Settings"): the show network with Restart the engine, the SuperUser's
+# Tailscale card slot, the announcement output and pre-show audio.
+UI2_SETTINGS_ONLY = ('id="admin"', 'id="ts-slot"', 'id="annout-card"',
+                     'id="booth-card"', 'id="psa-card"')
+
+
+def test_ui2_set_once_cards_are_on_settings_not_schedule():
+    section("the set-once cards (the show network and Restart the engine, "
+            "the SuperUser's Tailscale card, the announcement output, "
+            "pre-show audio) are on the Settings tab and never on the "
+            "Schedule tab; each is read when Settings opens, not Schedule; "
+            "the page still carries none of the Tailscale or upload card; "
+            "the guides say Settings; drawn at 360x740 and on the 2K "
+            "monitor nothing goes off the side")
+    _one, two = _ui2_pages()
+
+    def pane(pid):
+        i = two.find('<section class="pane" id="' + pid + '"')
+        j = two.find('<section class="pane"', i + 10)
+        if j < 0:
+            j = two.find("</main>", i)
+        return two[i:j] if i >= 0 else ""
+    sched, sett = pane("t-schedule"), pane("t-settings")
+    check(len(sched) > 5000 and len(sett) > 1000,
+          f"both panes are read: {len(sched)} {len(sett)}")
+    for need in UI2_SETTINGS_ONLY:
+        check(two.count(need) == 1 and need in sett and need not in sched,
+              f"{need} is on the Settings tab once and not on Schedule")
+    # What stays on Schedule: tonight and the operator's night.
+    for need in ('id="tn-card"', 'id="sched-edit"', 'id="p-run-card"',
+                 'id="p-tr"', 'id="arming-card"', 'id="lf-card"',
+                 'id="folders"', 'id="deck-op"', 'id="rigcheck"',
+                 'id="cfg-card"', 'id="fbt"', 'id="fbp"'):
+        check(need in sched and need not in sett,
+              f"{need} stays on the Schedule tab")
+    st_ = _js_function(two, "showTab") or ""
+    for load in ("loadNetwork();", "loadTailscale();", "loadAnnOutputs();",
+                 "loadBooth();", "loadPreshow();"):
+        lines = [ln for ln in st_.split("\n") if load in ln]
+        check(len(lines) == 1 and 't === "settings" && ME && ME.local'
+              in lines[0],
+              f"{load} runs when Settings opens on the show PC, never on "
+              f"Schedule: {lines}")
+    rp = _js_function(two, "renderPreshow") or ""
+    check('if(TAB === "settings" && !PSA_TRIED)' in rp and
+          '"schedule"' not in rp,
+          "pre-show audio's list is read on the Settings tab")
+    # The Settings tab: the show PC only, the Settings row; every press on
+    # the moved cards needed that row already.
+    rd = _js_function(two, "render") or ""
+    check('.tab[data-tab="settings"]\').hidden = !(ME && ME.local && '
+          'mayRow(s, "settings"));' in rd,
+          "the Settings tab is still the show PC's, for the Settings row")
+    # The SuperUser's cards stay off the page for everyone else.
+    for word in ("Remote access over Tailscale", "ts-logins", "ts-on",
+                 "Nightly upload", "au-upsave", "audit-settings",
+                 "SUPERUSER.md"):
+        check(word not in two, f"the page itself carries no {word!r}")
+    _no_dashes(sett, "the Settings tab")
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def doc(name):
+        with open(os.path.join(here, name), encoding="utf-8") as fh:
+            return " ".join(fh.read().split())
+    su, op = doc("SUPERUSER.md"), doc("OPERATOR.md")
+    check("Your card, on the rack screen's Settings tab" in su and
+          "Schedule tab" not in su,
+          "SUPERUSER.md puts the Tailscale card on the Settings tab")
+    for words in ("Settings tab, **Pre-show audio** card",
+                  "Settings tab, **Announcement output, on this machine**",
+                  "open the Settings tab (signed in as an admin) and pick",
+                  '"Show network, on this machine" card on the Settings '
+                  "tab"):
+        check(words in op, f"OPERATOR.md says {words!r}")
+    for gone in ("Schedule tab, **Pre-show audio**",
+                 "open the Schedule tab and pick this machine's",
+                 "card on the Schedule tab says it all"):
+        check(gone not in op, f"OPERATOR.md no longer says {gone!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    page = _ui2_page_inline()
+    st = _ui2_status_day()
+    st["preshow_audio"] = {"available": True, "on": False,
+                           "name": "welcome.wav", "file_ok": True,
+                           "length_s": 30.0, "lead_s": 120}
+    routes = {"/api/remote/morning": _morning_view_pico(),
+              "/api/timelines": {"timelines": []},
+              "/api/remote/preshow-audio": {"on": False, "file": "",
+                                            "choices": []},
+              "/api/remote/announce-outputs": {"device": "", "outputs": [
+                  {"name": "Speakers",
+                   "label": "Speakers (WASAPI, 2 ch)"}]},
+              # The Booth speaker card (boothcard.py): a long name, a
+              # device of 8 outputs picked on output 7, one of 2.
+              "/api/remote/booth-speaker": {
+                  "device": "Booth Box", "hostapi": "", "channels": [7],
+                  "rev": "r1", "locked": "",
+                  "line": {"ok": True, "text": "Booth speaker: Booth Box, "
+                           "output 7, 23 of 23 notes found."},
+                  "outputs": [
+                      {"name": "Speakers (Realtek High Definition Audio "
+                               "Device With A Long Name)",
+                       "hostapi": "Windows WASAPI", "channels": 2,
+                       "label": "Speakers (Realtek High Definition Audio "
+                                "Device With A Long Name) (Windows WASAPI, "
+                                "2 outputs)", "same_name": False,
+                       "cannot_pick": False, "picked": False,
+                       "reserved": {}, "unsure": "it is this PC's default "
+                       "output, where MadMapper's show audio plays"},
+                      {"name": "Booth Box", "hostapi": "Windows WASAPI",
+                       "channels": 8, "label": "Booth Box (Windows WASAPI, "
+                                               "8 outputs)",
+                       "same_name": False, "cannot_pick": False,
+                       "reserved": {"1": "the show audio",
+                                    "2": "the show audio"},
+                       "unsure": "", "picked": True}],
+                  "confirm_words": "These are the show mixer's own "
+                                   "outputs: I checked the channel is free"},
+              "/api/remote/network": {"lines": ["Saved: nothing yet."],
+                                      "url": "", "saved": "",
+                                      "candidates": ["10.20.0.5"],
+                                      "restart": {"needed": True,
+                                                  "offered": True},
+                                      "port": 7878}}
+    steps = r"""
+const g = id => document.getElementById(id);
+const vis = el => !!el && el.getClientRects().length > 0;
+const ids = ["admin", "ts-slot", "annout-card", "psa-card"];
+document.querySelector('.tab[data-tab="schedule"]').click();
+await h.sleep(900);
+out.onSchedule = ids.filter(id => vis(g(id)) && g(id).closest("#t-schedule"));
+document.querySelector('.tab[data-tab="settings"]').click();
+await h.sleep(1200);
+out.tab = !document.querySelector('.tab[data-tab="settings"]').hidden;
+out.onSettings = ["admin", "annout-card", "psa-card"].filter(id => vis(g(id)));
+out.booth = vis(g("booth-card"));
+out.boothLine = g("booth-line").textContent;
+out.boothDev = g("booth-dev").selectedOptions[0].textContent;
+out.boothA = [...g("booth-a").options].map(o => o.value);
+out.boothPickA = g("booth-a").value;
+out.boothB = [...g("booth-b").options].map(o => o.textContent);
+out.boothOff = [...g("booth-a").options].filter(o => o.disabled).map(o => o.textContent);
+out.boothSave1 = g("booth-save").disabled;
+out.boothTick1 = g("booth-ok-l").hidden;
+out.boothDevs = [...g("booth-dev").options].map(o => o.textContent);
+g("booth-dev").selectedIndex = 1;
+g("booth-dev").dispatchEvent(new Event("change"));
+out.boothA2 = [...g("booth-a").options].map(o => o.value);
+out.boothPickA2 = g("booth-a").value;
+out.boothB2 = [...g("booth-b").options].map(o => o.value);
+out.boothSave2 = g("booth-save").disabled;
+out.boothTick2 = !g("booth-ok-l").hidden && vis(g("booth-ok"));
+g("booth-a").value = "2"; g("booth-a").dispatchEvent(new Event("change"));
+out.boothSave3 = g("booth-save").disabled;
+g("booth-ok").checked = true; g("booth-ok").dispatchEvent(new Event("change"));
+out.boothSave4 = g("booth-save").disabled;
+out.boothNarrow = [...document.querySelectorAll("#booth-card select, #booth-card .b")].filter(e => e.getBoundingClientRect().right > g("booth-card").getBoundingClientRect().right + 1).map(e => e.id);
+out.xs = document.scrollingElement.scrollWidth - innerWidth;
+out.wide = [...document.querySelectorAll("#t-settings .card")].filter(e => vis(e) && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.id || "card");
+"""
+    for w, h in ((360, 740), (2560, 1440)):
+        m = _ui2_drive(chrome, page, st, steps, size=(w, h),
+                       frag="?tour=0#day", routes=routes, budget_ms=30000)
+        if not check(isinstance(m, dict) and not m.get("problems"),
+                     f"{w}x{h}: Settings drawn: {m!r}"[:1500]):
+            continue
+        check(m["tab"] and m["onSchedule"] == [] and
+              m["onSettings"] == ["admin", "annout-card", "psa-card"],
+              f"{w}x{h}: none of them on Schedule; on Settings, all three "
+              f"(the Tailscale slot is empty with no SuperUser): "
+              f"{m['onSchedule']} {m['onSettings']} tab {m['tab']}")
+        check(m["xs"] <= 0 and not m["wide"],
+              f"{w}x{h}: nothing on Settings goes off the side: "
+              f"{m['xs']} {m['wide']}")
+        check(m["booth"] and m["boothLine"] == "Booth speaker: Booth Box, "
+              "output 7, 23 of 23 notes found." and
+              m["boothDev"] == "Booth Box (Windows WASAPI, 8 outputs)" and
+              m["boothDevs"][0] == "None: booth speaker off" and
+              m["boothA"] == [str(i) for i in range(0, 9)] and
+              m["boothPickA"] == "7" and
+              m["boothB"][0] == "Channel B: none, one channel only" and
+              len(m["boothB"]) == 9 and not m["boothNarrow"] and
+              m["boothOff"] == ["Channel A: 1 of 8, in use by the show "
+                                "audio", "Channel A: 2 of 8, in use by the "
+                                "show audio"] and
+              m["boothSave1"] is False and m["boothTick1"] is True,
+              f"{w}x{h}: the Booth speaker card: the device, Channel A 1 "
+              f"to 8 with 7 picked, Channel B none or 1 to 8, the check "
+              f"line, nothing past its edge: {m.get('boothDev')} "
+              f"{m.get('boothA')} {m.get('boothB')} {m.get('boothNarrow')}")
+        check(m["boothA2"] == ["0", "1", "2"] and m["boothPickA2"] == "0"
+              and m["boothB2"] == ["0", "1", "2"] and m["boothSave2"] and
+              m["boothTick2"] and m["boothSave3"] and
+              m["boothSave4"] is False,
+              f"{w}x{h}: a device of 2 outputs offers 1 and 2 only, starts "
+              f"on choose a channel with Save off, and its unsure outputs "
+              f"need the tick: {m.get('boothA2')} {m.get('boothPickA2')} "
+              f"{m.get('boothB2')} {m.get('boothSave2')} "
+              f"{m.get('boothTick2')} {m.get('boothSave3')} "
+              f"{m.get('boothSave4')}")
+    print("  ok")
+
+
+def test_ui2_settings_tab_whole_reload_and_restart_poll():
+    section("the Settings tab with every card on it (integration of #278 to "
+            "#282): a reload on #settings reads the show PC's cards once "
+            "the page knows it is the show PC; Restart the engine's 5 s "
+            "refresh runs on the Settings tab, where its cards are, and "
+            "never on Schedule; every Settings card drawn together with "
+            "data (the show network, the Tailscale card, the announcement "
+            "output, the booth speaker, pre-show audio, Haze fluid with "
+            "hazers) at 360x740 and 2560x1440: nothing off the side, 56 px "
+            "targets; the Systems sheet names the Flame timing row and "
+            "says what to do")
+    _one, two = _ui2_pages()
+    tick = _js_function(two, "restartTick") or ""
+    check(tick.split("\n")[1].strip() == 'if(TAB !== "settings" || !ME || '
+          '!ME.local || RESTART_WAIT) return;' and
+          "setInterval(restartTick, 5000);" in two,
+          f"the restart refresh is the Settings tab's: {tick[:160]!r}")
+    who = _js_function(two, "whoami") or ""
+    check("afterFirstStatus(() => tabLoadsForMe(TAB));" in who and
+          who.index("ME = await") < who.index("tabLoadsForMe(TAB)"),
+          "whoami reads the open tab's show PC cards once ME is known and "
+          "the first status is in")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+    else:
+        fns = ""
+        for c in ("SYS_LABEL", "SYS_SHORT", "SYS_OFF", "SYS_SAY"):
+            m = re.search(r"^const " + c + r" = .*?;$", two, re.M | re.S)
+            fns += "\n" + (m.group(0) if m else "")
+        fns += "\n" + "\n".join(_js_function(two, n) or "" for n in (
+            "short8", "sysItem", "sysLook", "tabLoadsForMe"))
+        js = fns + r"""
+const out = {};
+const it = sysItem({name:"Flame timing", state:"warn", word:"3 frame(s) late in the last hour, worst 61 ms"});
+out.ft = [it.label, it.say, sysLook([{name:"Flame timing", state:"warn", word:"3 frame(s) late in the last hour, worst 61 ms"}], false).text];
+out.ok = sysItem({name:"Flame timing", state:"ok", word:"on time, worst 12 ms this hour"}).say;
+let CALLS = [], PSA_TRIED = false, ME = null;
+for(const f of ["loadNetwork", "loadTailscale", "loadAnnOutputs", "loadBooth", "loadPreshow", "loadDeckOp", "loadFolders"]) globalThis[f] = () => CALLS.push(f);
+tabLoadsForMe("settings"); out.none = CALLS.slice();
+ME = {local:false}; tabLoadsForMe("settings"); out.ipad = CALLS.slice();
+ME = {local:true}; tabLoadsForMe("settings"); out.settings = CALLS.slice(); out.psa = PSA_TRIED;
+CALLS = []; tabLoadsForMe("schedule"); out.schedule = CALLS.slice();
+CALLS = []; tabLoadsForMe("show"); out.show = CALLS.slice();
+console.log(JSON.stringify(out));
+"""
+        import subprocess as _sp
+        p = _sp.run([node, "-e", js], capture_output=True, text=True,
+                    timeout=60)
+        try:
+            m = json.loads(p.stdout.strip().splitlines()[-1])
+        except Exception:                        # noqa: BLE001
+            m = None
+        if check(isinstance(m, dict), f"the page's words ran: "
+                                      f"{p.stdout!r} {p.stderr!r}"[:600]):
+            check(m["ft"] == ["Flame timing", "Flame frames late. Tell Jeff "
+                              "after the show.", "Flame time: check"] and
+                  m["ok"] == "OK." and len(m["ft"][1].split()) <= 8,
+                  f"the Flame timing row: its name, what to do, the "
+                  f"badge: {m['ft']} {m['ok']}")
+            check(m["none"] == [] and m["ipad"] == [] and
+                  m["settings"] == ["loadNetwork", "loadTailscale",
+                                    "loadAnnOutputs", "loadBooth",
+                                    "loadPreshow"] and m["psa"] is True and
+                  m["schedule"] == ["loadDeckOp", "loadFolders"] and
+                  m["show"] == [],
+                  f"the open tab's show PC cards, read once ME is known, "
+                  f"on the show PC only: {m}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner")
+        print("  ok")
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "ltcplay", "web", "tailscale_card.js"),
+              encoding="utf-8") as fh:
+        ts_js = fh.read()
+    page = _ui2_page_inline()
+    st = _ui2_status_day()
+    st["preshow_audio"] = {"available": True, "on": False,
+                           "name": "welcome.wav", "file_ok": True,
+                           "length_s": 30.0, "lead_s": 120}
+    hz = [{"name": "Hazer 1", "big": "62% left", "color": "green",
+           "refill_soon": False, "not_sure": False, "words": "w",
+           "sub": "Learned from 3 tanks. 4 shows left", "basis": "learned",
+           "tank_s": 15300.0, "tanks_learned": 3, "learn_firm": True,
+           "tank_litres_learned": 2.55, "percent": 62,
+           "litres_per_hour": 0.6, "tank_litres": 2.5},
+          {"name": "Hazer 2 with a much longer name", "big": "88% left",
+           "color": "green", "refill_soon": False, "not_sure": False,
+           "words": "w", "sub": "Estimating (from the set numbers)",
+           "basis": "estimating", "tank_s": 7200.0, "tanks_learned": 0,
+           "learn_firm": False, "tank_litres_learned": None, "percent": 88,
+           "litres_per_hour": 1.0, "tank_litres": 2.0}]
+    fu = {"units": [], "unit_ids": [], "may_refill": True,
+          "may_undo": True, "refill_why": "", "undo_why": "", "fault": "",
+          "config_error": "", "notes": [], "recent_refills": [],
+          "haze": {"available": True, "hazers": hz, "notes": [],
+                   "config_error": "", "fault": "", "may_undo": True,
+                   "recent_refills": [], "stamp": "abc123stamp00000"}}
+    ts_view = {"on": True, "head": "On: this PC answers on Tailscale.",
+               "problems": ["Firewall rule missing. Restart LTC Player to "
+                            "add it."],
+               "info": ["Each login acts as an iPad, signed in."],
+               "detail": "", "url": "http://100.101.102.103:7878",
+               "name_url": "http://showpc.tail1234.ts.net:7878",
+               "listening": True, "firewall": {"state": "present"},
+               "logins": ["andy.example@gmail.com"],
+               "restart": {"needed": True, "offered": True, "why": ""}}
+    routes = {"/api/remote/morning": _morning_view_pico(),
+              "/api/timelines": {"timelines": []},
+              "/api/remote/fuel": fu,
+              "/api/remote/users": {"tailscale_card": True},
+              "/api/remote/tailscale": ts_view,
+              "/api/remote/tailscale-card.js": _RawRoute(ts_js),
+              "/api/remote/restart-check": {"engine": "e1", "page": ""},
+              "/api/remote/preshow-audio": {"on": False, "file": "",
+                                            "choices": ["welcome.wav"]},
+              "/api/remote/announce-outputs": {"device": "", "outputs": [
+                  {"name": "Speakers",
+                   "label": "Speakers (WASAPI, 2 ch)"}]},
+              "/api/remote/booth-speaker": {
+                  "device": "Booth Box", "hostapi": "", "channels": [7],
+                  "rev": "r1", "locked": "",
+                  "line": {"ok": True, "text": "Booth speaker: Booth Box, "
+                           "output 7, 23 of 23 notes found."},
+                  "outputs": [
+                      {"name": "Booth Box", "hostapi": "Windows WASAPI",
+                       "channels": 8, "label": "Booth Box (Windows WASAPI, "
+                                               "8 outputs)",
+                       "same_name": False, "cannot_pick": False,
+                       "reserved": {}, "unsure": "", "picked": True}],
+                  "confirm_words": "x"},
+              "/api/remote/network": {"lines": ["Saved: 10.20.0.5."],
+                                      "url": "http://10.20.0.5:7878",
+                                      "saved": "10.20.0.5",
+                                      "candidates": ["10.20.0.5"],
+                                      "restart": {"needed": True,
+                                                  "offered": True},
+                                      "port": 7878}}
+    steps = r"""
+const g = id => document.getElementById(id);
+const vis = el => !!el && el.getClientRects().length > 0;
+let CHECK = {engine:"e1", page:""}, ASKED = 0;
+const f0 = window.fetch;
+window.fetch = (u, o) => {
+  if(String(u).indexOf("/api/remote/restart-check") >= 0){ ASKED++; return Promise.resolve(new Response(JSON.stringify(CHECK), {status:200, headers:{"Content-Type":"application/json"}})); }
+  return f0(u, o);
+};
+// Opened on #settings (a reload there): nothing clicked.
+await h.sleep(2500);
+out.reload = {tab:TAB, net:g("net-status").textContent.length > 0, ann:g("annout-pick").options.length,
+  booth:g("booth-line").textContent, ts:!!g("ts-card") && vis(g("ts-card")), psa:PSA_TRIED,
+  hz:document.querySelectorAll("#hzs-rows [data-hz]").length};
+// Every card together, with its data.
+const cards = ["admin", "ts-card", "annout-card", "booth-card", "psa-card", "hzs-card"];
+out.cards = cards.filter(id => vis(g(id)) && g(id).closest("#t-settings"));
+out.xs = document.scrollingElement.scrollWidth - innerWidth;
+out.wide = [...document.querySelectorAll("#t-settings *")].filter(e => vis(e) && e.getBoundingClientRect().right > innerWidth + 1).map(e => (e.id || e.tagName) + "." + e.className).slice(0, 6);
+out.small = [...document.querySelectorAll("#t-settings .b, #t-settings input.f, #t-settings select.f")].filter(e => vis(e) && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.className).slice(0, 6);
+// The 5 s refresh on Settings: the engine's answer changes, the buttons follow.
+out.before = [g("net-restart").hidden, g("net-restart").disabled, g("ts-restart").hidden, g("ts-restart").disabled];
+CHECK = {engine:"e1", page:"A flame group is armed. Disarm every group first."};
+ASKED = 0;
+await h.sleep(5600);
+out.after = [g("net-restart").disabled, g("net-restart-why").hidden, g("net-restart-why").textContent.trim(),
+  g("ts-restart").disabled, g("ts-restart-why").textContent.trim(), ASKED > 0];
+// On Schedule it never runs.
+document.querySelector('.tab[data-tab="schedule"]').click();
+await h.sleep(300);
+ASKED = 0;
+CHECK = {engine:"e1", page:""};
+await h.sleep(5600);
+out.onSchedule = [TAB, ASKED, g("net-restart").disabled];
+"""
+    for w, hh in ((360, 740), (2560, 1440)):
+        # Opened on #settings: the morning view is never read there, so
+        # the drive waits for the status alone (as the Users pane's test).
+        js = "<script>window.__drive = async (out, h) => {\n" + steps + \
+            "\n};</script>" + _UI2_DRIVE_JS.replace(
+                ' && typeof MO !== "undefined" && MO', '', 1)
+        got = _rack_screen_in_chromium(chrome, page, st, ((w, hh),),
+                                       measure_js=js,
+                                       frag="?tour=0#settings",
+                                       routes=routes, budget_ms=40000)
+        m = got[(w, hh)]
+        m = m[0] if isinstance(m, list) and m else str(m)
+        if not check(isinstance(m, dict) and not m.get("problems"),
+                     f"{w}x{hh}: Settings drawn: {m!r}"[:1500]):
+            continue
+        r = m["reload"]
+        check(r["tab"] == "settings" and r["net"] and r["ann"] >= 1 and
+              r["booth"] == "Booth speaker: Booth Box, output 7, 23 of 23 "
+                            "notes found." and r["ts"] and r["psa"] and
+              r["hz"] == 2,
+              f"{w}x{hh}: a reload on #settings reads every show PC card: "
+              f"{r}")
+        check(m["cards"] == ["admin", "ts-card", "annout-card", "booth-card",
+                             "psa-card", "hzs-card"],
+              f"{w}x{hh}: every card drawn on the Settings tab: "
+              f"{m['cards']}")
+        check(m["xs"] <= 0 and not m["wide"] and not m["small"],
+              f"{w}x{hh}: nothing off the side, 56 px targets: {m['xs']} "
+              f"{m['wide']} {m['small']}")
+        check(m["before"] == [False, False, False, False] and
+              m["after"] == [True, False, "Not now: A flame group is "
+                             "armed. Disarm every group first.", True,
+                             "Not now: A flame group is armed. Disarm "
+                             "every group first.", True],
+              f"{w}x{hh}: on Settings the 5 s refresh follows the engine's "
+              f"answer, both buttons, the reason in words: {m['before']} "
+              f"{m['after']}")
+        check(m["onSchedule"] == ["schedule", 0, True],
+              f"{w}x{hh}: on Schedule the refresh does not run: "
+              f"{m['onSchedule']}")
     print("  ok")
 
 
@@ -127865,6 +131786,9 @@ if __name__ == "__main__":
         test_schedule_never_touches_the_rig_before_run,
         test_a_refused_start_sends_no_fade,
         test_refused_starts_say_why_and_what_to_press,
+        test_show_control_off_ends_the_show_without_a_hold,
+        test_show_control_on_late_never_starts_a_passed_show,
+        test_show_control_on_is_stamped_at_the_source,
         test_rack_screen_stop_in_place_of_start_now,
         test_schedule_failed_start_effects_follow_what_was_sent,
         test_soak_schedule_is_refused_outside_the_soak,
@@ -127916,6 +131840,7 @@ if __name__ == "__main__":
         test_flame_link_sender_not_held_by_other_threads,
         test_flame_link_encode_is_byte_for_byte_the_same,
         test_flame_frame_timing_alert_and_systems_line,
+        test_flame_timing_alert_only_in_a_fire_window,
         test_flame_serve_keeps_frames_on_time,
         test_flame_link_end_to_end_against_the_real_flamesafe,
         test_the_gpl_path_never_loads_the_flame_link,
@@ -128053,6 +131978,8 @@ if __name__ == "__main__":
         test_alerts_pure_logic,
         test_alerts_route_status_and_acknowledge,
         test_boothaudio_never_holds_and_never_uses_the_pa,
+        test_booth_speaker_channels_one_or_two_only_the_named_carry_it,
+        test_booth_speaker_card_saves_checks_and_tests,
         test_booth_notes_by_name_and_shipped_by_the_installer,
         test_player_alert_look_pulse_shape,
         test_alert_pixels_never_the_flame_controllers,
@@ -128158,6 +132085,7 @@ if __name__ == "__main__":
         test_video_lamp_follows_the_madmapper_watch,
         test_madmapper_not_following_is_a_display_only_alert,
         test_reset_says_how_the_rig_stands,
+        test_rig_health_reads_the_engines_own_lamp_names,
         test_madmapper_heartbeat_follows_the_real_show_length,
         test_artnet_faults_only_for_the_show_in_use,
         test_show_mode_stays_show_on_the_show_audio,
@@ -128207,6 +132135,10 @@ if __name__ == "__main__":
         test_haze_fluid_undo_bounds_and_the_safe_side,
         test_haze_fluid_never_touches_the_haze_output,
         test_haze_fluid_routes_wiring_and_audit,
+        test_haze_fluid_learns_the_tank_like_flame_fuel,
+        test_haze_fluid_set_level_is_a_correction,
+        test_haze_fluid_settings_card_route,
+        test_haze_fluid_card_saves_are_safe,
         test_haze_fluid_in_the_docs_and_the_page,
         test_fireball_panel_rules,
         test_fireball_at_the_engine,
@@ -128236,11 +132168,15 @@ if __name__ == "__main__":
         test_config_watch_names_the_file_and_who_is_behind,
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,
+        test_restart_engine_between_shows_on_hold,
+        test_show_ctrl_off_mid_show_then_restart_and_booth_test_note,
         test_ui2_screen_served,
         test_ui2_is_the_default_screen,
         test_remote_rules_file,
         test_ui2_runs_on_ipados15,
         test_ui2_systems_rows_say_each_word_once,
+        test_ui2_systems_idle_row_is_one_phrase,
+        test_systems_sheet_rows_are_outside_programs,
         test_ui2_page_makes_only_1_0_presses,
         test_ui2_big_button_second_line_is_state_only,
         test_ui2_time_elapsed_and_left,
@@ -128254,6 +132190,7 @@ if __name__ == "__main__":
         test_ui2_timed_purge_and_fuel_undo_driven,
         test_ui2_fuel_shows_driven,
         test_ui2_haze_fluid_driven,
+        test_ui2_haze_fluid_settings_card_driven,
         test_ui2_startup_steps_never_overlap,
         test_ui2_machine_rows_fit_and_never_overlap,
         test_ui2_fuel_arrange_driven,
@@ -128327,6 +132264,8 @@ if __name__ == "__main__":
         test_superuser_upload_file_never_named,
         test_ui2_show_pc_tools_are_1_0s,
         test_ui2_show_pc_tools_driven,
+        test_ui2_set_once_cards_are_on_settings_not_schedule,
+        test_ui2_settings_tab_whole_reload_and_restart_poll,
         test_ui2_op_text_shapes_text_with_dom_nodes_only,
     ]
     _stopped = _run_tests(TESTS)

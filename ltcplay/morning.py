@@ -3174,7 +3174,7 @@ class Morning:
             except Exception:
                 pass
 
-    def stop_hooks(self, who="", screen=""):
+    def stop_hooks(self, who="", screen="", what="Stop"):
         """Stop (Remote.halt, Jeff 2026-10-30: Stop has every guarantee the
         removed Abort had): the fireball and the cleaning cut at once,
         through the hooks in abort_hooks (named for the Abort they were
@@ -3182,7 +3182,7 @@ class Morning:
         ends the laser tests itself. Never raises."""
         for hook in list(self.abort_hooks):
             try:
-                hook(who, screen, what="Stop")
+                hook(who, screen, what=what)
             except Exception:                    # noqa: BLE001
                 pass
 

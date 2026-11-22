@@ -131,7 +131,7 @@ disarmed, and nothing can arm until it is gone.
 **Alerts.** When something needs a person (the Stream Deck unplugged, a show
 that did not start), a banner appears at the top of the rack screen and on
 every remote page, in plain words, and a short note plays on the booth
-speaker if one is set up (ltcplay_remote.json, booth_alert; off until it
+speaker if one is set up (Settings tab, Booth speaker; off until it
 is), and plays again every 30 seconds (the booth's response_s) until
 someone acknowledges it. It stays until you press Acknowledge on the
 banner or any key on the Stream Deck. Acknowledge only clears the banner:
@@ -172,6 +172,20 @@ While an alert is open the Stream Deck's Start key reads ACK / ALERT in
 blue; it goes back to START NOW once the alert is cleared. An audio alert,
 or an alert the booth speaker could not play, also pulses the floor pixels
 blue (alert_pixels in ltcplay_remote.json) until it is acknowledged.
+
+**Flame frames late** (the "timing" alert; Jeff, 2026-11-18). LTC Player
+sends flame frames to flamesafe 40 times a second. A gap of more than
+flamesafe's fire_hold_ms (100 ms unless its config says otherwise) can cut
+a flame pulse short; it can never hold a flame on, and flamesafe's own
+cut offs work the same at every hour. This alert is raised only while a
+flame can fire: a show (a Hold included), a purge or a Morning test,
+Programming, the Fireball page, or any frame carrying a fire value. If
+LTC Player cannot tell, it counts as a flame that can fire. Late frames at
+any other time (idle, between shows, overnight) raise no alert; they are
+still counted on the Systems sheet's Flame timing line and in the journal.
+The alert is display only, like the others above, and clears by itself an
+hour after its last late frame. A gap over 250 ms keeps it open until you
+acknowledge it. Acknowledging changes nothing on the rig.
 
 **The Stream Deck's keys** (Jeff, 2026-10-26). Six keys, three on top and
 three below:
@@ -272,7 +286,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
   silence (quieter than -80 dBFS) is never played: it says "the recording
   is silent or unreadable". If the show audio process restarts while one
   plays, it is reported failed at once.
-- **Test tone.** Beside the picker (Programming, Announcement output),
+- **Test tone.** Beside the picker (Settings tab, Announcement output),
   Test tone plays one second of a soft 440 Hz tone at -20 dBFS through
   exactly the route and output an announcement would use now, so you can
   check the PA without a recording. Admin, on the show PC only, never
@@ -288,7 +302,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
 - **When the show audio is not running** (the PC idle, show control off, or a
   show file with no audio of its own), an announcement plays on its own
   output instead, never the system default. Pick it on the rack screen:
-  Programming, **Announcement output, on this machine**: a list of every
+  Settings tab, **Announcement output, on this machine**: a list of every
   output on this PC, each with its audio system and how many outputs it
   has. Choose one and press Save; it is used at once, no restart. It
   needs someone signed in who may change Settings (an admin); signed out
@@ -337,7 +351,7 @@ push those off a small screen), with Stop announcement beside them; on the Strea
 minutes before each scheduled show. This is the one thing LTC Player plays
 on the public PA by itself, an exception Jeff approved to "nothing plays on
 the PA automatically": it is OFF until an admin turns it on. Two settings
-and nothing else, on the rack screen, Schedule tab, **Pre-show audio** card
+and nothing else, on the rack screen, Settings tab, **Pre-show audio** card
 (admin, show PC only): **Turn on** or **Turn off**, and which file (choose
 it, then **Save file**; Turn on uses the saved file). The list is every
 WAV file in the Announcements folder (and beside ltcplay_announce.json):
@@ -373,14 +387,59 @@ settings folder; kept over a restart.
 
 The **booth speaker** is separate from announcements: it plays the short
 alert notes (the Stream Deck unplugged, a show that did not start) to a
-private speaker in the booth, never the PA. It is the "booth_alert" block
-in ltcplay_remote.json: `"device"` (the exact output name) and
-`"channels"` (the output pair, like [15, 16]). That is all it needs: the
-notes Jeff recorded ship with the installer (2026-10-28). The first run
-writes the block with no device, so it is off; the Announcements line on
-the rack screen says "Booth speaker: not set" until it is set, and then
-how many notes it found, like "Booth speaker: StudioLive 16R, 23 of 23
-notes found", or which are missing. A missing note stays silent, the
+private speaker in the booth, never the PA. Set it on the show PC, signed
+in with the Settings row: Settings tab, **Booth speaker, on this
+machine** (2026-11-19; nobody edits ltcplay_remote.json by hand any more):
+
+- **Device**: every output on this PC, with how many outputs it has, or
+  "None: booth speaker off". A name Windows lists more than once shows
+  its audio system, the same as the Announcement output card.
+- **Channel A**: 1 up to that device's output count (a device with 8
+  outputs offers 1 to 8, one with 2 offers 1 and 2). Nothing is picked
+  for you: it starts on "choose a channel" and Save waits for it.
+  **Channel B**: a second output, or "none, one channel only". On one
+  output a stereo note is folded to one; on two, left plays on A and right
+  on B. Every other output stays silent.
+- Outputs the show audio or the announcements use are greyed, "in use by
+  the show audio", and the engine refuses them even if a page sends one:
+  every stem's and the timecode's output in the show files of the show
+  folder (and of the show running), the announcements' Main L/R
+  (show_outputs) on that device, and outputs 1 and 2 of the announcement
+  output. When LTC Player cannot tell which outputs a device's show audio
+  uses (this PC's default output, where MadMapper's show audio plays; no
+  show folder; a show file whose audio cannot be read), Save needs the
+  tick "These are the show mixer's own outputs: I checked the channel is
+  free", and the journal says it was ticked.
+- The line under the pickers checks the setting in use, the same way a
+  note does: "Booth speaker: StudioLive 16R, output 7, 23 of 23 notes
+  found.", or exactly what is wrong (the device is not attached, it has
+  only N outputs so a channel is not there, notes missing).
+- **Save** checks the device and channels against this PC's real outputs
+  and writes only the booth_alert block of ltcplay_remote.json (every
+  other setting, and the block's own "files" and "response_s", is kept).
+  It is used at once, no restart. An alert raised in the moment of a save
+  is silent until its next repeat (30 seconds, the booth's response_s). It
+  is refused while a show is live or on Hold, while a booth note is
+  playing, and when the card is older than the file (someone saved since:
+  the card shows the new setting, pick again). Every refusal ends "Nothing was changed." The journal and the
+  audit log say who changed it, on which screen, from what to what.
+- **Test note** plays booth_test.wav on the booth speaker only, never the
+  PA and never the show audio. It is refused while a show is running or
+  on Hold, while any flame group is armed (or flamesafe's state is not
+  known), during a purge, a laser or hazer test, cleaning or the fuel
+  pump, and when no booth speaker is set. So Test note never plays on a PC
+  without flamesafe (fails closed).
+- A one-output setting (like [7]) is not read by an older build: after a
+  rollback the booth speaker is off until it is set to two outputs again.
+
+It is the "booth_alert" block in ltcplay_remote.json: `"device"` (the
+exact output name), `"hostapi"` (only when the name is listed more than
+once) and `"channels"` (one output like [7], or two like [15, 16]). That
+is all it needs: the notes Jeff recorded ship with the installer
+(2026-10-28). The first run writes the block with no device, so it is
+off; the Announcements line on the rack screen says "Booth speaker: not
+set" until it is set, and then how many notes it found, like "Booth
+speaker: StudioLive 16R, 23 of 23 notes found", or which are missing. A missing note stays silent, the
 banner says so and the floor pulse runs instead; nothing else is played
 in its place.
 
@@ -404,7 +463,7 @@ differ) never sound. Every other alert repeats its note every 30 seconds
 | File | Plays when |
 |---|---|
 | booth_gate.wav, booth_audio.wav, booth_video.wav, booth_deck.wav, booth_start.wav, booth_flames.wav, booth_link.wav, booth_timecode.wav, booth_lasers.wav, booth_users.wav | an alert of that kind is open (lasers and users sound from 2026-10-28) |
-| booth_test.wav | a test of the booth speaker; no screen has a button for it yet |
+| booth_test.wav | Test note on the Settings tab's Booth speaker card |
 | booth_held.wav | once, when the schedule holds at showtime for an open alert, before that alert's own note |
 | booth_preroll_audio.wav, booth_preroll_video.wav, booth_preroll_timecode.wav, booth_preroll_lasers.wav, booth_preroll_flames.wav, booth_preroll_network.wav, booth_preroll_hold.wav, booth_preroll_ok.wav, booth_continue_anyway.wav | the pre-roll check, once it is built (PR #162); silent until then |
 | booth_clean_ready.wav, booth_clean_done.wav | the wave flamer cleaning routine, once it is built (PR #159); silent until then |
@@ -1074,15 +1133,25 @@ channel, and is either ARMED or DISARMED.
   always. It never arms a flame group or a laser.
 
 - **Haze fluid (Startup page, Fuel step, 2026-11-12).** Under the fuel
-  tanks, a tile per hazer: its haze time since its last refill (fan only
-  time never counts), or percent left when its flow and tank size are set
-  in ltcplay_hazers.json. Tap a hazer when its fluid tank is full and say
-  yes (**Refilled**, the same sign-in as a fuel refill). An admin can
-  undo a wrong one under **Refills and notes**, as for fuel. Not sure
+  tanks, a tile per hazer: percent left, then **Learned from N tanks**
+  or **Estimating (from the set numbers)**, and shows left once it has
+  seen 3 full shows. With nothing learned or set it shows haze time since
+  the last refill (fan only time never counts). Tap a hazer when its
+  fluid tank is full and say yes (**Refilled**, the same sign-in as a
+  fuel refill). An admin can undo a wrong one under **Refills and
+  notes**, as for fuel; the undo takes back what it taught. Not sure
   time (a restart, a stale link to flamesafe) counts as full output, on
-  top of any haze already counted, so the litres read emptier, never
+  top of any haze already counted, so the levels read emptier, never
   fuller. FUEL.md has the details; the record is haze.json in the
   settings folder.
+- **Haze fluid settings (Settings tab, the show PC, 2026-11-19).** An
+  admin sets each hazer's litres per hour at full output and tank
+  litres (a starting guess), sees what was learned, and has **Set level
+  now** (type the percent left after looking at the tank: a correction,
+  never a refill) and **Reset learning** (asks first; refills are
+  kept). It learns how long a tank lasts from refill to refill: refill
+  when a tank is really empty, run it down, refill again. After 3 tanks
+  it is firm. Nothing here changes the haze.
 
 ## The fireball's fuel pump
 
@@ -1965,8 +2034,38 @@ stop:
 - **Show control off** is on the Show file card's button: with show
   control on and nothing playing, the button reads Show control off
   (End rehearsal in a rehearsal). It is also in Stop's place on the SHOW
-  tab at those times, in full colour, reading Show ctrl off. It asks first, then does a Stop and
-  stops playback, so show control is off. It needs the Show permission;
+  tab at those times, in full colour, reading Show ctrl off. It asks first, then does
+  everything a Stop does except the Hold, and stops playback, so show
+  control is off (Jeff, 2026-11-19). Every flame group and laser is
+  disarmed and blanked, every test and Programming playback ends, and a
+  show that is live ends and is not resumed, but the schedule is NOT put
+  on Hold: the night carries on. A Hold that was already on stays on,
+  also one pressed during a show: that show ends and the Hold stays on
+  until Resume. The rig is left dark either way. A
+  show whose time comes while show control is off is not started: it is
+  refused in words, marked on its slot, journaled, and raises an alert
+  (nothing reaches the rig). If that alert is still open at the next
+  show's time, the engine holds the schedule then, as it does for any
+  open alert. Turning show control on again never starts a show whose
+  start time has already passed, by even one second (Jeff, 2026-11-19):
+  it is MISSED, and the journal says show control was off at its start
+  time. That is so even inside the 2 minute late rule. A show whose
+  time has not come yet starts at its time. The moment counted is when
+  you pressed Show control on, as long as the show file is first seen
+  running within 10 seconds of the press. If it is first seen running
+  more than 10 seconds after the press, the engine's first look that
+  sees it running (up to about a quarter second later) counts instead. Start now and Start at a cue
+  still start a show when you press them. Resume ends a Hold, but it
+  does not start a show whose time passed while show control was off:
+  that show is MISSED, and Start now starts it. A show MISSED this way
+  says so on the schedule list ("show control was off at its start
+  time") and in the journal; it raises no alert. If the scheduler had
+  already decided to start such a show when show control came on, the
+  start is refused at that moment with the same words, nothing is sent
+  to the rig for it, and it is marked FAULT with the usual alert for a
+  refused start (this can only happen in the moment between the
+  decision and the start). End rehearsal
+  is the same press in a rehearsal. It needs the Show permission;
   Stop never does. Right after Stop turns back into Start now, Show
   control on or off, the button waits 2 seconds before it takes a
   press, and a press made just as the show ended or started does nothing
@@ -2111,7 +2210,7 @@ the Schedule tab's editor (the schedule file's `after_last_show`):
 | End of night, tapped twice | the pixels go black; the night is closed for good (a restart or a schedule save never holds it again) |
 | One tap only | nothing is sent; after 3 s the message line says "End of night not sent: tap twice" |
 | Stop | a complete halt as always, and the held look ends: the pixels go black, the night is closed for good |
-| Show control off | it is a Stop first, so the same: black, closed for good |
+| Show control off | everything a Stop does but the Hold, so the same: black, closed for good |
 | Hold | refused as on any closed night ("nothing to hold"); the look stays |
 | Start now | an extra show starts; when it ends by itself the idle look is held again, with End of night |
 | The hand over to the next night (2 AM, or earlier for an early next night) | the held look ends, the pixels go black, the journal says so, and the next night starts as it always does |
@@ -2574,14 +2673,14 @@ Turning it off puts every controller back on the live stream immediately.
 
 ## The iPad
 
-Once, on the show machine: open the Schedule tab and pick this machine's
-show Wi-Fi address on the "Show network, on this machine" card. On a Mac, start it with the show network on (Run ltcplay, answer
+Once, on the show machine: open the Settings tab (signed in as an admin)
+and pick this machine's show Wi-Fi address on the "Show network, on this machine" card. On a Mac, start it with the show network on (Run ltcplay, answer
 y to the iPad question). There is no PIN.
 
 ### Open the page from your Mac or iPad
 
 On the Windows show PC the "Show network, on this machine" card on the
-Schedule tab says it all in plain words: the address saved (or none), where
+Settings tab says it all in plain words: the address saved (or none), where
 the engine is listening, whether the Windows Firewall rule is there,
 whether Windows calls that network Public or Private (with what to do
 when it is Public), and the address to type on the other machine, for
@@ -2710,8 +2809,8 @@ a show to see its notes (why it was moved, skipped or added, or "No notes";
 tap again to close). Programming has the scrubbing controls and, on the
 show machine only, the Show file card (the Show and Programming switch, the
 show file, and Show control on, or Start rehearsal in Programming,
-which reads Stop in the same place while it is on and something plays),
-the Stream Deck operator and the show network.
+which reads Stop in the same place while it is on and something plays)
+and the Stream Deck operator. The show network is on the Settings tab.
 Show: the scheduler starts each show at its time and scrubbing is off.
 Programming: a rehearsal; play from, jump and loop work and the scheduler
 starts no show. To switch, turn show control off (or End rehearsal),
@@ -2885,10 +2984,15 @@ nothing fires.
 
 Only for the people the SuperUser has let in (SUPERUSER.md).
 
-**Type the name, not the address.**
+**Type the number address.**
 
-- `http://ignite-player.tail342a0a.ts.net:7878/`
-- Shared from another tailnet: always this full name.
+- `http://100.75.53.81:7878/`
+- This works in Chrome on Android today.
+- The name, `http://ignite-player.tail342a0a.ts.net:7878/`, needs HTTPS
+  for now: Chrome tries HTTPS first on a name and refuses it
+  (ERR_SSL_PROTOCOL_ERROR), and LTC Player answers plain HTTP on 7878.
+- Shared from another tailnet: the number address, or the full name once
+  HTTPS works.
 - Nothing else answers: no other name, no https.
 
 **Then it works like an iPad.**
@@ -3067,9 +3171,9 @@ tab, and the hardware e-stop always works.
   tab): Arming from a screen (show PC only; Turn on asks first and
   needs Settings, Turn off works at once), Live flame programming (Turn
   on on the show PC only, asks first and needs Settings; Turn off from
-  anywhere, also from the line at the top) and the announcement output
-  (show PC only: the output, Save, Test tone, Settings). Nothing on
-  them arms anything by itself: arming is still the Stream Deck's hold
+  anywhere, also from the line at the top). The announcement output is
+  on the Settings tab (show PC only: the output, Save, Test tone).
+  Nothing on them arms anything by itself: arming is still the Stream Deck's hold
   to arm and flamesafe's rules.
 - Programming (Schedule tab): the Programming cards, on the Schedule tab (there is no room in the header for a tab
   of its own; `/remote2#prog` opens it). On the show PC, the Show file
@@ -3089,8 +3193,9 @@ tab, and the hardware e-stop always works.
   says why it refuses one, and its answer is shown under the card. While
   the show's flame cues follow Programming playback, a move needs the show
   PC or Settings, and the card says how the flames follow; a
-  flame cue fault is shown there in full. The show folder, the network
-  and the other show PC tools are cards further down the Schedule tab.
+  flame cue fault is shown there in full. The show folder and the other
+  show PC tools are cards further down the Schedule tab; the show
+  network is on the Settings tab.
 - Anything live that has to be stopped by hand (the wave flamer cleaning,
   live flame programming) sits in the next-step
   line with its own red Stop, on every tab, never behind another alert,
@@ -3169,9 +3274,13 @@ tab, and the hardware e-stop always works.
     someone who may change settings), Rig check (pre-roll) with Check the
     rig, the Show folder (Make a show file, Check the show file, Use this
     folder, which asks first and restarts the engine, Open the show and
-    settings folders), the Stream Deck operator (Choose), and the Show
-    network (the address to type on an iPad, Use, Save address, and
-    Restart the engine when the saved address needs it; it asks first).
+    settings folders) and the Stream Deck operator (Choose).
+  - Settings tab, on the show PC only, for someone who may change
+    settings (Jeff, 2026-11-19: set once, so moved off the Schedule tab):
+    the Show network (the address to type on an iPad, Use, Save address,
+    and Restart the engine when the saved address needs it; it asks
+    first), the announcement output, Pre-show audio and, for a SuperUser
+    only, Remote access over Tailscale.
   - Help, This LTC Player: the version, this screen, where the settings
     and logs are, the mode, how to leave this window, and on the show PC
     Close this window.
@@ -3197,7 +3306,14 @@ tab, and the hardware e-stop always works.
   USERS.md, "The SuperUser", says what an admin may not change.
 - The systems badge in the header names a single problem ("Stream Deck:
   check"); one tap opens the list, which starts with what to do first.
-  Something not set up here reads Off.
+  The list is only what cannot be seen elsewhere: whether each outside
+  program and device is there and talking to this PC (Stream Deck,
+  flamesafe, show audio, announcements, BEYOND, MadMapper and its window,
+  pixels, disk, audit log). The laser arm is on the main page, not here.
+  BEYOND reads OK while its program runs on this PC; it never answers, so
+  that is all the list can know. Pixels, and the show audio until it has
+  been looked for, read "Checked when a show starts" in grey: not a
+  problem. A problem says what is wrong and what to do.
 - Help (header): the tour again, and a quick card to print. Each "?" says
   what the buttons near it do, in one sentence each.
 

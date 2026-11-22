@@ -267,6 +267,20 @@ DELAY_CHOICES = (5, 10)
 # late_grace_s keeps its name; when the rule file does not give one, this is
 # the value. It was 15 s before (and 0 when the file left it out).
 DEFAULT_LATE_GRACE_S = 120
+# Show control turned on late (Jeff, 2026-11-19: "When you turn show control
+# back on, if it's past the start time by even a second, it should not
+# start"): a show already this many whole seconds past its start at the
+# moment show control went on (Event.run_on_at) is MISSED, never started by
+# the scheduler, whatever the late rule above allows. Start now, Resume and
+# Start at a cue stay the operator's own presses.
+RUN_ON_LATE_S = 1
+# The press of Show control on is its moment (Jeff, 2026-11-19), as long as
+# the show file is first seen running within this many seconds of the
+# press; otherwise the first look that sees it running (a tick or the show
+# runner's check, up to about a quarter second late) is the moment (the
+# later time, fail closed).
+RUN_ON_PRESS_GRACE_S = 10
+RUN_OFF_AT_START = "MISSED (show control was off at its start time)"
 # The late rule's ceiling (5 minutes). A bigger number in the rule file is
 # refused with a sentence rather than quietly clamped: a silent clamp is a
 # setting that says one thing and does another. A grace longer than the gap
@@ -1034,6 +1048,15 @@ class Event:
     # hold, pre-roll and Stop checks (Jeff's rule; simulation review B of
     # PR #202).
     settle: bool = False
+    # STOP_SHOW only (Jeff, 2026-11-19): False for Show control off, which
+    # ends a live show as every Stop does but leaves the schedule OFF Hold,
+    # so the night carries on to its next show (_stop_show_no_hold).
+    hold: bool = True
+    # TICK only, filled in by the service (Jeff, 2026-11-19): when show
+    # control was last turned on (the service's own clock), or None when
+    # this engine has no show control gate. A show RUN_ON_LATE_S or more
+    # past its start at that moment is MISSED, never started (_sweep).
+    run_on_at: object = None
 
 
 @dataclass(frozen=True)
@@ -1530,7 +1553,8 @@ def _enter(tx, state, show=0, after_stop=False, resume=False, held=None):
         tx.m = replace(tx.m, stop_hold=False)
 
 
-def _after_show(tx, abort=False, stopped=False, hold=False):
+def _after_show(tx, abort=False, stopped=False, hold=False,
+                stop_hold=True):
     """Where a show that has just finished, or been stopped, leaves the
     night. `stopped` is a show cut short (Abort, a failed start). `hold`
     is an operator's Stop (Jeff, 2026-10-30): with a show still to come it
@@ -1539,7 +1563,9 @@ def _after_show(tx, abort=False, stopped=False, hold=False):
     as an Abort does (STANDBY, and the next tick closes it)."""
     m = tx.m
     if hold and m.waiting():
-        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=True)
+        # stop_hold False: an operator's Hold that was on (a show paused,
+        # then Show control off) stays an operator's Hold.
+        tx.m = replace(tx.m, held_from=STANDBY, stop_hold=stop_hold)
         _enter(tx, HOLD, after_stop=stopped)
     elif abort or m.waiting():
         # Abort stays in STANDBY even when no show is left; the next tick
@@ -1693,6 +1719,14 @@ def _sweep(tx, held=None):
         if late < 0:
             break
         state = tx.m.state
+        on_at = tx.ev.run_on_at
+        if on_at is not None and not held and \
+                lateness_s(s.start, on_at) >= RUN_ON_LATE_S:
+            # Show control came on after this show's time: never started
+            # by the scheduler, even inside the late rule (Jeff,
+            # 2026-11-19).
+            _miss(tx, s, RUN_OFF_AT_START)
+            continue
         grace = tx.m.late_grace_s
         if tx.ev.late_show and tx.ev.late_show == s.n:
             grace = late_limit_s(grace, tx.ev.late_ok_s)
@@ -1888,7 +1922,7 @@ def _pause_so_far(tx):
 
 
 def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
-                  stopped=None, hold=False):
+                  stopped=None, hold=False, stop_hold=True):
     tx = _Tx(m, ev, now)
     n = m.running
     s = m.slot(n)
@@ -1901,7 +1935,7 @@ def _show_stopped(m, ev, now, status, reason, text, effects, abort=False,
     tx.effects.extend(effects)
     _after_show(tx, abort=abort,
                 stopped=bool(effects) if stopped is None else stopped,
-                hold=hold)
+                hold=hold, stop_hold=stop_hold)
     tx.note(ev.kind, status.lower(), reason, text, show=n)
     return tx.done()
 
@@ -2332,6 +2366,33 @@ NOTHING_SENT_TO_RIG = (
     "was.")
 
 
+def _stop_show_no_hold(m, ev, now):
+    """Show control turned off during a show (Jeff, 2026-11-19: "Show
+    Control Off should do everything it does now except put the schedule
+    on Hold"): the show ends exactly as a Stop ends it (the same Abort
+    sequence, nothing latched), but the schedule is NOT put on Hold. With
+    a show still to come the night waits in STANDBY, dark; with none left
+    it stays STANDBY and the next tick closes it, as after an Abort. A
+    show that was PAUSED (an operator's Hold pressed during it) ends onto
+    that Hold, dark, still the operator's Hold (not a Stop's): a Hold that
+    was on stays on. A show whose time comes while show control is off is
+    refused by the show runner, which sends nothing to the rig."""
+    n = m.running
+    who = ev.who.strip() or "Someone, with no operator chosen,"
+    paused = m.state == PAUSED
+    return _show_stopped(
+        m, ev, now, ABORTED, "STOPPED (show control turned off)",
+        f"{who} turned show control off{_screen(ev)} during show {n}. "
+        f"Flame cues zeroed and lasers blanked; music, video and pixels "
+        f"fading to black over {ABORT_FADE_S:g} s, then MadMapper stopped. "
+        f"Nothing is latched. "
+        + ("The Hold that was on stays on: no show starts by itself until "
+           "Resume." if paused and m.waiting() else
+           "The schedule is not on Hold: the night carries on, and no show "
+           "starts while show control is off."),
+        _abort_effects(n), abort=True, hold=paused, stop_hold=False)
+
+
 def _stop_show(m, ev, now):
     """Stop during a show (every Stop: a screen's double tap, an iPad, the
     Stream Deck's Stop held): the show ends now, faded to dark, and
@@ -2343,6 +2404,8 @@ def _stop_show(m, ev, now):
     flame groups and lasers itself before this and journals how that went,
     so this line claims only what the scheduler does. The slot's status is
     ABORTED (a show cut short), its reason STOPPED (operator Stop)."""
+    if not ev.hold:
+        return _stop_show_no_hold(m, ev, now)
     n = m.running
     held = m.waiting()
     return _show_stopped(
