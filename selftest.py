@@ -59914,14 +59914,15 @@ class _RawRoute:
     """A route _rack_screen_in_chromium answers with this text as it is
     (a script), not as JSON."""
 
-    def __init__(self, text, ctype="application/javascript; charset=utf-8"):
-        self.text, self.ctype = text, ctype
+    def __init__(self, text, ctype="application/javascript; charset=utf-8",
+                 code=200):
+        self.text, self.ctype, self.code = text, ctype, code
 
 
 def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                              tries=None, measure_js=None, head_js="",
                              frag="", routes=None, budget_ms=6000,
-                             posts=None):
+                             posts=None, stall=None, who=None):
     """Draw `page` (remote.html's text) in headless `chrome` (a path, or a
     command as a list) at each (width, height) in `sizes`, its engine a
     stub answering `status`, and return {(w, h): [measure, ...]} (see
@@ -59932,7 +59933,9 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
     `head_js` runs before the page's own script (an emulated screen),
     `frag` is added to the URL ("?q=1#morning") and `routes` maps more GET
     paths to the JSON they answer (/api/remote/morning); `posts` maps POST
-    paths to their JSON answer (the rest answer {})."""
+    paths to their JSON answer (the rest answer {}). `stall`, (text, s),
+    sends the page up to `text`, then waits s seconds before the rest (a
+    slow phone link); `who` replaces whoami's answer."""
     import http.server
     import shutil
     import subprocess as _sp
@@ -59959,10 +59962,23 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
 
         def do_GET(self):
             p = self.path.split("?")[0]
+            if p in ("/", "/remote") and stall:
+                data = html.encode("utf-8")
+                cut = len(html[:html.find(stall[0])].encode("utf-8"))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data[:cut])
+                self.wfile.flush()
+                time.sleep(stall[1])
+                self.wfile.write(data[cut:])
+                return
             if p in ("/", "/remote"):
                 return self._out(200, html, "text/html; charset=utf-8")
             if p == "/api/remote/whoami":
-                return self._out(200, json.dumps(
+                return self._out(200, json.dumps(who or
                     {"local": True, "device": "this PC (rack screen)",
                      "fresh_s": 2.0}))
             if p == "/api/remote/status":
@@ -59972,7 +59988,8 @@ def _rack_screen_in_chromium(chrome, page, status, sizes, floor=None,
                 return self._out(200, json.dumps(st))
             if p in routes:
                 if isinstance(routes[p], _RawRoute):
-                    return self._out(200, routes[p].text, routes[p].ctype)
+                    return self._out(routes[p].code, routes[p].text,
+                                     routes[p].ctype)
                 return self._out(200, json.dumps(routes[p]))
             if p.startswith("/brand/"):
                 return self._out(404, "{}")
@@ -118378,6 +118395,326 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
     print("  ok")
 
 
+_UI2_BANNER_MEASURE_JS = r"""
+<script>
+(function(){
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const q = id => document.getElementById(id);
+const r = el => { const a = el.getBoundingClientRect(); return [a.left, a.top, a.right, a.bottom].map(Math.round); };
+const vis = el => { const a = el.getBoundingClientRect();
+  const at = document.elementFromPoint(a.left + a.width / 2, a.top + a.height / 2);
+  return !!at && el.contains(at); };
+const cut = el => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+function measure(){
+  const b = q("broken"), t = q("broken-t"), s = q("broken-stop"), g = q("broken-go");
+  const m = {W:innerWidth, H:innerHeight, shown:!b.hidden, pos:getComputedStyle(b).position,
+    banner:r(b), title:r(t), stop:r(s), go:r(g), stop_vis:vis(s), go_vis:vis(g),
+    stop_cut:cut(s), go_cut:cut(g), title_cut:t.scrollWidth > t.clientWidth + 1,
+    page_w:Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+    banner_cut:b.scrollWidth > b.clientWidth + 1,
+    why:q("broken-why").hidden ? "" : q("broken-why").textContent,
+    more:!q("broken-more").hidden, more_r:r(q("broken-more")), more_vis:!q("broken-more").hidden && vis(q("broken-more")),
+    detail:q("broken-detail").hidden ? "" : q("broken-detail").textContent,
+    // where the page starts with the window scrolled to its top
+    app_top:Math.round(q("app").getBoundingClientRect().top + scrollY)};
+  return m;
+}
+async function go(){
+  await wait(2500);
+  const res = {first:measure()};
+  // The page under it: the page's own Stop where its layout puts it (shown
+  // as a page with something to stop draws it), brought into view, is on
+  // top, never under the banner.
+  res.own = [];
+  for(const id of ["b-stop", "m-stop"]){
+    const e = q(id);
+    if(!e || !e.offsetParent) continue;
+    e.classList.remove("nostop");
+    // As a finger can: the page's own pane scrolls, the window never does.
+    e.scrollIntoView({block:"center"});
+    if(getComputedStyle(document.body).overflowY === "hidden") window.scrollTo(0, 0);
+    else window.scrollBy(0, e.getBoundingClientRect().top - q("broken").getBoundingClientRect().bottom - 4);
+    await wait(100);
+    const a = e.getBoundingClientRect(), at = document.elementFromPoint(a.left + a.width / 2, a.top + a.height / 2);
+    const hit = at ? (at.closest("[id]") || at) : null;
+    // The banner never covers it (the page's own layout in a very short
+    // window is the page's, banner or not).
+    res.own.push([id, !(at && q("broken").contains(at)), r(e), hit ? (hit.id || hit.tagName) : null]);
+  }
+  q("broken-more").click(); await wait(300);
+  res.detail = measure();
+  // Its own Stop sent: the longer answer, and the page moved down with it.
+  q("broken-stop").click(); await wait(300); q("broken-stop").click(); await wait(800);
+  res.stopped = measure();
+  res.stopped.said = q("broken-t").textContent;
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(res);
+  document.body.appendChild(pre);
+}
+go();
+})();
+</script>
+"""
+
+
+def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
+    section("the not fully loaded banner (Andy, 2026-11-22, a Galaxy S22 "
+            "Ultra): from a 360 px phone to a 2560x1440 screen its words "
+            "wrap at full width and its Stop show and Reload sit side by "
+            "side under them, 56 px or more, never cut or off the screen, "
+            "the page moved down under it so the page's own Stop is still "
+            "reachable; it says where the page's script stopped")
+    two = _ui2_pages()[1]
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: the banner could "
+              "not be drawn")
+        print("  note: no Chromium, Chrome or Edge here, so the banner was "
+              "not drawn (set LTCPLAY_CHROME to one)")
+        print("  ok")
+        return
+    fk = two[two.find("const FIRE_KEY_NEVER"):][:500]
+    check("#broken-more," in fk and "#broken," in fk,
+          "Space or Enter on the banner's Show detail (or anything in the "
+          "banner) never reaches the purge's fire key")
+    # Broken on purpose: the rules' request refused, and a script error
+    # after the Stop core (the first one the page meets).
+    # The browser's own ResizeObserver notice comes first: never taken
+    # for where the page stopped. The real error ends in a full stop, which
+    # the line drops before ", line N".
+    page = two.replace('<script src="/remote-logic.js"></script>',
+                       '<script src="/remote-logic.js"></script><script>'
+                       'window.dispatchEvent(new ErrorEvent("error", {message:'
+                       '"ResizeObserver loop completed with undelivered '
+                       'notifications.", filename:"/remote", lineno:9}));'
+                       'throw new Error("test break.");</script>', 1)
+    check(page != two, "the test page carries its break")
+    refused = _RawRoute('{"error": "no"}', "application/json", code=404)
+    got = _rack_screen_in_chromium(
+        chrome, page, _ui2_status_running(),
+        ((360, 740), (412, 915), (740, 360), (915, 412), (2560, 1440)),
+        measure_js=_UI2_BANNER_MEASURE_JS, frag="?tour=0", budget_ms=8000,
+        routes={"/remote-logic.js": refused})
+    for (w, h), res in got.items():
+        where = f"the banner at {w}x{h}"
+        if not isinstance(res, dict):
+            check(False, f"{where}: not drawn: {res!r}")
+            continue
+        for k in ("first", "detail", "stopped"):
+            m = res.get(k) or {}
+            at = f"{where} ({k})"
+            W, H = m.get("W", 0), m.get("H", 0)
+            bn, ti = m.get("banner") or [0] * 4, m.get("title") or [0] * 4
+            st, go = m.get("stop") or [0] * 4, m.get("go") or [0] * 4
+            check(m.get("shown") and m.get("pos") == "fixed" and
+                  bn[1] == 0 and bn[0] >= 0 and bn[2] <= W,
+                  f"{at}: shown, fixed at the top, the window's width: {m}")
+            check(m.get("page_w", 1e9) <= W and not m.get("banner_cut"),
+                  f"{at}: nothing goes off the side: {m}")
+            check(ti[2] - ti[0] >= 0.6 * W and not m.get("title_cut"),
+                  f"{at}: the words have the row's width, not one word a "
+                  f"line: {ti} of {W}")
+            for name, b, seen, cut in (("Stop show", st, "stop_vis",
+                                        "stop_cut"),
+                                       ("Reload", go, "go_vis", "go_cut")):
+                check(b[3] - b[1] >= 56 and b[0] >= 0 and b[2] <= W and
+                      b[1] >= ti[3] and b[3] <= H and m.get(seen) and
+                      not m.get(cut),
+                      f"{at}: {name} is 56 px or more, under the words, "
+                      f"whole on the screen and on top: {b} {m}")
+            mr = m.get("more_r") or [0] * 4
+            check(m.get("more") and m.get("more_vis") and mr[1] >= 0 and
+                  mr[3] <= st[1] and mr[3] - mr[1] >= 44 and mr[2] <= W,
+                  f"{at}: Show detail (or Hide detail) is whole, above the "
+                  f"buttons, on top: {mr} {m}")
+            check(abs(st[1] - go[1]) <= 2 and st[2] <= go[0],
+                  f"{at}: Stop show first, Reload beside it: {st} {go}")
+            check(bn[3] - bn[1] <= max(0.6 * H, 180) + 1 and
+                  m.get("app_top", -1) >= bn[3] - 1,
+                  f"{at}: the banner is at most 60 percent of the window "
+                  f"(or one line and its buttons) "
+                  f"and the page starts under it, so it covers none of the "
+                  f"page: banner {bn}, page at {m.get('app_top')}, {H} high")
+        f = res["first"]
+        check("Stopped at: " in f.get("why", "") and
+              "test break, line " in f["why"] and
+              "ResizeObserver" not in f["why"] and ".," not in f["why"] and
+              f.get("more"),
+              f"{where}: it says where the script stopped, with Show "
+              f"detail: {f.get('why')!r}")
+        sp = res.get("stopped") or {}
+        check(sp.get("said", "").startswith("Stop "),
+              f"{where}: its Stop was sent and answered: {sp.get('said')!r}")
+        check(res.get("own") and all(o[1] for o in res["own"]),
+              f"{where}: the page's own Stop, where drawn, is never under "
+              f"the banner: "
+              f"{res.get('own')}")
+        d = res["detail"].get("detail", "")
+        check("test break" in d and "Rules: missing isStale" in d and
+              "Page script ran to its end: " in d and ", line " in d,
+              f"{where}: Show detail says what broke: {d!r}")
+        check("–" not in d + f.get("why", "") and
+              "—" not in d + f.get("why", ""),
+              f"{where}: no em or en dashes")
+    print("  ok")
+
+
+_UI2_ARRIVE_HEAD_JS = r"""
+<script>
+window.__seen = []; window.__first = null;
+new MutationObserver(() => {
+  const b = document.getElementById("broken");
+  if(b && !b.hidden){
+    window.__seen.push(document.getElementById("broken-t").textContent);
+    const w = document.getElementById("broken-why");
+    if(!window.__first) window.__first = {ms:Math.round(performance.now()), state:document.readyState};
+    if(w && !w.hidden && w.textContent) window.__first.why = w.textContent;
+  }
+}).observe(document, {subtree:true, childList:true, attributes:true, attributeFilter:["hidden"]});
+</script>
+"""
+
+_UI2_ARRIVE_MEASURE_JS = r"""
+<script>
+(function(){
+const q = id => document.getElementById(id);
+const now = () => ({broken:!q("broken").hidden, whole:ui2Whole(), ready:UI2_READY,
+  text:q("broken-t").textContent, seen:window.__seen.slice(0, 5)});
+const res = {at_end:now()};
+setTimeout(() => {
+  res.later = now();
+  res.local = (typeof ME !== "undefined" && ME) ? ME.local : null;
+  res.first = window.__first;
+  const pre = document.createElement("pre"); pre.id = "rack-measure";
+  pre.textContent = JSON.stringify(res);
+  document.body.appendChild(pre);
+}, 3000);
+})();
+</script>
+"""
+
+
+def test_ui2_slow_link_page_is_not_called_broken():
+    section("a page that arrives slowly is not called broken (Andy, "
+            "2026-11-22, Chrome on Android over Tailscale on 5G): the "
+            "Tailscale door serves the screen with its rules written in, "
+            "the same page as the show network's; the page's own script "
+            "arriving seconds after its Stop core is no longer judged "
+            "before it is there, so a page that loads whole shows no "
+            "banner; one still arriving after 10 s says so, and the "
+            "banner goes once it is whole")
+    from ltcplay import web as web_mod
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    D = _ts_door(R)
+    try:
+        st, _h, lan = _ask(R.httpd, "GET", "/remote")
+        st2, _h, ts = _ask(D, "GET", "/remote", client=_TS_PEER)
+        check(st == 200 and st2 == 200 and isinstance(ts, str) and
+              ts == lan and web_mod.RULES_SERVED_MARK in ts and
+              web_mod.LOGIC_TAG not in ts,
+              f"the Tailscale door serves the same page as the show "
+              f"network door, its rules written in: {st} {st2}")
+        st, _h, lg = _ask(D, "GET", "/remote-logic.js", client=_TS_PEER)
+        check(st == 200 and "function armState(" in str(lg),
+              f"and the rules' fallback route answers over it: {st}")
+    finally:
+        D.server_close()
+        R.close()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: the slow page could "
+              "not be drawn")
+        print("  note: no Chromium, Chrome or Edge here, so the slow page "
+              "was not drawn (set LTCPLAY_CHROME to one)")
+        print("  ok")
+        return
+    page = web_mod.remote2_page().decode("utf-8")
+    # A Tailscale phone: not this PC, and every route but the status and
+    # whoami refused, as a role the page lacks would be.
+    who = {"local": False, "fresh_s": 2.0,
+           "device": "Tailscale at 100.88.1.2 (andy@example.com)",
+           "tailscale": {"login": "andy@example.com"}}
+    refused = _RawRoute('{"error": "Sign in first."}', "application/json",
+                        code=403)
+    routes = {r: refused for r in list(_UI2_ROUTES) + [
+        "/api/remote/tailscale-card.js", "/api/brand"]
+        if r not in ("/api/remote/whoami", "/api/remote/status")}
+    for gap, size in ((3.0, (412, 915)), (12.0, (360, 740))):
+        got = _rack_screen_in_chromium(
+            chrome, page, _ui2_status_running(), (size,),
+            measure_js=_UI2_ARRIVE_MEASURE_JS, head_js=_UI2_ARRIVE_HEAD_JS,
+            frag="?tour=0", budget_ms=8000, routes=routes, who=who,
+            stall=('<script id="remote-logic">', gap))
+        res = got.get(size)
+        where = f"the page {gap:g} s late after its Stop core, {size}"
+        if not isinstance(res, dict):
+            check(False, f"{where}: not drawn: {res!r}")
+            continue
+        # A page later than CORE_WAIT_MS still has the banner when its
+        # script ends; the next check, at most a second on, takes it away.
+        for k in (("at_end", "later") if gap < 10 else ("later",)):
+            m = res.get(k) or {}
+            check(m.get("whole") is True and m.get("ready") is True and
+                  m.get("broken") is False,
+                  f"{where}: whole, UI2_READY, and no banner ({k}): {m}")
+        check(res.get("local") is False,
+              f"{where}: the page started as a Tailscale client: {res}")
+        seen = (res.get("at_end") or {}).get("seen") or []
+        if gap < 10:
+            check(seen == [], f"{where}: the banner never showed: {seen}")
+        else:
+            check(seen and all(t == "Page still loading. Wait, or reload "
+                               "it." for t in seen),
+                  f"{where}: while the page was still arriving the banner "
+                  f"said so, never that it was broken: {seen}")
+    # A script error while the page is still arriving (cold review of
+    # #290, 1): the banner and its Stop at once, saying where it stopped,
+    # not after the 10 s a page with no error is given; gone once the page
+    # turns out whole.
+    erred = page.replace('<script id="remote-logic">',
+                         '<script>throw new Error("early break");</script>'
+                         '<script id="remote-logic">', 1)
+    check(erred != page, "the early error is in the test page")
+    size = (412, 915)
+    got = _rack_screen_in_chromium(
+        chrome, erred, _ui2_status_running(), (size,),
+        measure_js=_UI2_ARRIVE_MEASURE_JS, head_js=_UI2_ARRIVE_HEAD_JS,
+        frag="?tour=0", budget_ms=8000, routes=routes, who=who,
+        stall=('<script id="remote-logic">', 5.0))
+    res = got.get(size)
+    where = f"a script error while the page arrives, {size}"
+    f = (res or {}).get("first") if isinstance(res, dict) else None
+    check(isinstance(f, dict) and f.get("state") == "loading" and
+          f.get("ms", 1e9) < 3500 and "early break" in f.get("why", "") and
+          (res.get("at_end") or {}).get("seen", [""])[0] ==
+          "Page not fully loaded. Reload it.",
+          f"{where}: the banner showed at once, while loading, with where "
+          f"it stopped: {res!r}")
+    check(isinstance(res, dict) and (res.get("later") or {}).get("broken")
+          is False and (res.get("later") or {}).get("whole") is True,
+          f"{where}: and went once the page was whole: {res!r}")
+    # A page that arrived and is not whole, with no script error at all:
+    # said as soon as it has arrived, never "still loading".
+    stuck = page.replace("\nUI2_READY = true;\n", "\n", 1)
+    check(stuck != page, "the test page never sets UI2_READY")
+    got = _rack_screen_in_chromium(
+        chrome, stuck, _ui2_status_running(), (size,),
+        measure_js=_UI2_ARRIVE_MEASURE_JS, head_js=_UI2_ARRIVE_HEAD_JS,
+        frag="?tour=0", budget_ms=8000, routes=routes, who=who)
+    res = got.get(size)
+    lt = (res or {}).get("later") if isinstance(res, dict) else None
+    check(isinstance(lt, dict) and lt.get("broken") is True and
+          lt.get("whole") is False and
+          lt.get("text") == "Page not fully loaded. Reload it.",
+          f"a page that arrived not whole, no error: the banner says so "
+          f"within 3 s: {res!r}")
+    print("  ok")
+
 # The DAY tab's copies of 1.0's Startup page code: purge selection, open
 # beats, lock and unlock, the fire key, the cleaning's holds.
 # groupClick and fireBeat left 1.0 on 2026-11-14 (Jeff's ruling: a tap on
@@ -132726,6 +133063,8 @@ if __name__ == "__main__":
         test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
         test_ui2_touch_holds_lock_scrolling_and_end_off_the_button,
+        test_ui2_broken_banner_fits_a_phone_and_a_2k_screen,
+        test_ui2_slow_link_page_is_not_called_broken,
         test_ui2_day_makes_only_1_0_presses,
         test_ui2_day_purge_fire_beats_at_1_0s_rate,
         test_ui2_day_tab_in_a_browser,
