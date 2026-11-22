@@ -112315,6 +112315,314 @@ def test_hold_and_no_schedule_allow_tests_not_a_live_show():
     print("  ok")
 
 
+# ---------------------- a hazer press never disarms a laser (Jeff's claim) --
+
+def _hzl_rig(S):
+    """One engine with lasers AND hazers: the Morning rig (the laser arm,
+    the purge and a timed-purge link, flamesafe's status on the rig's
+    clock) with the hazers and the hazer test wired as web.serve wires
+    them, on its own FlameLink. flamesafe's status carries the flame
+    groups and the hazers' passthrough together. Every journal line the
+    engine writes is kept in R.jlines too (with no schedule loaded they
+    go to the session log instead of the scheduler's journal)."""
+    import json as _j
+    from ltcplay import hazers as HZ
+    from ltcplay import web as web_mod
+    R = _morning_rig(S, _MO_CONFIG, link=_FakeTimedLink())
+    R.m.timed_blockers = R.remote.timed_purge_blockers
+    R.loop = ("127.0.0.1", 5000)
+    R.tp_seq = [0]
+    R.tp_runs = [0]
+    R.hlink = _hz_link(live=True, gate=None)
+    R.pt = [{"name": n, "slots": sl, "haze": sl[0], "fan": sl[1],
+             "kind": "hazer", "asked": False, "enabled": False,
+             "passing": False, "why": "switched off in the show program"}
+            for n, sl in _HZ]
+
+    def feed():
+        on = set(R.hlink.hazers_on) | set(R.hlink.hazer_test_live_now())
+        for p in R.pt:
+            p["asked"] = p["enabled"] = p["passing"] = p["name"] in on
+        doc = {"t": "status", "k": "k" * 20, "fault": "",
+               "groups": R.groups, "passthrough": R.pt}
+        if R.fs_lockout is not None:
+            doc["lockout"] = R.fs_lockout
+        R.remote.flame_status.note(_j.dumps(doc).encode())
+    R.feed = feed
+    feed()
+    inner_pause = R.remote._pause
+
+    def pause(seconds):
+        inner_pause(seconds)
+        feed()
+    R.remote._pause = pause
+    R.jlines = []
+    real_journal = R.remote._journal
+
+    def journal(who, screen, action, outcome, text, fault=False):
+        R.jlines.append({"who": who, "screen": screen, "action": action,
+                         "outcome": outcome, "text": str(text)})
+        return real_journal(who, screen, action, outcome, text, fault=fault)
+    R.remote._journal = journal
+    R.remote.hazers = HZ.Hazers(
+        link_get=lambda: R.hlink,
+        flames_get=lambda: R.remote.flame_status.view(),
+        show_state=R.remote.hazer_show_state,
+        blocker=R.remote.hazer_blocker, folder=R.work,
+        journal=lambda who, screen, outcome, text, fault=False:
+        R.remote._journal(who or "system", screen or "engine", "hazers",
+                          outcome, text, fault=fault),
+        clock=lambda: R.mono[0], threaded=False)
+
+    class _H:
+        remote = R.remote
+        fire_ice = None
+
+        def server_close(self):
+            pass
+    R.h = _H()
+    web_mod._attach_hazer_test(R.h)
+    R.ht = R.remote.hazer_test
+    R.ht._threaded = False
+    R.ht._clock = lambda: R.mono[0]
+    # The conductor's own laser disarm (Hold, Stop), as web.serve wires it.
+    R.c.lasers_disarm = lambda r, w, s: R.m.laser_arm.disarm_all(
+        r, w, s, defer=True)
+    R.m.laser_arm.blank_now = R.c.lasers_dark_now
+    return R
+
+
+def test_hazer_presses_never_disarm_the_lasers():
+    section("Jeff's safety claim: a hazer press does not disarm the lasers. "
+            "With every laser ARMED, between shows with show control off, "
+            "on Hold and with no schedule loaded: the hazer test on and "
+            "off, a hazer armed and disarmed, a hazer level, Arm all "
+            "hazers, Hazers off, a purge selected and cleared and a timed "
+            "purge started and ended each leave every laser armed, nothing "
+            "sent to BEYOND and no laser disarm in the journal; a laser "
+            "arms and a laser test goes on while the hazer test runs. "
+            "Stop and Hold DO disarm; Resume and Start now turn the hazer "
+            "test off and leave the lasers armed")
+    S = _sched()
+    if S is None:
+        return
+    import itertools
+    R = _hzl_rig(S)
+    loop = R.loop
+    la, hz, ht = R.m.laser_arm, R.remote.hazers, R.ht
+    every = list(la.order)
+    names = [la.names[i] for i in every]
+    runs = itertools.count(1)
+
+    def post(route, body=None):
+        b = {"seen": R.seen()}
+        b.update(body or {})
+        st, _h, out = R.ask("POST", "/api/remote/" + route, b, client=loop)
+        return st, out
+
+    def settle():
+        R.settle()
+        R.feed()
+        R.remote._deck_seen = R.mono[0]
+        R.m.tick()
+
+    def mark():
+        return (len(R.laser_out.calls), len(R.jlines), la.may_enable())
+
+    def laser_disarm_lines(since):
+        return [r for r in R.jlines[since:]
+                if r["action"] == "laser-disarm" or
+                ("laser" in r["text"].lower() and
+                 "disarm" in r["text"].lower())]
+
+    def still_armed(state, what, since):
+        n_calls, n_lines, permitted = since
+        settle()
+        sv = la.status_view()
+        sent = R.laser_out.calls[n_calls:]
+        lines = laser_disarm_lines(n_lines)
+        _st, _h, s = R.ask("GET", "/api/remote/status", client=loop)
+        chip = [x["word"] for x in s.get("subsystems") or []
+                if x["name"] == "Laser arm"]
+        check(la.armed_ids() == every and sv["armed"] == names and
+              (la.may_enable() is None) == (permitted is None) and
+              "blank" not in sent and "disable" not in sent and
+              not lines and chip and chip[0] in
+              ("ARMED", f"{len(every)} of {len(every)} armed"),
+              f"{state}: {what}: every laser still ARMED, BEYOND sent "
+              f"nothing, no laser disarm journaled: armed {la.armed_ids()} "
+              f"sent {sent} lines {lines} chip {chip}")
+
+    def hazer_test(on):
+        if on:
+            return post("hazer-test", {"on": True, "run": f"hz{next(runs)}",
+                                       "hazers": ["Hazer 1"]})
+        return post("hazer-test", {"on": False})
+
+    def both_ways(state):
+        """Lasers disarmed, the hazer test on: every laser arms and a laser
+        test goes on and off while it runs, and it keeps running."""
+        check(la.armed_ids() == [], f"{state}: setup: no laser armed")
+        st, out = post("hazer-level", {"hazer": "Hazer 1", "haze": 40,
+                                       "fan": 60})
+        check(st == 200, f"{state}: setup: Hazer 1 has a level: {st} {out}")
+        st, out = hazer_test(True)
+        check(st == 200 and R.hlink.hazer_test_live_now(),
+              f"{state}: the hazer test goes on: {st} {out}")
+        st, out = post("laser-arm", {"group": "All lasers", "on": True,
+                                     "confirmed": True})
+        settle()
+        check(st == 200 and la.armed_ids() == every,
+              f"{state}: every laser arms while the hazer test runs: {st} "
+              f"{out}")
+        st, out = post("laser-test", {"laser": "laser-3", "on": True})
+        check(st == 200 and "laser-3" in R.m.lasers.on,
+              f"{state}: a laser test goes on while the hazer test runs: "
+              f"{st} {out}")
+        st, out = post("laser-test", {"laser": "laser-3", "on": False})
+        check(st == 200 and not R.m.lasers.on,
+              f"{state}: and off: {st} {out}")
+        R.mono[0] += 0.1
+        R.wall[0] += 0.1
+        R.feed()
+        check(not ht.send() and R.hlink.hazer_test_live_now(),
+              f"{state}: the hazer test is still on: {ht.last_off}")
+        since = mark()
+        st, out = hazer_test(False)
+        check(st == 200 and not R.hlink.hazer_test_live_now(),
+              f"{state}: the hazer test goes off: {st} {out}")
+        still_armed(state, "the hazer test off", since)
+
+    def hazer_presses(state):
+        since = mark()
+        st, out = hazer_test(True)
+        check(st == 200 and R.hlink.hazer_test_live_now(),
+              f"{state}: the hazer test on, lasers armed: {st} {out}")
+        still_armed(state, "the hazer test on", since)
+        since = mark()
+        st, out = hazer_test(False)
+        check(st == 200 and not R.hlink.hazer_test_live_now(),
+              f"{state}: the hazer test off: {st} {out}")
+        still_armed(state, "the hazer test off", since)
+        every_hazer = set(hz.names())
+        for what, route, body, want in (
+                ("a hazer level", "hazer-level",
+                 {"hazer": "Hazer 2", "haze": 30, "fan": 50}, set()),
+                ("every hazer's level", "hazer-level",
+                 {"hazer": "all", "haze": 35, "fan": 55}, set()),
+                ("Hazer 2 armed", "hazer", {"hazer": "Hazer 2", "on": True},
+                 {"Hazer 2"}),
+                ("Hazer 2 disarmed", "hazer",
+                 {"hazer": "Hazer 2", "on": False}, set()),
+                ("Arm all hazers", "hazers-arm-all", {}, every_hazer),
+                ("Hazers off", "hazers-off", {}, set())):
+            since = mark()
+            st, out = post(route, body)
+            check(st == 200 and hz.on() == want,
+                  f"{state}: {what}: taken: {st} {out} {hz.on()}")
+            still_armed(state, what, since)
+        # The purge: a selection and its Clear, then a timed purge.
+        R.groups[0]["armed"] = "armed"
+        R.groups[0]["wanted"] = True
+        for what, route, body, want in (
+                ("a purge selected", "purge-select", {"machine": "g1"},
+                 ["g1"]),
+                ("the purge cleared", "purge-clear", {}, []),
+                ("a purge selected again", "purge-select",
+                 {"machine": "g1"}, ["g1"])):
+            _tap_gap(R)
+            R.m.open_beat("Rack screen")
+            since = mark()
+            st, out = post(route, body)
+            check(st == 200 and R.m.purge.selected == want,
+                  f"{state}: {what}: {st} {out} {R.m.purge.selected}")
+            still_armed(state, what, since)
+        since = mark()
+        st, out, _run = _tp_hold(R, 2)
+        check(st == 200 and out.get("started") is True and
+              R.m.purge.timed_running(),
+              f"{state}: a timed purge starts: {st} {out}")
+        still_armed(state, "a timed purge started", since)
+        since = mark()
+        for _ in range(30):
+            if not R.m.purge.timed_running():
+                break
+            _tp_step(R, 0.1, beat_page=False)
+        check(not R.m.purge.timed_running(),
+              f"{state}: the timed purge ends by itself")
+        still_armed(state, "a timed purge ended", since)
+        since = mark()
+        st, out = post("purge-clear")
+        check(st == 200 and R.m.purge.selected == [],
+              f"{state}: the purge cleared: {st} {out}")
+        still_armed(state, "the purge cleared after it", since)
+
+    def disarmed_by(state, what, since):
+        settle()
+        lines = laser_disarm_lines(since[1])
+        check(la.armed_ids() == [] and lines and
+              "disable" in R.laser_out.calls[since[0]:],
+              f"{state}: {what} DOES disarm every laser, BEYOND told, "
+              f"journaled (so this test can fail): {la.armed_ids()} "
+              f"{R.laser_out.calls[since[0]:]} {lines}")
+
+    try:
+        settle()
+        # 1. Between shows, show control off.
+        state = f"between shows ({R.svc.machine.state}), show control off"
+        check(R.svc.machine.state in (S.IDLE, S.STANDBY) and
+              R.remote.hazer_test_show_busy() == "" and
+              not R.remote.show_control_on(R.httpd.control.state() or {}),
+              f"setup: {state}")
+        both_ways(state)
+        hazer_presses(state)
+        since = mark()
+        st, out = post("stop")
+        disarmed_by(state, "Stop", since)
+        # 2. On Hold (the Stop's).
+        check(R.svc.machine.state == S.HOLD,
+              f"setup: on Hold: {R.svc.machine.state}")
+        state = "on Hold"
+        both_ways(state)
+        hazer_presses(state)
+        # Start now (here refused, no confirm) and Resume turn the hazer
+        # test off first and leave the armed lasers armed (Jeff's ruling).
+        for what, route in (("Start now", "start-now"), ("Resume", "resume")):
+            st, out = hazer_test(True)
+            check(st == 200 and R.hlink.hazer_test_live_now(),
+                  f"{state}: setup: the hazer test on before {what}: {out}")
+            since = mark()
+            st, out = post(route)
+            settle()
+            check(not R.hlink.hazer_test_live_now() and ht.run is None and
+                  any(f"Tests turned off for {what}: the hazer test" in
+                      r["text"] for r in R.jlines[since[1]:]),
+                  f"{state}: {what} turns the hazer test off first: {st} "
+                  f"{out}")
+            check(la.armed_ids() == every and
+                  "disable" not in R.laser_out.calls[since[0]:] and
+                  not laser_disarm_lines(since[1]),
+                  f"{state}: {what} leaves every armed laser armed: "
+                  f"{la.armed_ids()} {R.laser_out.calls[since[0]:]}")
+        check(R.svc.machine.state != S.HOLD,
+              f"setup: Resume took the schedule off Hold: "
+              f"{R.svc.machine.state}")
+        since = mark()
+        st, out = post("hold")
+        disarmed_by("after Resume", "a Hold press", since)
+        # 3. No schedule loaded.
+        R.remote.schedule = None
+        state = "no schedule loaded"
+        both_ways(state)
+        hazer_presses(state)
+        since = mark()
+        st, out = post("stop")
+        disarmed_by(state, "Stop", since)
+    finally:
+        R.close()
+    print("  ok")
+
+
 # ------------------------------------------- interface 2.0 (the SHOW tab) --
 
 def _op_shaped(full):
@@ -131819,6 +132127,7 @@ if __name__ == "__main__":
         test_streamdeck_reconnect_never_remembers_old_state,
         test_show_control_refusals_say_turn_it_off,
         test_hold_and_no_schedule_allow_tests_not_a_live_show,
+        test_hazer_presses_never_disarm_the_lasers,
         test_streamdeck_never_imports_flamesafe,
         test_conductor_devices_hold_blanks_beyond_before_anything_fades,
         test_conductor_devices_stop_blanks_at_once_never_ramps,
