@@ -26142,6 +26142,16 @@ def build():
   '            ht.stop(why, who=who, screen=device, system=False)\n            return 200, {"ok": True, "text": "Every hazer OFF."}\n',
   '            pass\n'),
 
+ ("hazer test: its Off press disarms every laser too (Jeff's claim: a hazer press never disarms a laser)",
+  'ltcplay/remote.py',
+  "            why = (f\"{who or 'someone'} pressed Off on the {device}\")\n",
+  "            why = (f\"{who or 'someone'} pressed Off on the {device}\")\n            self._lasers_disarm_now(who, device, \"hazer-test\")\n"),
+
+ ("hazers off: the press disarms every laser too (Jeff's claim: a hazer press never disarms a laser)",
+  'ltcplay/remote.py',
+  '            text = "Every hazer is DISARMED."\n',
+  '            self._lasers_disarm_now(who, device, "hazers-off")\n            text = "Every hazer is DISARMED."\n'),
+
  ('hazer test: All on is refused ("all" is not read)',
   'ltcplay/remote.py',
   '        if sel == "all":\n            sel = ht.names()\n',

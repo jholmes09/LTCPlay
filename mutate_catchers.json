@@ -2150,6 +2150,8 @@
 "end of night: a Stop or failed start at the last show holds the look": "test_after_last_show_idle_holds_the_look_until_end_of_night",
 "end of night: the button closes a night still running": "test_after_last_show_idle_holds_the_look_until_end_of_night",
 "end of night: a Stop is journaled as End of night": "test_end_of_night_end_to_end_on_the_rig",
+"hazer test: its Off press disarms every laser too (Jeff's claim: a hazer press never disarms a laser)": "test_hazer_presses_never_disarm_the_lasers",
+"hazers off: the press disarms every laser too (Jeff's claim: a hazer press never disarms a laser)": "test_hazer_presses_never_disarm_the_lasers",
 "end of night: signed out over Tailscale is not said": "test_end_of_night_end_to_end_on_the_rig",
 "end of night: the default holds the idle look": "test_after_last_show_default_still_closes_dark",
 "live flame: a live show sends the program frame": "test_live_flame_values_and_zero_on_silence",
