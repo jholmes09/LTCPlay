@@ -3535,8 +3535,15 @@ MUTATIONS = [
 
  ('ui 2.0 phone: two live modes hide the top line\'s words',
   'ltcplay/web/remote2.html',
-  "  #next.many .t{display:block}\n",
-  "  #next.many .t{display:none}\n"),
+  "  #next.many .t{display:flex;align-items:center;padding:0;white-space:normal}\n",
+  "  #next.many .t{display:none;align-items:center;padding:0;white-space:normal}\n"),
+
+ # Cold review of #294: a fault's words in the Systems chip were cut to
+ # 68 px on a 384 px phone ("Flames: fa...")
+ ('ui 2.0 phone: the Systems chip cuts a fault\'s words',
+  'ltcplay/web/remote2.html',
+  "  #sys > span{white-space:normal;max-width:6.5em;text-align:center}\n",
+  "  #sys > span{max-width:5.2em;overflow:hidden;text-overflow:ellipsis}\n"),
 
 
  # Cold review of #291: an alert raised again keeps its id with new words;

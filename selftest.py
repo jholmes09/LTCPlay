@@ -119784,7 +119784,13 @@ def _ui2_status_phone():
     two = copy.deepcopy(idle)
     two["live_flame"] = dict(live["live_flame"])
     two["morning"] = copy.deepcopy(live["morning"])
-    return {"five": five, "five_live": live, "two_live": two, "idle": idle}
+    out = {"five": five, "five_live": live, "two_live": two, "idle": idle}
+    for k, name, state in (("sys_flames", "Flamesafe", "bad"),
+                           ("sys_timing", "Flame timing", "warn"),
+                           ("sys_lasers", "Laser output", "bad")):
+        out[k] = copy.deepcopy(idle)
+        out[k]["systems"] = [{"name": name, "state": state}]
+    return out
 
 
 _UI2_PHONE_STEPS = r"""
@@ -119811,9 +119817,11 @@ const whole = el => {
 };
 // The words: shown, and their lines (none when they are not drawn).
 const words = () => { const t = q("next-t"), cs = getComputedStyle(t), lh = parseFloat(cs.lineHeight) || 1.2 * parseFloat(cs.fontSize);
-  const r = t.getBoundingClientRect();
+  const r = t.getBoundingClientRect(), rg = document.createRange(); rg.selectNodeContents(t);
+  const lines = new Set([...rg.getClientRects()].filter(x => x.width > 0).map(x => Math.round(x.top))).size;
   return {text:t.textContent, shown:cs.display !== "none" && cs.visibility !== "hidden" && r.width >= 60 && r.height >= lh - 1,
-    lines:Math.round(r.height / lh), cut:t.scrollWidth > t.clientWidth + 1 || t.scrollHeight > t.clientHeight + 1}; };
+    lines:cs.display === "none" ? 0 : lines, tap:Math.round(r.height),
+    cut:t.scrollWidth > t.clientWidth + 1 || t.scrollHeight > t.clientHeight + 1}; };
 const fixed = () => { const m = main.getBoundingClientRect(); return {px:Math.round(m.top + innerHeight - m.bottom),
   header:Math.round(document.querySelector("header").getBoundingClientRect().height),
   next:Math.round(q("next").getBoundingClientRect().height), footer:Math.round(document.querySelector("footer").getBoundingClientRect().height)}; };
@@ -119855,6 +119863,15 @@ document.querySelector('.tab[data-tab="day"]').click();
 await h.sleep(700);
 main.scrollTop = 99999; await h.sleep(300);
 out.day_scrolled = {top:main.scrollTop, hold:whole(q("m-hold")), disarm:whole(q("m-disf"))};
+// The Systems chip: a fault's words whole, never cut (cold review of #294).
+const chip = () => { const c = q("sys"), sp = c.querySelector("span"), r = c.getBoundingClientRect();
+  return [sp.textContent, sp.scrollWidth <= sp.clientWidth && sp.scrollHeight <= sp.clientHeight && r.left >= -1 && r.right <= innerWidth + 1 &&
+    r.bottom <= main.getBoundingClientRect().top + 1, Math.round(document.querySelector("header").getBoundingClientRect().height)]; };
+out.chips = [];
+for(const k of ["sys_flames", "sys_timing", "sys_lasers"]){ phase = k; await h.sleep(1500); out.chips.push(chip()); }
+window.__patch = st => { throw new Error("no contact"); };
+await h.sleep(4500);
+out.chips.push(chip());
 """
 
 # What the desktop layout is measured by: the rack screen's, an iPad's and
@@ -119914,9 +119931,9 @@ def test_ui2_phone_layout_whole_on_a_touch_phone():
     morning = {"/api/remote/morning": _morning_view_pico()}
     for size in ((412, 915), (412, 600), (384, 800)):
         r = _ui2_drive_framed(chrome, page, ph["five"], steps, size,
-                              routes=morning, budget_ms=30000)
+                              routes=morning, budget_ms=40000)
         where = f"2.0 on a touch phone, {size[0]}x{size[1]}"
-        if not check(isinstance(r, dict) and "day_scrolled" in r and
+        if not check(isinstance(r, dict) and "chips" in r and
                      not r.get("problems"),
                      f"{where}: driven: {r!r}"[:1500]):
             continue
@@ -119941,7 +119958,8 @@ def test_ui2_phone_layout_whole_on_a_touch_phone():
               f"{where}, five alerts, DAY: the line whole with its button, "
               f"Hold and Disarm flames whole: {d}")
         fl = r["five_live"]
-        check(fl["words"]["shown"] and fl["words"]["lines"] == 1 and
+        check(fl["words"]["shown"] and 1 <= fl["words"]["lines"] <= 2 and
+              not fl["words"]["cut"] and
               [p[0] for p in fl["pins"]] == ["Stop purge", "Live flame off"]
               and all(p[1] for p in fl["pins"]) and fl["act"] and
               fl["n"] == "1 of 5" and fl["resume"] and
@@ -119951,11 +119969,13 @@ def test_ui2_phone_layout_whole_on_a_touch_phone():
               f"{fl}")
         t = r["two_live"]
         check(t["words"]["text"] == "2 live modes on. Stop when done." and
-              t["words"]["shown"] and t["words"]["lines"] == 1 and
+              t["words"]["shown"] and 1 <= t["words"]["lines"] <= 2 and
+              not t["words"]["cut"] and
               "many" in t["cls"].split() and len(t["pins"]) == 2 and
               all(p[1] for p in t["pins"]),
-              f"{where}, two live modes: one line of words above their "
-              f"Stops, never hidden: {t}")
+              f"{where}, two live modes: their words whole (a second "
+              f"line rather than cut) above their Stops, never hidden: "
+              f"{t}")
         o = r["two_open"]
         check("open" in o["cls"].split() and not o["words"]["cut"] and
               all(p[1] for p in o["pins"]) and not o["sheet"] and
@@ -119967,6 +119987,15 @@ def test_ui2_phone_layout_whole_on_a_touch_phone():
               f"{where}, calm: the footer has no desktop height: {i}")
         check(i["fixed"]["header"] <= 60 and i["words"]["lines"] == 1,
               f"{where}, calm: the header one row, the words one line: {i}")
+        check(i["words"]["tap"] >= 44 and i["fixed"]["next"] <= 48,
+              f"{where}, calm: the words take a 44 px tap, and the line is "
+              f"no taller for it: {i}")
+        check([c[0] for c in r["chips"]] == ["Flames: fault",
+                                            "Flame time: check",
+                                            "Lasers: fault", "No contact"]
+              and all(c[1] for c in r["chips"]),
+              f"{where}: the Systems chip's words whole for each fault and "
+              f"for no contact, never cut: {r['chips']}")
         if size == (412, 915):
             check(i["fixed"]["px"] < 0.2 * size[1],
                   f"{where}, calm: the fixed chrome is under 20 percent of "

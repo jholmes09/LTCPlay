@@ -815,15 +815,18 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
    desktop window, an iPad and the rack screen never match. Nothing moves
    in the page: the same elements, drawn tighter. */
 @media (max-width:500px) and (pointer:coarse){
-  /* The header on one row: each tab and button an icon over its word. */
-  header{flex-wrap:nowrap;gap:4px;padding:4px 6px}
-  #tabs{flex:1 1 auto;flex-wrap:nowrap;gap:2px;min-width:0}
-  .tab{flex:1 1 0;min-width:0;flex-direction:column;justify-content:center;gap:0;padding:2px 0;min-height:48px;font-size:14px;line-height:1.15}
+  /* The header on one row: each tab and button an icon over its word.
+     No word is ever cut: a Systems chip too long for the row (a fault)
+     takes a second row instead. */
+  header{flex-wrap:wrap;gap:4px;padding:4px 6px}
+  #tabs{flex:1 1 auto;flex-wrap:nowrap;gap:2px}
+  .tab{flex:1 1 auto;min-width:max-content;flex-direction:column;justify-content:center;gap:0;padding:2px 0;min-height:48px;font-size:14px;line-height:1.15}
   .tab svg.i,.hb svg.i{width:22px;height:22px}
-  .hright{flex:0 0 auto;flex-wrap:nowrap;gap:4px;margin-left:0}
+  .hright{flex:0 0 auto;flex-wrap:nowrap;gap:4px;margin-left:auto}
   .hright #brand{display:none}
   .hb{flex-direction:column;justify-content:center;gap:0;min-height:48px;min-width:48px;padding:2px 4px;font-size:13px;line-height:1.15}
-  .hb > span{max-width:5.2em;overflow:hidden;text-overflow:ellipsis}
+  #user > span{max-width:5.2em;overflow:hidden;text-overflow:ellipsis}
+  #sys > span{white-space:normal;max-width:6.5em;text-align:center}
   #sys .chev{display:none}
   /* The banner block: the words one line, a tap opens them (a sheet when
      they are longer than about 15 percent of the screen). Only the words
@@ -832,14 +835,17 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #next{margin:4px 6px 0;min-height:44px;padding:0 6px 0 10px;gap:8px;font-size:18px;flex-wrap:wrap}
   #next > svg{width:22px;height:22px}
   #next > .q{width:44px;height:44px;min-width:44px}
-  #next .t{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;line-height:1.2}
+  /* The words' tap area is 44 px tall; the bar does not grow for it. */
+  #next .t{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;line-height:1.2;
+    min-height:44px;padding:11px 0}
   #next.open .t{white-space:normal;overflow-y:auto;max-height:15vh;max-height:15dvh}
-  #next.go .t{white-space:normal;overflow:visible;max-height:none;cursor:default}
+  #next.go .t{white-space:normal;overflow:visible;max-height:none;cursor:default;min-height:0;padding:0}
   #next > svg,#next > .q,#b-eon{flex:none}
   #next-go{flex:1 1 100%;min-height:48px}
   #b-eon{min-height:48px}
-  /* Two or three live modes: one line of words, then their Stops whole. */
-  #next.many .t{display:block}
+  /* Two or three live modes: their words (a second line rather than cut
+     on a narrow phone), then their Stops whole. */
+  #next.many .t{display:flex;align-items:center;padding:0;white-space:normal}
   #pins{order:5;flex:1 1 100%;flex-wrap:wrap;gap:6px;padding-bottom:4px}
   #pins .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 8px;font-size:17px;white-space:normal;line-height:1.05}
   /* SHOW: the state strip on one row; the transport sticks to the top of
