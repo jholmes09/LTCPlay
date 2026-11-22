@@ -3353,8 +3353,8 @@ MUTATIONS = [
 
  ("ui 2.0 alert hold: the line's button stays on the tab it was pressed on",
   'ltcplay/web/remote2.html',
-  "  if(TAB !== \"show\") backToShow();\n  if(ns.go === \"ack\"){",
-  "  if(ns.go === \"ack\"){"),
+  "  if(TAB !== \"show\") backToShow();\n  const el = ns.go",
+  "  const el = ns.go"),
 
  ("ui 2.0 alert hold: the slot's Acknowledge is left below the edge on a phone",
   'ltcplay/web/remote2.html',

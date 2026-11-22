@@ -118284,7 +118284,9 @@ window.__patch = st => { st.alerts = (st.alerts || []).filter(a => !gone.has(a.i
 window.__answer["alert"] = b => { gone.add(b.id); return [200, {text:"Alert cleared."}]; };
 const seen = el => { if(!el || el.hidden || !el.getClientRects().length) return false;
   const r = el.getBoundingClientRect(), m = document.querySelector("main").getBoundingClientRect();
-  return r.height > 0 && r.top >= Math.max(0, m.top) - 1 && r.bottom <= Math.min(innerHeight, m.bottom) + 1 && r.left >= -1 && r.right <= innerWidth + 1; };
+  // and nothing (a footer, a bar) over its middle
+  const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  return r.height > 0 && r.top >= Math.max(0, m.top) - 1 && r.bottom <= Math.min(innerHeight, m.bottom) + 1 && r.left >= -1 && r.right <= innerWidth + 1 && !!at && el.contains(at); };
 const inside = (a, b) => { const r = a.getBoundingClientRect(), o = b.getBoundingClientRect(); return r.top >= o.top - 1 && r.bottom <= o.bottom + 1 && r.left >= o.left - 1 && r.right <= o.right + 1; };
 const line = () => ({text:q("next-t").textContent, go:!q("next-go").hidden, go_l:q("next-go-l").textContent,
   // the words and the button whole inside the line, nothing cut
@@ -118345,6 +118347,12 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
     check(lo.startswith("function alertHoldStep("),
           "alertHoldStep is on the page")
     _no_dashes(lo, "the alert hold line's words")
+    said = re.findall(r'"([A-Z][^"]*\.)"', lo)
+    check(len(said) == 4 and all(len(w.split()) <= 8 for w in said) and
+          not any("acknowledged" in w for w in said),
+          f"the alert hold line: four sentences of eight words or fewer, "
+          f"none saying an alert was acknowledged (another screen or the "
+          f"engine may have cleared it): {said}")
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
               "no Chromium or Chrome on this CI runner: 2.0 could not be "
@@ -118354,7 +118362,7 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
         return
     # A phone, an iPad upright and a laptop: the narrow line is the one
     # that could cut its words.
-    for size in ((412, 915), (768, 1024), (1366, 768)):
+    for size in ((412, 915), (412, 600), (768, 1024), (1366, 768)):
         r = _ui2_drive(chrome, page, _ui2_status_alert_hold(3),
                        _UI2_ACK_STEPS, size=size, frag="?tour=0#day",
                        routes={"/api/remote/morning": _morning_view_pico()},
@@ -118374,8 +118382,8 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
               f"{where}: on SHOW the line says Acknowledge, then Resume, "
               f"whole, with its button: {s0}")
         check(d["tab"] == "day" and not d["slot_seen"] and
-              d["line"]["text"] == "Alert holds the show. On Show: "
-              "Acknowledge, then Resume." and d["line"]["go"] and
+              d["line"]["text"] == "Alert holds the show. "
+              "Acknowledge, Resume on Show." and d["line"]["go"] and
               d["line"]["go_l"] == "Go to alert" and d["line"]["whole"] and
               d["line"]["go_size"] >= 44,
               f"{where}: on DAY the line says where Acknowledge and Resume "
@@ -118417,13 +118425,14 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
         al = r["after_later"]
         check(al["line"]["text"] in ("Alert holds the show. Acknowledge, "
                                      "then Resume.",
-                                     "Alert acknowledged. Press Resume.")
+                                     "Show held after an alert. Press "
+                                     "Resume.")
               and al["line"]["go"] and al["posts"] == 2,
               f"{where}: the hold is never hidden by itself: {al}")
         r2 = r["day2"]
-        check(r2["text"] in ("Alert holds the show. On Show: Acknowledge, "
-                             "then Resume.",
-                             "Alert acknowledged. Resume on the Show tab.")
+        check(r2["text"] in ("Alert holds the show. Acknowledge, Resume "
+                             "on Show.",
+                             "Show held after an alert. Resume on Show.")
               and r2["go"] and r2["whole"],
               f"{where}: on DAY the line still says Resume is on SHOW, "
               f"whole: {r2}")
@@ -118439,7 +118448,8 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
     steps = r"""
 const q = id => document.getElementById(id);
 const seen = el => { const r = el.getBoundingClientRect(), m = document.querySelector("main").getBoundingClientRect();
-  return r.height > 0 && r.top >= Math.max(0, m.top) - 1 && r.bottom <= Math.min(innerHeight, m.bottom) + 1; };
+  const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  return r.height > 0 && r.top >= Math.max(0, m.top) - 1 && r.bottom <= Math.min(innerHeight, m.bottom) + 1 && !!at && el.contains(at); };
 await h.sleep(1500);
 out.day = [q("next-t").textContent, q("next-go").hidden, q("next-go-l").textContent];
 q("next-go").click();
@@ -118448,7 +118458,7 @@ out.went = [document.body.dataset.tab, q("go-l").textContent, seen(q("b-go"))];
 out.show = [q("next-t").textContent, q("next-go").hidden, q("next-go-l").textContent];
 out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
 """
-    for size in ((412, 915),):
+    for size in ((412, 915), (412, 600)):
         r = _ui2_drive(chrome, page, one, steps, size=size,
                        frag="?tour=0#day",
                        routes={"/api/remote/morning": _morning_view_pico()},
@@ -118458,14 +118468,119 @@ out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
         if not check(isinstance(r, dict) and "went" in r,
                      f"{where}: driven: {r!r}"[:900]):
             continue
-        check(r["show"] == ["Alert acknowledged. Press Resume.", False,
-                            "Go to Resume"] and
-              r["day"] == ["Alert acknowledged. Resume on the Show tab.",
+        check(r["show"] == ["Show held after an alert. Press Resume.",
+                            False, "Go to Resume"] and
+              r["day"] == ["Show held after an alert. Resume on Show.",
                            False, "Go to Resume"],
               f"{where}: the line says Resume, and where it is: {r}")
         check(r["went"] == ["show", "Resume", True] and r["routes"] == [],
               f"{where}: the button goes to SHOW's own Resume, in sight, "
               f"and presses nothing: {r}")
+    # A fault with no Acknowledge (the laser link lost) is the worst: the
+    # line's button never moves the slot off it (cold review of #291, 1).
+    lz = _ui2_status_alert_hold(0)
+    lz["alerts"] = [_ui2_status_alert_hold(3)["alerts"][2]]
+    lz["beyond_link"] = {"link": "lost", "why": "BEYOND closed"}
+    steps = r"""
+const q = id => document.getElementById(id);
+const seen = el => { const r = el.getBoundingClientRect(), m = document.querySelector("main").getBoundingClientRect();
+  const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  return r.height > 0 && r.top >= Math.max(0, m.top) - 1 && r.bottom <= Math.min(innerHeight, m.bottom) + 1 && !!at && el.contains(at); };
+await h.sleep(1500);
+out.before = [q("al-what").textContent, q("al-n").textContent, q("next-go-l").textContent, q("next-go").hidden];
+q("next-go").click();
+await h.sleep(600);
+out.after = [document.body.dataset.tab, q("al-what").textContent, q("al-n").textContent, seen(q("alert"))];
+out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
+"""
+    for size in ((412, 600), (1366, 768)):
+        r = _ui2_drive(chrome, page, lz, steps, size=size,
+                       frag="?tour=0#day",
+                       routes={"/api/remote/morning": _morning_view_pico()},
+                       budget_ms=15000)
+        where = f"2.0, an alert holds the show and the laser link is " \
+                f"lost, {size[0]}x{size[1]}"
+        if not check(isinstance(r, dict) and "after" in r,
+                     f"{where}: driven: {r!r}"[:900]):
+            continue
+        check(r["before"] == ["Laser link lost.", "1 of 2", "Go to alert",
+                              False] and
+              r["after"] == ["show", "Laser link lost.", "1 of 2", True]
+              and r["routes"] == [],
+              f"{where}: the line's button goes to SHOW with the slot in "
+              f"sight and the fault still shown first; nothing sent: {r}")
+    # The slot's Show control on: switched off and on by the engine, it is
+    # locked a second after each change, never for good.
+    rn = _ui2_status_running()
+    rn["schedule"].update({"state": "STANDBY", "running": None,
+                           "run_warning": "Show control is off: show 5 "
+                           "will NOT start. Turn show control on."})
+    rn["show"] = {"running": False, "show_control_on": False,
+                  "timecode": None}
+    rn["countdown"] = None
+    rn["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in rn["flames"]["groups"]]
+    rn["laser_arm"]["lasers"][0]["armed"] = False
+    steps = r"""
+const q = id => document.getElementById(id);
+const msg = () => q("msg-t").textContent;
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1500);
+out.first = q("al-act").dataset.act;
+window.__off = false;
+window.__patch = st => { if(window.__off) delete st.schedule.run_warning; return st; };
+window.__off = true; await h.sleep(800); out.off = q("al-act").dataset.act;
+window.__off = false; await h.sleep(800); out.on = q("al-act").dataset.act;
+q("al-act").click(); await h.sleep(200); out.quick = msg();
+await h.sleep(1200);
+q("al-act").click(); await h.sleep(800); out.later = msg();
+"""
+    r = _ui2_drive(chrome, page, rn, steps, size=(412, 600),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico()},
+                   budget_ms=15000)
+    where = "2.0, the slot's Show control on switched off and on, 412x600"
+    if check(isinstance(r, dict) and "later" in r,
+             f"{where}: driven: {r!r}"[:900]):
+        check(r["first"] == "run" and r["off"] != "run" and
+              r["on"] == "run" and r["quick"].startswith("Nothing done") and
+              r["later"] == "No show file found.",
+              f"{where}: locked for a second after it came back, then its "
+              f"own press (runShow) goes through: {r}")
+    # Hold to continue anyway: a finger down within the second after the
+    # slot changed starts nothing.
+    pr = _ui2_status_rigcheck()
+    pr.pop("cleaning", None)
+    pr["alerts"] = [_ui2_status_alert_hold(3)["alerts"][2]]
+    steps = r"""
+const q = id => document.getElementById(id), b = q("al-act");
+const n = () => window.__posts.filter(p => p.route === "preroll-continue").length;
+const down = () => b.dispatchEvent(new PointerEvent("pointerdown", {bubbles:true, cancelable:true, pointerType:"touch", isPrimary:true, pointerId:4}));
+const up = () => b.dispatchEvent(new PointerEvent("pointerup", {bubbles:true, cancelable:true, pointerType:"touch", isPrimary:true, pointerId:4}));
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1500);
+out.first = b.dataset.act;
+q("al-next").click(); await h.sleep(100); q("al-next").click(); await h.sleep(150);
+out.back = b.dataset.act;
+down(); await h.sleep(300); up();
+out.quick = [n(), q("msg-t").textContent];
+await h.sleep(1200);
+down(); await h.sleep(300); up(); await h.sleep(300);
+out.later = n();
+"""
+    r = _ui2_drive(chrome, page, pr, steps, size=(412, 600),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico()},
+                   budget_ms=15000)
+    where = "2.0, Hold to continue anyway just after the slot changed, " \
+            "412x600"
+    if check(isinstance(r, dict) and "later" in r,
+             f"{where}: driven: {r!r}"[:900]):
+        check(r["first"] == "pr-continue" and r["back"] == "pr-continue"
+              and r["quick"][0] == 0 and
+              r["quick"][1].startswith("Nothing done") and r["later"] == 1,
+              f"{where}: a hold begun within the second starts nothing and "
+              f"says so; after it, the hold begins: {r}")
     print("  ok")
 
 

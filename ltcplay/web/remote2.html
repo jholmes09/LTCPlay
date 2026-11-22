@@ -2080,13 +2080,14 @@ function nextStep(st, isStaleNow, local, items){
 // An alert holds the show (Andy's phone, 2026-11-22: the line showed on
 // DAY, where there is no Acknowledge, and Resume is on SHOW only). While
 // an alert with Acknowledge is open: Acknowledge, then Resume, and the
-// line's button (next-go) goes to the alert slot. Once none is: Resume,
-// and the button goes to SHOW's Resume. It never acknowledges or resumes
-// anything itself. Pure.
+// line's button (next-go) goes to the alert slot. Once none is (whoever
+// cleared it, or the engine): Resume, and the button goes to SHOW's
+// Resume. It never acknowledges or resumes anything itself, and never
+// changes which alert the slot shows. Eight words or fewer. Pure.
 function alertHoldStep(items, onShow){
   if((items || []).some(i => i.act === "ack"))
-    return {tone:"warn", icon:"warn", go:"ack", text:onShow ? "Alert holds the show. Acknowledge, then Resume." : "Alert holds the show. On Show: Acknowledge, then Resume."};
-  return {tone:"warn", icon:"warn", go:"resume", text:onShow ? "Alert acknowledged. Press Resume." : "Alert acknowledged. Resume on the Show tab."};
+    return {tone:"warn", icon:"warn", go:"ack", text:onShow ? "Alert holds the show. Acknowledge, then Resume." : "Alert holds the show. Acknowledge, Resume on Show."};
+  return {tone:"warn", icon:"warn", go:"resume", text:onShow ? "Show held after an alert. Press Resume." : "Show held after an alert. Resume on Show."};
 }
 // Signed out (view only), no contact, nothing heard yet, or the show not
 // running: the page's quiet tone. From the engine's status only. Pure.
@@ -2344,19 +2345,16 @@ $("al-act").addEventListener("click", async (e) => {
   }
 });
 // The line's button while an alert holds the show: to SHOW (as a tab
-// press), the slot on an alert with Acknowledge, and that button or
-// Resume scrolled into sight. Only the slot's own Acknowledge and SHOW's
-// own Resume act, with their own checks.
+// press), with the alert slot (its Acknowledge, when the alert it shows
+// has one) or SHOW's Resume scrolled into sight. It never changes which
+// alert the slot shows: the worst stays first (cold review of #291, 1),
+// and the operator pages to the others. Only the slot's own Acknowledge
+// and SHOW's own Resume act, with their own checks.
 $("next-go").addEventListener("click", () => {
   const ns = nextStep(ST, stale(), !!(ME && ME.local), ALERTS);
   if(!ns.go) return;
   if(TAB !== "show") backToShow();
-  if(ns.go === "ack"){
-    const cur = ALERTS.find(i => i.key === ALERT_KEY);
-    const a = ALERTS.find(i => i.act === "ack");
-    if(!(cur && cur.act === "ack") && a){ ALERT_KEY = a.key; renderAlertSlot(); }
-  }
-  const el = $(ns.go === "ack" ? "al-act" : "b-go");
+  const el = ns.go === "ack" ? ($("al-act").hidden ? $("alert") : $("al-act")) : $("b-go");
   try{ el.scrollIntoView({block:"center", inline:"nearest"}); }catch(e){}
 });
 // A Disarm, or a live mode's Stop, that was refused or did not arrive:
