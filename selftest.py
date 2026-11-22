@@ -118220,6 +118220,164 @@ def test_ui2_show_tab_in_a_browser():
     print("  ok")
 
 
+def _ui2_status_touch_holds():
+    """Between shows, every group disarmed and arming from screens on, the
+    rig check before show 4 failed (its Hold to continue anyway in the
+    alert slot): every hold on the SHOW tab can be pressed."""
+    st = _ui2_status_rigcheck()
+    st.pop("cleaning", None)
+    st["show"] = {"running": False, "show_control_on": True,
+                  "timecode": None}
+    st["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in st["flames"]["groups"]]
+    st["laser_arm"]["lasers"][0]["armed"] = False
+    return st
+
+
+_UI2_TOUCH_STEPS = r"""
+const q = id => document.getElementById(id);
+const T0 = {}, ARMED = [];
+window.__answer["arm-hold"] = b => {
+  if(!b.hold_id) T0[b.group] = performance.now();
+  const held = (performance.now() - T0[b.group]) / 1000;
+  if(held >= 2.0) ARMED.push(b.group);
+  return [200, {hold_id:"h" + b.group, held_s:held, needs_s:2.0, armed:held >= 2.0, text:held >= 2.0 ? "Group " + b.group + " ARMED." : "Keep holding"}];
+};
+window.__answer["preroll-continue"] = b => [200, {ok:true, text:"Continuing anyway."}];
+const pe = (el, type, x, y, kind) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
+  pointerId:kind === "mouse" ? 1 : 7, pointerType:kind, isPrimary:true, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+const mid = el => { el.scrollIntoView({block:"center"}); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r]; };
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+const n = r => window.__posts.filter(p => p.route === r).length;
+// One hold: down, then each [ms, dx, dy, on] move (on: the element the
+// move lands on, "btn" or "body"), held until `ms` from the down, then up.
+async function hold(el, kind, moves, ms, click, sx){
+  const [x0, y, rr] = mid(el), x = sx ? rr.right - sx : x0;
+  const a0 = ARMED.length, r0 = n("arm-release"), b0 = n("arm-hold");
+  const t0 = performance.now();
+  pe(el, "pointerdown", x, y, kind);
+  const res = {};
+  for(const [at, dx, dy, on] of moves){
+    while(performance.now() - t0 < at) await h.sleep(20);
+    pe(on === "body" ? document.body : el, "pointermove", x + dx, y + dy, kind);
+    if(on === "body") res.beats_at_off = n("arm-hold");
+  }
+  while(performance.now() - t0 < ms) await h.sleep(20);
+  res.msg_held = msg();
+  pe(el, "pointerup", x, y, kind);
+  if(click) el.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
+  await h.sleep(400);
+  Object.assign(res, {armed:ARMED.length - a0, released:n("arm-release") - r0, beats:n("arm-hold") - b0, msg:msg(),
+    beats_after_off:res.beats_at_off === undefined ? null : n("arm-hold") - res.beats_at_off});
+  await h.sleep(300);
+  return res;
+}
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1200);
+const g0 = () => document.querySelector('[data-arm="0"]');
+const cs = el => { const c = getComputedStyle(el); return [c.touchAction, c.userSelect || c.webkitUserSelect, c.webkitTouchCallout || ""]; };
+out.css = {group:cs(g0()), all:cs(q("b-armall")), cont:cs(q("al-act")), cont_cls:q("al-act").className,
+  html:getComputedStyle(document.documentElement).overscrollBehaviorY, body:getComputedStyle(document.body).overscrollBehaviorY,
+  group_label:g0().textContent.trim(), w:Math.round(g0().getBoundingClientRect().width), h:Math.round(g0().getBoundingClientRect().height)};
+const drift = []; for(let i = 1; i <= 20; i++) drift.push([i * 100, i, Math.round(i * 0.4), "btn"]);
+out.a = await hold(g0(), "touch", drift, 2700);
+out.b = await hold(g0(), "touch", [[400, 5, 0, "btn"], [800, 0, 150, "body"]], 2700);
+out.b2 = await hold(g0(), "touch", [[400, 15, 0, "btn"], [800, 30, 0, "btn"]], 2700);
+// 6 px in from its right edge, 12 px to the right: off the button after
+// a move well under the 24 px.
+out.b3 = await hold(g0(), "touch", [[800, 12, 0, "btn"]], 2700, false, 6);
+out.c = await hold(g0(), "touch", [], 90, true);
+out.d = await hold(g0(), "mouse", [[400, 20, 0, "btn"], [800, 40, 0, "btn"], [1200, 0, 0, "btn"]], 2700);
+out.e = await hold(q("b-armall"), "touch", [[500, 0, 150, "body"]], 2700);
+const c0 = n("preroll-continue");
+out.f = await hold(q("al-act"), "touch", [[400, 0, 150, "body"]], 1800);
+out.f_posts = window.__posts.filter(p => p.route === "preroll-continue").slice(c0).map(p => p.body.phase);
+const c1 = n("preroll-continue");
+out.g = await hold(q("al-act"), "touch", drift.slice(0, 12), 1500);
+out.g_posts = window.__posts.filter(p => p.route === "preroll-continue").slice(c1).map(p => p.body.phase);
+"""
+
+
+def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
+    section("the holds on a phone (Andy's Galaxy, 2026-11-22: a finger "
+            "drifting 12 to 20 px during Hold to arm became a scroll, and "
+            "the browser cancelled the hold at about 0.75 s): every group's "
+            "Hold to arm, Hold: arm flames and Hold to continue anyway lock "
+            "touch scrolling and selection, as the purge and cleaning holds "
+            "do, and the page has no pull to refresh; a touch hold that "
+            "drifts 20 px arms after the whole hold; one that slides off "
+            "the button, or moves more than 24 px, ends at once and arms "
+            "nothing; a tap arms nothing; a mouse is as before")
+    page = _ui2_page_inline()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    r = _ui2_drive(chrome, page, _ui2_status_touch_holds(), _UI2_TOUCH_STEPS,
+                   size=(412, 915), frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico()},
+                   budget_ms=40000)
+    where = "2.0 at 412x915, the holds pressed by touch"
+    if not check(isinstance(r, dict) and "g_posts" in r and
+                 not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
+        print("  ok")
+        return
+    c = r["css"]
+    check(c["group_label"] == "Hold to arm" and c["w"] >= 60 and
+          c["h"] >= 44,
+          f"{where}: the first group's button is Hold to arm: {c}")
+    check(c["group"][:2] == ["none", "none"] and
+          c["all"][:2] == ["none", "none"] and
+          "hold" in c["cont_cls"].split() and
+          c["cont"][:2] == ["none", "none"],
+          f"{where}: Hold to arm, Hold: arm flames and Hold to continue "
+          f"anyway lock touch scrolling and selection: {c}")
+    check(c["html"] == "none" and c["body"] == "none",
+          f"{where}: no pull to refresh on the page: {c}")
+    a = r["a"]
+    check(a["armed"] == 1 and a["released"] == 0,
+          f"{where}: a whole touch hold that drifts 20 px arms: {a}")
+    b = r["b"]
+    check(b["armed"] == 0 and b["released"] == 1 and
+          b["beats_after_off"] == 0 and b["msg"] == "Let go: not armed.",
+          f"{where}: a touch hold that slides 150 px off the button ends "
+          f"there, arms nothing and says Not armed: {b}")
+    b2 = r["b2"]
+    check(b2["armed"] == 0 and b2["released"] == 1 and
+          b2["msg"] == "Let go: not armed.",
+          f"{where}: a touch hold that moves 30 px (a scroll starting on "
+          f"the button) ends and arms nothing: {b2}")
+    b3 = r["b3"]
+    check(b3["armed"] == 0 and b3["released"] == 1 and
+          b3["msg"] == "Let go: not armed.",
+          f"{where}: a touch hold that leaves the button by 6 px ends "
+          f"there and arms nothing: {b3}")
+    t = r["c"]
+    check(t["armed"] == 0 and t["released"] == 1,
+          f"{where}: a tap arms nothing: {t}")
+    d = r["d"]
+    check(d["armed"] == 1 and d["released"] == 0,
+          f"{where}: a mouse hold that moves 40 px on the button still "
+          f"arms, as before: {d}")
+    e = r["e"]
+    check(e["armed"] == 0 and e["released"] >= 1 and
+          e["beats_after_off"] == 0,
+          f"{where}: Hold: arm flames slid off by touch ends there and "
+          f"arms nothing: {e}")
+    check(r["f_posts"] == ["begin"] and
+          r["f"]["msg"].startswith("Let go too early"),
+          f"{where}: Hold to continue anyway slid off by touch sends only "
+          f"its begin, and says so: {r['f']} {r['f_posts']}")
+    check(r["g_posts"] == ["begin", "done"],
+          f"{where}: Hold to continue anyway held by touch with a drift "
+          f"continues, after its whole hold: {r['g']} {r['g_posts']}")
+    print("  ok")
+
+
 # The DAY tab's copies of 1.0's Startup page code: purge selection, open
 # beats, lock and unlock, the fire key, the cleaning's holds.
 # groupClick and fireBeat left 1.0 on 2026-11-14 (Jeff's ruling: a tap on
@@ -132567,6 +132725,7 @@ if __name__ == "__main__":
         test_ui2_time_elapsed_and_left,
         test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
+        test_ui2_touch_holds_lock_scrolling_and_end_off_the_button,
         test_ui2_day_makes_only_1_0_presses,
         test_ui2_day_purge_fire_beats_at_1_0s_rate,
         test_ui2_day_tab_in_a_browser,

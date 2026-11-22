@@ -3343,6 +3343,44 @@ MUTATIONS = [
   "  if(n !== P_SAID) return j;\n",
   ""),
 
+ # Andy's phone, 2026-11-22: a finger drifting during Hold to arm became a
+ # scroll and the browser cancelled the hold; with scrolling locked, a
+ # finger that leaves the button, or moves like a scroll, must end it
+ ('ui 2.0 touch: the arm holds do not lock touch scrolling, so a drift cancels them',
+  'ltcplay/web/remote2.html',
+  ".armb, #b-armall, #al-act.hold{touch-action:none;",
+  ".armb, #b-armall, #al-act.hold{"),
+
+ ('ui 2.0 touch: a finger moving during a hold is never checked',
+  'ltcplay/web/remote2.html',
+  "window.addEventListener(\"pointermove\", holdMoved, true);\n",
+  ""),
+
+ ('ui 2.0 touch: a hold whose finger left the button carries on',
+  'ltcplay/web/remote2.html',
+  "  const off = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;\n",
+  "  const off = false;\n"),
+
+ ('ui 2.0 touch: a hold that moves like a scroll carries on',
+  'ltcplay/web/remote2.html',
+  "  if(off || Math.hypot(e.clientX - p.x, e.clientY - p.y) > HOLD_SLIDE_PX){",
+  "  if(off){"),
+
+ ("ui 2.0 touch: a group's Hold to arm is not tracked off the button",
+  'ltcplay/web/remote2.html',
+  "armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop(\"let go\"); }); }",
+  "armStart(i); }"),
+
+ ('ui 2.0 touch: Hold: arm flames is not tracked off the button',
+  'ltcplay/web/remote2.html',
+  "armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop(\"let go\"); }); }",
+  "armAllStart(); }"),
+
+ ('ui 2.0 touch: Hold to continue anyway is not tracked off the button',
+  'ltcplay/web/remote2.html',
+  "  holdTrack(ev, $(\"al-act\"), () => {",
+  "  if(false) holdTrack(ev, $(\"al-act\"), () => {"),
+
  # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
  # their rows when the step is taller than its panel, so the sections
  # under them (the timed purge, the hazer test) are drawn over them

@@ -68,6 +68,9 @@
 :root{--foot-h:112px}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);height:100%}
+/* No pull to refresh, no overscroll bounce: a finger dragged down the
+   page never reloads it mid show (Andy's phone, 2026-11-22). */
+html,body{overscroll-behavior:none}
 body{color:var(--cream);font:400 var(--fs)/1.25 var(--sans);-webkit-font-smoothing:antialiased;
   -webkit-user-select:none;user-select:none;overflow:hidden}
 button,a.b{font:inherit;color:inherit}
@@ -142,6 +145,12 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) var(--p
 .b.blue{background:#0d2742;border-color:var(--blue);color:#E3F1FF}
 .b.safe{background:#2b2723;border-color:#8b8170;color:var(--cream)}
 .b.hold{border-style:solid;border-width:3px}
+/* The arm holds lock touch scrolling and selection, as the purge and
+   cleaning holds do (Andy's phone, 2026-11-22: a finger drifting 12 to
+   20 px became a scroll, and the browser cancelled the hold). A finger
+   that leaves the button, or moves more than HOLD_SLIDE_PX, ends the hold
+   (holdMoved). */
+.armb, #b-armall, #al-act.hold{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E;pointer-events:none}
 .b:disabled .fill{display:none}
 /* The quiet tone: signed out, no contact or the show not running. Only
@@ -2216,6 +2225,27 @@ $("pins").addEventListener("click", async e => {
   }
 });
 
+// A touch or pen hold (an arm, Continue anyway) ends when the finger
+// leaves its button or moves more than HOLD_SLIDE_PX from where it went
+// down (Andy's phone, 2026-11-22). The buttons lock touch scrolling, so the
+// browser no longer cancels a hold that drifts; and a touch held by its
+// button never sends pointerleave, so this is checked on every move, on
+// the window: a scroll that starts on an arm button ends the hold, never
+// arms. A mouse is as before (its pointerleave ends the hold).
+const HOLD_SLIDE_PX = 24;
+let HOLD_PT = null;
+function holdTrack(e, el, end){
+  HOLD_PT = e.pointerType === "mouse" ? null : {id:e.pointerId, x:e.clientX, y:e.clientY, el:el, end:end};
+}
+function holdMoved(e){
+  const p = HOLD_PT;
+  if(!p || e.pointerId !== p.id) return;
+  const r = p.el.getBoundingClientRect();
+  const off = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+  if(off || Math.hypot(e.clientX - p.x, e.clientY - p.y) > HOLD_SLIDE_PX){ HOLD_PT = null; p.end(); }
+}
+window.addEventListener("pointermove", holdMoved, true);
+["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => { if(HOLD_PT && e.pointerId === HOLD_PT.id) HOLD_PT = null; }, true));
 // Continue anyway after a failed rig check: 1.0's hold, the same two
 // presses (begin, then done once it has filled; the engine times the hold
 // itself). Letting go early sends nothing more and nothing happens.
@@ -2242,6 +2272,7 @@ $("al-act").addEventListener("pointerdown", async (ev) => {
   const f = $("al-act").querySelector(".fill");
   if(f){ f.style.transition = "none"; f.style.width = "0"; void f.offsetWidth; f.style.transition = "width " + (PR_HOLD_MS + 100) + "ms linear"; f.style.width = "100%"; }
   const mine = PR_HOLD = {token:token, timer:null};
+  holdTrack(ev, $("al-act"), () => { if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done.", "The finger left the button: nothing was done.", "warn"); } });
   try{ await post("/api/remote/preroll-continue", actor({phase:"begin", token:token})); }
   catch(e){ prHoldEnd(); say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); return; }
   if(PR_HOLD !== mine) return;
@@ -4862,7 +4893,7 @@ function renderGroups(fl){
     // the release; Disarm goes on the click.
     box.querySelectorAll("[data-arm]").forEach(b => {
       const i = Number(b.dataset.arm);
-      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold") armStart(i); });
+      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
       ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
         b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));
       b.addEventListener("click", e => {
@@ -4928,7 +4959,7 @@ function renderAllButtons(isSt){
   $("b-disall").disabled = false;
 }
 const ARMALL = $("b-armall");
-ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled) armAllStart(); });
+ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
 ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
   ARMALL.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));
 ARMALL.addEventListener("contextmenu", e => e.preventDefault());
