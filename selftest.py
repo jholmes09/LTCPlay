@@ -119728,6 +119728,287 @@ go();
 """
 
 
+# A phone held upright, touch only (Andy's phone, 2026-11-22): Chrome told
+# its pointer is coarse. A headless window is never narrower than 500 px
+# and loses its frame's height, so the page is drawn in a frame of the
+# exact size, as a phone draws it; the frame's page measures itself and
+# leaves its answer in the window's own page.
+_UI2_COARSE = ("--blink-settings=primaryPointerType=2,availablePointerTypes=2,"
+               "primaryHoverType=1,availableHoverTypes=1")
+_UI2_FRAMED_DRIVE_JS = _UI2_DRIVE_JS.replace(
+    "document.body.appendChild(pre);",
+    "(window.parent !== window ? window.parent.document : document)"
+    ".body.appendChild(pre);", 1)
+
+
+def _ui2_drive_framed(chrome, page, status, steps_js, size, coarse=True,
+                      frag="?tour=0#day", **kw):
+    """_ui2_drive with the page in a frame of exactly `size` (CSS px), in
+    a touch Chrome (pointer: coarse) unless `coarse` is False."""
+    w, h = size
+    wrap = ('<!doctype html><html><head><meta charset="utf-8">'
+            '<style>html,body{margin:0;background:#000}</style></head><body>'
+            f'<iframe src="/remote{frag}" style="display:block;border:0;'
+            f'width:{w}px;height:{h}px"></iframe></body></html>')
+    routes = dict(kw.pop("routes", None) or {})
+    routes["/remote-framed"] = _RawRoute(wrap, "text/html; charset=utf-8")
+    js = "<script>window.__drive = async (out, h) => {\n" + steps_js + \
+        "\n};</script>" + _UI2_FRAMED_DRIVE_JS
+    cmd = ([chrome] if isinstance(chrome, str) else list(chrome)) + \
+        ([_UI2_COARSE] if coarse else [])
+    win = (max(w + 120, 640), h + 260)
+    got = _rack_screen_in_chromium(cmd, page, status, (win,), measure_js=js,
+                                   frag="-framed", routes=routes, **kw)
+    res = got[win]
+    return res[0] if isinstance(res, list) and res else str(res)
+
+
+def _ui2_status_phone():
+    """The phases of the phone layout test, each a whole status: five
+    alerts holding the show; the same with two live modes on (a timed
+    purge and live flame programming, each with its Stop); the two live
+    modes alone; and a calm STANDBY. Signed in as an operator who may run
+    the show, so Resume takes a finger."""
+    import copy
+    five = _ui2_status_alert_hold(3)
+    for i in range(2):
+        five["alerts"].append(dict(five["alerts"][2], id=20 + i, ver=20 + i,
+                                   text=f"Check {i + 1} before the show."))
+    five["me"]["may"]["show"] = True
+    live = copy.deepcopy(five)
+    live["live_flame"] = {"on": True, "who": "Jeff"}
+    live["morning"] = {"timed": {"left_s": 95, "total_s": 120,
+                                 "what": "purge"}}
+    idle = _ui2_status_day()
+    idle["me"] = copy.deepcopy(five["me"])
+    two = copy.deepcopy(idle)
+    two["live_flame"] = dict(live["live_flame"])
+    two["morning"] = copy.deepcopy(live["morning"])
+    return {"five": five, "five_live": live, "two_live": two, "idle": idle}
+
+
+_UI2_PHONE_STEPS = r"""
+const q = id => document.getElementById(id);
+const PH = __PHASES__;
+let phase = "five";
+window.__patch = st => { const s = JSON.parse(JSON.stringify(PH[phase])); s.served_at = st.served_at; return s; };
+const main = document.querySelector("main");
+// Whole: inside the window (and the pane, for what is in it), on top at
+// its middle, and cut by no box around it.
+const whole = el => {
+  if(!el || el.hidden || !el.getClientRects().length) return false;
+  const r = el.getBoundingClientRect();
+  const box = main.contains(el) ? main.getBoundingClientRect() : {top:0, bottom:innerHeight};
+  const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  for(let a = el.parentElement; a && a !== document.body; a = a.parentElement){
+    const cs = getComputedStyle(a);
+    if(cs.overflowX === "visible" && cs.overflowY === "visible") continue;
+    const o = a.getBoundingClientRect();
+    if(r.top < o.top - 1 || r.bottom > o.bottom + 1 || r.left < o.left - 1 || r.right > o.right + 1) return false;
+  }
+  return r.height > 0 && r.top >= Math.max(0, box.top) - 1 && r.bottom <= Math.min(innerHeight, box.bottom) + 1 &&
+    r.left >= -1 && r.right <= innerWidth + 1 && !!at && el.contains(at);
+};
+// The words: shown, and their lines (none when they are not drawn).
+const words = () => { const t = q("next-t"), cs = getComputedStyle(t), lh = parseFloat(cs.lineHeight) || 1.2 * parseFloat(cs.fontSize);
+  const r = t.getBoundingClientRect();
+  return {text:t.textContent, shown:cs.display !== "none" && cs.visibility !== "hidden" && r.width >= 60 && r.height >= lh - 1,
+    lines:Math.round(r.height / lh), cut:t.scrollWidth > t.clientWidth + 1 || t.scrollHeight > t.clientHeight + 1}; };
+const fixed = () => { const m = main.getBoundingClientRect(); return {px:Math.round(m.top + innerHeight - m.bottom),
+  header:Math.round(document.querySelector("header").getBoundingClientRect().height),
+  next:Math.round(q("next").getBoundingClientRect().height), footer:Math.round(document.querySelector("footer").getBoundingClientRect().height)}; };
+const pins = () => [...document.querySelectorAll("#pins .b")].map(b => [b.textContent.trim(), whole(b)]);
+const showTab = async () => { document.querySelector('.tab[data-tab="show"]').click(); await h.sleep(700); };
+out.vw = innerWidth; out.vh = innerHeight; out.coarse = matchMedia("(pointer:coarse)").matches;
+await showTab();
+await h.sleep(800);
+out.five = {words:words(), cls:q("next").className, go:whole(q("next-go")), act:whole(q("al-act")), act_l:q("al-act-l").textContent,
+  n:q("al-n").textContent, resume:whole(q("b-go")), go_l:q("go-l").textContent, fixed:fixed()};
+document.querySelector('.tab[data-tab="day"]').click();
+await h.sleep(700);
+out.five_day = {words:words(), go:whole(q("next-go")), hold:whole(q("m-hold")), disarm:whole(q("m-disf"))};
+await showTab();
+phase = "five_live";
+await h.sleep(1200);
+out.five_live = {words:words(), pins:pins(), act:whole(q("al-act")), n:q("al-n").textContent, resume:whole(q("b-go")),
+  go_l:q("go-l").textContent, fixed:fixed()};
+phase = "two_live";
+await h.sleep(1200);
+out.two_live = {words:words(), cls:q("next").className, pins:pins(), fixed:fixed()};
+// A tap on the words opens them; another folds them.
+q("next-t").click(); await h.sleep(400);
+out.two_open = {cls:q("next").className, words:words(), pins:pins(), sheet:!q("sheet").hidden};
+q("next-t").click(); await h.sleep(400);
+out.two_shut = {cls:q("next").className};
+phase = "idle";
+await h.sleep(1200);
+const fs = getComputedStyle(document.querySelector("footer"));
+out.idle = {words:words(), fixed:fixed(), foot_min:fs.minHeight, foot_shadow:fs.boxShadow,
+  main_mask:getComputedStyle(main).webkitMaskImage || getComputedStyle(main).maskImage || "none",
+  over:[getComputedStyle(document.documentElement).overscrollBehaviorY, getComputedStyle(document.body).overscrollBehaviorY]};
+// Scrolled to the foot of the pane, the transport stays at its top, and
+// the last control is drawn as it is, not faded.
+main.scrollTop = 99999; await h.sleep(300);
+const last = [...main.querySelectorAll("#t-show button")].filter(b => b.getClientRects().length && !b.hidden && !b.disabled).pop();
+out.idle_scrolled = {top:main.scrollTop, hold:whole(q("b-hold")), go:whole(q("b-go")), last:last ? [last.id || last.className, whole(last)] : null};
+document.querySelector('.tab[data-tab="day"]').click();
+await h.sleep(700);
+main.scrollTop = 99999; await h.sleep(300);
+out.day_scrolled = {top:main.scrollTop, hold:whole(q("m-hold")), disarm:whole(q("m-disf"))};
+"""
+
+# What the desktop layout is measured by: the rack screen's, an iPad's and
+# a laptop's regions, and SHOW's controls.
+_UI2_DESK_STEPS = r"""
+const q = id => document.getElementById(id);
+const PH = __PHASES__;
+window.__patch = st => { const s = JSON.parse(JSON.stringify(PH.five_live)); s.served_at = st.served_at; return s; };
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1500);
+const sel = ["header", "#tabs", ".hright", "#next", "#next-t", "#pins", "main", "footer", "#wx", "#t-show .state", "#t-show .tr", "#b-go", "#b-hold",
+  "#alert", "#al-act", "#al-next", ".flames", "#b-armall"];
+const look = () => sel.map(s => { const e = document.querySelector(s); if(!e || !e.getClientRects().length) return [s, null];
+  const r = e.getBoundingClientRect(); return [s, [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]]; });
+out.vw = innerWidth; out.vh = innerHeight; out.coarse = matchMedia("(pointer:coarse)").matches;
+out.with = look();
+// The phone's rules taken out: bench-build's own stylesheet.
+let cut = 0;
+for(const sh of document.styleSheets){ let rs; try{ rs = sh.cssRules; }catch(e){ continue; }
+  for(let i = rs.length - 1; i >= 0; i--) if(rs[i].media && /pointer:\s*coarse/.test(rs[i].media.mediaText)){ sh.deleteRule(i); cut++; } }
+await h.sleep(300);
+out.cut = cut;
+out.without = look();
+"""
+
+
+def test_ui2_phone_layout_whole_on_a_touch_phone():
+    section("2.0 on a phone held upright, touch only (Andy's phone, "
+            "2026-11-22: 443 of 915 px was fixed chrome): the header one "
+            "row, the top line's words one line (a tap opens them), the "
+            "alert hold line, pinned Stops, Acknowledge and Resume never "
+            "cut, two live modes keep a line of words above their Stops, "
+            "the transport and the safety strip stay at the top of the "
+            "pane, the footer has no desktop height; a desktop, an iPad "
+            "and a narrow mouse window unchanged")
+    page = _ui2_page_inline()
+    css = page[page.find("/* PHONE LAYOUT BEGIN"):
+               page.find("/* PHONE LAYOUT END")]
+    check(css.count("@media (max-width:500px) and (pointer:coarse){") == 1
+          and css.count("@media") == 1,
+          "the phone's rules are one block, for a touch screen 500 px wide "
+          "or less only")
+    _no_dashes(css, "the phone layout's notes")
+    check("html,body{overscroll-behavior:none}" in page and
+          "overscroll" not in css,
+          "no pull to refresh, the phone's rules leave that alone")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    ph = _ui2_status_phone()
+    steps = _UI2_PHONE_STEPS.replace("__PHASES__", json.dumps(ph))
+    morning = {"/api/remote/morning": _morning_view_pico()}
+    for size in ((412, 915), (412, 600), (384, 800)):
+        r = _ui2_drive_framed(chrome, page, ph["five"], steps, size,
+                              routes=morning, budget_ms=30000)
+        where = f"2.0 on a touch phone, {size[0]}x{size[1]}"
+        if not check(isinstance(r, dict) and "day_scrolled" in r and
+                     not r.get("problems"),
+                     f"{where}: driven: {r!r}"[:1500]):
+            continue
+        check(r["coarse"] and [r["vw"], r["vh"]] == list(size),
+              f"{where}: drawn as a touch screen of that size: {r['vw']}x"
+              f"{r['vh']}, coarse {r['coarse']}")
+        f = r["five"]
+        check(f["words"]["text"] == "Alert holds the show. Acknowledge, "
+              "then Resume." and f["words"]["shown"] and
+              not f["words"]["cut"] and "go" in f["cls"].split() and
+              f["go"],
+              f"{where}, five alerts: the alert hold line whole, never "
+              f"folded to one line, its Go to alert whole: {f}")
+        check(f["act"] and f["act_l"] == "Acknowledge" and
+              f["n"] == "1 of 5" and f["resume"] and f["go_l"] == "Resume",
+              f"{where}, five alerts: Acknowledge and Resume whole on the "
+              f"screen, no scrolling: {f}")
+        d = r["five_day"]
+        check(d["words"]["text"] == "Alert holds the show. Acknowledge, "
+              "Resume on Show." and not d["words"]["cut"] and d["go"] and
+              d["hold"] and d["disarm"],
+              f"{where}, five alerts, DAY: the line whole with its button, "
+              f"Hold and Disarm flames whole: {d}")
+        fl = r["five_live"]
+        check(fl["words"]["shown"] and fl["words"]["lines"] == 1 and
+              [p[0] for p in fl["pins"]] == ["Stop purge", "Live flame off"]
+              and all(p[1] for p in fl["pins"]) and fl["act"] and
+              fl["n"] == "1 of 5" and fl["resume"] and
+              fl["go_l"] == "Resume",
+              f"{where}, five alerts and two live modes: a line of words, "
+              f"both Stops, Acknowledge and Resume whole on the screen: "
+              f"{fl}")
+        t = r["two_live"]
+        check(t["words"]["text"] == "2 live modes on. Stop when done." and
+              t["words"]["shown"] and t["words"]["lines"] == 1 and
+              "many" in t["cls"].split() and len(t["pins"]) == 2 and
+              all(p[1] for p in t["pins"]),
+              f"{where}, two live modes: one line of words above their "
+              f"Stops, never hidden: {t}")
+        o = r["two_open"]
+        check("open" in o["cls"].split() and not o["words"]["cut"] and
+              all(p[1] for p in o["pins"]) and not o["sheet"] and
+              "open" not in r["two_shut"]["cls"].split(),
+              f"{where}: a tap opens the words whole, the Stops still "
+              f"whole; another folds them: {o} {r['two_shut']}")
+        i = r["idle"]
+        check(i["foot_min"] == "0px" and i["fixed"]["footer"] <= 56,
+              f"{where}, calm: the footer has no desktop height: {i}")
+        check(i["fixed"]["header"] <= 60 and i["words"]["lines"] == 1,
+              f"{where}, calm: the header one row, the words one line: {i}")
+        if size == (412, 915):
+            check(i["fixed"]["px"] < 0.2 * size[1],
+                  f"{where}, calm: the fixed chrome is under 20 percent of "
+                  f"the screen (it was 48): {i['fixed']}")
+        check(i["foot_shadow"] == "none" and i["main_mask"] == "none" and
+              i["over"] == ["none", "none"],
+              f"{where}: nothing faded over the pane's foot; no pull to "
+              f"refresh: {i}")
+        s, ds = r["idle_scrolled"], r["day_scrolled"]
+        check(s["top"] > 0 and s["hold"] and s["go"] and s["last"] and
+              s["last"][1],
+              f"{where}, SHOW scrolled to its foot: the transport still "
+              f"whole at the top, the last button whole: {s}")
+        check(ds["hold"] and ds["disarm"],
+              f"{where}, DAY scrolled to its foot: the safety strip whole "
+              f"at the top: {ds}")
+    # A desktop, a laptop, an iPad upright and a narrow window with a
+    # mouse: drawn the same as before the phone's rules (bench-build's own
+    # stylesheet, measured in the same browser).
+    desk = _UI2_DESK_STEPS.replace("__PHASES__", json.dumps(ph))
+    for size, coarse in (((1280, 800), False), ((412, 915), False),
+                         ((768, 1024), True)):
+        r = _ui2_drive_framed(chrome, page, ph["five_live"], desk, size,
+                              coarse=coarse, routes=morning, budget_ms=15000)
+        where = (f"2.0 at {size[0]}x{size[1]}, "
+                 f"{'touch' if coarse else 'a mouse'}")
+        if not check(isinstance(r, dict) and "without" in r and
+                     not r.get("problems"),
+                     f"{where}: driven: {r!r}"[:1500]):
+            continue
+        check(r["cut"] == 1 and r["coarse"] == coarse and
+              [r["vw"], r["vh"]] == list(size),
+              f"{where}: drawn at that size, the phone's block found: "
+              f"{r}"[:600])
+        diff = [(a, b) for a, b in zip(r["with"], r["without"]) if a != b]
+        check(not diff and dict(r["with"])["#al-act"] and
+              dict(r["with"])["#b-go"],
+              f"{where}: every region and control where it was: "
+              f"{diff or r['with']}")
+    print("  ok")
+
+
 def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
     section("the not fully loaded banner (Andy, 2026-11-22, a Galaxy S22 "
             "Ultra): from a 360 px phone to a 2560x1440 screen its words "
@@ -134337,6 +134618,7 @@ if __name__ == "__main__":
         test_ui2_alert_hold_acknowledge_from_every_tab,
         test_ui2_touch_holds_lock_scrolling_and_end_off_the_button,
         test_ui2_arm_beats_on_a_fixed_timer,
+        test_ui2_phone_layout_whole_on_a_touch_phone,
         test_ui2_broken_banner_fits_a_phone_and_a_2k_screen,
         test_ui2_slow_link_page_is_not_called_broken,
         test_ui2_day_makes_only_1_0_presses,

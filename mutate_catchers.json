@@ -4345,5 +4345,8 @@
 "remote: a brief quiet of the Stream Deck program takes the unit off": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
 "purge page: a brief glitch tells the operator a tap takes the unit off": "test_purge_page_says_selected_vs_armed_and_not_firing",
 "morning: a brief refusal episode never ends (an old glitch takes a unit off at its first new refusal)": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
-"morning: one brief refusal clock for every unit and screen": "test_purge_nothing_arms_without_a_tap_after_a_glitch"
+"morning: one brief refusal clock for every unit and screen": "test_purge_nothing_arms_without_a_tap_after_a_glitch",
+"ui 2.0 phone: the top line is capped, cutting its pinned Stops and the alert hold line": "test_ui2_phone_layout_whole_on_a_touch_phone",
+"ui 2.0 phone: the footer keeps its desktop height on a phone": "test_ui2_phone_layout_whole_on_a_touch_phone",
+"ui 2.0 phone: two live modes hide the top line's words": "test_ui2_phone_layout_whole_on_a_touch_phone"
 }
