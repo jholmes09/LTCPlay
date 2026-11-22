@@ -2956,8 +2956,22 @@ class Remote:
         if aid is not None and (not isinstance(aid, int) or
                                 isinstance(aid, bool)):
             return 400, {"error": "id has to be the alert's number."}
+        # The raise the page showed (alerts.Alert.view "rev"): with it, only
+        # that version clears; one raised again since (same id, new words)
+        # is refused, and stays up. Without it (the deck, an older page),
+        # as before.
+        rev = body.get("rev")
+        if rev is not None and (aid is None or not isinstance(rev, int) or
+                                isinstance(rev, bool)):
+            return 400, {"error": "rev has to be the alert's raise number, "
+                                  "with its id."}
         ok, text = self.alerts.clear(id=aid, action=action or "Acknowledge",
-                                     who=who, screen=screen, address=ctx.ip)
+                                     who=who, screen=screen, address=ctx.ip,
+                                     rev=rev)
+        if not ok and rev is not None and any(
+                a.id == aid for a in self.alerts.open()):
+            text = ("The alert changed since it was shown. Nothing was "
+                    "cleared.")
         if not ok:
             # A cleared alert journals itself (alerts.py). A press that
             # clears nothing (the alert already gone, a wrong id, an

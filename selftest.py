@@ -71973,6 +71973,67 @@ def test_alerts_route_status_and_acknowledge():
     print("  ok")
 
 
+def test_alerts_acknowledge_clears_only_the_raise_it_showed():
+    section("an alert raised again with new words keeps its id (alerts.py): "
+            "the status carries its raise number, and a page's Acknowledge "
+            "that carries the raise it showed clears only that one; one "
+            "raised since is refused and stays up (cold review of #291, 1)")
+    S = _sched()
+    if S is None:
+        return
+    R = _RemoteRig(S)
+    loop = ("127.0.0.1", 5000)
+    try:
+        _ask(R.httpd, "POST", "/api/remote/alert",
+             {"raise": "deck", "text": "The Stream Deck is unplugged."},
+             client=loop)
+        _st, _h, status = R.ask("GET", "/api/remote/status")
+        a1 = (status.get("alerts") or [{}])[0]
+        check(isinstance(a1.get("rev"), int),
+              f"the status carries the raise number: {a1}")
+        _ask(R.httpd, "POST", "/api/remote/alert",
+             {"raise": "deck", "text": "The Stream Deck is gone again."},
+             client=loop)
+        _st, _h, status = R.ask("GET", "/api/remote/status")
+        a2 = (status.get("alerts") or [{}])[0]
+        check(a2.get("id") == a1.get("id") and a2.get("rev") != a1.get("rev")
+              and "gone again" in a2.get("text", ""),
+              f"raised again: the same id, new words, a new raise number: "
+              f"{a1} {a2}")
+        st, _h, o = R.ask("POST", "/api/remote/alert",
+                          {"id": a1["id"], "rev": a1["rev"],
+                           "action": "acknowledge", "seen": R.seen()})
+        check(st == 409 and "changed" in o.get("error", "") and
+              len(R.remote.alerts.open()) == 1,
+              f"an Acknowledge of the earlier raise is refused, and the "
+              f"alert stays up: {st} {o}")
+        rows = R.lines_for("alert")
+        check(rows and "cleared nothing" in rows[-1]["text"],
+              f"and journaled: {rows[-1:]}")
+        st, _h, o = R.ask("POST", "/api/remote/alert",
+                          {"id": a1["id"], "rev": True,
+                           "action": "acknowledge"})
+        check(st == 400, f"a raise number that is not a number: {st} {o}")
+        st, _h, o = R.ask("POST", "/api/remote/alert",
+                          {"id": a2["id"], "rev": a2["rev"],
+                           "action": "acknowledge", "seen": R.seen()})
+        check(st == 200 and not R.remote.alerts.open(),
+              f"the raise it showed clears: {st} {o}")
+        # Without a raise number (the Stream Deck, an older page): as before.
+        _ask(R.httpd, "POST", "/api/remote/alert",
+             {"raise": "deck", "text": "Unplugged."}, client=loop)
+        a3 = R.remote.alerts.open()[0]
+        st, _h, o = R.ask("POST", "/api/remote/alert",
+                          {"id": a3.id, "action": "acknowledge",
+                           "seen": R.seen()})
+        check(st == 200 and not R.remote.alerts.open(),
+              f"an Acknowledge with no raise number clears as before: "
+              f"{st} {o}")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def _booth_wav(path, seconds=0.5, rate=48000, channels=2):
     import wave
     import numpy as np
@@ -118269,13 +118330,16 @@ def _ui2_status_alert_hold(n=1):
                         "users": False}}
     al = [{"id": 7, "kind": "deck", "severity": "fault",
            "text": "Stream Deck: not plugged in.", "since": 0,
-           "options": ["Acknowledge"], "booth": "", "pulse": False},
+           "options": ["Acknowledge"], "booth": "", "pulse": False,
+           "rev": 1},
           {"id": 8, "kind": "timecode", "severity": "fault",
            "text": "Two Art-Net receivers on one address.", "since": 0,
-           "options": ["Acknowledge"], "booth": "", "pulse": False},
+           "options": ["Acknowledge"], "booth": "", "pulse": False,
+           "rev": 2},
           {"id": 9, "kind": "gate", "severity": "warning",
            "text": "Check before the show.", "since": 0,
-           "options": ["Acknowledge"], "booth": "", "pulse": False}]
+           "options": ["Acknowledge"], "booth": "", "pulse": False,
+           "rev": 3}]
     st["alerts"] = al[:n]
     return st
 
@@ -118286,8 +118350,16 @@ const heads = [];
 const f0 = window.fetch;
 window.fetch = (u, o) => { if(o && o.method === "POST") heads.push({route:String(u), h:Object.assign({}, o.headers || {}), cred:o.credentials || ""}); return f0(u, o); };
 const gone = new Set();
-window.__patch = st => { st.alerts = (st.alerts || []).filter(a => !gone.has(a.id)); return st; };
-window.__answer["alert"] = b => { gone.add(b.id); return [200, {text:"Alert cleared."}]; };
+window.__rr = false;
+window.__patch = st => {
+  st.alerts = (st.alerts || []).filter(a => !gone.has(a.id));
+  // Raised again by the engine: the same id, new words, a new raise number.
+  if(window.__rr) st.alerts.forEach(a => { if(a.id === 9){ a.text = "Check before the show: the video PC."; a.rev = 99; } });
+  return st;
+};
+// The engine: the first Acknowledge of an id clears it; another finds
+// nothing open (409).
+window.__answer["alert"] = b => { if(gone.has(b.id)) return [409, {error:"There is no open alert to clear."}]; gone.add(b.id); return [200, {text:"Alert cleared."}]; };
 const seen = el => { if(!el || el.hidden || !el.getClientRects().length) return false;
   const r = el.getBoundingClientRect(), m = document.querySelector("main").getBoundingClientRect();
   // and nothing (a footer, a bar) over its middle
@@ -118312,6 +118384,10 @@ out.went = {tab:document.body.dataset.tab, slot:slot(), posts:alertPosts().lengt
 out.worst = slot().what;
 out.show0 = line();
 await h.sleep(700);
+// Two quick taps: the second lands before the next status, on the id this
+// page has just cleared; it stays Acknowledged.
+q("al-act").click();
+await h.sleep(30);
 q("al-act").click();
 await h.sleep(900);
 out.acked = {posts:alertPosts(), heads:heads.filter(x => x.route === "/api/remote/alert"), slot:slot(), line:line(), msg:q("msg-t") ? q("msg-t").textContent : ""};
@@ -118324,7 +118400,19 @@ await h.sleep(1100);
 q("al-act").click();
 await h.sleep(900);
 out.second = {posts:alertPosts(), slot:slot(), line:line()};
-await h.sleep(3000);
+// Raised again with new words, the same id: a tap within the second does
+// nothing; after it, the Acknowledge carries the new raise.
+await h.sleep(1200);
+window.__rr = true;
+await h.sleep(500);
+q("al-act").click();
+await h.sleep(150);
+out.rerais = {posts:alertPosts().length, msg:q("msg-t").textContent, text:q("al-what").textContent};
+await h.sleep(1100);
+q("al-act").click();
+await h.sleep(900);
+out.rerais2 = alertPosts().slice(-1);
+await h.sleep(2000);
 out.after_later = {line:line(), posts:alertPosts().length};
 document.querySelector('.tab[data-tab="day"]').click();
 await h.sleep(700);
@@ -118372,7 +118460,7 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
         r = _ui2_drive(chrome, page, _ui2_status_alert_hold(3),
                        _UI2_ACK_STEPS, size=size, frag="?tour=0#day",
                        routes={"/api/remote/morning": _morning_view_pico()},
-                       budget_ms=30000)
+                       budget_ms=45000)
         where = f"2.0, an alert holds the show, {size[0]}x{size[1]}"
         if not check(isinstance(r, dict) and "resume" in r and
                      not r.get("problems"),
@@ -118408,33 +118496,42 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
         a = r["acked"]
         hd = a["heads"][0]["h"] if a["heads"] else {}
         check([sorted(b) for b in a["posts"]] ==
-              [["action", "id", "seen"]] and a["posts"][0]["id"] == 7 and
+              [["action", "id", "rev", "seen"]] * 2 and
+              [b["id"] for b in a["posts"]] == [7, 7] and
+              a["posts"][0]["rev"] == 1 and a["msg"] == "Acknowledged." and
               a["posts"][0]["action"] == "acknowledge" and
               hd.get("Content-Type") == "application/json" and
               str(hd.get("X-LTC-Window", "")).startswith("w-") and
               a["heads"][0]["cred"] == "same-origin",
               f"{where}: Acknowledge is the slot's own press, by an "
-              f"operator who may not run the show: the same route, body "
-              f"and headers: {a}")
+              f"operator who may not run the show: the same route and "
+              f"headers, the body with the raise it showed; a second tap "
+              f"before the next status (the engine's 409 for the id just "
+              f"cleared here) still says Acknowledged: {a}")
         check(a["slot"]["what"] == "Timecode problem." and
               a["line"]["text"] == "Alert holds the show. Acknowledge, "
               "then Resume.",
               f"{where}: the alert cleared; the next one is in the slot, "
               f"and the line still says Acknowledge: {a}")
         lk = r["locked"]
-        check(lk["posts"] == 1 and lk["msg"].startswith("Nothing done"),
+        check(lk["posts"] == 2 and lk["msg"].startswith("Nothing done"),
               f"{where}: a press within a second of the slot changing "
               f"does nothing and says so: {lk}")
         sc = r["second"]
-        check([b["id"] for b in sc["posts"]] == [7, 8],
+        check([b["id"] for b in sc["posts"]] == [7, 7, 8],
               f"{where}: after the second, Acknowledge works again: {sc}")
         al = r["after_later"]
-        check(al["line"]["text"] in ("Alert holds the show. Acknowledge, "
-                                     "then Resume.",
-                                     "Show held after an alert. Press "
-                                     "Resume.")
-              and al["line"]["go"] and al["posts"] == 2,
+        check(al["line"]["text"] == "Show held after an alert. Press "
+              "Resume." and al["posts"] == 4,
               f"{where}: the hold is never hidden by itself: {al}")
+        rr, rr2 = r["rerais"], r["rerais2"]
+        check(rr["posts"] == 3 and rr["msg"].startswith("Nothing done"),
+              f"{where}: an alert raised again with new words (the same "
+              f"id) is a new alert: a tap within the second sends "
+              f"nothing: {rr}")
+        check([(b["id"], b.get("rev")) for b in rr2] == [(9, 99)],
+              f"{where}: after the second, Acknowledge carries the new "
+              f"raise: {rr2}")
         r2 = r["day2"]
         check(r2["text"] in ("Alert holds the show. Acknowledge, Resume "
                              "on Show.",
@@ -118523,6 +118620,43 @@ out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
               and r["routes"] == [],
               f"{where}: the line's button goes to SHOW with the slot in "
               f"sight and the fault still shown first; nothing sent: {r}")
+    # The slot's button is not an Acknowledge (Show control on, first: the
+    # run warning is urgent): the line's button scrolls to the slot's words,
+    # never to that button (cold review of #291, 2).
+    ru = _ui2_status_alert_hold(0)
+    ru["alerts"] = [_ui2_status_alert_hold(3)["alerts"][2]]
+    ru["schedule"].update({"run_warning": "Show control is off: show 5 "
+                           "will NOT start. Turn show control on, then "
+                           "Resume.", "run_warning_urgent": True})
+    ru["show"]["show_control_on"] = False
+    steps = r"""
+const q = id => document.getElementById(id);
+const went = [];
+const si = Element.prototype.scrollIntoView;
+Element.prototype.scrollIntoView = function(o){ went.push(this.id || this.className); return si.call(this, o); };
+await h.sleep(1500);
+out.before = [q("al-act").hidden ? "" : q("al-act").dataset.act, q("next-go-l").textContent, q("next-go").hidden];
+went.length = 0;
+q("next-go").click();
+await h.sleep(600);
+out.after = [document.body.dataset.tab, went.slice(), q("al-act").dataset.act];
+out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
+"""
+    r = _ui2_drive(chrome, page, ru, steps, size=(412, 915),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico()},
+                   budget_ms=15000)
+    where = "2.0, an alert holds the show and the slot shows Show control " \
+            "on, 412x915"
+    if check(isinstance(r, dict) and "after" in r,
+             f"{where}: driven: {r!r}"[:900]):
+        check(r["before"] == ["run", "Go to alert", False] and
+              r["after"][0] == "show" and r["after"][2] == "run" and
+              r["after"][1][-1:] == ["al-text"] and
+              "al-act" not in r["after"][1] and
+              r["routes"] == [],
+              f"{where}: the line's button goes to SHOW and scrolls to the "
+              f"slot's words, not to its Show control on: {r}")
     # The slot's Show control on: switched off and on by the engine, it is
     # locked a second after each change, never for good.
     rn = _ui2_status_running()
@@ -133341,6 +133475,7 @@ if __name__ == "__main__":
         test_release_tags_are_ltc_only,
         test_alerts_pure_logic,
         test_alerts_route_status_and_acknowledge,
+        test_alerts_acknowledge_clears_only_the_raise_it_showed,
         test_boothaudio_never_holds_and_never_uses_the_pa,
         test_booth_speaker_channels_one_or_two_only_the_named_carry_it,
         test_booth_speaker_card_saves_checks_and_tests,

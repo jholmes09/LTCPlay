@@ -3438,6 +3438,33 @@ MUTATIONS = [
   "  const others = [...HOLD_PTRS.keys()].some(id => id !== e.pointerId);\n",
   "  const others = false;\n"),
 
+ # Cold review of #291: an alert raised again keeps its id with new words;
+ # a page's Acknowledge must clear only the raise it showed
+ ('ui 2.0 alert slot: an alert raised again with new words is not a new alert to the lockout',
+  'ltcplay/web/remote2.html',
+  "+ \":\" + (it.rev === undefined ? \"\" : it.rev) : \"\";",
+  " : \"\";"),
+
+ ('ui 2.0 alert slot: Acknowledge does not carry the raise it showed',
+  'ltcplay/web/remote2.html',
+  "    if(typeof it.rev === \"number\") body.rev = it.rev;\n",
+  ""),
+
+ ('ui 2.0 alert slot: a second tap on an alert this page just cleared says Not acknowledged',
+  'ltcplay/web/remote2.html',
+  "if(e.status === 409 && AL_ACKED && AL_ACKED.id === it.id && AL_ACKED.rev === it.rev) say(",
+  "if(false) say("),
+
+ ("ui 2.0 alert hold: the line's button scrolls to a button that is not Acknowledge",
+  'ltcplay/web/remote2.html',
+  "!$(\"al-act\").hidden && $(\"al-act\").dataset.act === \"ack\" ? $(\"al-act\")",
+  "!$(\"al-act\").hidden ? $(\"al-act\")"),
+
+ ("alerts: a page's Acknowledge clears a version raised after the one it showed",
+  'ltcplay/remote.py',
+  "address=ctx.ip,\n                                     rev=rev)",
+  "address=ctx.ip,\n                                     rev=None)"),
+
  # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
  # their rows when the step is taller than its panel, so the sections
  # under them (the timed purge, the hazer test) are drawn over them
@@ -21480,7 +21507,7 @@ def build():
   ""),
 
  ("ui2 page: the slot's button acts on whatever shows at the lift", "ltcplay/web/remote2.html",
-  "  if(down && (down.key !== ALERT_KEY || down.act !== $(\"al-act\").dataset.act)){",
+  "  if(down && (down.key !== ALERT_KEY || down.act !== $(\"al-act\").dataset.act || down.sig !== AL_SHOWN)){",
   "  if(false){"),
 
  ("ui2 page: the footer's sentence cut is a lookbehind again (dead on iPadOS 15)",

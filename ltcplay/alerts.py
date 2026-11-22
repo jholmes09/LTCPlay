@@ -145,7 +145,10 @@ class Alert:
         out = {"id": self.id, "kind": self.kind, "text": text,
                "severity": self.severity, "since": int(self.since * 1000),
                "options": list(self.options), "booth": self.booth,
-               "pulse": self.pulse}
+               "pulse": self.pulse,
+               # The raise this view shows: a page's Acknowledge carries it
+               # back, so a version raised since is never cleared unseen.
+               "rev": self.rev}
         # The words with their line breaks, only when they have any: the
         # rack screen reads full, else text.
         if "\n" in self.full:

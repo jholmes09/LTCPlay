@@ -2204,7 +2204,7 @@ function alertItems(st){
   else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
-    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.full || a.text, act:"ack", id:a.id}));
+    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.full || a.text, act:"ack", id:a.id, rev:a.rev}));
   // flamesafe.json not valid JSON (Jeff, 2026-11-06): flames are off and
   // the engine runs without its flame link; the file, line and column.
   if(s.flamesafe_config_error) items.push({key:"fscfg", tone:"bad", what:"Flame settings file broken.", do:"Flames are off. Tap here.", full:s.flamesafe_config_error});
@@ -2261,7 +2261,9 @@ function renderAlertSlot(){
   let idx = items.findIndex(i => i.key === ALERT_KEY);
   if(idx < 0){ idx = 0; ALERT_KEY = items.length ? items[0].key : null; }
   const it = items[idx];
-  const sig = it ? it.key + ":" + (it.act || "") : "";
+  // The alert, its press, and its raise (the engine's rev: raised again
+  // with new words, the same id is a new alert to read).
+  const sig = it ? it.key + ":" + (it.act || "") + ":" + (it.rev === undefined ? "" : it.rev) : "";
   if(sig !== AL_SHOWN){ AL_SHOWN = sig; AL_SHOWN_AT = Date.now(); }
   const box = $("alert");
   // A Continue anyway hold ends the moment its alert is not the one shown.
@@ -2333,9 +2335,9 @@ $("al-text").addEventListener("click", async () => {
 // The slot's button acts on the alert that was showing when the finger
 // went down (1.0's pressDecision idea): if the slot changed under the
 // finger, nothing is done and it says so.
-let AL_DOWN = null;
+let AL_DOWN = null, AL_ACKED = null;
 function alDownFresh(){ return !!AL_DOWN && Date.now() - AL_DOWN.at < 10000; }
-$("al-act").addEventListener("pointerdown", () => { AL_DOWN = {key:ALERT_KEY, act:$("al-act").dataset.act, at:Date.now()}; }, true);
+$("al-act").addEventListener("pointerdown", () => { AL_DOWN = {key:ALERT_KEY, act:$("al-act").dataset.act, sig:AL_SHOWN, at:Date.now()}; }, true);
 $("al-act").addEventListener("pointercancel", () => { AL_DOWN = null; });
 $("al-act").addEventListener("click", async (e) => {
   const down = alDownFresh() ? AL_DOWN : null;
@@ -2344,7 +2346,7 @@ $("al-act").addEventListener("click", async (e) => {
     say("Nothing done. Look, then press again.", "The alert changed less than a second ago, so nothing was done.", "warn");
     return;
   }
-  if(down && (down.key !== ALERT_KEY || down.act !== $("al-act").dataset.act)){
+  if(down && (down.key !== ALERT_KEY || down.act !== $("al-act").dataset.act || down.sig !== AL_SHOWN)){
     say("Nothing done. Look, then press again.", "The alert changed under your finger, so nothing was done.", "warn");
     return;
   }
@@ -2352,8 +2354,15 @@ $("al-act").addEventListener("click", async (e) => {
   if(it.act === "pr-continue") return;      // a hold, never a tap (below)
   if(it.act === "run") return runShowHere();   // the big button's own Run
   if(it.act === "ack"){
-    try{ await post("/api/remote/alert", actor({id:it.id, action:"acknowledge"})); say("Acknowledged.", "", "ok"); }
-    catch(e){ say("Not acknowledged.", e.message, "bad"); }
+    // The raise it showed goes with it: the engine clears only that one.
+    const body = {id:it.id, action:"acknowledge"};
+    if(typeof it.rev === "number") body.rev = it.rev;
+    try{ await post("/api/remote/alert", actor(body)); AL_ACKED = {id:it.id, rev:it.rev}; say("Acknowledged.", "", "ok"); }
+    catch(e){
+      // A second tap before the next status: this page cleared it already.
+      if(e.status === 409 && AL_ACKED && AL_ACKED.id === it.id && AL_ACKED.rev === it.rev) say("Acknowledged.", "", "ok");
+      else say("Not acknowledged.", e.message, "bad");
+    }
   } else if(it.act === "seen"){
     if(it.key === "stop") STOP_SAID = null; else if(it.key === "dis-fail") DISARM_FAIL = null;
     ALERTS = alertItems(ST); renderAlertSlot();
@@ -2372,7 +2381,9 @@ $("next-go").addEventListener("click", () => {
   // The line says SHOW's words now, before the scroll: its height can
   // change, and the pane under it with it.
   try{ renderStale(); }catch(e){}
-  const el = ns.go === "ack" ? ($("al-act").hidden ? $("al-text") : $("al-act")) : $("b-go");
+  // Only a real Acknowledge is scrolled to; another button the slot shows
+  // (Seen, Show control on) is not what the line names.
+  const el = ns.go === "ack" ? (!$("al-act").hidden && $("al-act").dataset.act === "ack" ? $("al-act") : $("al-text")) : $("b-go");
   try{ el.scrollIntoView({block:"center", inline:"nearest"}); }catch(e){}
 });
 // A Disarm, or a live mode's Stop, that was refused or did not arrive:
