@@ -3522,6 +3522,7 @@
 "ui2 page: a fault reads READY": "test_ui2_page_makes_only_1_0_presses",
 "ui2 page: a forced Disarm is said as done": "test_ui2_show_tab_in_a_browser",
 "ui2 page: a live mode reads READY": "test_ui2_page_makes_only_1_0_presses",
+"ui2 page: a page that arrived broken is called still loading": "test_ui2_slow_link_page_is_not_called_broken",
 "ui2 page: a page whose rules did not load says nothing": "test_ui2_show_tab_in_a_browser",
 "ui2 page: a refused Disarm is said only in the footer": "test_ui2_show_tab_in_a_browser",
 "ui2 page: a refused Programming pin Stop is only said": "test_ui2_show_tab_in_a_browser",
