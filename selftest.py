@@ -118312,6 +118312,49 @@ out.f_posts = window.__posts.filter(p => p.route === "preroll-continue").slice(c
 const c1 = n("preroll-continue");
 out.g = await hold(q("al-act"), "touch", drift.slice(0, 12), 1500);
 out.g_posts = window.__posts.filter(p => p.route === "preroll-continue").slice(c1).map(p => p.body.phase);
+// Two fingers (cold review of #292): finger 1 holds one button, finger 2
+// presses another hold, finger 1 slides 150 px off. Nothing arms or
+// continues, either way round.
+const f2 = (el, type, x, y) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
+  pointerId:8, pointerType:"touch", isPrimary:false, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+async function two(first, second){
+  const [x, y] = mid(first), [x2, y2] = mid(second);
+  const [xa, ya] = mid(first);
+  const a0 = ARMED.length, r0 = n("arm-release"), b0 = n("arm-hold"), c0 = window.__posts.filter(p => p.route === "preroll-continue").length;
+  pe(first, "pointerdown", xa, ya, "touch");
+  await h.sleep(400);
+  const beats1 = n("arm-hold") - b0;
+  f2(second, "pointerdown", x2, y2);
+  await h.sleep(300);
+  const beats2 = n("arm-hold");
+  pe(document.body, "pointermove", xa, ya + 150, "touch");
+  await h.sleep(2300);
+  pe(first, "pointerup", xa, ya + 150, "touch"); f2(second, "pointerup", x2, y2);
+  await h.sleep(400);
+  return {armed:ARMED.length - a0, released:n("arm-release") - r0, beats_before:beats1, beats_after:n("arm-hold") - beats2,
+    cont:window.__posts.filter(p => p.route === "preroll-continue").slice(c0).map(p => p.body.phase), msg:msg()};
+}
+out.two_a = await two(g0(), q("al-act"));
+await h.sleep(300);
+out.two_b = await two(q("al-act"), g0());
+await h.sleep(300);
+// Every finger up: a hold works again.
+out.after_two = await hold(g0(), "touch", [], 2700);
+// The button moves under a still finger (a line above wraps): the hold ends.
+const lay = async () => {
+  const [x, y] = mid(g0());
+  const a0 = ARMED.length, r0 = n("arm-release");
+  pe(g0(), "pointerdown", x, y, "touch");
+  await h.sleep(500);
+  const pad = document.createElement("div"); pad.style.height = "200px";
+  q("t-show").insertBefore(pad, q("t-show").firstChild);
+  await h.sleep(2300);
+  pe(g0(), "pointerup", x, y, "touch");
+  await h.sleep(400);
+  pad.remove();
+  return {armed:ARMED.length - a0, released:n("arm-release") - r0, msg:msg()};
+};
+out.shift = await lay();
 """
 
 
@@ -118392,6 +118435,25 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
     check(r["g_posts"] == ["begin", "done"],
           f"{where}: Hold to continue anyway held by touch with a drift "
           f"continues, after its whole hold: {r['g']} {r['g_posts']}")
+    ta, tb = r["two_a"], r["two_b"]
+    check(ta["armed"] == 0 and ta["beats_before"] >= 1 and
+          ta["released"] >= 1 and ta["beats_after"] == 0 and
+          ta["cont"] == [],
+          f"{where}: finger 1 on Hold to arm, finger 2 on Hold to continue "
+          f"anyway: the arm hold ends at once, nothing continues, and "
+          f"finger 1 sliding off arms nothing: {ta}")
+    check(tb["armed"] == 0 and tb["cont"] == ["begin"] and
+          tb["beats_before"] == 0 and tb["beats_after"] == 0,
+          f"{where}: finger 1 on Hold to continue anyway, finger 2 on Hold "
+          f"to arm: the continue ends with its begin only, and no arm hold "
+          f"starts: {tb}")
+    check(r["after_two"]["armed"] == 1,
+          f"{where}: once every finger is up, a hold arms again: "
+          f"{r['after_two']}")
+    sh = r["shift"]
+    check(sh["armed"] == 0 and sh["released"] == 1,
+          f"{where}: the button moving out from under a still finger ends "
+          f"the hold and arms nothing: {sh}")
     print("  ok")
 
 

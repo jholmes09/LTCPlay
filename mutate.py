@@ -3381,6 +3381,16 @@ MUTATIONS = [
   "  holdTrack(ev, $(\"al-act\"), () => {",
   "  if(false) holdTrack(ev, $(\"al-act\"), () => {"),
 
+ ('ui 2.0 touch: a second finger on a hold button leaves the first hold running',
+  'ltcplay/web/remote2.html',
+  "  if(!busy) return false;\n",
+  "  return false;\n"),
+
+ ('ui 2.0 touch: a button that moves out from under a still finger keeps its hold',
+  'ltcplay/web/remote2.html',
+  "setInterval(() => { const p = HOLD_PT; if(p) holdMoved({pointerId:p.id, clientX:p.lx, clientY:p.ly}); }, 100);\n",
+  ""),
+
  # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
  # their rows when the step is taller than its panel, so the sections
  # under them (the timed purge, the hazer test) are drawn over them

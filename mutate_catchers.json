@@ -2874,6 +2874,8 @@
 "rig check cleared: a clear is not counted": "test_preroll_resume_and_clear_guards",
 "rig check cleared: a cleared show is journaled as a late check": "test_preroll_a_pass_clears_the_failure_and_keeps_the_hold",
 "rig check cleared: a cleared show is started by the scheduler unattended": "test_preroll_a_pass_clears_the_failure_and_keeps_the_hold",
+"ui 2.0 touch: a second finger on a hold button leaves the first hold running": "test_ui2_touch_holds_lock_scrolling_and_end_off_the_button",
+"ui 2.0 touch: a button that moves out from under a still finger keeps its hold": "test_ui2_touch_holds_lock_scrolling_and_end_off_the_button",
 "rig check cleared: a delayed show held says Press Resume": "test_preroll_resume_and_clear_guards",
 "rig check cleared: a failed Pre-check does not refresh the failure": "test_preroll_a_pass_never_clears_a_newer_or_other_failure",
 "rig check cleared: a failure numbered during the clear is ignored": "test_preroll_a_clear_never_meets_a_newer_raise_or_a_deadlock",

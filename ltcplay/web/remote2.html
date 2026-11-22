@@ -2395,17 +2395,42 @@ $("pins").addEventListener("click", async e => {
 const HOLD_SLIDE_PX = 24;
 let HOLD_PT = null;
 function holdTrack(e, el, end){
-  HOLD_PT = e.pointerType === "mouse" ? null : {id:e.pointerId, x:e.clientX, y:e.clientY, el:el, end:end};
+  HOLD_PT = e.pointerType === "mouse" ? null : {id:e.pointerId, x:e.clientX, y:e.clientY, lx:e.clientX, ly:e.clientY, el:el, end:end};
 }
 function holdMoved(e){
   const p = HOLD_PT;
   if(!p || e.pointerId !== p.id) return;
+  p.lx = e.clientX; p.ly = e.clientY;
   const r = p.el.getBoundingClientRect();
   const off = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
   if(off || Math.hypot(e.clientX - p.x, e.clientY - p.y) > HOLD_SLIDE_PX){ HOLD_PT = null; p.end(); }
 }
 window.addEventListener("pointermove", holdMoved, true);
-["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => { if(HOLD_PT && e.pointerId === HOLD_PT.id) HOLD_PT = null; }, true));
+// The button moving under a still finger (a line above it wrapping, a
+// banner) is checked too: a finger no longer on its button ends the hold.
+setInterval(() => { const p = HOLD_PT; if(p) holdMoved({pointerId:p.id, clientX:p.lx, clientY:p.ly}); }, 100);
+// Two fingers (cold review of #292): the page follows one finger, so a
+// second finger pressing any hold button while a hold runs ends every
+// hold, and none starts until every finger on a hold button is up. It
+// fails safe: nothing is armed or continued.
+const HOLD_DOWN = new Set();
+let HOLD_TWO = false;
+function holdSecond(e){
+  if(e.isPrimary){ HOLD_DOWN.clear(); HOLD_TWO = false; }
+  const busy = HOLD_DOWN.size > 0 || HOLD_TWO;
+  HOLD_DOWN.add(e.pointerId);
+  if(!busy) return false;
+  HOLD_TWO = true;
+  HOLD_PT = null;
+  if(HOLD) armStop("two fingers on the hold buttons; nothing armed. Let go, then hold again");
+  if(PR_HOLD){ prHoldEnd(); say("Let go: nothing done.", "Two fingers on the hold buttons: nothing was done. Let go, then hold again.", "warn"); }
+  return true;
+}
+["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => {
+  if(HOLD_PT && e.pointerId === HOLD_PT.id) HOLD_PT = null;
+  HOLD_DOWN.delete(e.pointerId);
+  if(!HOLD_DOWN.size) HOLD_TWO = false;
+}, true));
 // Continue anyway after a failed rig check: 1.0's hold, the same two
 // presses (begin, then done once it has filled; the engine times the hold
 // itself). Letting go early sends nothing more and nothing happens.
@@ -2423,6 +2448,7 @@ function prHoldEnd(){
 $("al-act").addEventListener("pointerdown", async (ev) => {
   if($("al-act").dataset.act !== "pr-continue" || $("al-act").disabled) return;
   ev.preventDefault();
+  if(holdSecond(ev)) return;
   if(PR_HOLD) return;
   const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
   const it = ALERTS.find(i => i.key === ALERT_KEY);
@@ -5053,7 +5079,7 @@ function renderGroups(fl){
     // the release; Disarm goes on the click.
     box.querySelectorAll("[data-arm]").forEach(b => {
       const i = Number(b.dataset.arm);
-      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
+      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ if(holdSecond(e)) return; armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
       ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
         b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));
       b.addEventListener("click", e => {
@@ -5119,7 +5145,7 @@ function renderAllButtons(isSt){
   $("b-disall").disabled = false;
 }
 const ARMALL = $("b-armall");
-ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
+ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ if(holdSecond(e)) return; armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
 ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
   ARMALL.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));
 ARMALL.addEventListener("contextmenu", e => e.preventDefault());
