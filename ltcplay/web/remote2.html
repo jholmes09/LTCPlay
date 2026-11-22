@@ -4466,6 +4466,16 @@ document.addEventListener("keydown", e => { if(e.key === "Escape"){ $("info").hi
 // holdFill, groupNames, armStart, armAllStart, armBeat, armAllProgress,
 // armAllSettle, armStop.
 let HOLD = null;
+// A hold's beats (Andy on 5G, 2026-11-22): once the engine has answered the
+// hold's first press with its hold id, one beat every HOLD_BEAT_MS on a
+// fixed timer, never waiting for the last answer. Waiting added the round
+// trip to every gap, and the engine lets go of a hold with no beat for
+// 0.25 s, so a phone over about 150 ms never armed. At most HOLD_BEATS_OUT
+// beats unanswered at once: a stalled link sends no more (nothing piles up
+// to arrive later), and the engine lets go of the hold by itself. An
+// answer that comes after the hold ended is ignored. Every way a hold ends
+// clears the timer at once.
+const HOLD_BEAT_MS = 100, HOLD_BEATS_OUT = 4;
 const REARM_SEEN = {}, REARM_REFUSED_AT = {};
 function rearmWaitFor(i){
   const fl = (ST && ST.flames) || {};
@@ -4523,13 +4533,17 @@ async function armBeat(h, p){
     const why = holdLapsed();
     if(why){ armStop(why); return; }
   }
+  if((p.out || 0) >= HOLD_BEATS_OUT) return;
+  p.out = (p.out || 0) + 1;
   try{
     const j = await post("/api/remote/arm-hold", {group:p.group, seen: ST ? ST.served_at : null, hold_id:p.id});
+    p.out--;
     if(HOLD !== h || p.end) return;
     p.id = j.hold_id;
     if(j.armed){
       // The Stream Deck took the hold: the engine says so and the hold is
       // over. Said as a success, never as "Hold stopped".
+      clearInterval(p.timer);
       holdFill(p.group, "0");
       if(!h.all){
         HOLD = null;
@@ -4540,12 +4554,14 @@ async function armBeat(h, p){
       armAllSettle(h);
       return;
     }
-    p.held = j.held_s; p.needs = j.needs_s || 1;
-    holdFill(p.group, Math.min(100, 100 * j.held_s / (j.needs_s || 1)) + "%");
-    if(!h.all) armSay(j.held_s >= j.needs_s ? "Keep holding: the Stream Deck arms it in a moment, and says so here." : "Keep holding...", 0);
+    p.held = Math.max(p.held || 0, j.held_s); p.needs = j.needs_s || 1;
+    holdFill(p.group, Math.min(100, 100 * p.held / (j.needs_s || 1)) + "%");
+    if(!h.all) armSay(p.held >= j.needs_s ? "Keep holding: the Stream Deck arms it in a moment, and says so here." : "Keep holding...", 0);
     else armAllProgress(h);
-    p.timer = setTimeout(() => armBeat(h, p), 100);
+    // The first answer (the hold id): the next beat at once, then the timer.
+    if(!p.timer){ p.timer = setInterval(() => armBeat(h, p), HOLD_BEAT_MS); armBeat(h, p); }
   }catch(e){
+    p.out--;
     if(HOLD !== h || p.end) return;
     // The Stream Deck's re-arm refractory window refused it (its own
     // code), or the hold ended while a re-arm wait was still running:
@@ -4565,7 +4581,7 @@ async function armBeat(h, p){
     }
     // Arm all: this group stays out, named; the others carry on.
     p.end = "out"; p.why = said || e.message;
-    clearTimeout(p.timer);
+    clearInterval(p.timer);
     holdFill(p.group, "0");
     post("/api/remote/arm-release", {group:p.group}).catch(() => {});
     armAllSettle(h);
@@ -4589,7 +4605,7 @@ function armStop(why){
   HOLD = null;
   if(!h) return;
   for(const p of h.parts){
-    clearTimeout(p.timer);
+    clearInterval(p.timer);
     holdFill(p.group, "0");
     if(p.end) continue;
     if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; }

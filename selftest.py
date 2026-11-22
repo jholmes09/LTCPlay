@@ -119082,6 +119082,279 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
     print("  ok")
 
 
+# The arm holds' beats in a real browser, against a stand-in for the
+# engine's arm-hold rules (remote.Remote.arm_hold): the first press starts
+# the hold and answers its id, a beat with that id more than BEAT_STALE_S
+# after the last one is "The hold was interrupted", and the group is asked
+# for once beats have lasted SCREEN_HOLD_S plus the deck's 0.6 s. Each
+# request reaches it ENG.up ms after the page sent it, and its answer
+# reaches the page ENG.down ms later (a phone's round trip, split).
+_UI2_BEAT_STEPS = r"""
+const q = id => document.getElementById(id);
+const ENG = {up:0, down:0, stale:250, needs:1.0, deck:0.6, holds:{}, ids:0, force:null};
+const SENT = [], REL = [], ARMED = [], DELIVERED = [], REFUSED = [];
+let INFL = 0, MAXINFL = 0;
+// Every timer the hold loop starts, and whether it is still running.
+const LIVE = new Set();
+const si = window.setInterval.bind(window), st = window.setTimeout.bind(window);
+const ci = window.clearInterval.bind(window), ct = window.clearTimeout.bind(window);
+window.setInterval = (fn, ms, ...a) => { const id = si(fn, ms, ...a); if(String(fn).indexOf("armBeat") >= 0) LIVE.add(id); return id; };
+window.setTimeout = (fn, ms, ...a) => {
+  if(typeof fn !== "function" || String(fn).indexOf("armBeat") < 0) return st(fn, ms, ...a);
+  const id = st(() => { LIVE.delete(id); fn(...a); }, ms); LIVE.add(id); return id; };
+window.clearInterval = id => { LIVE.delete(id); return ci(id); };
+window.clearTimeout = id => { LIVE.delete(id); return ct(id); };
+const nap = ms => new Promise(r => st(r, ms));
+function engine(b, now){
+  const g = b.group, hd = ENG.holds[g];
+  if(b.hold_id == null){
+    if(hd && now - hd.beat <= ENG.stale) return [409, {error:"Someone is already holding it. Only one hold at a time.", let_go:true}];
+    const id = ++ENG.ids;
+    ENG.holds[g] = {id:id, start:now, beat:now};
+    return [200, {ok:true, hold_id:id, held_s:0, needs_s:ENG.needs}];
+  }
+  if(!hd || hd.id !== b.hold_id || now - hd.beat > ENG.stale){
+    if(hd && hd.id === b.hold_id) delete ENG.holds[g];
+    REFUSED.push(now);
+    return [409, {error:"The hold was interrupted. Lift your finger and hold again.", let_go:true}];
+  }
+  hd.beat = now;
+  const held = (now - hd.start) / 1000;
+  if(held >= ENG.needs + ENG.deck){
+    delete ENG.holds[g]; ARMED.push(g);
+    return [200, {ok:true, armed:true, hold_id:hd.id, held_s:held, needs_s:ENG.needs, text:"Armed."}];
+  }
+  return [200, {ok:true, hold_id:hd.id, held_s:held, needs_s:ENG.needs}];
+}
+const hf = window.fetch;
+window.fetch = async (url, opt) => {
+  const u = String(url);
+  if(!(opt && opt.method === "POST" && /\/api\/remote\/arm-(hold|release)$/.test(u))) return hf(url, opt);
+  const body = JSON.parse(opt.body || "{}");
+  const t = performance.now();
+  if(/arm-release$/.test(u)){
+    REL.push({t:t, g:body.group});
+    await nap(ENG.up);
+    delete ENG.holds[body.group];
+    return new Response('{"ok":true}', {status:200, headers:{"Content-Type":"application/json"}});
+  }
+  SENT.push({t:t, id:body.hold_id, g:body.group});
+  INFL++; MAXINFL = Math.max(MAXINFL, INFL);
+  const up = typeof ENG.up === "function" ? ENG.up(body) : ENG.up;
+  const down = typeof ENG.down === "function" ? ENG.down(body) : ENG.down;
+  await nap(up);
+  let a = engine(body, performance.now());
+  if(ENG.force && body.hold_id != null) a = ENG.force(body);
+  await nap(down);
+  INFL--;
+  if(a[1].armed) DELIVERED.push(performance.now());
+  return new Response(JSON.stringify(a[1]), {status:a[0], headers:{"Content-Type":"application/json"}});
+};
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+const pe = (el, type, x, y, id, prim) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
+  pointerId:id || 7, pointerType:"touch", isPrimary:prim !== false, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+const mid = el => { el.scrollIntoView({block:"center"}); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+const g0 = () => document.querySelector('[data-arm="0"]');
+const reset = () => { ENG.up = 0; ENG.down = 0; ENG.force = null; ENG.holds = {}; MAXINFL = 0; };
+// One hold of `el` for `ms` (or until `cut` ends it at `at` ms): what was
+// sent, the gaps between the beats after the first answer, whether the
+// page said Armed before the engine's armed answer reached it.
+async function hold(el, ms, cut, at){
+  const [x, y] = mid(el);
+  const s0 = SENT.length, r0 = REL.length, a0 = ARMED.length, d0 = DELIVERED.length, f0 = REFUSED.length;
+  MAXINFL = INFL;
+  const t0 = performance.now();
+  let early = false, live = 0, cutAt = null;
+  q("msg-t").textContent = "";
+  pe(el, "pointerdown", x, y);
+  while(performance.now() - t0 < ms){
+    await nap(10);
+    if(msg() === "Armed." && DELIVERED.length === d0) early = true;
+    live = Math.max(live, LIVE.size);
+    if(cut && cutAt === null && performance.now() - t0 >= at){
+      cutAt = SENT.length;
+      await cut(el, x, y);
+      break;
+    }
+  }
+  const liveCut = LIVE.size;
+  if(!cut) pe(el, "pointerup", x, y);
+  const liveUp = LIVE.size;
+  const sentUp = SENT.length;
+  await nap(400);
+  const mine = SENT.slice(s0);
+  const beats = mine.filter(b => b.id != null && b.g === mine[0].g).map(b => b.t);
+  const gaps = beats.slice(1).map((t, i) => Math.round(t - beats[i]));
+  const res = {sent:mine.length, starts:mine.filter(b => b.id == null).length, gaps:gaps,
+    armed:ARMED.length - a0, released:REL.length - r0, refused:REFUSED.length - f0, early:early, live_held:live,
+    live_cut:liveCut, live_up:liveUp, live_after:LIVE.size, after:SENT.length - sentUp,
+    max_out:MAXINFL, msg:msg(), fill:el.querySelector(".fill") ? el.querySelector(".fill").style.width : ""};
+  await nap(300);
+  reset();
+  return res;
+}
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1200);
+out.mode = g0().dataset.mode;
+// 1. No delay: arms after the engine's whole hold.
+out.fast = await hold(g0(), 2200);
+// 2. Every beat's answer 300 ms late (the first press answered at once):
+// the beats still go out every 100 ms, and the engine arms it.
+ENG.down = b => b.hold_id == null ? 0 : 300;
+out.late = await hold(g0(), 2600);
+// 3. A 200 ms round trip, 100 ms each way, the first press too: arms.
+ENG.up = 100; ENG.down = 100;
+out.rt200 = await hold(g0(), 2600);
+// 4. A 300 ms round trip, the first press too: the first beat reaches the
+// engine 0.3 s after the press, so the engine lets go of the hold; the page
+// says so and arms nothing.
+ENG.up = 150; ENG.down = 150;
+out.rt300 = await hold(g0(), 2600);
+// 5. A stall: after the first answer every answer takes 1.5 s. Only
+// HOLD_BEATS_OUT beats are sent meanwhile; the engine lets go of the hold
+// (the next beat reaches it 1.3 s after the last), refuses every beat
+// after, and the page says so when that answer comes.
+ENG.down = b => b.hold_id == null ? 0 : 1500;
+out.stall = await hold(g0(), 3600);
+// 6. A stall, then the finger lifts, then the late answers say armed: the
+// page never says Armed and starts nothing again.
+ENG.down = b => b.hold_id == null ? 0 : 1200;
+ENG.force = b => [200, {ok:true, armed:true, hold_id:b.hold_id, held_s:1.7, needs_s:1.0, text:"Armed."}];
+out.stall_lift = await hold(g0(), 700);
+await nap(1200);
+out.stall_lift.later = {msg:msg(), live:LIVE.size, sent:SENT.length};
+await nap(300);
+out.stall_lift.later.more = SENT.length - out.stall_lift.later.sent;
+reset();
+// 7. Every way a hold ends, 600 ms in: the timer stops at once (in the
+// same event), no beat after, the hold released.
+const ways = {
+  up:(el, x, y) => pe(el, "pointerup", x, y),
+  cancel:(el, x, y) => pe(el, "pointercancel", x, y),
+  leave:(el, x, y) => { pe(el, "pointerleave", x, y); pe(document.body, "pointerup", x, y); },
+  capture:(el, x, y) => { pe(el, "lostpointercapture", x, y); pe(document.body, "pointerup", x, y); },
+  off:(el, x, y) => { pe(document.body, "pointermove", x, y + 150); pe(el, "pointerup", x, y + 150); },
+  blur:(el, x, y) => { window.dispatchEvent(new Event("blur")); pe(el, "pointerup", x, y); },
+  hidden:(el, x, y) => { Object.defineProperty(document, "hidden", {configurable:true, get:() => true});
+    document.dispatchEvent(new Event("visibilitychange")); delete document.hidden; pe(el, "pointerup", x, y); },
+  pagehide:(el, x, y) => { window.dispatchEvent(new Event("pagehide")); pe(el, "pointerup", x, y); },
+  second:(el, x, y) => { pe(q("al-act"), "pointerdown", 5, 5, 8, false); pe(q("al-act"), "pointerup", 5, 5, 8, false); pe(el, "pointerup", x, y); },
+  refused:async (el, x, y) => { ENG.force = b => [409, {error:"Screen arming was switched off.", let_go:true}]; await nap(300); pe(el, "pointerup", x, y); },
+};
+out.cuts = {};
+for(const k of Object.keys(ways)){
+  out.cuts[k] = await hold(g0(), 600, ways[k], 600);
+  reset();
+  await nap(200);
+}
+// 8. Hold: arm flames, every group: the same timer, ended by the lift.
+ENG.down = b => b.hold_id == null ? 0 : 300;
+out.all = await hold(q("b-armall"), 800);
+out.all_cut = await hold(q("b-armall"), 600, ways.blur, 600);
+out.all_armed = await hold(q("b-armall"), 2600);
+out.live_end = LIVE.size;
+out.vt = Math.round(performance.now());
+"""
+
+
+def test_ui2_arm_beats_on_a_fixed_timer():
+    section("the arm holds' beats go out on a fixed 100 ms timer once the "
+            "engine has answered the first press, never waiting for the "
+            "last answer (Andy on 5G, 2026-11-22: a beat was sent 100 ms "
+            "after the last answer, so the engine's 0.25 s limit ended "
+            "every hold over about 150 ms of round trip). At most four "
+            "beats unanswered at once; an answer after the hold ended does "
+            "nothing; every way a hold ends stops the timer at once; the "
+            "page says Armed only on the engine's armed answer")
+    page = _ui2_page_inline()
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    two = _ui2_pages()[1]
+    check(re.search(r"const HOLD_BEAT_MS = 100, HOLD_BEATS_OUT = 4;", two),
+          "the page beats every 100 ms, four unanswered at most")
+    r = _ui2_drive(chrome, page, _ui2_status_touch_holds(), _UI2_BEAT_STEPS,
+                   size=(412, 915), frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico()},
+                   budget_ms=60000)
+    where = "2.0 at 412x915, the arm holds' beats"
+    if not check(isinstance(r, dict) and "live_end" in r and
+                 not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
+        print("  ok")
+        return
+    check(r["mode"] == "hold", f"{where}: group 1 can be held: {r['mode']}")
+
+    def steady(gaps):
+        return bool(gaps) and all(60 <= g <= 160 for g in gaps)
+
+    def clean(x):
+        return (x["live_up"] == 0 and x["live_after"] == 0 and
+                x["after"] == 0 and not x["early"])
+    f = r["fast"]
+    check(f["armed"] == 1 and f["starts"] == 1 and steady(f["gaps"]) and
+          f["msg"] == "Armed." and clean(f) and f["live_held"] == 1,
+          f"{where}: with no delay the hold arms after the engine's whole "
+          f"hold, one beat every 100 ms, the timer gone once armed: {f}")
+    la = r["late"]
+    check(la["armed"] == 1 and steady(la["gaps"]) and
+          len(la["gaps"]) >= 14 and la["max_out"] <= 4 and
+          la["msg"] == "Armed." and clean(la),
+          f"{where}: every answer 300 ms late, the beats still go out "
+          f"every 100 ms (not every 400), and the engine arms it; Armed is "
+          f"said only on the engine's answer: {la}")
+    rt = r["rt200"]
+    check(rt["armed"] == 1 and steady(rt["gaps"]) and clean(rt),
+          f"{where}: a 200 ms round trip (100 ms each way, the first press "
+          f"too) arms: {rt}")
+    r3 = r["rt300"]
+    check(r3["armed"] == 0 and r3["msg"] == "Hold stopped. Tap Details." and
+          r3["released"] >= 1 and clean(r3) and r3["fill"] in ("0", "0px"),
+          f"{where}: a 300 ms round trip on the first press too: the first "
+          f"beat reaches the engine 0.3 s after the press, the engine lets "
+          f"go and the page says the hold stopped; nothing armed, the "
+          f"timer gone: {r3}")
+    s = r["stall"]
+    check(s["armed"] == 0 and s["max_out"] <= 4 and
+          s["gaps"][:3] == [100, 100, 100] and len(s["gaps"]) > 3 and
+          s["gaps"][3] >= 1000 and s["refused"] >= 1 and
+          s["msg"] == "Hold stopped. Tap Details." and clean(s),
+          f"{where}: with the answers stalled, four beats go out and no "
+          f"more until an answer comes back; the engine lets go of the "
+          f"hold, and the page says so: {s}")
+    sl = r["stall_lift"]
+    check(sl["armed"] == 0 and sl["max_out"] <= 4 and
+          sl["sent"] <= 5 and sl["released"] == 1 and clean(sl) and
+          sl["later"]["msg"] == "Let go: not armed." and
+          sl["later"]["live"] == 0 and sl["later"]["more"] == 0,
+          f"{where}: a stall, then the lift: at most four beats were out, "
+          f"and the late answers (armed, all of them) neither say Armed "
+          f"nor start a beat again: {sl}")
+    for k, c in r["cuts"].items():
+        check(c["armed"] == 0 and c["live_held"] == 1 and
+              c["live_cut"] == 0 and clean(c) and c["released"] >= 1,
+              f"{where}: a hold ended by {k}: its timer stops at once, no "
+              f"beat after it, nothing armed: {c}")
+    a = r["all"]
+    check(a["armed"] == 0 and a["live_held"] >= 1 and steady(a["gaps"][:3])
+          and a["released"] >= 1 and clean(a),
+          f"{where}: Hold: arm flames lifted early: its timers stop, "
+          f"nothing armed: {a}")
+    ac = r["all_cut"]
+    check(ac["armed"] == 0 and ac["live_cut"] == 0 and clean(ac),
+          f"{where}: Hold: arm flames ended by losing focus: its timers stop "
+          f"at once: {ac}")
+    aa = r["all_armed"]
+    check(aa["armed"] >= 1 and clean(aa) and r["live_end"] == 0,
+          f"{where}: Hold: arm flames with every answer 300 ms late arms, "
+          f"and no timer is left running: {aa} {r['live_end']}")
+    print("  ok")
+
+
 _UI2_BANNER_MEASURE_JS = r"""
 <script>
 (function(){
@@ -133752,6 +134025,7 @@ if __name__ == "__main__":
         test_ui2_show_tab_in_a_browser,
         test_ui2_alert_hold_acknowledge_from_every_tab,
         test_ui2_touch_holds_lock_scrolling_and_end_off_the_button,
+        test_ui2_arm_beats_on_a_fixed_timer,
         test_ui2_broken_banner_fits_a_phone_and_a_2k_screen,
         test_ui2_slow_link_page_is_not_called_broken,
         test_ui2_day_makes_only_1_0_presses,

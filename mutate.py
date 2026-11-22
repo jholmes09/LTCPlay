@@ -3437,6 +3437,25 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "  const others = [...HOLD_PTRS.keys()].some(id => id !== e.pointerId);\n",
   "  const others = false;\n"),
+ # Andy on 5G, 2026-11-22: a beat sent 100 ms after the last answer adds
+ # the round trip to every gap, and the engine lets go of a hold with no
+ # beat for 0.25 s; the beats go on a fixed timer, a few unanswered at
+ # most, and every way a hold ends stops the timer
+ ('ui 2.0 beats: a hold beats 100 ms after each answer again, so a slow link never arms',
+  'ltcplay/web/remote2.html',
+  "    if(!p.timer){ p.timer = setInterval(() => armBeat(h, p), HOLD_BEAT_MS); armBeat(h, p); }\n",
+  "    p.timer = setTimeout(() => armBeat(h, p), HOLD_BEAT_MS);\n"),
+
+ ('ui 2.0 beats: a hold that ends leaves its beat timer running',
+  'ltcplay/web/remote2.html',
+  "  for(const p of h.parts){\n    clearInterval(p.timer);\n    holdFill(p.group, \"0\");\n",
+  "  for(const p of h.parts){\n    holdFill(p.group, \"0\");\n"),
+
+ ('ui 2.0 beats: a stalled link piles up unanswered beats',
+  'ltcplay/web/remote2.html',
+  "  if((p.out || 0) >= HOLD_BEATS_OUT) return;\n",
+  ""),
+
 
  # Cold review of #291: an alert raised again keeps its id with new words;
  # a page's Acknowledge must clear only the raise it showed
@@ -21387,8 +21406,8 @@ def build():
   '        b.addEventListener(ev, () => {}));'),
 
  ("ui2 page: the copied hold beats faster than 1.0's", "ltcplay/web/remote2.html",
-  "    p.timer = setTimeout(() => armBeat(h, p), 100);",
-  "    p.timer = setTimeout(() => armBeat(h, p), 50);"),
+  "{ p.timer = setInterval(() => armBeat(h, p), HOLD_BEAT_MS); armBeat(h, p); }",
+  "{ p.timer = setInterval(() => armBeat(h, p), 50); armBeat(h, p); }"),
 
  ("ui2 page: one system to check is not named", "ltcplay/web/remote2.html",
   "  const text = probs.length === 1 ?",
