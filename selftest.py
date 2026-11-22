@@ -118377,6 +118377,82 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
+def test_ui2_day_purge_fire_beats_at_1_0s_rate():
+    section("interface 2.0's DAY tab: a held purge fire beats the engine "
+            "at 1.0's rate (one purge-fire post every 100 ms on a fake "
+            "clock), well inside the engine's BEAT_STALE_S")
+    # fireBeat left UI2_DAY_COPIES on 2026-11-14 (its NOT FIRING words), so
+    # no copy check compares its repeat any more: this drives it.
+    from ltcplay import morning as _morning
+    one, two = _ui2_pages()
+    f1, f2 = _js_function(one, "fireBeat"), _js_function(two, "fireBeat")
+    beat = r"setTimeout\(\(\) => fireBeat\(f\), (\d+)\);"
+    m1 = re.search(beat, f1 or "")
+    check(m1 is not None and f2 is not None and re.search(beat, f2),
+          "1.0's and 2.0's fireBeat both repeat by a setTimeout")
+    if m1 is None or f2 is None:
+        print("  ok")
+        return
+    gap1 = int(m1.group(1))
+    stale_ms = _morning.BEAT_STALE_S * 1000
+    check(gap1 == 100 and gap1 * 2 <= stale_ms,
+          f"1.0's purge fire beat is 100 ms, half the engine's "
+          f"{stale_ms:g} ms stale limit or less: {gap1}")
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        print("  note: node is not on this machine, so the beat was not "
+              "driven (CI runs it)")
+        print("  ok")
+        return
+    js = r"""
+let NOW = 0;
+const Q = [];
+Date.now = () => NOW;
+function setTimeout(fn, ms){ const t = {at:NOW + ms, fn:fn, ms:ms}; Q.push(t); return t; }
+function clearTimeout(t){ const i = Q.indexOf(t); if(i >= 0) Q.splice(i, 1); }
+const posts = [], gaps = [];
+const el = {textContent:"", className:""};
+const $ = () => el;
+let FIRE = null, LAST_OK = 0;
+const KEY_REPEAT_GRACE_MS = 0, KEY_REPEAT_GAP_MS = 0;
+const isStale = () => false, fireKeyLapsed = () => false;
+const moActor = b => b;
+let stopped = null;
+function fireStop(why){ stopped = why; FIRE = null; }
+async function post(route, body){ posts.push([NOW, route, body.on]); return {fire_id:"F1", firing:["m1"], waiting:[]}; }
+""" + f2 + r"""
+(async () => {
+  FIRE = {id:null, startAt:0, repeatAt:0};
+  fireBeat(FIRE);
+  for(let i = 0; i < 20; i++) await null;
+  while(Q.length){
+    Q.sort((a, b) => a.at - b.at);
+    if(Q[0].at >= 1000) break;
+    const t = Q.shift(); gaps.push(t.ms); NOW = t.at; t.fn();
+    for(let i = 0; i < 20; i++) await null;
+  }
+  console.log(JSON.stringify({posts:posts.length, gaps:[...new Set(gaps)], stopped:stopped,
+    routes:[...new Set(posts.map(p => p[1] + ":" + p[2]))]}));
+})();
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        got = None
+    want = -(-1000 // gap1)
+    check(r.returncode == 0 and got is not None and
+          got["gaps"] == [gap1] and got["posts"] == want and
+          got["stopped"] is None and
+          got["routes"] == ["/api/remote/purge-fire:true"],
+          f"2.0's held purge fire posts every {gap1} ms as 1.0's does "
+          f"({want} posts in 1 s, never faster): {got} "
+          f"{r.stderr[-600:]!r}")
+    print("  ok")
+
+
 _UI2_DAY_JS = r"""
 <script>
 (function(){
@@ -132492,6 +132568,7 @@ if __name__ == "__main__":
         test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
         test_ui2_day_makes_only_1_0_presses,
+        test_ui2_day_purge_fire_beats_at_1_0s_rate,
         test_ui2_day_tab_in_a_browser,
         test_ui2_day_fireball_fuel_purge_are_1_0s,
         test_ui2_fireball_page_driven,
