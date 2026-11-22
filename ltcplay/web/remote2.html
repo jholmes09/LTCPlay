@@ -778,6 +778,12 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #t-show{grid-template-rows:none;height:auto}
   #app{grid-template-rows:auto auto minmax(0,1fr) auto}
   #next{min-height:64px;padding:8px 12px;flex-wrap:wrap}
+  /* The words share the first row with the sign and the help button,
+     wrapping inside it (they took a row of their own, and the help button
+     a third: 164 px of line on a 457 px page left the pane 64 px, under
+     Resume's 72). The line's own button gets the next row. */
+  #next .t{flex:1 1 0}
+  #next-go{order:9;flex:1 1 100%}
   #next-t .tm{display:none}
   #mini .b{flex:1 1 40%}
   #pins{flex:1 1 100%;flex-wrap:wrap}
