@@ -3343,6 +3343,39 @@ MUTATIONS = [
   "  if(n !== P_SAID) return j;\n",
   ""),
 
+ # Andy's phone, 2026-11-22: an alert holding the show showed on DAY with
+ # no Acknowledge there, and Resume is on SHOW only; an Acknowledge can
+ # bring the next alert under the same finger
+ ('ui 2.0 alert hold: off the Show tab the line has no way to Acknowledge',
+  'ltcplay/web/remote2.html',
+  "  $(\"next-go\").hidden = !ns.go; if(ns.go)",
+  "  $(\"next-go\").hidden = true; if(ns.go)"),
+
+ ("ui 2.0 alert hold: the line's button stays on the tab it was pressed on",
+  'ltcplay/web/remote2.html',
+  "  if(TAB !== \"show\") backToShow();\n  if(ns.go === \"ack\"){",
+  "  if(ns.go === \"ack\"){"),
+
+ ("ui 2.0 alert hold: the slot's Acknowledge is left below the edge on a phone",
+  'ltcplay/web/remote2.html',
+  "  try{ el.scrollIntoView({block:\"center\", inline:\"nearest\"}); }catch(e){}\n});",
+  "});"),
+
+ ('ui 2.0 alert hold: the line says Acknowledge with nothing left to acknowledge',
+  'ltcplay/web/remote2.html',
+  "  if((items || []).some(i => i.act === \"ack\"))\n    return {tone:\"warn\"",
+  "  if(true)\n    return {tone:\"warn\""),
+
+ ('ui 2.0 alert slot: a press just after the slot changed acts on the new alert',
+  'ltcplay/web/remote2.html',
+  "function alLocked(){ return Date.now() - AL_SHOWN_AT < AL_LOCK_MS; }",
+  "function alLocked(){ return false; }"),
+
+ ("ui 2.0 alert slot: the second's lockout is not restarted when the slot changes",
+  'ltcplay/web/remote2.html',
+  "if(sig !== AL_SHOWN){ AL_SHOWN = sig; AL_SHOWN_AT = Date.now(); }",
+  "if(sig !== AL_SHOWN){ AL_SHOWN = sig; }"),
+
  # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
  # their rows when the step is taller than its panel, so the sections
  # under them (the timed purge, the hazer test) are drawn over them

@@ -118220,6 +118220,234 @@ def test_ui2_show_tab_in_a_browser():
     print("  ok")
 
 
+def _ui2_status_alert_hold(n=1):
+    """Held at showtime for open alerts (alerthold.py), nothing playing,
+    signed in as an operator who may not run the show or change settings
+    (Andy's phone, 2026-11-22). `n` alerts: a deck fault (id 7), then a
+    timecode fault (id 8), then a gate warning (id 9)."""
+    st = _ui2_status_running()
+    st["schedule"].update({"state": "HOLD", "running": None, "held": True,
+                           "next": {"show": 5, "start": "19:50",
+                                    "in_s": -30}})
+    st["show"] = {"running": False, "show_control_on": True,
+                  "timecode": None}
+    st["countdown"] = None
+    st["flames"]["groups"] = [dict(g, armed="disarmed")
+                              for g in st["flames"]["groups"]]
+    st["laser_arm"]["lasers"][0]["armed"] = False
+    st["alert_hold"] = {"held": True,
+                        "text": "Held: alert open. Press Resume."}
+    st["me"] = {"user": "andy", "role": "operator", "view_only": False,
+                "may": {"arm": True, "show": False, "settings": False,
+                        "users": False}}
+    al = [{"id": 7, "kind": "deck", "severity": "fault",
+           "text": "Stream Deck: not plugged in.", "since": 0,
+           "options": ["Acknowledge"], "booth": "", "pulse": False},
+          {"id": 8, "kind": "timecode", "severity": "fault",
+           "text": "Two Art-Net receivers on one address.", "since": 0,
+           "options": ["Acknowledge"], "booth": "", "pulse": False},
+          {"id": 9, "kind": "gate", "severity": "warning",
+           "text": "Check before the show.", "since": 0,
+           "options": ["Acknowledge"], "booth": "", "pulse": False}]
+    st["alerts"] = al[:n]
+    return st
+
+
+_UI2_ACK_STEPS = r"""
+const q = id => document.getElementById(id);
+const heads = [];
+const f0 = window.fetch;
+window.fetch = (u, o) => { if(o && o.method === "POST") heads.push({route:String(u), h:Object.assign({}, o.headers || {}), cred:o.credentials || ""}); return f0(u, o); };
+const gone = new Set();
+window.__patch = st => { st.alerts = (st.alerts || []).filter(a => !gone.has(a.id)); return st; };
+window.__answer["alert"] = b => { gone.add(b.id); return [200, {text:"Alert cleared."}]; };
+const seen = el => { if(!el || el.hidden || !el.getClientRects().length) return false;
+  const r = el.getBoundingClientRect(), m = document.querySelector("main").getBoundingClientRect();
+  return r.height > 0 && r.top >= Math.max(0, m.top) - 1 && r.bottom <= Math.min(innerHeight, m.bottom) + 1 && r.left >= -1 && r.right <= innerWidth + 1; };
+const inside = (a, b) => { const r = a.getBoundingClientRect(), o = b.getBoundingClientRect(); return r.top >= o.top - 1 && r.bottom <= o.bottom + 1 && r.left >= o.left - 1 && r.right <= o.right + 1; };
+const line = () => ({text:q("next-t").textContent, go:!q("next-go").hidden, go_l:q("next-go-l").textContent,
+  // the words and the button whole inside the line, nothing cut
+  whole:inside(q("next-t"), q("next")) && (q("next-go").hidden || inside(q("next-go"), q("next"))) && q("next").scrollWidth <= q("next").clientWidth + 1 &&
+    q("next").getBoundingClientRect().right <= innerWidth + 1,
+  go_size:q("next-go").hidden ? 0 : Math.round(Math.min(q("next-go").getBoundingClientRect().height, q("next-go").getBoundingClientRect().width))});
+const slot = () => ({what:q("al-what").textContent, act:q("al-act").hidden ? "" : q("al-act-l").textContent, seen:seen(q("al-act"))});
+const alertPosts = () => window.__posts.filter(p => p.route === "alert").map(p => p.body);
+await h.sleep(1500);
+out.day = {tab:document.body.dataset.tab, line:line(), slot_seen:seen(q("al-act"))};
+// Nothing goes away by itself: three seconds on DAY, untouched.
+await h.sleep(3000);
+out.day_later = {tab:document.body.dataset.tab, line:line(), slot:slot(), posts:alertPosts().length};
+q("next-go").click();
+await h.sleep(500);
+out.went = {tab:document.body.dataset.tab, slot:slot(), posts:alertPosts().length};
+out.worst = slot().what;
+out.show0 = line();
+await h.sleep(700);
+q("al-act").click();
+await h.sleep(900);
+out.acked = {posts:alertPosts(), heads:heads.filter(x => x.route === "/api/remote/alert"), slot:slot(), line:line(), msg:q("msg-t") ? q("msg-t").textContent : ""};
+// The next alert is in the slot now, under the same finger: a press
+// within a second does nothing and says so.
+q("al-act").click();
+await h.sleep(150);
+out.locked = {posts:alertPosts().length, msg:q("msg-t") ? q("msg-t").textContent : "", slot:slot()};
+await h.sleep(1100);
+q("al-act").click();
+await h.sleep(900);
+out.second = {posts:alertPosts(), slot:slot(), line:line()};
+await h.sleep(3000);
+out.after_later = {line:line(), posts:alertPosts().length};
+document.querySelector('.tab[data-tab="day"]').click();
+await h.sleep(700);
+out.day2 = line();
+q("next-go").click();
+await h.sleep(600);
+out.resume = {tab:document.body.dataset.tab, go:q("go-l").textContent, seen:seen(q("b-go")), routes:window.__posts.map(p => p.route).filter(r => r !== "morning-open")};
+"""
+
+
+def test_ui2_alert_hold_acknowledge_from_every_tab():
+    section("an alert holding the show (Andy's phone, 2026-11-22): the "
+            "line says Acknowledge, then Resume, on every tab, whole at "
+            "every width, and its button goes to the alert slot on SHOW "
+            "with the Acknowledge in sight; the slot's own Acknowledge "
+            "(the same route, headers and body) works for an operator who "
+            "may not run the show; the slot's button does nothing for a "
+            "second after the slot changes; then the line says Resume is "
+            "on SHOW and its button goes there; nothing is acknowledged, "
+            "resumed or hidden by itself; the worst alert first")
+    page = _ui2_page_inline()
+    chrome = _find_chromium()
+    # The pure part, everywhere: the line's words and where its button goes.
+    lo = page[page.find("function alertHoldStep("):]
+    lo = _js_function(lo, "alertHoldStep") or ""
+    check(lo.startswith("function alertHoldStep("),
+          "alertHoldStep is on the page")
+    _no_dashes(lo, "the alert hold line's words")
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    # A phone, an iPad upright and a laptop: the narrow line is the one
+    # that could cut its words.
+    for size in ((412, 915), (768, 1024), (1366, 768)):
+        r = _ui2_drive(chrome, page, _ui2_status_alert_hold(3),
+                       _UI2_ACK_STEPS, size=size, frag="?tour=0#day",
+                       routes={"/api/remote/morning": _morning_view_pico()},
+                       budget_ms=30000)
+        where = f"2.0, an alert holds the show, {size[0]}x{size[1]}"
+        if not check(isinstance(r, dict) and "resume" in r and
+                     not r.get("problems"),
+                     f"{where}: driven: {r!r}"[:1500]):
+            continue
+        check(r["worst"] == "Stream Deck problem.",
+              f"{where}: the worst alert first (a fault before a "
+              f"warning): {r['worst']!r}")
+        s0, d = r["show0"], r["day"]
+        check(s0["text"] == "Alert holds the show. Acknowledge, then "
+              "Resume." and s0["go"] and s0["go_l"] == "Go to alert" and
+              s0["whole"] and s0["go_size"] >= 44,
+              f"{where}: on SHOW the line says Acknowledge, then Resume, "
+              f"whole, with its button: {s0}")
+        check(d["tab"] == "day" and not d["slot_seen"] and
+              d["line"]["text"] == "Alert holds the show. On Show: "
+              "Acknowledge, then Resume." and d["line"]["go"] and
+              d["line"]["go_l"] == "Go to alert" and d["line"]["whole"] and
+              d["line"]["go_size"] >= 44,
+              f"{where}: on DAY the line says where Acknowledge and Resume "
+              f"are, whole, and has a button to go there: {d}")
+        dl = r["day_later"]
+        check(dl["tab"] == "day" and dl["line"]["text"] ==
+              d["line"]["text"] and dl["posts"] == 0 and
+              dl["slot"]["what"] == "Stream Deck problem.",
+              f"{where}: nothing is acknowledged or hidden by itself, and "
+              f"the screen stays where it is: {dl}")
+        w = r["went"]
+        check(w["tab"] == "show" and w["slot"]["act"] == "Acknowledge" and
+              w["slot"]["seen"] and w["posts"] == 0,
+              f"{where}: the line's button goes to SHOW with the slot's "
+              f"Acknowledge in sight, and acknowledges nothing itself: {w}")
+        a = r["acked"]
+        hd = a["heads"][0]["h"] if a["heads"] else {}
+        check([sorted(b) for b in a["posts"]] ==
+              [["action", "id", "seen"]] and a["posts"][0]["id"] == 7 and
+              a["posts"][0]["action"] == "acknowledge" and
+              hd.get("Content-Type") == "application/json" and
+              str(hd.get("X-LTC-Window", "")).startswith("w-") and
+              a["heads"][0]["cred"] == "same-origin",
+              f"{where}: Acknowledge is the slot's own press, by an "
+              f"operator who may not run the show: the same route, body "
+              f"and headers: {a}")
+        check(a["slot"]["what"] == "Timecode problem." and
+              a["line"]["text"] == "Alert holds the show. Acknowledge, "
+              "then Resume.",
+              f"{where}: the alert cleared; the next one is in the slot, "
+              f"and the line still says Acknowledge: {a}")
+        lk = r["locked"]
+        check(lk["posts"] == 1 and lk["msg"].startswith("Nothing done"),
+              f"{where}: a press within a second of the slot changing "
+              f"does nothing and says so: {lk}")
+        sc = r["second"]
+        check([b["id"] for b in sc["posts"]] == [7, 8],
+              f"{where}: after the second, Acknowledge works again: {sc}")
+        al = r["after_later"]
+        check(al["line"]["text"] in ("Alert holds the show. Acknowledge, "
+                                     "then Resume.",
+                                     "Alert acknowledged. Press Resume.")
+              and al["line"]["go"] and al["posts"] == 2,
+              f"{where}: the hold is never hidden by itself: {al}")
+        r2 = r["day2"]
+        check(r2["text"] in ("Alert holds the show. On Show: Acknowledge, "
+                             "then Resume.",
+                             "Alert acknowledged. Resume on the Show tab.")
+              and r2["go"] and r2["whole"],
+              f"{where}: on DAY the line still says Resume is on SHOW, "
+              f"whole: {r2}")
+        rs = r["resume"]
+        check(rs["tab"] == "show" and
+              set(rs["routes"]) == {"alert"},
+              f"{where}: the line's button sends nothing; only the two "
+              f"Acknowledge presses were posted: {rs}")
+    # Every alert acknowledged, the show still held: Resume, on SHOW only.
+    one = _ui2_status_alert_hold(0)
+    one["alert_hold"]["text"] = ("Held: the alert was acknowledged. Press "
+                                 "Resume when ready.")
+    steps = r"""
+const q = id => document.getElementById(id);
+const seen = el => { const r = el.getBoundingClientRect(), m = document.querySelector("main").getBoundingClientRect();
+  return r.height > 0 && r.top >= Math.max(0, m.top) - 1 && r.bottom <= Math.min(innerHeight, m.bottom) + 1; };
+await h.sleep(1500);
+out.day = [q("next-t").textContent, q("next-go").hidden, q("next-go-l").textContent];
+q("next-go").click();
+await h.sleep(600);
+out.went = [document.body.dataset.tab, q("go-l").textContent, seen(q("b-go"))];
+out.show = [q("next-t").textContent, q("next-go").hidden, q("next-go-l").textContent];
+out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
+"""
+    for size in ((412, 915),):
+        r = _ui2_drive(chrome, page, one, steps, size=size,
+                       frag="?tour=0#day",
+                       routes={"/api/remote/morning": _morning_view_pico()},
+                       budget_ms=15000)
+        where = f"2.0, held after every alert was acknowledged, " \
+                f"{size[0]}x{size[1]}"
+        if not check(isinstance(r, dict) and "went" in r,
+                     f"{where}: driven: {r!r}"[:900]):
+            continue
+        check(r["show"] == ["Alert acknowledged. Press Resume.", False,
+                            "Go to Resume"] and
+              r["day"] == ["Alert acknowledged. Resume on the Show tab.",
+                           False, "Go to Resume"],
+              f"{where}: the line says Resume, and where it is: {r}")
+        check(r["went"] == ["show", "Resume", True] and r["routes"] == [],
+              f"{where}: the button goes to SHOW's own Resume, in sight, "
+              f"and presses nothing: {r}")
+    print("  ok")
+
+
 # The DAY tab's copies of 1.0's Startup page code: purge selection, open
 # beats, lock and unlock, the fire key, the cleaning's holds.
 # groupClick and fireBeat left 1.0 on 2026-11-14 (Jeff's ruling: a tap on
@@ -132567,6 +132795,7 @@ if __name__ == "__main__":
         test_ui2_time_elapsed_and_left,
         test_ui2_stop_lone_tap_never_covers_a_stop,
         test_ui2_show_tab_in_a_browser,
+        test_ui2_alert_hold_acknowledge_from_every_tab,
         test_ui2_day_makes_only_1_0_presses,
         test_ui2_day_purge_fire_beats_at_1_0s_rate,
         test_ui2_day_tab_in_a_browser,

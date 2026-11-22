@@ -182,6 +182,9 @@ body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mo
    after the last show; two lines, as Stop show's. */
 #b-eon{min-height:56px;font-size:var(--fs);gap:6px;padding:0 10px;flex:0 0 auto}
 #b-eon .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
+/* An alert holding the show (Andy's phone, 2026-11-22): the way to its
+   Acknowledge, and then to Resume, from every tab. */
+#next-go{min-height:56px;font-size:var(--fs);gap:6px;padding:0 10px;flex:0 0 auto;white-space:nowrap}
 /* Two or three live modes on a narrow screen: their Stops are the words. */
 @media (max-width:1300px) and (min-width:601px){ #next.many .t{display:none} #next.many #pins{flex:1 1 auto} #next.many #pins .b{flex:1 1 0;min-width:0;padding:0 8px} }
 #mini{display:flex;flex-wrap:wrap;gap:var(--gap);min-width:0}
@@ -800,7 +803,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 </header>
 <!-- What to do next, on every tab; a live hazard (cleaning, live flame,
      flames in rehearsal) pinned here with its own Stop, never paged. -->
-<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span id="next-b" data-brand hidden></span><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button data-safe class="b red" id="b-eon" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="eon-l">End of night</span><small id="eon-s">tap twice</small></span></button><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
+<div id="next" class="ok"><svg class="i"><use href="#i-info"/></svg><span id="next-b" data-brand hidden></span><span class="t" id="next-t">Connecting to the show PC</span><span id="pins"></span><button data-safe class="b red" id="b-eon" hidden><svg class="i"><use href="#i-power"/></svg><span class="lbl"><span id="eon-l">End of night</span><small id="eon-s">tap twice</small></span></button><button class="b blue" id="next-go" hidden><svg class="i"><use href="#i-right"/></svg><span id="next-go-l">Go to alert</span></button><button class="q" data-q="next" aria-label="Help: next step">?</button></div>
 <main>
   <!-- Off the SHOW tab: the presses that make things safe, always here. -->
   <div id="mini" hidden>
@@ -1883,7 +1886,7 @@ function nextStep(st, isStaleNow, local, items){
   const pch = prerollChoice(st.preroll, sch);
   if(pch && pch.cleared) return {tone:"warn", icon:"check", text:String((st.preroll.cleared || {}).say || "Rig check passed. Press Resume.")};
   if(pch && !pch.continued) return {tone:"bad", icon:"warn", text:"Rig check failed. Fix it, or continue."};
-  if(st.alert_hold && st.alert_hold.held === true) return {tone:"warn", icon:"warn", text:"Alert holds the show. Acknowledge, then Resume."};
+  if(st.alert_hold && st.alert_hold.held === true) return alertHoldStep(items, typeof TAB === "undefined" || TAB === "show");
   if(st.me && st.me.view_only) return {tone:"warn", icon:"user", text:"Signed out: view only. Sign in to control."};
   if(isHeld(st)) return {tone:"warn", icon:"pause", text:"Held. Press Resume to carry on."};
   if(sch.attached && !isLive(st) && prerollLook(st.preroll).checking) return {tone:"warn", icon:"clock", text:"Checking the rig before the show."};
@@ -1913,6 +1916,17 @@ function nextStep(st, isStaleNow, local, items){
   if(sch.delayed) return {tone:"warn", icon:"clock", text:"Show " + sch.delayed.show + " delayed. Press Start now."};
   if(sch.attached) return {tone:"ok", icon:"check", text:"No more shows tonight."};
   return {tone:"ok", icon:"info", text:"No schedule on this show PC."};
+}
+// An alert holds the show (Andy's phone, 2026-11-22: the line showed on
+// DAY, where there is no Acknowledge, and Resume is on SHOW only). While
+// an alert with Acknowledge is open: Acknowledge, then Resume, and the
+// line's button (next-go) goes to the alert slot. Once none is: Resume,
+// and the button goes to SHOW's Resume. It never acknowledges or resumes
+// anything itself. Pure.
+function alertHoldStep(items, onShow){
+  if((items || []).some(i => i.act === "ack"))
+    return {tone:"warn", icon:"warn", go:"ack", text:onShow ? "Alert holds the show. Acknowledge, then Resume." : "Alert holds the show. On Show: Acknowledge, then Resume."};
+  return {tone:"warn", icon:"warn", go:"resume", text:onShow ? "Alert acknowledged. Press Resume." : "Alert acknowledged. Resume on the Show tab."};
 }
 // Signed out (view only), no contact, nothing heard yet, or the show not
 // running: the page's quiet tone. From the engine's status only. Pure.
@@ -1967,6 +1981,12 @@ const ALERT_DO = {deck:"Check its USB cable.", audio:"Check the audio box.", vid
   timecode:"Tap here. Call Jeff.", lasers:"Disarm lasers if unsure.", link:"Use the Deck to disarm.",
   output:"Turn on MadMapper output."};
 let STOP_SAID = null, DISARM_FAIL = null, ALERT_KEY = null, FAULTS_SEEN = null, KEYS_SEEN = null;
+// The alert the slot shows, and when it began to show it: its button does
+// nothing for AL_LOCK_MS after the slot changes (an Acknowledge can bring
+// the next alert under the same finger; AL_DOWN covers one press only).
+const AL_LOCK_MS = 1000;
+let AL_SHOWN = "", AL_SHOWN_AT = 0;
+function alLocked(){ return Date.now() - AL_SHOWN_AT < AL_LOCK_MS; }
 // The engine's run warning ("Show control is off: ... will NOT start. Turn
 // show control on[, then Resume].") as it is on the show PC, where the
 // slot's own button is Turn show control on; elsewhere it is turned on at
@@ -2065,6 +2085,8 @@ function renderAlertSlot(){
   let idx = items.findIndex(i => i.key === ALERT_KEY);
   if(idx < 0){ idx = 0; ALERT_KEY = items.length ? items[0].key : null; }
   const it = items[idx];
+  const sig = it ? it.key + ":" + (it.act || "") : "";
+  if(sig !== AL_SHOWN){ AL_SHOWN = sig; AL_SHOWN_AT = Date.now(); }
   const box = $("alert");
   // A Continue anyway hold ends the moment its alert is not the one shown.
   if(PR_HOLD && !(it && it.act === "pr-continue")){ prHoldEnd(); say("Let go: nothing was done.", "The rig check's alert changed during the hold: nothing was done.", "warn"); }
@@ -2142,6 +2164,10 @@ $("al-act").addEventListener("pointercancel", () => { AL_DOWN = null; });
 $("al-act").addEventListener("click", async (e) => {
   const down = alDownFresh() ? AL_DOWN : null;
   AL_DOWN = null;
+  if(alLocked()){
+    say("Nothing done. Look, then press again.", "The alert changed less than a second ago, so nothing was done.", "warn");
+    return;
+  }
   if(down && (down.key !== ALERT_KEY || down.act !== $("al-act").dataset.act)){
     say("Nothing done. Look, then press again.", "The alert changed under your finger, so nothing was done.", "warn");
     return;
@@ -2156,6 +2182,22 @@ $("al-act").addEventListener("click", async (e) => {
     if(it.key === "stop") STOP_SAID = null; else if(it.key === "dis-fail") DISARM_FAIL = null;
     ALERTS = alertItems(ST); renderAlertSlot();
   }
+});
+// The line's button while an alert holds the show: to SHOW (as a tab
+// press), the slot on an alert with Acknowledge, and that button or
+// Resume scrolled into sight. Only the slot's own Acknowledge and SHOW's
+// own Resume act, with their own checks.
+$("next-go").addEventListener("click", () => {
+  const ns = nextStep(ST, stale(), !!(ME && ME.local), ALERTS);
+  if(!ns.go) return;
+  if(TAB !== "show") backToShow();
+  if(ns.go === "ack"){
+    const cur = ALERTS.find(i => i.key === ALERT_KEY);
+    const a = ALERTS.find(i => i.act === "ack");
+    if(!(cur && cur.act === "ack") && a){ ALERT_KEY = a.key; renderAlertSlot(); }
+  }
+  const el = $(ns.go === "ack" ? "al-act" : "b-go");
+  try{ el.scrollIntoView({block:"center", inline:"nearest"}); }catch(e){}
 });
 // A Disarm, or a live mode's Stop, that was refused or did not arrive:
 // said in the slot until Seen, never only in the footer.
@@ -2234,6 +2276,7 @@ $("al-act").addEventListener("pointerdown", async (ev) => {
   if($("al-act").dataset.act !== "pr-continue" || $("al-act").disabled) return;
   ev.preventDefault();
   if(PR_HOLD) return;
+  if(alLocked()){ say("Nothing done. Look, then press again.", "The alert changed less than a second ago, so nothing was done.", "warn"); return; }
   const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
   const it = ALERTS.find(i => i.key === ALERT_KEY);
   say("Keep holding...", it ? it.full : "", "warn");
@@ -2291,6 +2334,7 @@ function renderStale(){
   // the next step and the state
   const ns = nextStep(ST, isSt, local, ALERTS);
   $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
+  $("next-go").hidden = !ns.go; if(ns.go) setText($("next-go-l"), ns.go === "ack" ? "Go to alert" : "Go to Resume");
   const pl = pillLook(ST, isSt, ALERTS);
   $("pill").className = pl.cls; setIcon($("pill-i"), pl.icon); setText($("pill-t"), pl.text);
   renderPins();
