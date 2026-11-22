@@ -810,6 +810,76 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   .tile{grid-template-rows:auto auto var(--tile-btn)}
   .hzrow{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+/* PHONE LAYOUT BEGIN. A phone held upright, touch only (Andy's phone,
+   2026-11-22: 443 of 915 px was fixed chrome, 48 percent). A narrow
+   desktop window, an iPad and the rack screen never match. Nothing moves
+   in the page: the same elements, drawn tighter. */
+@media (max-width:500px) and (pointer:coarse){
+  /* The header on one row: each tab and button an icon over its word.
+     No word is ever cut: a Systems chip too long for the row (a fault)
+     takes a second row instead. */
+  header{flex-wrap:wrap;gap:4px;padding:4px 6px}
+  #tabs{flex:1 1 auto;flex-wrap:nowrap;gap:2px}
+  .tab{flex:1 1 auto;min-width:max-content;flex-direction:column;justify-content:center;gap:0;padding:2px 0;min-height:48px;font-size:14px;line-height:1.15}
+  .tab svg.i,.hb svg.i{width:22px;height:22px}
+  .hright{flex:0 0 auto;flex-wrap:nowrap;gap:4px;margin-left:auto}
+  .hright #brand{display:none}
+  .hb{flex-direction:column;justify-content:center;gap:0;min-height:48px;min-width:48px;padding:2px 4px;font-size:13px;line-height:1.15}
+  #user > span{max-width:5.2em;overflow:hidden;text-overflow:ellipsis}
+  #sys > span{white-space:normal;max-width:6.5em;text-align:center}
+  #sys .chev{display:none}
+  /* The banner block: the words one line, a tap opens them (a sheet when
+     they are longer than about 15 percent of the screen). Only the words
+     fold: pinned Stops, End of night and the alert hold line and its
+     button are never cut or capped. */
+  #next{margin:4px 6px 0;min-height:44px;padding:0 6px 0 10px;gap:8px;font-size:18px;flex-wrap:wrap}
+  #next > svg{width:22px;height:22px}
+  #next > .q{width:44px;height:44px;min-width:44px}
+  /* The words' tap area is 44 px tall; the bar does not grow for it. */
+  #next .t{flex:1 1 0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;line-height:1.2;
+    min-height:44px;padding:11px 0}
+  #next.open .t{white-space:normal;overflow-y:auto;max-height:15vh;max-height:15dvh}
+  #next.go .t{white-space:normal;overflow:visible;max-height:none;cursor:default;min-height:0;padding:0}
+  #next > svg,#next > .q,#b-eon{flex:none}
+  #next-go{flex:1 1 100%;min-height:48px}
+  #b-eon{min-height:48px}
+  /* Two or three live modes: their words (a second line rather than cut
+     on a narrow phone), then their Stops whole. */
+  #next.many .t{display:flex;align-items:center;padding:0;white-space:normal}
+  #pins{order:5;flex:1 1 100%;flex-wrap:wrap;gap:6px;padding-bottom:4px}
+  #pins .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 8px;font-size:17px;white-space:normal;line-height:1.05}
+  /* SHOW: the state strip on one row; the transport sticks to the top of
+     the pane, so Hold and Stop never scroll away. */
+  #t-show .state{grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr) minmax(0,1fr)}
+  #t-show .state > div{min-height:52px;padding:2px 8px}
+  #t-show .state small{font-size:14px}
+  #pill{font-size:15px;line-height:1.05;gap:4px !important;padding:2px 6px !important}
+  #pill svg{width:18px;height:18px}
+  #st-tc,#cd-v{font-size:20px}
+  #t-show .tr{position:sticky;top:0;z-index:5;background:var(--bg);padding:6px 0;margin:-6px 0;grid-template-columns:1fr 1fr 44px}
+  #t-show .tr .b{min-height:56px}
+  #b-go{min-height:60px}
+  #t-show .tr .q{width:44px;height:44px;min-width:44px}
+  /* The alert slot: its words one line each (a tap opens Details), then
+     its buttons. */
+  #alert{padding:4px 8px;row-gap:4px}
+  #alert > svg{width:24px;height:24px}
+  #alert .at{flex:1 1 calc(100% - 40px);min-height:44px}
+  #alert .at .tt b,#alert .at .tt > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #al-next,#al-act{min-height:48px;padding:0 10px;gap:6px;font-size:18px}
+  #alert > .q{width:44px;height:44px;min-width:44px;margin-left:auto}
+  /* Off SHOW: the safety strip on one row, stuck to the top of the pane. */
+  main > #mini{position:sticky;top:0;z-index:5;background:var(--bg);flex-wrap:nowrap;padding:4px 6px}
+  main > #mini .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 3px;gap:2px;font-size:15px}
+  main > #mini .b svg.i{width:18px;height:18px}
+  /* The footer: no reserved desktop height. No fade over the pane: a
+     faded control reads as disabled. */
+  footer{min-height:0;padding:4px 6px}
+  #wx,#msg-more{min-height:44px;padding:0 10px}
+  #wx{font-size:17px}
+  #msg-t{font-size:16px}
+}
+/* PHONE LAYOUT END */
 </style>
 </head>
 <body>
@@ -2387,6 +2457,20 @@ $("next-go").addEventListener("click", () => {
   const el = ns.go === "ack" ? (!$("al-act").hidden && $("al-act").dataset.act === "ack" ? $("al-act") : $("al-text")) : $("b-go");
   try{ el.scrollIntoView({block:"center", inline:"nearest"}); }catch(e){}
 });
+// A phone (PHONE LAYOUT): the line's words are one line; a tap opens them
+// in place, or in a sheet when they are longer than the room they have.
+// It presses nothing. Read at the tap, so nothing is listened for.
+var NEXT_OPEN = false;
+$("next-t").addEventListener("click", () => {
+  const nx = $("next"), t = $("next-t");
+  if(!matchMedia("(max-width:500px) and (pointer:coarse)").matches || nx.classList.contains("go")) return;
+  NEXT_OPEN = !NEXT_OPEN;
+  nx.classList.toggle("open", NEXT_OPEN);
+  if(NEXT_OPEN && t.scrollHeight > t.clientHeight + 1){
+    NEXT_OPEN = false; nx.classList.remove("open");
+    sheet("Details", opText(t.textContent), [{label:"Close", cls:"blue"}]);
+  }
+});
 // A Disarm, or a live mode's Stop, that was refused or did not arrive:
 // said in the slot until Seen, never only in the footer.
 function disarmFailed(what, text){
@@ -2576,7 +2660,7 @@ function renderStale(){
   const local = !!(ME && ME.local);
   // the next step and the state
   const ns = nextStep(ST, isSt, local, ALERTS);
-  $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
+  $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : "") + (ns.go ? " go" : "") + (NEXT_OPEN ? " open" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
   // On SHOW, Resume is its own big button at the top of the pane: the line
   // keeps no button for it, so on a short phone the pane has the room to
   // show Resume whole (412x600: 64 px of pane with the button, Resume 72).

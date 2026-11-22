@@ -3520,6 +3520,32 @@ MUTATIONS = [
   "  const doubt = [];\n"),
 
 
+ # Andy's phone, 2026-11-22: on a touch phone the top line was capped and
+ # cut the pinned Stops and the alert hold line; two live modes hid their
+ # words; the footer kept a desktop height of empty space
+ ('ui 2.0 phone: the top line is capped, cutting its pinned Stops and the alert hold line',
+  'ltcplay/web/remote2.html',
+  "  #next > svg,#next > .q,#b-eon{flex:none}\n",
+  "  #next > svg,#next > .q,#b-eon{flex:none}\n  #next{max-height:15vh;overflow:hidden}\n"),
+
+ ('ui 2.0 phone: the footer keeps its desktop height on a phone',
+  'ltcplay/web/remote2.html',
+  "  footer{min-height:0;padding:4px 6px}\n",
+  "  footer{padding:4px 6px}\n"),
+
+ ('ui 2.0 phone: two live modes hide the top line\'s words',
+  'ltcplay/web/remote2.html',
+  "  #next.many .t{display:flex;align-items:center;padding:0;white-space:normal}\n",
+  "  #next.many .t{display:none;align-items:center;padding:0;white-space:normal}\n"),
+
+ # Cold review of #294: a fault's words in the Systems chip were cut to
+ # 68 px on a 384 px phone ("Flames: fa...")
+ ('ui 2.0 phone: the Systems chip cuts a fault\'s words',
+  'ltcplay/web/remote2.html',
+  "  #sys > span{white-space:normal;max-width:6.5em;text-align:center}\n",
+  "  #sys > span{max-width:5.2em;overflow:hidden;text-overflow:ellipsis}\n"),
+
+
  # Cold review of #291: an alert raised again keeps its id with new words;
  # a page's Acknowledge must clear only the raise it showed
  ('ui 2.0 alert slot: an alert raised again with new words is not a new alert to the lockout',
