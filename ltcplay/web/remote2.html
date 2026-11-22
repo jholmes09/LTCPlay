@@ -152,6 +152,9 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) var(--p
    that leaves the button, or moves more than HOLD_SLIDE_PX, ends the hold
    (holdMoved). */
 .armb, #b-armall, #al-act.hold{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+/* The flame slide's handle: drawn on a touch phone only (the phone's
+   block below); everywhere else an arm is the hold, as before. */
+.knob{display:none}
 .b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E;pointer-events:none}
 .b:disabled .fill{display:none}
 /* The quiet tone: signed out, no contact or the show not running. Only
@@ -878,6 +881,22 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #wx,#msg-more{min-height:44px;padding:0 10px}
   #wx{font-size:17px}
   #msg-t{font-size:16px}
+  /* Flame slide to arm (step 5): one tile a row, and each group's arm and
+     Arm all a full width slide, its 56 px handle 40 px or more from both
+     edges of the screen (a Samsung's Back swipe and Edge panel). Only the
+     handle starts it: the rest of the track scrolls the page. The words
+     say what it does, nothing about how. */
+  :root{--tile-btn:64px}
+  .armb.hold:not(:disabled), #b-armall:not(:disabled){touch-action:pan-y;justify-content:center;padding:0 8px 0 64px}
+  .armb.hold:not(:disabled){margin:0 24px;width:auto}
+  #b-armall:not(:disabled){margin:0 34px;min-height:64px}
+  .armb.hold:not(:disabled) > svg, .armb.hold:not(:disabled) > .act, #b-armall:not(:disabled) > svg, #b-armall:not(:disabled) > .lbl{display:none}
+  .armb.hold:not(:disabled)::after{content:"Arm"}
+  #b-armall:not(:disabled)::after{content:"Arm all flames"}
+  .armb.hold:not(:disabled) > .knob, #b-armall:not(:disabled) > .knob{display:flex;align-items:center;justify-content:center;
+    position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:var(--green-ink);
+    touch-action:none;z-index:1}
+  .knob svg.i{width:32px;height:32px}
 }
 /* PHONE LAYOUT END */
 </style>
@@ -969,7 +988,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     <div class="flames">
       <div id="groups" aria-label="Flame groups and lasers"></div>
       <div class="allcol">
-        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span class="lbl"><span id="armall-l">Hold: arm flames</span><small id="armall-why"></small></span></button>
+        <button class="b green hold" id="b-armall"><div class="fill"></div><svg class="i"><use href="#i-ring"/></svg><span class="lbl"><span id="armall-l">Hold: arm flames</span><small id="armall-why"></small></span><span class="knob" aria-hidden="true"><svg class="i"><use href="#i-right"/></svg></span></button>
         <button data-safe class="b safe" id="b-disall"><svg class="i"><use href="#i-shield"/></svg><span>Disarm flames</span></button>
       </div>
       <!-- The hazers (hazers.py, Jeff 2026-10-29): a plain tap ON or OFF
@@ -2155,7 +2174,9 @@ function nextStep(st, isStaleNow, local, items){
     const fl = st.flames || {}, armedAny = (fl.groups || []).some(g => g.armed === "armed");
     const when = s === null ? "at " + nx.start : "in " + clockText(s);
     if(s !== null && s <= 300 && !armedAny && st.arming && st.arming.enabled && mayRow(st, "arm"))
-      return {tone:"warn", icon:"flame", text:"Show " + nx.show + " " + when + ". Hold to arm flames."};
+      // A touch phone slides to arm (step 5): no Hold in its words there.
+      return {tone:"warn", icon:"flame", text:"Show " + nx.show + " " + when + ". " +
+        (typeof matchMedia === "function" && matchMedia("(max-width:500px) and (pointer:coarse)").matches ? "Arm flames." : "Hold to arm flames.")};
     return {tone:"ok", icon:"clock", text:"Show " + nx.show + " starts " + when + "."};
   }
   if(sch.delayed) return {tone:"warn", icon:"clock", text:"Show " + sch.delayed.show + " delayed. Press Start now."};
@@ -2492,7 +2513,7 @@ function renderMini(isSt){
 }
 $("m-hold").addEventListener("click", () => press("hold"));
 $("m-stop").addEventListener("click", e => stopTap2("m-stop", e));
-$("m-disf").addEventListener("click", () => { armStop("Disarm all flame groups"); press("disarm-all"); });
+$("m-disf").addEventListener("click", () => { slideCancel("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
 $("m-disl").addEventListener("click", () => lzDisarmAll());
 $("m-snd").addEventListener("click", () => annPress("announce-stop"));
 
@@ -3066,6 +3087,7 @@ $("tn-run").addEventListener("click", () => runShowHere());
 // Stop: the engine's complete halt (1.0's pressStop): the same body, the
 // same answer read the same way. No confirm: the double tap is its guard.
 async function pressStop(route){
+  if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
   HALT_SEQ++;
   // Any Stop ends every armed first tap (Stop show, the strip's, the Run
   // card's): none of them says "not sent" after it.
@@ -4850,9 +4872,190 @@ function armShort(text){
   return short8(t, "Tap Details.");
 }
 function armSay(text, level){ say(armShort(text), text, level >= 2 ? "bad" : (level === 1 ? "ok" : "")); }
-document.addEventListener("visibilitychange", () => { if(document.hidden) armStop("the page was hidden"); });
-window.addEventListener("pagehide", () => armStop("the page closed"));
-window.addEventListener("blur", () => armStop("the page lost focus"));
+document.addEventListener("visibilitychange", () => { if(document.hidden){ slideCancel("the page was hidden"); armStop("the page was hidden"); } });
+window.addEventListener("pagehide", () => { slideCancel("the page closed"); armStop("the page closed"); });
+window.addEventListener("blur", () => { slideCancel("the page lost focus"); armStop("the page lost focus"); });
+
+// ---- flame slide to arm, touch phones only (step 5 of the phone build) ----
+// On a touch phone ((max-width:500px) and (pointer:coarse), read when the
+// finger goes down and fixed for that touch) each group's arm and Arm all
+// are a slide. It is the same hold as everywhere else: armStart or
+// armAllStart, the same beats, the same engine, started when the finger
+// touches the handle. The engine arms only once beats have lasted 1.0 s
+// plus the deck's 0.6 s, so the beats carry on past SLIDE_GATE_MS (or past
+// SLIDE_GATE_HELD_S of hold the engine has answered) only while the handle
+// is at SLIDE_ARM (90 percent) or more. Under it the hold is let go, and a
+// new hold starts once the handle is back at 90 percent (the engine then
+// needs its whole hold again). The slide never shows armed: the engine's
+// armed answer or its status says so, and the tile turns to Disarm.
+// Everything else ends the slide, lets go of its hold and springs the
+// handle back: the lift, pointercancel, a second pointer of any kind, a
+// jump (a wet screen), the finger leaving the band, blur, a hidden or
+// closed page, a resize or rotation, the phone test changing, the tiles
+// drawn again, Back, sign out, arming switched off, a Disarm, a Stop.
+// Off a phone (a desktop, an iPad, the rack screen) an arm is the hold,
+// exactly as before. A keyboard and a screen reader still cannot arm.
+const SLIDE_MQ = matchMedia("(max-width:500px) and (pointer:coarse)");
+const SLIDE_ARM = 0.9, SLIDE_GATE_MS = 500, SLIDE_GATE_HELD_S = 0.7, SLIDE_AGAIN_MS = 300,
+  SLIDE_JUMP_PX = 64, SLIDE_BAND_PX = 24, SLIDE_TICK_MS = 50;
+let SLIDE = null, SLIDE_BACK = 0;
+function slidePhone(){ return SLIDE_MQ.matches; }
+// The finger down on a slide's track: only on its handle, and only the
+// first pointer. Anywhere else on the track nothing starts (a scroll that
+// starts there scrolls the page).
+function slideDown(e, el, i){
+  const knob = el.querySelector(".knob");
+  if(!e.isPrimary || el.disabled || !knob || !knob.contains(e.target) || !knob.getClientRects().length) return;
+  // The last slide's Back guard is still being taken away.
+  if(SLIDE_BACK) return;
+  if(holdSecond(e)) return;
+  slideCancel("");
+  // The handle back at the start at once (a spring back still running), and
+  // its travel from the layout, never from where a transition has it.
+  knob.style.transition = "none";
+  knob.style.transform = "";
+  const s = SLIDE = {el:el, knob:knob, i:i, id:e.pointerId, x0:e.clientX, lx:e.clientX, ly:e.clientY,
+    travel:Math.max(1, el.clientWidth - knob.offsetWidth - 2 * knob.offsetLeft), frac:0, h:null, t0:0, paused:false, at:0,
+    back:false, tick:0, vw:innerWidth, vh:innerHeight};
+  s.tick = setInterval(slideCheck, SLIDE_TICK_MS);
+  // Back (or a Samsung's swipe from the edge) while the finger is down
+  // takes this entry away and ends the slide, never the page.
+  try{ history.pushState({ltcSlide:true}, ""); s.back = true; }catch(_e){}
+  slideHold(s);
+}
+// The hold, the same as a press and hold: armStart or armAllStart.
+function slideHold(s){
+  s.t0 = Date.now(); s.paused = false;
+  if(s.i === "all") armAllStart(); else armStart(s.i);
+  s.h = HOLD;
+  if(s.h) s.groups = s.h.parts.map(p => p.group);
+  // Refused at once (armStart said why): nothing to slide.
+  if(!s.h) slideEnd(s);
+}
+// Every group of the slide's hold still holding shows armed or asked for
+// in the status: the engine's armed answer is on its way.
+function slidePending(s){
+  if(s.paused || !s.h || HOLD !== s.h) return false;
+  const gs = ((ST && ST.flames) || {}).groups || [];
+  const live = s.h.parts.filter(p => !p.end);
+  return live.length > 0 && live.every(p => { const g = gs[p.group]; return !!g && (g.armed === "armed" || !!g.wanted); });
+}
+// A slide's hold stopped: each part still holding goes through #293's
+// doubt path (armStop reads the engine's state before it says anything or
+// lets go), so an armed answer cut off here is never said as not armed.
+function slideStop(s, why){
+  if(!s.h || HOLD !== s.h) return;
+  s.h.parts.forEach(p => { if(!p.end && !p.err) p.err = new Error(why || "the slide ended"); });
+  armStop(why);
+}
+function slideHeld(h){ return Math.max(0, ...h.parts.map(p => p.held || 0)); }
+function slideCheck(){
+  const s = SLIDE;
+  if(!s) return;
+  // The hold ended by itself (armed, refused, lapsed), and said so.
+  if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }
+  if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
+  // The tile turned to Disarm under the finger: its group is asked for, so
+  // the engine's armed answer is on its way. The hold waits for it, as a
+  // press and hold does (holdLapsed); nothing is let go.
+  if(!s.knob.getClientRects().length && !slidePending(s)){ slideCancel("the controls were drawn again"); return; }
+  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
+  // Signed out (the sheet's Sign out, or the engine says view only).
+  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
+  // A resize or a turn that has not fired its event yet.
+  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
+  const r = s.el.getBoundingClientRect();
+  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("let go"); return; }
+  if(!s.paused){
+    // Under 90 percent: never as far as the engine's whole hold. Let go
+    // through the doubt path: the engine may have armed it this instant.
+    if(s.frac < SLIDE_ARM && (Date.now() - s.t0 >= SLIDE_GATE_MS || slideHeld(s.h) >= SLIDE_GATE_HELD_S)){
+      slideStop(s, "");
+      s.h = null; s.paused = true; s.at = Date.now();
+    }
+  } else if(s.frac >= SLIDE_ARM && Date.now() - s.at >= SLIDE_AGAIN_MS) slideHold(s);
+}
+function slideMove(e){
+  const s = SLIDE;
+  if(!s || e.pointerId !== s.id) return;
+  const pts = e.getCoalescedEvents && e.getCoalescedEvents().length ? e.getCoalescedEvents() : [e];
+  for(const p of pts){
+    // A wet screen: the touch jumps. Never read as a slide.
+    if(Math.hypot(p.clientX - s.lx, p.clientY - s.ly) > SLIDE_JUMP_PX){ slideCancel("the touch jumped"); return; }
+    s.lx = p.clientX; s.ly = p.clientY;
+  }
+  s.frac = Math.min(1, Math.max(0, (s.lx - s.x0) / s.travel));
+  s.knob.style.transform = "translateX(" + Math.round(s.frac * s.travel) + "px)";
+  slideCheck();
+}
+// Ends the slide: its hold let go (said as the hold says it), the handle
+// back at the start.
+function slideCancel(why){
+  const s = SLIDE;
+  if(!s) return;
+  if(s.h && HOLD === s.h) slideStop(s, why);
+  else if(s.paused && why) slideSaid(s.groups, why);
+  slideEnd(s);
+}
+// A slide that ended while paused under 90 percent (its hold already let
+// go): the engine's state is read before anything is said, never "not
+// armed" without it.
+async function slideSaid(groups, why){
+  const nows = await Promise.all(groups.map(i => groupNow(i)));
+  if(HOLD) return;
+  const on = nows.filter(n => n.armed), unk = nows.filter(n => !n.known);
+  if(groups.length === 1){
+    if(on.length) armSay(ASKED_WORDS(on[0].name), 1);
+    else if(unk.length) armSay(UNKNOWN_WORDS(unk[0].name), 2);
+    else armSay("Hold stopped: " + why, why === "let go" ? 0 : 2);
+    return;
+  }
+  if(!on.length && !unk.length){ armSay("Hold stopped: " + why, why === "let go" ? 0 : 2); return; }
+  // armAllText's words for a group not known.
+  armSay("Arm all:" + (on.length ? " " + on.map(n => n.name).join(", ") + " asked for." : "") +
+    (unk.length ? " Not known: " + unk.map(n => n.name).join(", ") + " (the engine's state could not be read; check the tiles before you hold again)." : ""), unk.length ? 2 : 1);
+}
+function slideEnd(s){
+  if(SLIDE !== s) return;
+  SLIDE = null;
+  clearInterval(s.tick);
+  s.knob.style.transition = "transform .2s ease-out";
+  s.knob.style.transform = "";
+  if(s.back && history.state && history.state.ltcSlide){
+    SLIDE_BACK = setTimeout(() => { SLIDE_BACK = 0; }, 1000);
+    try{ history.back(); }catch(_e){ clearTimeout(SLIDE_BACK); SLIDE_BACK = 0; }
+  }
+}
+window.addEventListener("pointermove", slideMove, true);
+// The buttons' own pointerleave and lostpointercapture let go of a hold at
+// once, with no state read. During a slide they never reach them (the
+// handle hidden while its group is asked for may lose the capture, or the
+// finger past the track's end leave the button): the slide ends only
+// through its own path, which reads the engine's state first.
+["pointerleave", "lostpointercapture"].forEach(t => window.addEventListener(t, e => {
+  if(SLIDE && e.pointerId === SLIDE.id) e.stopPropagation();
+}, true));
+// Arming switched off and Sign out (their own handlers are 1.0's copied
+// code, which lets go of the hold first).
+$("sa-off").addEventListener("click", () => slideCancel("arming from a screen was switched off"));
+$("u-out").addEventListener("click", () => slideCancel("Signed out"));
+["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => { if(SLIDE && e.pointerId === SLIDE.id) slideCancel("let go"); }, true));
+// A second pointer of any kind, anywhere: the slide ends, and no hold
+// starts until every pointer is up (holdSecond).
+window.addEventListener("pointerdown", e => {
+  if(SLIDE && e.pointerId !== SLIDE.id){ HOLD_TWO = true; slideCancel("two touches at once. Lift, then slide again"); }
+}, true);
+window.addEventListener("popstate", () => {
+  if(SLIDE_BACK){ clearTimeout(SLIDE_BACK); SLIDE_BACK = 0; return; }
+  slideCancel("Back was pressed");
+});
+window.addEventListener("resize", () => slideCancel("the screen turned or changed size"));
+window.addEventListener("orientationchange", () => slideCancel("the screen turned or changed size"));
+{
+  const f = () => { slideCancel("the screen changed"); try{ layoutGroups(); }catch(_e){} };
+  // An older Safari has addListener only.
+  if(SLIDE_MQ.addEventListener) SLIDE_MQ.addEventListener("change", f); else if(SLIDE_MQ.addListener) SLIDE_MQ.addListener(f);
+}
 
 // What a group's tile says: an icon, a word, a short line.
 const LAMP_SHORT = {"dirty edge":"DIRTY EDGE", "chatter":"CHATTER", "arm input stale":"NO SIGNAL",
@@ -4893,7 +5096,8 @@ let LAMP_KEY = "";
 function layoutGroups(){
   const box = document.querySelector(".flames");
   const n = ($("groups").querySelectorAll(".tile").length || 1) + 1;
-  const fit = Math.max(1, Math.floor((box.clientWidth + 8) / (150 + 8)));
+  // A touch phone: one tile a row, so each slide is the screen's width.
+  const fit = SLIDE_MQ.matches ? 1 : Math.max(1, Math.floor((box.clientWidth + 8) / (150 + 8)));
   const rows = Math.ceil(n / Math.min(n, fit));
   let cols = Math.ceil(n / rows);
   // The hazers (2026-10-29): in two free cells of the last row when one
@@ -5367,11 +5571,13 @@ function renderGroups(fl){
   const key = groups.map(g => g.name).join("\n") + "|" + hasLz;
   const box = $("groups");
   if(key !== LAMP_KEY){
+    // box.innerHTML takes the slide's handle away from under the finger.
+    slideCancel("the group list changed");
     armStop("the group list changed");
     LAMP_KEY = key;
     box.innerHTML = groups.map((g, i) =>
       `<div class="tile unknown" data-lamp="${i}"><div class="tn"></div><div class="ts">${icon("x")}<span class="word"></span><span class="lk" hidden>${icon("lock")}<span></span></span></div>` +
-      `<button class="b armb" data-arm="${i}" data-mode="hold"><div class="fill"></div>${icon("ring")}<span class="act"></span></button></div>`).join("") +
+      `<button class="b armb" data-arm="${i}" data-mode="hold"><div class="fill"></div>${icon("ring")}<span class="act"></span><span class="knob" aria-hidden="true">${icon("right")}</span></button></div>`).join("") +
       (hasLz ? `<div class="tile lz" id="lz"><div class="tn">Lasers</div><div class="ts">${icon("laser")}<span class="word" id="lz-w"></span><span class="lk" id="lz-lk" hidden>${icon("lock")}<span></span></span></div>` +
         `<button class="b" id="lz-b">${icon("laser")}<span id="lz-bl">Arm lasers</span></button></div>` : "");
     // One button per group, 1.0's: its mode when the finger went down
@@ -5379,12 +5585,12 @@ function renderGroups(fl){
     // the release; Disarm goes on the click.
     box.querySelectorAll("[data-arm]").forEach(b => {
       const i = Number(b.dataset.arm);
-      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ if(holdSecond(e)) return; armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
+      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ if(slidePhone()){ slideDown(e, b, i); return; } if(holdSecond(e)) return; armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
       ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
         b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));
       b.addEventListener("click", e => {
         const down = b.dataset.down || ""; delete b.dataset.down;
-        if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ armStop("disarm"); press("group-disarm", {group:i}); }
+        if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ slideCancel("disarm"); armStop("disarm"); press("group-disarm", {group:i}); }
         else if(e.detail === 0 && b.dataset.mode === "hold") armSay(KEY_HOLD_WORDS, 2);
       });
       b.addEventListener("contextmenu", e => e.preventDefault());
@@ -5445,12 +5651,12 @@ function renderAllButtons(isSt){
   $("b-disall").disabled = false;
 }
 const ARMALL = $("b-armall");
-ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ if(holdSecond(e)) return; armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
+ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ if(slidePhone()){ slideDown(e, ARMALL, "all"); return; } if(holdSecond(e)) return; armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
 ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
   ARMALL.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));
 ARMALL.addEventListener("contextmenu", e => e.preventDefault());
 ARMALL.addEventListener("click", e => { if(e.detail === 0) armSay(KEY_HOLD_WORDS, 2); });
-$("b-disall").addEventListener("click", () => { armStop("Disarm all flame groups"); press("disarm-all"); });
+$("b-disall").addEventListener("click", () => { slideCancel("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
 
 // ---- lasers: one tile. Disarm is one press and never held back; Arm is
 // 1.0's laser arm for every laser, with its confirm.
