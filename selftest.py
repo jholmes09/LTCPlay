@@ -118346,14 +118346,21 @@ const lay = async () => {
   const a0 = ARMED.length, r0 = n("arm-release");
   pe(g0(), "pointerdown", x, y, "touch");
   await h.sleep(500);
-  const pad = document.createElement("div"); pad.style.height = "200px";
-  q("t-show").insertBefore(pad, q("t-show").firstChild);
-  await h.sleep(2300);
+  // The top line growing (a long line wrapping): the pane under it moves
+  // down. (A row added inside the pane would not: the browser keeps the
+  // scrolled content where it was.)
+  const y0 = g0().getBoundingClientRect().top;
+  const pad = document.createElement("div"); pad.style.cssText = "flex:1 1 100%;height:200px";
+  q("next").appendChild(pad);
+  await h.sleep(100);
+  moved = Math.round(g0().getBoundingClientRect().top - y0);
+  await h.sleep(2200);
   pe(g0(), "pointerup", x, y, "touch");
   await h.sleep(400);
   pad.remove();
-  return {armed:ARMED.length - a0, released:n("arm-release") - r0, msg:msg()};
+  return {armed:ARMED.length - a0, released:n("arm-release") - r0, msg:msg(), moved:moved};
 };
+let moved = null;
 out.shift = await lay();
 """
 
@@ -118451,7 +118458,8 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
           f"{where}: once every finger is up, a hold arms again: "
           f"{r['after_two']}")
     sh = r["shift"]
-    check(sh["armed"] == 0 and sh["released"] == 1,
+    check(sh["armed"] == 0 and sh["released"] == 1 and
+          (sh["moved"] or 0) >= 100,
           f"{where}: the button moving out from under a still finger ends "
           f"the hold and arms nothing: {sh}")
     print("  ok")
