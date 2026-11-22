@@ -115,11 +115,19 @@ def lines(text):
     return "\n".join(out)
 
 
+# The kinds whose words carry a counter that ticks while nothing new is
+# said: the flame timing alert's count, worst gap and limit, raised again
+# about once a second (remote.Remote._frame_timing_work). Their version
+# (Alert.ver) leaves the numbers out. Every other kind counts every
+# character, digits too: "Show 3 did not start" and "Show 4 did not
+# start" are different words.
+COUNTING = frozenset(("timing",))
+
+
 def words_shape(text):
-    """The words of an alert with every number taken out: a raise that
-    only moves a count or a time ("late, last hour: 3" to "4") keeps its
-    shape, one that says something else ("missing: A" to "missing: A, B")
-    does not."""
+    """The words of an alert with every number taken out, for a COUNTING
+    kind: "late, last hour: 3" to "4" keeps its shape, other words do
+    not."""
     return re.sub(r"\d+(?:\.\d+)?", "#", str(text or ""))
 
 
@@ -147,11 +155,11 @@ class Alert:
         # id), and this number changes. clear(rev=) clears it only as it
         # was then (preroll.alert_hooks, review 1 of #176).
         self.rev = 0
-        # What a person reading it saw (Alert.view "ver"): changed only
-        # when the words change, never for a number in them (words_shape),
-        # so a page's Acknowledge of an alert whose count ticks still
-        # clears it, and one whose words changed since is refused
-        # (cold review of #291). The booth line ("Booth speaker not
+        # What a person reading it saw (Alert.view "ver"): changed when the
+        # words change, digits too; for a COUNTING kind never for a number
+        # in them (words_shape), so a page's Acknowledge of the timing
+        # alert, whose count ticks, still clears it, and one whose words
+        # changed since is refused (cold reviews of #291). The booth line ("Booth speaker not
         # available.") is left out on purpose: it says whether the booth
         # note could play, not what is wrong, and may come and go on its
         # own.
@@ -239,7 +247,7 @@ class Alerts:
                 outcome = "raised"
             self._revs += 1
             a.rev = self._revs
-            shape = words_shape(full)
+            shape = words_shape(full) if kind in COUNTING else full
             if shape != a.shape:
                 a.shape = shape
                 a.ver = a.rev

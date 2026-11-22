@@ -71985,9 +71985,9 @@ def test_alerts_acknowledge_clears_only_the_raise_it_showed():
     R = _RemoteRig(S)
     loop = ("127.0.0.1", 5000)
 
-    def up(text):
+    def up(text, kind="deck"):
         _ask(R.httpd, "POST", "/api/remote/alert",
-             {"raise": "deck", "text": text}, client=loop)
+             {"raise": kind, "text": text}, client=loop)
         _st, _h, status = R.ask("GET", "/api/remote/status")
         return (status.get("alerts") or [{}])[0]
 
@@ -71996,18 +71996,47 @@ def test_alerts_acknowledge_clears_only_the_raise_it_showed():
                      {"id": a["id"], "ver": ver, "action": "acknowledge",
                       "seen": R.seen()})
     try:
-        a1 = up("Flame frames late, last hour: 3. Worst 312 ms.")
+        a1 = up("Flame frames late, last hour: 3. Worst 312 ms.", "timing")
         check(isinstance(a1.get("ver"), int),
               f"the status carries the version: {a1}")
         # A count that ticks (the timing alert, about once a second).
-        a2 = up("Flame frames late, last hour: 4. Worst 330.5 ms.")
+        a2 = up("Flame frames late, last hour: 4. Worst 330.5 ms.", "timing")
         check(a2.get("id") == a1.get("id") and a2.get("ver") == a1.get("ver")
               and "4." in a2.get("text", ""),
-              f"a count or time that ticks keeps the version: {a1} {a2}")
+              f"the timing alert: a count or time that ticks keeps the "
+              f"version: {a1} {a2}")
         st, _h, o = ack(a1, a1["ver"])
         check(st == 200 and not R.remote.alerts.open(),
               f"an Acknowledge of the version shown clears it, though the "
               f"count ticked since: {st} {o}")
+        # Every other kind: digits are words. Each pair is two alerts a
+        # person must read (the start, aim, hazer, audio device, rig check
+        # and Art-Net sentences).
+        from ltcplay import alerts as alerts_mod
+        al = alerts_mod.Alerts()
+        for kind, t1, t2 in (
+                ("start", "Show 3 did not start: x. T",
+                 "Show 4 did not start: x. T"),
+                ("aim", "Wave aim slots: 1, 7, 13 here, 1, 7, 14 there.",
+                 "Wave aim slots: 1, 7, 13 here, 2, 8, 14 there."),
+                ("hazers", "Hazer 1 on channel 101, flamesafe says 102.",
+                 "Hazer 1 on channel 101, flamesafe says 112."),
+                ("audio", "Focusrite 2i2 is not attached.",
+                 "Focusrite 18i20 is not attached."),
+                ("preroll", "Rig check failed for show 3.",
+                 "Rig check failed for show 4."),
+                ("timecode", "Two receivers on universe 0.",
+                 "Two receivers on universe 1.")):
+            x = al.raise_(kind, t1)
+            v1 = x.view()["ver"]
+            x = al.raise_(kind, t2)
+            v2 = x.view()["ver"]
+            ok, _t = al.clear(id=x.id, ver=v1)
+            check(v1 != v2 and not ok and
+                  any(a.id == x.id for a in al.open()),
+                  f"{kind}: a number in its words is a word: {t1!r} to "
+                  f"{t2!r} is a new version ({v1}, {v2}), and the earlier "
+                  f"one does not clear it")
         # Words that change: refused.
         b1 = up("Stream Deck missing: A.")
         b2 = up("Stream Deck missing: A, B and C.")

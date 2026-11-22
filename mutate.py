@@ -3472,13 +3472,23 @@ MUTATIONS = [
 
  ('alerts: changed words keep the version a page showed, so they clear unseen',
   'ltcplay/alerts.py',
-  "            shape = words_shape(full)\n",
-  "            shape = words_shape(kind)\n"),
+  "            shape = words_shape(full) if kind in COUNTING else full\n",
+  "            shape = kind\n"),
 
  ('ui 2.0 alert slot: the lockout keys on the words, so a ticking count locks it for good',
   'ltcplay/web/remote2.html',
   "+ \":\" + (it.ver === undefined ? \"\" : it.ver) : \"\";",
   "+ \":\" + (it.full || \"\") : \"\";"),
+
+ ("alerts: every kind's numbers are left out of its version, so 'Show 3' and 'Show 4' are one",
+  'ltcplay/alerts.py',
+  "            shape = words_shape(full) if kind in COUNTING else full\n",
+  "            shape = words_shape(full)\n"),
+
+ ("alerts: the timing alert's ticking count is a new version, so it can never be acknowledged",
+  'ltcplay/alerts.py',
+  "COUNTING = frozenset((\"timing\",))\n",
+  "COUNTING = frozenset()\n"),
 
  # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
  # their rows when the step is taller than its panel, so the sections
