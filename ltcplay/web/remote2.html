@@ -2354,6 +2354,9 @@ $("next-go").addEventListener("click", () => {
   const ns = nextStep(ST, stale(), !!(ME && ME.local), ALERTS);
   if(!ns.go) return;
   if(TAB !== "show") backToShow();
+  // The line says SHOW's words now, before the scroll: its height can
+  // change, and the pane under it with it.
+  try{ renderStale(); }catch(e){}
   const el = ns.go === "ack" ? ($("al-act").hidden ? $("alert") : $("al-act")) : $("b-go");
   try{ el.scrollIntoView({block:"center", inline:"nearest"}); }catch(e){}
 });

@@ -118458,6 +118458,8 @@ out.day = [q("next-t").textContent, q("next-go").hidden, q("next-go-l").textCont
 q("next-go").click();
 await h.sleep(600);
 out.went = [document.body.dataset.tab, q("go-l").textContent, seen(q("b-go"))];
+const rr = id => { const r = (id === "main" ? document.querySelector("main") : q(id)).getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; };
+out.rects = {go:rr("b-go"), main:rr("main"), next:rr("next"), inner:innerHeight};
 out.show = [q("next-t").textContent, q("next-go").hidden, q("next-go-l").textContent];
 out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
 """
@@ -118494,6 +118496,8 @@ out.before = [q("al-what").textContent, q("al-n").textContent, q("next-go-l").te
 q("next-go").click();
 await h.sleep(600);
 out.after = [document.body.dataset.tab, q("al-what").textContent, q("al-n").textContent, seen(q("al-text"))];
+const rr = id => { const r = (id === "main" ? document.querySelector("main") : q(id)).getBoundingClientRect(); return [Math.round(r.top), Math.round(r.bottom)]; };
+out.rects = {text:rr("al-text"), main:rr("main"), next:rr("next"), inner:innerHeight};
 out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
 """
     for size in ((412, 600), (1366, 768)):
@@ -118529,11 +118533,12 @@ const q = id => document.getElementById(id);
 const msg = () => q("msg-t").textContent;
 document.querySelector('.tab[data-tab="show"]').click();
 await h.sleep(1500);
-out.first = q("al-act").dataset.act;
+const act = () => q("al-act").hidden ? "" : q("al-act").dataset.act;
+out.first = act();
 window.__off = false;
 window.__patch = st => { if(window.__off) delete st.schedule.run_warning; return st; };
-window.__off = true; await h.sleep(800); out.off = q("al-act").dataset.act;
-window.__off = false; await h.sleep(800); out.on = q("al-act").dataset.act;
+window.__off = true; await h.sleep(800); out.off = act();
+window.__off = false; await h.sleep(800); out.on = act();
 q("al-act").click(); await h.sleep(200); out.quick = msg();
 await h.sleep(1200);
 q("al-act").click(); await h.sleep(800); out.later = msg();
