@@ -114794,6 +114794,8 @@ async function prPresses(){
   posts.length = 0;
   const b = document.getElementById("al-act");
   res.act = b.dataset.act; res.label = document.getElementById("al-act-l").textContent;
+  // The slot's button waits a second after the slot changes (AL_LOCK_MS).
+  await wait(1100);
   const o = {bubbles:true, pointerType:"touch", isPrimary:true, pointerId:2};
   b.click(); await wait(200);
   res.after_tap = posts.filter(p => /preroll-continue/.test(p.u)).length;
@@ -114843,6 +114845,8 @@ async function fdPresses(){
   res.swapped = posts.filter(p => p.u === "/api/remote/alert").length;
   res.msg = q("msg-t").textContent;
   await toAck();
+  // The slot's button waits a second after the slot changes (AL_LOCK_MS).
+  await wait(1100);
   b.dispatchEvent(new PointerEvent("pointerdown", o)); b.dispatchEvent(new PointerEvent("pointerup", o));
   b.dispatchEvent(new MouseEvent("click", {bubbles:true, detail:1})); await wait(300);
   res.same = posts.filter(p => p.u === "/api/remote/alert").length;
