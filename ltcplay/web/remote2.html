@@ -75,7 +75,8 @@ svg.i{width:1.15em;height:1.15em;flex:0 0 auto;fill:currentColor}
 [hidden]{display:none !important}
 
 /* ---- the frame: header, the tab, the footer ---- */
-#app{height:calc(100vh - var(--pad-bottom, 0px));height:calc(100dvh - var(--pad-bottom, 0px));
+#app{height:calc(100vh - var(--pad-bottom, 0px) - var(--broken-h, 0px));height:calc(100dvh - var(--pad-bottom, 0px) - var(--broken-h, 0px));
+  margin-top:var(--broken-h, 0px);
   display:grid;grid-template-rows:auto calc(var(--next-h) + var(--gap)) minmax(0,1fr) auto;grid-template-columns:minmax(0,1fr)}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);padding:var(--gap) var(--pad);
   border-bottom:1px solid var(--line)}
@@ -312,11 +313,54 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 #msg.bad #msg-t{color:#FFB3AB} #msg.ok #msg-t{color:#9BF5B7} #msg.warn #msg-t{color:#FFD08A}
 
 /* ---- a page that did not load whole: loud, over everything, with its own Stop ---- */
-#broken{position:fixed;left:0;right:0;top:0;z-index:90;display:flex;align-items:center;gap:12px;padding:12px 16px;
+/* Two rows from a 320 px phone to a 2K screen: the sign and its words at
+   full width, then Stop show and Reload side by side, never cut. The page
+   moves down by the banner's height (--broken-h, set by the stop-core), so
+   nothing of it, its own Stop included, is under the banner. */
+#broken{position:fixed;left:0;right:0;top:0;z-index:90;display:flex;flex-direction:column;gap:10px;
+  padding:calc(10px + env(safe-area-inset-top, 0px)) calc(14px + env(safe-area-inset-right, 0px)) 10px calc(14px + env(safe-area-inset-left, 0px));
+  overflow-x:hidden;
   background:var(--red-deep);border-bottom:4px solid var(--red-hi);color:#fff;font-size:calc(var(--fs) + 6px);font-weight:800}
-#broken > svg{width:40px;height:40px}
-#broken span{flex:1 1 auto;min-width:0}
+/* About 60 percent of the window at most (40 on a short one), never less
+   than one line of words and the buttons: the words scroll inside the
+   banner, Show detail and the two buttons always stay whole in it, and the
+   page below moves down by the whole banner, so the banner covers none of
+   it. */
+#broken-top{display:flex;align-items:flex-start;gap:12px;min-width:0;flex:0 1 auto;overflow-y:auto;overflow-x:hidden;
+  max-height:max(1.6em, calc(60vh - 150px));max-height:max(1.6em, calc(60dvh - 150px))}
+#broken-top > svg{width:40px;height:40px;flex:0 0 40px}
+#broken-words{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;line-height:1.2}
+#broken-t{display:block}
+#broken-why{display:block;margin-top:4px;font-size:var(--fs);font-weight:700}
+#broken-more{flex:0 0 auto;align-self:flex-start;margin-left:52px;min-height:44px;min-width:0;padding:0 14px;font-size:var(--fs);background:transparent;border-color:#fff;color:#fff}
+#broken-detail{display:block;margin-top:6px;font-size:calc(var(--fs) - 2px);font-weight:400;white-space:pre-wrap;
+  -webkit-user-select:text;user-select:text}
+#broken-btns{display:flex;gap:10px;min-width:0;flex:0 0 auto}
+#broken-btns .b{flex:1 1 0;min-width:0;max-width:18em;min-height:56px;padding:4px 10px;gap:8px;white-space:normal;line-height:1.1}
+#broken-stop{flex-grow:3 !important}
+#broken-go{flex-grow:2 !important}
 #broken-stop.tap1{outline:3px solid #fff;outline-offset:-4px}
+/* A short window (a phone on its side): the banner takes about half (60
+   percent with its detail open), so the page keeps the rest; its words
+   scroll, Show detail and its buttons stay whole. */
+@media (max-height:500px){
+  /* and the page keeps its whole height there, under the banner, the
+     window scrolling to reach its foot: squeezed, its footer would lie
+     over its own Stop. */
+  html.broken-on body{overflow-y:auto}
+  html.broken-on #app{height:calc(100vh - var(--pad-bottom, 0px));height:calc(100dvh - var(--pad-bottom, 0px))}
+  #broken-top{max-height:max(1.6em, calc(50vh - 132px));max-height:max(1.6em, calc(50dvh - 132px))}
+  #broken.det #broken-top{max-height:max(1.6em, calc(60vh - 132px));max-height:max(1.6em, calc(60dvh - 132px))}
+  #broken-more{margin-left:40px}
+  #broken{gap:6px;padding-top:calc(6px + env(safe-area-inset-top, 0px));padding-bottom:6px;font-size:var(--fs)}
+  #broken-top > svg{width:28px;height:28px;flex-basis:28px}
+}
+@media (max-width:600px){
+  #broken{font-size:calc(var(--fs) + 2px)}
+  #broken-more{margin-left:44px}
+  #broken-btns .b{font-size:var(--fs)}
+  #broken-top > svg{width:32px;height:32px;flex-basis:32px}
+}
 
 /* ---- DAY: steps as chips, the step's panel, one big Next ---- */
 .day{display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:var(--gap);height:100%;min-height:0}
@@ -1393,7 +1437,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      stopTapKind2 are 1.0's stopTapStep and stopTapKind, renamed;
      selftest.py checks they stay the same), 1.0's Stop route and headers.
      On a whole page the SHOW tab's Stop is the page's own (stopTap2). -->
-<div id="broken" hidden role="alert"><svg class="i"><use href="#i-warn"/></svg><span id="broken-t">Page not fully loaded. Reload it.</span><button data-safe class="b red" id="broken-stop"><svg class="i"><use href="#i-stop"/></svg><span id="broken-stop-l">Stop show: tap twice</span></button><button class="b red" id="broken-go"><svg class="i"><use href="#i-reset"/></svg>Reload</button></div>
+<div id="broken" hidden role="alert"><div id="broken-top"><svg class="i"><use href="#i-warn"/></svg><div id="broken-words"><span id="broken-t">Page not fully loaded. Reload it.</span><span id="broken-why" hidden></span><span id="broken-detail" hidden></span></div></div><button class="b" id="broken-more" hidden>Show detail</button><div id="broken-btns"><button data-safe class="b red" id="broken-stop"><svg class="i"><use href="#i-stop"/></svg><span id="broken-stop-l">Stop show: tap twice</span></button><button class="b red" id="broken-go"><svg class="i"><use href="#i-reset"/></svg>Reload</button></div></div>
 <script id="stop-core">
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -1401,6 +1445,26 @@ const monoNow = () => performance.now();
 const WINDOW_ID = "w-" + Math.random().toString(36).slice(2, 8);
 const STOP_TAP_MS2 = 3000;                  // 1.0's STOP_TAP_MS
 let UI2_READY = false;                      // the page's own script ran to its end
+// The first script error and the first unanswered promise, kept for the
+// banner ("Stopped at: ..."), so a broken page can be read out from a phone.
+let CORE_ERR = null, CORE_REJ = null;
+const coreCut = (t) => { t = String(t == null ? "" : t); return t.length > 160 ? t.slice(0, 157) + "..." : t; };
+window.addEventListener("error", e => {
+  if(CORE_ERR || !e || !e.message) return;
+  const f = String(e.filename || "").replace(location.origin, "");
+  // The browser's own layout notice is not the page's script stopping.
+  if(/^(Uncaught )?ResizeObserver loop/.test(String(e.message))) return;
+  // "...notifications., line 12" reads badly: the message's own end stop goes.
+  const msg = String(e.message).replace(/[\s.]+$/, "");
+  CORE_ERR = {msg:coreCut(msg), file:coreCut(f), line:Number(e.lineno) || 0, col:Number(e.colno) || 0};
+  // Said at once, even while the page is still arriving (cold review of #290, 1).
+  setTimeout(() => { try{ coreCheck(); }catch(e2){} }, 0);
+});
+window.addEventListener("unhandledrejection", e => {
+  if(CORE_REJ) return;
+  const r = e && e.reason;
+  CORE_REJ = {msg:coreCut((r && r.message) || r || "a promise failed"), file:"", line:0, col:0};
+});
 function stopTapStep2(prev, nowMs, kind, enlarged){
   if(prev && prev.kind === kind && nowMs >= prev.at){
     if(nowMs - prev.at <= STOP_TAP_MS2 || enlarged) return {fire:true, next:null};
@@ -1459,8 +1523,104 @@ function ui2Whole(){
   return typeof isStale === "function" && typeof armState === "function" && typeof announceLook === "function" &&
     typeof prerollChoice === "function" && UI2_READY;
 }
-window.addEventListener("load", () => { if(!ui2Whole()) $("broken").hidden = false; });
-setInterval(() => { if(!ui2Whole()) $("broken").hidden = false; }, 1000);
+// Judged only once the page has arrived whole (Andy, 2026-11-22, a phone
+// on 5G over Tailscale): on a slow link the rest of the page, its rules and
+// its own script, is still on its way after this script has run, and a
+// check then said "not fully loaded" about a page that went on to load and
+// work, and never took it back. Parsing done, every script on the page has
+// had its turn, so a page that is not whole then is broken, and stays so.
+// A page still arriving after CORE_WAIT_MS says that instead, and the
+// banner goes once the page is whole (never after its own Stop was sent).
+const CORE_WAIT_MS = 10000;
+const CORE_T0 = monoNow();
+let CORE_SAID = "", CORE_DETAIL = false;
+function coreMissing(){
+  const m = [];
+  if(typeof isStale !== "function") m.push("isStale");
+  if(typeof armState !== "function") m.push("armState");
+  if(typeof announceLook !== "function") m.push("announceLook");
+  if(typeof prerollChoice !== "function") m.push("prerollChoice");
+  return m;
+}
+function coreSent(){ return /^Stop /.test($("broken-t").textContent); }
+// The page moves down by the banner's whole height (the banner itself is
+// at most 60 percent of the window, its words scrolling inside it), so the
+// page and its own Stop are never under it.
+function coreRoom(){
+  const b = $("broken");
+  const h = b.hidden ? 0 : Math.ceil(b.getBoundingClientRect().height);
+  const v = h + "px", de = document.documentElement;
+  if(de.style.getPropertyValue("--broken-h") !== v) de.style.setProperty("--broken-h", v);
+  if(de.classList.contains("broken-on") !== h > 0) de.classList.toggle("broken-on", h > 0);
+}
+// The short line names a script error only; a failed promise (a request
+// that did not come back) is in the detail.
+function coreWhy(){
+  const e = CORE_ERR, w = $("broken-why");
+  const said = e ? ("Stopped at: " + e.msg + (e.line ? ", line " + e.line : "")) : "";
+  if(w.textContent !== said) w.textContent = said;
+  w.hidden = !said;
+  const said2 = CORE_SAID === "broken" || CORE_SAID === "early";
+  $("broken-more").hidden = !said2;
+  const d = $("broken-detail");
+  d.hidden = !CORE_DETAIL || !said2;
+  if(d.hidden) return;
+  const miss = coreMissing();
+  const lines = [
+    "Error: " + (e ? e.msg : "none caught"),
+    "Where: " + (e && e.file ? e.file : "the page") + (e && e.line ? ", line " + e.line + ", column " + e.col : ""),
+    "Promise: " + (CORE_REJ ? CORE_REJ.msg : "none failed"),
+    "Rules: " + (miss.length ? "missing " + miss.join(", ") : "loaded"),
+    "Page script ran to its end: " + (UI2_READY ? "yes" : "no"),
+    "Address: " + location.host,
+    "Browser: " + navigator.userAgent];
+  const t = lines.join("\n");
+  if(d.textContent !== t) d.textContent = t;
+}
+function coreCheck(){
+  const b = $("broken");
+  if(ui2Whole()){
+    if((CORE_SAID === "loading" || CORE_SAID === "early") && !CORE_TAP && !coreSent()){ b.hidden = true; CORE_SAID = ""; }
+    coreRoom();
+    return;
+  }
+  if(document.readyState === "loading"){
+    // A script error while the page arrives: said at once, with where it
+    // stopped (cold review of #290, 1). Only a page with no error yet gets
+    // the CORE_WAIT_MS to arrive.
+    if(CORE_ERR && CORE_SAID !== "early"){
+      CORE_SAID = "early";
+      if(!coreSent()) $("broken-t").textContent = "Page not fully loaded. Reload it.";
+      b.hidden = false;
+    }
+    if(CORE_SAID === "" && monoNow() - CORE_T0 >= CORE_WAIT_MS){
+      CORE_SAID = "loading";
+      if(!coreSent()) $("broken-t").textContent = "Page still loading. Wait, or reload it.";
+      b.hidden = false;
+    }
+  }else{
+    if(CORE_SAID !== "broken"){
+      CORE_SAID = "broken";
+      if(!coreSent()) $("broken-t").textContent = "Page not fully loaded. Reload it.";
+    }
+    b.hidden = false;
+  }
+  if(!b.hidden) coreWhy();
+  coreRoom();
+}
+$("broken-more").addEventListener("click", () => {
+  CORE_DETAIL = !CORE_DETAIL;
+  $("broken").classList.toggle("det", CORE_DETAIL);
+  $("broken-more").textContent = CORE_DETAIL ? "Hide detail" : "Show detail";
+  coreWhy(); coreRoom();
+});
+document.addEventListener("DOMContentLoaded", coreCheck);
+window.addEventListener("load", coreCheck);
+window.addEventListener("resize", coreRoom);
+// The banner's height as soon as it changes (its Stop's answer is longer
+// than its title; cold review of #290, 3); the 1 s check is the fallback.
+try{ new ResizeObserver(coreRoom).observe($("broken")); }catch(e){}
+setInterval(coreCheck, 1000);
 </script>
 <!-- The pure rules (remote_rules.js), written in by web.py as the page is
      served; this tag is their fallback. Never copied here. -->
@@ -7292,7 +7452,7 @@ function renderCleaning(){
 // of #169): Space on a focused Hold, Stop, Disarm, Hazers off or a
 // pinned Stop presses that button and never fires.
 const FIRE_KEY_NEVER = "#broken-stop, #b-hold, #b-stop, #b-disall, #m-hold, #m-stop, #m-disf, #m-disl, #m-snd, #ann-stop, " +
-  "#pins button, #wc-stop, #hz-off, #d-hz-off, #pm-off, #broken-go, [data-arm][data-mode=\"disarm\"], #lz-b[data-mode=\"disarm\"], .b.red, .b.redline, .b.safe, .b.amber";
+  "#pins button, #wc-stop, #hz-off, #d-hz-off, #pm-off, #broken-go, #broken-more, #broken, [data-arm][data-mode=\"disarm\"], #lz-b[data-mode=\"disarm\"], .b.red, .b.redline, .b.safe, .b.amber";
 function fireKeyNotOurs(e){
   if(SHEET_DONE || !$("sheet").hidden) return true;
   const t = e.target;
