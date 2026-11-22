@@ -119091,7 +119091,7 @@ def test_ui2_touch_holds_lock_scrolling_and_end_off_the_button():
 # reaches the page ENG.down ms later (a phone's round trip, split).
 _UI2_BEAT_STEPS = r"""
 const q = id => document.getElementById(id);
-const ENG = {up:0, down:0, stale:250, needs:1.0, deck:0.6, holds:{}, ids:0, force:null, asked:false, wanted:{}, lose:false};
+const ENG = {up:0, down:0, stale:250, needs:1.0, deck:0.6, holds:{}, ids:0, force:null, asked:false, wanted:{}, lose:false, blind:false};
 const SENT = [], REL = [], ARMED = [], DELIVERED = [], REFUSED = [];
 // What reached the stand-in engine, in its order: {t, g, rel} (a release)
 // or {t, g} (a beat); how long each release and status read waited for a
@@ -119168,6 +119168,8 @@ window.fetch = async (url, opt) => {
   const signal = opt && opt.signal;
   if(!(opt && opt.method === "POST" && /\/api\/remote\/arm-(hold|release)$/.test(u))){
     const t0 = performance.now();
+    // The engine's state unreadable once a group is asked for (ENG.blind).
+    if(/\/api\/remote\/status/.test(u) && ENG.blind && Object.keys(ENG.wanted).length) throw new TypeError("Failed to fetch");
     await slot(signal);
     if(/\/api\/remote\/status/.test(u)) STWAIT.push(performance.now() - t0);
     try{ return await hf(url, opt); } finally { free(); }
@@ -119203,6 +119205,9 @@ window.fetch = async (url, opt) => {
   let a;
   try{ a = await abortable(work, signal); }
   finally { INFL--; free(); }
+  // ENG.lose "all": the armed answer and every answer after it for that
+  // group lost on the way.
+  if(ENG.lose === "all" && ENG.wanted[body.group] && body.hold_id != null) throw new TypeError("Failed to fetch");
   if(a[1].armed){
     // An armed answer lost on the way (ENG.lose): the page never gets it.
     if(ENG.lose) throw new TypeError("Failed to fetch");
@@ -119216,7 +119221,7 @@ const pe = (el, type, x, y, id, prim) => el.dispatchEvent(new PointerEvent(type,
 const mid = el => { el.scrollIntoView({block:"center"}); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
 const g0 = () => document.querySelector('[data-arm="0"]');
 const reset = () => { ENG.up = 0; ENG.down = 0; ENG.force = null; ENG.holds = {}; MAXINFL = 0;
-  ENG.asked = false; ENG.wanted = {}; ENG.lose = false; POOL.n = Infinity; window.__patch = null; };
+  ENG.asked = false; ENG.wanted = {}; ENG.lose = false; ENG.blind = false; POOL.n = Infinity; window.__patch = null; };
 // The status as the real engine reports it: a group asked for once the
 // engine has answered armed (ENG.asked), and the first `n` groups only
 // (Hold: arm flames is Disarm all while any group is armed).
@@ -119245,6 +119250,8 @@ async function hold(el, ms, cut, at){
     }
   }
   const liveCut = LIVE.size;
+  // What the page said with the finger still down.
+  const msgHeld = msg();
   if(!cut) pe(el, "pointerup", x, y);
   const liveUp = LIVE.size;
   const sentUp = SENT.length;
@@ -119255,7 +119262,7 @@ async function hold(el, ms, cut, at){
   const res = {sent:mine.length, starts:mine.filter(b => b.id == null).length, gaps:gaps,
     armed:ARMED.length - a0, released:REL.length - r0, refused:REFUSED.length - f0, early:early, live_held:live,
     live_cut:liveCut, live_up:liveUp, live_after:LIVE.size, after:SENT.length - sentUp,
-    max_out:MAXINFL, msg:msg(), fill:el.querySelector(".fill") ? el.querySelector(".fill").style.width : ""};
+    max_out:MAXINFL, msg:msg(), msg_held:msgHeld, fill:el.querySelector(".fill") ? el.querySelector(".fill").style.width : ""};
   await nap(300);
   reset();
   return res;
@@ -119354,6 +119361,45 @@ ENG.down = (b, a) => b.hold_id == null ? 0 : (a[1].armed ? 600 : 30);
 out.ooo_all = await reorder(q("b-armall"), 2600, [0, 1]);
 out.ooo_all.groups = ARMED.slice(-2);
 reset(); await settle();
+// 9b. Second review of #293. The armed answer hangs (post() has no
+// deadline) and a refusal comes back: the finger lifts before the page's
+// wait is over, or the wait runs out. Either way the engine's state is
+// read and the group is said asked for, never "Let go: not armed", and not
+// let go of.
+ENG.asked = true; patchFor(4); await settle();
+ENG.down = (b, a) => b.hold_id == null ? 0 : (a[1].armed ? 30000 : 30);
+out.hang_lift = await reorder(g0(), 2100, [0]);
+reset(); await settle();
+ENG.asked = true; patchFor(4); await settle();
+ENG.down = (b, a) => b.hold_id == null ? 0 : (a[1].armed ? 30000 : 30);
+out.hang_wait = await reorder(g0(), 3400, [0]);
+reset(); await settle();
+// The armed answer and every answer after it lost (no refusal at all):
+// the state is read, asked for.
+ENG.asked = true; patchFor(4); await settle();
+ENG.lose = "all"; ENG.down = b => b.hold_id == null ? 0 : 30;
+out.lost_all = await reorder(g0(), 2600, [0]);
+reset(); await settle();
+// The same with the engine's state unreadable too: not known, never "not
+// armed" or "Hold stopped".
+ENG.asked = true; patchFor(4); await settle();
+ENG.lose = "all"; ENG.blind = true; ENG.down = b => b.hold_id == null ? 0 : 30;
+out.lost_blind = await reorder(g0(), 2600, [0]);
+reset(); await nap(1500);
+// A clear refusal (403, arming switched off) then a plain 409 behind it:
+// the first is what the page says.
+{
+  let n = 0;
+  const way = async (el, x, y) => {
+    ENG.force = b => n++ === 0 ? [409, {error:"The hold was interrupted. Lift your finger and hold again.", let_go:true}] :
+      [403, {error:ARMING_OFF, let_go:true}];
+    ENG.down = (b, a) => b.hold_id == null ? 0 : (a[0] === 409 ? 300 : 0);
+    await nap(800); pe(el, "pointerup", x, y); };
+  ENG.up = 50;
+  out.first_refusal = await hold(g0(), 1200, way, 500);
+  out.first_refusal.full = MSG_FULL;
+}
+reset(); await settle();
 // 10. Hold: arm flames, three groups, a 200 ms round trip, a browser's six
 // connections: at most four beats out for the whole hold, the status read
 // never waits, and on the lift the beats still out are cancelled and the
@@ -119410,12 +119456,14 @@ def test_ui2_arm_beats_on_a_fixed_timer():
         print("  ok")
         return
     two = _ui2_pages()[1]
-    check(re.search(r"const HOLD_BEAT_MS = 100, HOLD_BEATS_OUT = 4;", two),
-          "the page beats every 100 ms, four unanswered at most")
+    check(re.search(r"const HOLD_BEAT_MS = 100, HOLD_BEATS_OUT = 4, "
+                    r"HOLD_ANSWER_WAIT_MS = 1000;", two),
+          "the page beats every 100 ms, four unanswered at most, and waits "
+          "1 s at most for the beats still out after a refusal")
     r = _ui2_drive(chrome, page, _ui2_status_touch_holds(), _UI2_BEAT_STEPS,
                    size=(412, 915), frag="?tour=0#day",
                    routes={"/api/remote/morning": _morning_view_pico()},
-                   budget_ms=90000)
+                   budget_ms=180000)
     where = "2.0 at 412x915, the arm holds' beats"
     if not check(isinstance(r, dict) and "live_end" in r and
                  not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
@@ -119454,7 +119502,8 @@ def test_ui2_arm_beats_on_a_fixed_timer():
           f"timer gone: {r3}")
     s = r["stall"]
     check(s["armed"] == 0 and s["max_out"] <= 4 and
-          s["gaps"][:3] == [100, 100, 100] and len(s["gaps"]) > 3 and
+          len(s["gaps"]) > 3 and
+          all(70 <= g <= 130 for g in s["gaps"][:3]) and
           s["gaps"][3] >= 1000 and s["refused"] >= 1 and
           s["msg"] == "Hold stopped. Tap Details." and clean(s),
           f"{where}: with the answers stalled, four beats go out and no "
@@ -119513,6 +119562,40 @@ def test_ui2_arm_beats_on_a_fixed_timer():
           f"{where}: Hold: arm flames with two groups, each group's "
           f"refusal overtaking its armed answer: both said asked for, "
           f"neither let go of: {oa}")
+    # Second review of #293: a hanging armed answer, every answer lost, a
+    # clear refusal kept over a later 409.
+    for k, how in (("hang_lift", "the armed answer hangs, a refusal comes "
+                                 "back, the finger lifts"),
+                   ("hang_wait", "the armed answer hangs, a refusal comes "
+                                 "back, the wait runs out"),
+                   ("lost_all", "the armed answer and every answer after "
+                                "it lost")):
+        x = r[k]
+        check(x["armed"] == 1 and x["rel_mine"] == 0 and x["cls"] == "ok" and
+              "is asked for" in x["full"] + x["msg"] and
+              not x["msg"].startswith("Let go") and
+              not x["msg"].startswith("Hold stopped") and
+              x["msg"] != "Armed." and x["live_after"] == 0,
+              f"{where}: {how}: the page reads the engine's state and says "
+              f"asked for, never not armed, and lets go of nothing: {x}")
+    hw = r["hang_wait"]
+    check("is asked for" in hw["msg_held"],
+          f"{where}: the armed answer hangs: once the page's wait for it is "
+          f"over, with the finger still down, it has read the engine's state "
+          f"and says asked for: {hw}")
+    lb = r["lost_blind"]
+    check(lb["armed"] == 1 and lb["cls"] == "bad" and
+          lb["msg"].startswith("Not known") and
+          "not armed" not in (lb["full"] + lb["msg"]).lower() and
+          "Hold stopped" not in lb["full"] + lb["msg"] and
+          lb["live_after"] == 0,
+          f"{where}: every answer lost and the engine's state unreadable: "
+          f"the page says not known, never not armed: {lb}")
+    fr = r["first_refusal"]
+    check(fr["armed"] == 0 and fr["msg"] == "Arming from screens is off."
+          and fr["released"] >= 1,
+          f"{where}: arming switched off (403) then a plain 409 behind it: "
+          f"the page says the first refusal: {fr}")
     # Cold review of #293, 2: one bound for the whole hold, so the let go
     # and the status read never wait behind beats for one of a browser's
     # six connections.

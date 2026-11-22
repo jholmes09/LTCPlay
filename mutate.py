@@ -3448,8 +3448,8 @@ MUTATIONS = [
 
  ('ui 2.0 beats: a hold that ends leaves its beat timer running',
   'ltcplay/web/remote2.html',
-  "  for(const p of h.parts){\n    clearInterval(p.timer);\n    holdFill(p.group, \"0\");\n",
-  "  for(const p of h.parts){\n    holdFill(p.group, \"0\");\n"),
+  "  for(const p of h.parts){\n    clearInterval(p.timer);\n    clearTimeout(p.wait);\n",
+  "  for(const p of h.parts){\n    clearTimeout(p.wait);\n"),
 
  ('ui 2.0 beats: a stalled link piles up unanswered beats',
   'ltcplay/web/remote2.html',
@@ -3464,13 +3464,35 @@ MUTATIONS = [
  # for one of a browser's six connections.
  ('ui 2.0 beats: a refusal that overtakes the armed answer ends the hold at once',
   'ltcplay/web/remote2.html',
-  "    if(!p.out) armRefused(h, p);\n  }\n}\n",
-  "    armRefused(h, p);\n  }\n}\n"),
+  "    if(!p.out) armResolve(h, p);\n    else if(!p.wait) p.wait = setTimeout(() => armResolve(h, p), HOLD_ANSWER_WAIT_MS);\n",
+  "    armResolve(h, p);\n"),
 
  ('ui 2.0 beats: a refusal with no armed answer is not read against the engine state',
   'ltcplay/web/remote2.html',
-  "  if(e.status === 409 && !e.code){\n",
-  "  if(false){\n"),
+  "  const now = await groupNow(p.group);\n",
+  "  const now = e.status === 409 && !e.code ? await groupNow(p.group) : {known:true, armed:false};\n"),
+
+ # Second review of #293: an armed answer that hangs, every answer lost, a
+ # state that cannot be read, a clear refusal overwritten by a later 409.
+ ('ui 2.0 beats: a refusal waits with no deadline for an armed answer that hangs',
+  'ltcplay/web/remote2.html',
+  "    else if(!p.wait) p.wait = setTimeout(() => armResolve(h, p), HOLD_ANSWER_WAIT_MS);\n",
+  ""),
+
+ ('ui 2.0 beats: a hold that ends after a refusal lets go without reading the engine state',
+  'ltcplay/web/remote2.html',
+  "    if(p.err){ doubt.push(p); continue; }\n",
+  ""),
+
+ ('ui 2.0 beats: an engine state that cannot be read is said as not armed',
+  'ltcplay/web/remote2.html',
+  "  if(now.armed || (!now.known && !clear)){\n",
+  "  if(now.armed){\n"),
+
+ ('ui 2.0 beats: a later plain 409 replaces the first refusal',
+  'ltcplay/web/remote2.html',
+  "    if(!p.err || (!p.err.status && e.status)) p.err = e;\n",
+  "    if(!p.err || (e.status === 409 && p.err.status !== 409)) p.err = e;\n"),
 
  ('ui 2.0 beats: a hold of one group stops when its group shows asked for before the armed answer',
   'ltcplay/web/remote2.html',
@@ -3484,8 +3506,8 @@ MUTATIONS = [
 
  ('ui 2.0 beats: a hold that ends leaves its beats out, the let go queued behind them',
   'ltcplay/web/remote2.html',
-  "  h.stop.abort();\n  for(const p of h.parts){\n",
-  "  for(const p of h.parts){\n"),
+  "  h.stop.abort();\n  const doubt = [];\n",
+  "  const doubt = [];\n"),
 
 
  # Cold review of #291: an alert raised again keeps its id with new words;

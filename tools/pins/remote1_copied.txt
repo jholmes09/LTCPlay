@@ -310,7 +310,7 @@ async function armBeat(h, p){
       return;
     }
     // A refusal came back first: its answer waits for the beats still out.
-    if(p.err){ if(!p.out) armRefused(h, p); return; }
+    if(p.err){ if(!p.out) armResolve(h, p); return; }
     p.held = Math.max(p.held || 0, j.held_s); p.needs = j.needs_s || 1;
     holdFill(p.group, Math.min(100, 100 * p.held / (j.needs_s || 1)) + "%");
     if(!h.all) armSay(p.held >= j.needs_s ? "Keep holding: the Stream Deck arms it in a moment, and says so here." : "Keep holding...", 0);
@@ -325,11 +325,13 @@ async function armBeat(h, p){
     // threads): the engine answers one beat armed and refuses every beat
     // after it ("already armed or asked for"), and that refusal can reach
     // the page first. So a refusal sends no more beats and waits for the
-    // beats still out: an armed answer among them wins. The engine's own
-    // refusal is kept over a lost answer.
-    if(!p.err || (e.status === 409 && p.err.status !== 409)) p.err = e;
+    // beats still out (HOLD_ANSWER_WAIT_MS at most): an armed answer among
+    // them wins. The first refusal the engine gave is kept; it only
+    // replaces a lost answer.
+    if(!p.err || (!p.err.status && e.status)) p.err = e;
     clearInterval(p.timer);
-    if(!p.out) armRefused(h, p);
+    if(!p.out) armResolve(h, p);
+    else if(!p.wait) p.wait = setTimeout(() => armResolve(h, p), HOLD_ANSWER_WAIT_MS);
   }
 }
 held.
@@ -346,7 +348,7 @@ function armAllSettle(h){
   h.stop.abort();
   const f = $("b-disarm").querySelector(".fill");
   if(f) f.style.width = "0";
-  armSay(armAllWords(h.parts, h.out, groupNames()), h.out.length || h.parts.some(p => p.end !== "armed") ? 2 : 1);
+  armSay(armAllText(h), h.out.length || h.parts.some(p => p.end !== "armed") ? 2 : 1);
 }
 function armStop(why){
   const h = HOLD;
@@ -355,12 +357,22 @@ function armStop(why){
   // The beats still out or waiting for a connection cancelled first, so
   // the let go never waits behind them.
   h.stop.abort();
+  const doubt = [];
   for(const p of h.parts){
     clearInterval(p.timer);
+    clearTimeout(p.wait);
     holdFill(p.group, "0");
     if(p.end) continue;
+    // A refusal or a lost answer and no armed answer yet: the engine may
+    // have armed it. Read before anything is said or let go of.
+    if(p.err){ doubt.push(p); continue; }
     if(h.all){ p.end = "out"; p.why = why ? "Hold stopped: " + why : "Hold stopped"; }
     post("/api/remote/arm-release", {group:p.group}).catch(() => {});
+  }
+  if(doubt.length){
+    if(h.all){ const f = $("b-disarm").querySelector(".fill"); if(f) f.style.width = "0"; }
+    armDoubt(h, doubt, why);
+    return;
   }
   if(h.all){
     const f = $("b-disarm").querySelector(".fill");
