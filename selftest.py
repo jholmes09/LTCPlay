@@ -71974,61 +71974,68 @@ def test_alerts_route_status_and_acknowledge():
 
 
 def test_alerts_acknowledge_clears_only_the_raise_it_showed():
-    section("an alert raised again with new words keeps its id (alerts.py): "
-            "the status carries its raise number, and a page's Acknowledge "
-            "that carries the raise it showed clears only that one; one "
-            "raised since is refused and stays up (cold review of #291, 1)")
+    section("an alert raised again keeps its id (alerts.py): the status "
+            "carries the version of its words, which changes only when the "
+            "words do, never for a number in them; a page's Acknowledge "
+            "carrying the version it showed clears it while a count ticks, "
+            "and is refused once the words changed (cold reviews of #291)")
     S = _sched()
     if S is None:
         return
     R = _RemoteRig(S)
     loop = ("127.0.0.1", 5000)
+
+    def up(text):
+        _ask(R.httpd, "POST", "/api/remote/alert",
+             {"raise": "deck", "text": text}, client=loop)
+        _st, _h, status = R.ask("GET", "/api/remote/status")
+        return (status.get("alerts") or [{}])[0]
+
+    def ack(a, ver):
+        return R.ask("POST", "/api/remote/alert",
+                     {"id": a["id"], "ver": ver, "action": "acknowledge",
+                      "seen": R.seen()})
     try:
-        _ask(R.httpd, "POST", "/api/remote/alert",
-             {"raise": "deck", "text": "The Stream Deck is unplugged."},
-             client=loop)
-        _st, _h, status = R.ask("GET", "/api/remote/status")
-        a1 = (status.get("alerts") or [{}])[0]
-        check(isinstance(a1.get("rev"), int),
-              f"the status carries the raise number: {a1}")
-        _ask(R.httpd, "POST", "/api/remote/alert",
-             {"raise": "deck", "text": "The Stream Deck is gone again."},
-             client=loop)
-        _st, _h, status = R.ask("GET", "/api/remote/status")
-        a2 = (status.get("alerts") or [{}])[0]
-        check(a2.get("id") == a1.get("id") and a2.get("rev") != a1.get("rev")
-              and "gone again" in a2.get("text", ""),
-              f"raised again: the same id, new words, a new raise number: "
-              f"{a1} {a2}")
-        st, _h, o = R.ask("POST", "/api/remote/alert",
-                          {"id": a1["id"], "rev": a1["rev"],
-                           "action": "acknowledge", "seen": R.seen()})
+        a1 = up("Flame frames late, last hour: 3. Worst 312 ms.")
+        check(isinstance(a1.get("ver"), int),
+              f"the status carries the version: {a1}")
+        # A count that ticks (the timing alert, about once a second).
+        a2 = up("Flame frames late, last hour: 4. Worst 330.5 ms.")
+        check(a2.get("id") == a1.get("id") and a2.get("ver") == a1.get("ver")
+              and "4." in a2.get("text", ""),
+              f"a count or time that ticks keeps the version: {a1} {a2}")
+        st, _h, o = ack(a1, a1["ver"])
+        check(st == 200 and not R.remote.alerts.open(),
+              f"an Acknowledge of the version shown clears it, though the "
+              f"count ticked since: {st} {o}")
+        # Words that change: refused.
+        b1 = up("Stream Deck missing: A.")
+        b2 = up("Stream Deck missing: A, B and C.")
+        check(b2.get("id") == b1.get("id") and b2.get("ver") != b1.get("ver"),
+              f"changed words: the same id, a new version: {b1} {b2}")
+        st, _h, o = ack(b1, b1["ver"])
         check(st == 409 and "changed" in o.get("error", "") and
               len(R.remote.alerts.open()) == 1,
-              f"an Acknowledge of the earlier raise is refused, and the "
+              f"an Acknowledge of the earlier words is refused, and the "
               f"alert stays up: {st} {o}")
         rows = R.lines_for("alert")
         check(rows and "cleared nothing" in rows[-1]["text"],
               f"and journaled: {rows[-1:]}")
         st, _h, o = R.ask("POST", "/api/remote/alert",
-                          {"id": a1["id"], "rev": True,
+                          {"id": b1["id"], "ver": True,
                            "action": "acknowledge"})
-        check(st == 400, f"a raise number that is not a number: {st} {o}")
-        st, _h, o = R.ask("POST", "/api/remote/alert",
-                          {"id": a2["id"], "rev": a2["rev"],
-                           "action": "acknowledge", "seen": R.seen()})
+        check(st == 400, f"a version that is not a number: {st} {o}")
+        st, _h, o = ack(b2, b2["ver"])
         check(st == 200 and not R.remote.alerts.open(),
-              f"the raise it showed clears: {st} {o}")
-        # Without a raise number (the Stream Deck, an older page): as before.
-        _ask(R.httpd, "POST", "/api/remote/alert",
-             {"raise": "deck", "text": "Unplugged."}, client=loop)
+              f"the version shown clears: {st} {o}")
+        # Without a version (the Stream Deck, an older page): as before.
+        up("Unplugged.")
         a3 = R.remote.alerts.open()[0]
         st, _h, o = R.ask("POST", "/api/remote/alert",
                           {"id": a3.id, "action": "acknowledge",
                            "seen": R.seen()})
         check(st == 200 and not R.remote.alerts.open(),
-              f"an Acknowledge with no raise number clears as before: "
-              f"{st} {o}")
+              f"an Acknowledge with no version clears as before: {st} {o}")
     finally:
         R.close()
     print("  ok")
@@ -118331,15 +118338,15 @@ def _ui2_status_alert_hold(n=1):
     al = [{"id": 7, "kind": "deck", "severity": "fault",
            "text": "Stream Deck: not plugged in.", "since": 0,
            "options": ["Acknowledge"], "booth": "", "pulse": False,
-           "rev": 1},
+           "ver": 1},
           {"id": 8, "kind": "timecode", "severity": "fault",
            "text": "Two Art-Net receivers on one address.", "since": 0,
            "options": ["Acknowledge"], "booth": "", "pulse": False,
-           "rev": 2},
+           "ver": 2},
           {"id": 9, "kind": "gate", "severity": "warning",
            "text": "Check before the show.", "since": 0,
            "options": ["Acknowledge"], "booth": "", "pulse": False,
-           "rev": 3}]
+           "ver": 3}]
     st["alerts"] = al[:n]
     return st
 
@@ -118354,7 +118361,7 @@ window.__rr = false;
 window.__patch = st => {
   st.alerts = (st.alerts || []).filter(a => !gone.has(a.id));
   // Raised again by the engine: the same id, new words, a new raise number.
-  if(window.__rr) st.alerts.forEach(a => { if(a.id === 9){ a.text = "Check before the show: the video PC."; a.rev = 99; } });
+  if(window.__rr) st.alerts.forEach(a => { if(a.id === 9){ a.text = "Check before the show: the video PC."; a.ver = 99; } });
   return st;
 };
 // The engine: the first Acknowledge of an id clears it; another finds
@@ -118496,9 +118503,9 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
         a = r["acked"]
         hd = a["heads"][0]["h"] if a["heads"] else {}
         check([sorted(b) for b in a["posts"]] ==
-              [["action", "id", "rev", "seen"]] * 2 and
+              [["action", "id", "seen", "ver"]] * 2 and
               [b["id"] for b in a["posts"]] == [7, 7] and
-              a["posts"][0]["rev"] == 1 and a["msg"] == "Acknowledged." and
+              a["posts"][0]["ver"] == 1 and a["msg"] == "Acknowledged." and
               a["posts"][0]["action"] == "acknowledge" and
               hd.get("Content-Type") == "application/json" and
               str(hd.get("X-LTC-Window", "")).startswith("w-") and
@@ -118529,9 +118536,9 @@ def test_ui2_alert_hold_acknowledge_from_every_tab():
               f"{where}: an alert raised again with new words (the same "
               f"id) is a new alert: a tap within the second sends "
               f"nothing: {rr}")
-        check([(b["id"], b.get("rev")) for b in rr2] == [(9, 99)],
+        check([(b["id"], b.get("ver")) for b in rr2] == [(9, 99)],
               f"{where}: after the second, Acknowledge carries the new "
-              f"raise: {rr2}")
+              f"words' version: {rr2}")
         r2 = r["day2"]
         check(r2["text"] in ("Alert holds the show. Acknowledge, Resume "
                              "on Show.",
@@ -118620,6 +118627,38 @@ out.routes = window.__posts.map(p => p.route).filter(r => r !== "morning-open");
               and r["routes"] == [],
               f"{where}: the line's button goes to SHOW with the slot in "
               f"sight and the fault still shown first; nothing sent: {r}")
+    # An alert whose count ticks every status (the timing alert): the same
+    # version, so the slot is not changing and a plain tap acknowledges it
+    # (delta review of #291, 1).
+    tk = _ui2_status_alert_hold(0)
+    tk["alerts"] = [{"id": 12, "kind": "timing", "severity": "warning",
+                     "text": "Flame frames late, last hour: 3.", "since": 0,
+                     "options": ["Acknowledge"], "booth": "",
+                     "pulse": False, "ver": 5}]
+    steps = r"""
+const q = id => document.getElementById(id);
+let n = 3;
+window.__patch = st => { n++; (st.alerts || []).forEach(a => { a.text = "Flame frames late, last hour: " + n + "."; }); return st; };
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1600);
+const t0 = q("al-what").textContent + "|" + (ALERTS[0] || {}).full;
+q("al-act").click();
+await h.sleep(500);
+out.tap = {posts:window.__posts.filter(p => p.route === "alert").map(p => p.body), msg:q("msg-t").textContent, ticked:n > 6, t0:t0};
+"""
+    r = _ui2_drive(chrome, page, tk, steps, size=(412, 915),
+                   frag="?tour=0#day",
+                   routes={"/api/remote/morning": _morning_view_pico()},
+                   budget_ms=15000)
+    where = "2.0, an alert whose count ticks, 412x915"
+    if check(isinstance(r, dict) and "tap" in r,
+             f"{where}: driven: {r!r}"[:900]):
+        t = r["tap"]
+        check(t["ticked"] and
+              [(b["id"], b.get("ver")) for b in t["posts"]] == [(12, 5)] and
+              t["msg"] == "Acknowledged.",
+              f"{where}: its count changing every status is not a new "
+              f"alert: a plain tap acknowledges it, with its version: {t}")
     # The slot's button is not an Acknowledge (Show control on, first: the
     # run warning is urgent): the line's button scrolls to the slot's words,
     # never to that button (cold review of #291, 2).

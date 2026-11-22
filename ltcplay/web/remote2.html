@@ -2204,7 +2204,7 @@ function alertItems(st){
   else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
-    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.full || a.text, act:"ack", id:a.id, rev:a.rev}));
+    what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.full || a.text, act:"ack", id:a.id, ver:a.ver}));
   // flamesafe.json not valid JSON (Jeff, 2026-11-06): flames are off and
   // the engine runs without its flame link; the file, line and column.
   if(s.flamesafe_config_error) items.push({key:"fscfg", tone:"bad", what:"Flame settings file broken.", do:"Flames are off. Tap here.", full:s.flamesafe_config_error});
@@ -2261,9 +2261,10 @@ function renderAlertSlot(){
   let idx = items.findIndex(i => i.key === ALERT_KEY);
   if(idx < 0){ idx = 0; ALERT_KEY = items.length ? items[0].key : null; }
   const it = items[idx];
-  // The alert, its press, and its raise (the engine's rev: raised again
-  // with new words, the same id is a new alert to read).
-  const sig = it ? it.key + ":" + (it.act || "") + ":" + (it.rev === undefined ? "" : it.rev) : "";
+  // The alert, its press, and its words (the engine's ver: raised again
+  // with new words, the same id is a new alert to read; a count that only
+  // ticks is not).
+  const sig = it ? it.key + ":" + (it.act || "") + ":" + (it.ver === undefined ? "" : it.ver) : "";
   if(sig !== AL_SHOWN){ AL_SHOWN = sig; AL_SHOWN_AT = Date.now(); }
   const box = $("alert");
   // A Continue anyway hold ends the moment its alert is not the one shown.
@@ -2354,13 +2355,13 @@ $("al-act").addEventListener("click", async (e) => {
   if(it.act === "pr-continue") return;      // a hold, never a tap (below)
   if(it.act === "run") return runShowHere();   // the big button's own Run
   if(it.act === "ack"){
-    // The raise it showed goes with it: the engine clears only that one.
+    // The words it showed go with it: the engine clears only those.
     const body = actor({id:it.id, action:"acknowledge"});
-    if(typeof it.rev === "number") body.rev = it.rev;
-    try{ await post("/api/remote/alert", body); AL_ACKED = {id:it.id, rev:it.rev}; say("Acknowledged.", "", "ok"); }
+    if(typeof it.ver === "number") body.ver = it.ver;
+    try{ await post("/api/remote/alert", body); AL_ACKED = {id:it.id, ver:it.ver}; say("Acknowledged.", "", "ok"); }
     catch(e){
       // A second tap before the next status: this page cleared it already.
-      if(e.status === 409 && AL_ACKED && AL_ACKED.id === it.id && AL_ACKED.rev === it.rev) say("Acknowledged.", "", "ok");
+      if(e.status === 409 && AL_ACKED && AL_ACKED.id === it.id && AL_ACKED.ver === it.ver) say("Acknowledged.", "", "ok");
       else say("Not acknowledged.", e.message, "bad");
     }
   } else if(it.act === "seen"){

@@ -3442,17 +3442,17 @@ MUTATIONS = [
  # a page's Acknowledge must clear only the raise it showed
  ('ui 2.0 alert slot: an alert raised again with new words is not a new alert to the lockout',
   'ltcplay/web/remote2.html',
-  "+ \":\" + (it.rev === undefined ? \"\" : it.rev) : \"\";",
+  "+ \":\" + (it.ver === undefined ? \"\" : it.ver) : \"\";",
   " : \"\";"),
 
  ('ui 2.0 alert slot: Acknowledge does not carry the raise it showed',
   'ltcplay/web/remote2.html',
-  "    if(typeof it.rev === \"number\") body.rev = it.rev;\n",
+  "    if(typeof it.ver === \"number\") body.ver = it.ver;\n",
   ""),
 
  ('ui 2.0 alert slot: a second tap on an alert this page just cleared says Not acknowledged',
   'ltcplay/web/remote2.html',
-  "if(e.status === 409 && AL_ACKED && AL_ACKED.id === it.id && AL_ACKED.rev === it.rev) say(",
+  "if(e.status === 409 && AL_ACKED && AL_ACKED.id === it.id && AL_ACKED.ver === it.ver) say(",
   "if(false) say("),
 
  ("ui 2.0 alert hold: the line's button scrolls to a button that is not Acknowledge",
@@ -3462,8 +3462,23 @@ MUTATIONS = [
 
  ("alerts: a page's Acknowledge clears a version raised after the one it showed",
   'ltcplay/remote.py',
-  "address=ctx.ip,\n                                     rev=rev)",
-  "address=ctx.ip,\n                                     rev=None)"),
+  "address=ctx.ip,\n                                     ver=ver)",
+  "address=ctx.ip,\n                                     ver=None)"),
+
+ ('alerts: a count that ticks gives an alert new words, so it can never be acknowledged',
+  'ltcplay/alerts.py',
+  "            if shape != a.shape:\n",
+  "            if True:\n"),
+
+ ('alerts: changed words keep the version a page showed, so they clear unseen',
+  'ltcplay/alerts.py',
+  "            shape = words_shape(full)\n",
+  "            shape = words_shape(kind)\n"),
+
+ ('ui 2.0 alert slot: the lockout keys on the words, so a ticking count locks it for good',
+  'ltcplay/web/remote2.html',
+  "+ \":\" + (it.ver === undefined ? \"\" : it.ver) : \"\";",
+  "+ \":\" + (it.full || \"\") : \"\";"),
 
  # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
  # their rows when the step is taller than its panel, so the sections
