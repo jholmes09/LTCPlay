@@ -3343,6 +3343,38 @@ MUTATIONS = [
   "  if(n !== P_SAID) return j;\n",
   ""),
 
+ # Andy's phone, 2026-11-22: an alert holding the show showed on DAY with
+ # no Acknowledge there, and Resume is on SHOW only; an Acknowledge can
+ # bring the next alert under the same finger
+ ('ui 2.0 alert hold: off the Show tab the line has no way to Acknowledge',
+  'ltcplay/web/remote2.html',
+  "  $(\"next-go\").hidden = !ns.go || (ns.go === \"resume\" && TAB === \"show\");",
+  "  $(\"next-go\").hidden = true;"),
+
+ ("ui 2.0 alert hold: the line's button stays on the tab it was pressed on",
+  'ltcplay/web/remote2.html',
+  "  if(TAB !== \"show\") backToShow();\n  // The line says SHOW",
+  "  // The line says SHOW"),
+
+ ("ui 2.0 alert hold: the slot's Acknowledge is left below the edge on a phone",
+  'ltcplay/web/remote2.html',
+  "  try{ el.scrollIntoView({block:\"center\", inline:\"nearest\"}); }catch(e){}\n});",
+  "});"),
+
+ ('ui 2.0 alert hold: the line says Acknowledge with nothing left to acknowledge',
+  'ltcplay/web/remote2.html',
+  "  if((items || []).some(i => i.act === \"ack\"))\n    return {tone:\"warn\"",
+  "  if(true)\n    return {tone:\"warn\""),
+
+ ('ui 2.0 alert slot: a press just after the slot changed acts on the new alert',
+  'ltcplay/web/remote2.html',
+  "function alLocked(){ return Date.now() - AL_SHOWN_AT < AL_LOCK_MS; }",
+  "function alLocked(){ return false; }"),
+
+ ("ui 2.0 alert slot: the second's lockout is not restarted when the slot changes",
+  'ltcplay/web/remote2.html',
+  "if(sig !== AL_SHOWN){ AL_SHOWN = sig; AL_SHOWN_AT = Date.now(); }",
+  "if(sig !== AL_SHOWN){ AL_SHOWN = sig; }"),
  # Andy's phone, 2026-11-22: a finger drifting during Hold to arm became a
  # scroll and the browser cancelled the hold; with scrolling locked, a
  # finger that leaves the button, or moves like a scroll, must end it
@@ -3405,6 +3437,58 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "  const others = [...HOLD_PTRS.keys()].some(id => id !== e.pointerId);\n",
   "  const others = false;\n"),
+
+ # Cold review of #291: an alert raised again keeps its id with new words;
+ # a page's Acknowledge must clear only the raise it showed
+ ('ui 2.0 alert slot: an alert raised again with new words is not a new alert to the lockout',
+  'ltcplay/web/remote2.html',
+  "+ \":\" + (it.ver === undefined ? \"\" : it.ver) : \"\";",
+  " : \"\";"),
+
+ ('ui 2.0 alert slot: Acknowledge does not carry the raise it showed',
+  'ltcplay/web/remote2.html',
+  "    if(typeof it.ver === \"number\") body.ver = it.ver;\n",
+  ""),
+
+ ('ui 2.0 alert slot: a second tap on an alert this page just cleared says Not acknowledged',
+  'ltcplay/web/remote2.html',
+  "if(e.status === 409 && AL_ACKED && AL_ACKED.id === it.id && AL_ACKED.ver === it.ver) say(",
+  "if(false) say("),
+
+ ("ui 2.0 alert hold: the line's button scrolls to a button that is not Acknowledge",
+  'ltcplay/web/remote2.html',
+  "!$(\"al-act\").hidden && $(\"al-act\").dataset.act === \"ack\" ? $(\"al-act\")",
+  "!$(\"al-act\").hidden ? $(\"al-act\")"),
+
+ ("alerts: a page's Acknowledge clears a version raised after the one it showed",
+  'ltcplay/remote.py',
+  "address=ctx.ip,\n                                     ver=ver)",
+  "address=ctx.ip,\n                                     ver=None)"),
+
+ ('alerts: a count that ticks gives an alert new words, so it can never be acknowledged',
+  'ltcplay/alerts.py',
+  "            if shape != a.shape:\n",
+  "            if True:\n"),
+
+ ('alerts: changed words keep the version a page showed, so they clear unseen',
+  'ltcplay/alerts.py',
+  "            shape = words_shape(full) if kind in COUNTING else full\n",
+  "            shape = kind\n"),
+
+ ('ui 2.0 alert slot: the lockout keys on the words, so a ticking count locks it for good',
+  'ltcplay/web/remote2.html',
+  "+ \":\" + (it.ver === undefined ? \"\" : it.ver) : \"\";",
+  "+ \":\" + (it.full || \"\") : \"\";"),
+
+ ("alerts: every kind's numbers are left out of its version, so 'Show 3' and 'Show 4' are one",
+  'ltcplay/alerts.py',
+  "            shape = words_shape(full) if kind in COUNTING else full\n",
+  "            shape = words_shape(full)\n"),
+
+ ("alerts: the timing alert's ticking count is a new version, so it can never be acknowledged",
+  'ltcplay/alerts.py',
+  "COUNTING = frozenset((\"timing\",))\n",
+  "COUNTING = frozenset()\n"),
 
  # Jeff, 2026-11-13 (the show PC): the DAY step's buttons shrink below
  # their rows when the step is taller than its panel, so the sections
@@ -21448,7 +21532,7 @@ def build():
   ""),
 
  ("ui2 page: the slot's button acts on whatever shows at the lift", "ltcplay/web/remote2.html",
-  "  if(down && (down.key !== ALERT_KEY || down.act !== $(\"al-act\").dataset.act)){",
+  "  if(down && (down.key !== ALERT_KEY || down.act !== $(\"al-act\").dataset.act || down.sig !== AL_SHOWN)){",
   "  if(false){"),
 
  ("ui2 page: the footer's sentence cut is a lookbehind again (dead on iPadOS 15)",

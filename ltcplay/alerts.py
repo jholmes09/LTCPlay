@@ -44,6 +44,7 @@ Severity is per kind, in plain words for the strip: a "fault" is
 something broken (the deck gone, the audio gone), a "warning" is the gate
 asking before an unattended start.
 """
+import re
 import threading
 import time
 
@@ -114,9 +115,26 @@ def lines(text):
     return "\n".join(out)
 
 
+# The kinds whose words carry a counter that ticks while nothing new is
+# said: the flame timing alert's count, worst gap and limit, raised again
+# about once a second (remote.Remote._frame_timing_work). Their version
+# (Alert.ver) leaves the numbers out. Every other kind counts every
+# character, digits too: "Show 3 did not start" and "Show 4 did not
+# start" are different words.
+COUNTING = frozenset(("timing",))
+
+
+def words_shape(text):
+    """The words of an alert with every number taken out, for a COUNTING
+    kind: "late, last hour: 3" to "4" keeps its shape, other words do
+    not."""
+    return re.sub(r"\d+(?:\.\d+)?", "#", str(text or ""))
+
+
 class Alert:
     __slots__ = ("id", "kind", "text", "since", "options", "severity",
-                 "booth", "booth_ok", "pulse", "rev", "full")
+                 "booth", "booth_ok", "pulse", "rev", "full", "ver",
+                 "shape")
 
     def __init__(self, id, kind, text, since, options):
         self.id = id
@@ -137,6 +155,16 @@ class Alert:
         # id), and this number changes. clear(rev=) clears it only as it
         # was then (preroll.alert_hooks, review 1 of #176).
         self.rev = 0
+        # What a person reading it saw (Alert.view "ver"): changed when the
+        # words change, digits too; for a COUNTING kind never for a number
+        # in them (words_shape), so a page's Acknowledge of the timing
+        # alert, whose count ticks, still clears it, and one whose words
+        # changed since is refused (cold reviews of #291). The booth line ("Booth speaker not
+        # available.") is left out on purpose: it says whether the booth
+        # note could play, not what is wrong, and may come and go on its
+        # own.
+        self.ver = 0
+        self.shape = None
 
     def view(self):
         text = self.text
@@ -145,7 +173,10 @@ class Alert:
         out = {"id": self.id, "kind": self.kind, "text": text,
                "severity": self.severity, "since": int(self.since * 1000),
                "options": list(self.options), "booth": self.booth,
-               "pulse": self.pulse}
+               "pulse": self.pulse,
+               # The words this view shows: a page's Acknowledge carries it
+               # back, so words raised since are never cleared unseen.
+               "ver": self.ver}
         # The words with their line breaks, only when they have any: the
         # rack screen reads full, else text.
         if "\n" in self.full:
@@ -216,6 +247,10 @@ class Alerts:
                 outcome = "raised"
             self._revs += 1
             a.rev = self._revs
+            shape = words_shape(full) if kind in COUNTING else full
+            if shape != a.shape:
+                a.shape = shape
+                a.ver = a.rev
         self._sound(a)
         self._journal(f"Alert ({a.severity}, {kind}): {text}", fault=True,
                       action="alert", outcome=outcome, who="system",
@@ -295,10 +330,11 @@ class Alerts:
 
     # -- clear -------------------------------------------------------------
     def clear(self, kind=None, id=None, action="Acknowledge", who="",
-              screen="", address="", rev=None):
+              screen="", address="", rev=None, ver=None):
         """Clear by kind, by id, or (neither) every open alert: a Stream
         Deck key acknowledges whatever is open. With `rev`, only while the
-        alert is as it was at that raise (not raised again since). Only a
+        alert is as it was at that raise (not raised again since); with
+        `ver`, only while its words are the ones a page showed. Only a
         CLEARING option clears here; the others choose, and are refused
         with the sentence the page shows. Returns (ok, sentence)."""
         action = str(action or "Acknowledge").strip()
@@ -316,6 +352,8 @@ class Alerts:
                 if kind and a.kind != kind:
                     continue
                 if rev is not None and a.rev != rev:
+                    continue
+                if ver is not None and a.ver != ver:
                     continue
                 picked.append(a)
             for a in picked:
