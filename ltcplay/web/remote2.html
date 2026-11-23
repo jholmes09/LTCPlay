@@ -2703,13 +2703,14 @@ $("al-act").addEventListener("pointerdown", async (ev) => {
 // The hold itself, from the button's press (ev) or from the phone's slide
 // at 90 percent (no ev: prsSlideCheck follows that finger itself). The
 // slide's hold keeps what happened on it (sent: the done press is on its
-// way; answer: what it answered) and says nothing on an error: the slide
-// reads the engine first (prsAwait, prsRead).
+// way; answer: what it answered) and says nothing itself: the slide says
+// the engine's yes (prsAwait, never after a Stop or a Hold) and reads the
+// engine first on anything else (prsRead).
 async function prHoldGo(ev){
   const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
   const it = ALERTS.find(i => i.key === ALERT_KEY);
   if(ev) say("Keep holding...", it ? it.full : "", "warn");
-  else say("Keep your finger at the end.", it ? it.full : "", "warn");
+  else prsSay("Keep your finger at the end.", it ? it.full : "", "warn");
   setText($("al-act-l"), PR_HOLD_WORDS);
   $("al-act").classList.add("holding");
   const f = $("al-act").querySelector(".fill");
@@ -2723,7 +2724,7 @@ async function prHoldGo(ev){
     if(PR_HOLD !== mine) return;
     prHoldEnd();
     mine.sent = true;
-    try{ const j = await post("/api/remote/preroll-continue", actor({phase:"done", token:token})); mine.answer = {ok:j}; say("Continuing anyway.", String(j.text || ""), "ok"); }
+    try{ const j = await post("/api/remote/preroll-continue", actor({phase:"done", token:token})); mine.answer = {ok:j}; if(ev) say("Continuing anyway.", String(j.text || ""), "ok"); }
     catch(e){ mine.answer = {err:e}; if(ev) say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); }
   }, PR_HOLD_MS + 100);
 }
@@ -6025,20 +6026,35 @@ function prsSlideEnd(s, why){
   else if(!PRS_STOP_WHY.includes(why)) prsRead(why, false, h.answer && h.answer.err);
   renderPrSlide();
 }
-// The done press is on its way: checking, no handle, until its answer
-// (or PRS_ANSWER_MS without one: lost). The engine's yes: no handle
-// until a read shows the engine; anything else: the engine read.
+// The done press is on its way: checking, no handle, for as long as it is
+// unanswered (the engine may be starting the show all that time: never
+// "not continued" and never a second slide meanwhile). After
+// PRS_ANSWER_MS the engine's status is read each second: once it shows
+// the show continued or live, that is said. The engine's yes, said here
+// (never after a Stop or a Hold): no handle until a read shows the
+// engine; any other answer: the engine read.
 async function prsAwait(h){
   const me = ++PRS_READING, t0 = Date.now();
+  let next = t0 + PRS_ANSWER_MS;
   PRS_WAIT = h; PRS_CHECK = false; PRS_STARTED = 0;
   renderPrSlide();
-  while(!h.answer && Date.now() - t0 < PRS_ANSWER_MS){
+  while(!h.answer){
     await prsNap(50);
     if(me !== PRS_READING){ if(PRS_WAIT === h) PRS_WAIT = null; return; }
+    if(Date.now() < next) continue;
+    next = Date.now() + 1000;
+    let v = null;
+    try{ v = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    if(me !== PRS_READING){ if(PRS_WAIT === h) PRS_WAIT = null; return; }
+    if(prsReadable(v) && (prsDone(v) || isLive(v))){
+      PRS_WAIT = null; PRS_DOUBT = false; PRS_CHECK = false;
+      prsSeen(v); prsTell(v, "", true, null); renderPrSlide();
+      return;
+    }
   }
   PRS_WAIT = null;
   const a = h.answer;
-  if(a && a.ok) prsStateRead(false, me);
+  if(a && a.ok){ prsSay("Continuing anyway.", String(a.ok.text || ""), "ok"); prsStateRead(false, me); }
   else prsRead("", true, a ? a.err : null);
 }
 // No handle (the engine's yes, or a Stop or a Hold pressed) until a read
@@ -6160,11 +6176,13 @@ function prsTell(v, why, over, err){
 }
 // A safety press (Stop show, Hold, a pinned Stop, Disarm) ends a held
 // slide before its done press is sent: a Continue anyway after a Hold
-// would resume it. A Hold's read waits for its answer (PRS_STOP_OUT).
+// would resume it. A Hold's read waits for its answer (PRS_STOP_OUT), the
+// pinned Stop for Programming flames' too (it is a Hold).
 document.addEventListener("click", e => {
   const b = e.target && e.target.closest ? e.target.closest("[data-safe]") : null;
   if(!b) return;
-  const hold = b.id === "b-hold" || b.id === "m-hold";
+  // The pinned Stop for Programming flames is 1.0's Hold (its pin's press).
+  const hold = b.id === "b-hold" || b.id === "m-hold" || b.dataset.pin === "pf";
   if(SLIDE && SLIDE.i === "pr") slideCancel(hold ? "Hold was pressed" : "a safety press was made");
   if(hold) prsStopSeen();
 }, true);
@@ -7394,7 +7412,10 @@ const QHELP = {
 };
 function qOpen(k){
   const q = QHELP[k]; if(!q) return;
-  sheet(q[0], `<ul>${q[1].map(r => `<li><b>${esc(r[0])}:</b> ${esc(r[1])}</li>`).join("")}</ul>`, [{label:"Close", cls:"blue"}]);
+  let rows = q[1];
+  // On a touch phone Continue anyway is a slide, never a hold.
+  if(k === "alert" && slidePhone()) rows = rows.map(r => r[0] === "Hold to continue anyway" ? ["Continue anyway", "Slide to the end. The show starts late."] : r);
+  sheet(q[0], `<ul>${rows.map(r => `<li><b>${esc(r[0])}:</b> ${esc(r[1])}</li>`).join("")}</ul>`, [{label:"Close", cls:"blue"}]);
 }
 document.querySelectorAll("[data-q]").forEach(b => b.addEventListener("click", () => qOpen(b.dataset.q)));
 // The flames' "?" lives on the Arm all column's long press-free twin: the

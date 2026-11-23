@@ -122301,9 +122301,9 @@ def test_ui2_continue_anyway_slide_on_a_phone():
         r, bad = {}, False
         for part, need, ms in (("phone", "early", 90000),
                                ("phone2", "cuts", 120000),
-                               ("phone3", "blind", 90000),
+                               ("phone3", "blind", 150000),
                                ("phone4", "stale_cut", 90000),
-                               ("phone5", "again", 90000)):
+                               ("phone5", "again", 150000)):
             x = _ui2_drive_framed(chrome, page, st,
                                   _UI2_PR_SLIDE_STEPS.replace("__PART__",
                                                               part),
@@ -122335,6 +122335,10 @@ def test_ui2_continue_anyway_slide_on_a_phone():
         check(r["tap"] == {"posts": 0, "slide": False},
               f"{where}: a tap on the track or the handle sends nothing: "
               f"{r['tap']}")
+        check("Slide to the end. The show starts late." in r["help"] and
+              "hold" not in r["help"].lower(),
+              f"{where}: the alert's help on a phone says slide, never "
+              f"hold: {r['help']!r}")
         so = r["signed_out"]
         check(so["mode"] == "na" and so["kd"] == "none" and
               so["line"] == "Signed out. Sign in first.",
@@ -122398,6 +122402,17 @@ def test_ui2_continue_anyway_slide_on_a_phone():
                   f"its answer not clear: read, said continued, never not "
                   f"continued, never the handle, one done press: "
                   f"{dict(x, during=sorted(set(tuple(d[:2]) for d in x['during'])))}")
+        x = r["done_hung"]
+        check(x["during"] and all(m != "go" and kd == "none" and
+                                  "Not continued" not in ln
+                                  for m, ln, kd in x["during"]) and
+              not x["again_slide"] and x["dones"] == 1 and
+              x["starts"] == 1 and
+              x["msg"] in ("Continued anyway.", "Continuing anyway."),
+              f"{where}: the done press unanswered for 14 s while the "
+              f"engine starts the show: no handle, never not continued, "
+              f"no second slide: "
+              f"{dict(x, during=sorted(set(tuple(d) for d in x['during'])))}"[:1500])
         x = r["refused_done"]
         check(x["posts"] == ["begin", "done"] and x["starts"] == 0 and
               x["msg"] == "Not continued now." and
@@ -122480,6 +122495,28 @@ def test_ui2_continue_anyway_slide_on_a_phone():
               "continued" not in x["line"].lower(),
               f"{where}: Hold pressed while the engine is read: the read "
               f"never speaks after it: {x}")
+        for k, said in (("stop_after_done",
+                         "Stopped and on Hold. Resume when safe."),
+                        ("stop_lost_after_done",
+                         "Stop did not arrive. Try again.")):
+            x = r[k]
+            check(x["dones"] == 1 and x["stops"] == 1 and
+                  x["said"] == said and x["msg"] == said,
+                  f"{where}: {k}: Stop show after the done press, the "
+                  f"engine's yes late: nothing speaks after the Stop: {x}")
+        x = r["not_kept"]
+        check(x["at_end"] == "Purge NOT stopped." and
+              x["msg"] == "Purge NOT stopped." and x["dones"] == 1,
+              f"{where}: a failed safety press's words are never covered "
+              f"by the slide's own: {x}")
+        x = r["pf_pin"]
+        check(x["posts"] == ["begin", "hold"] and x["resumed"] == 0 and
+              x["during"] and all(m != "go" and kd == "none" and
+                                  "Not continued" not in ln
+                                  for m, ln, kd, *_x in x["during"]),
+              f"{where}: the pinned Stop for Programming flames is a Hold: "
+              f"no done press, no handle until a read after its answer: "
+              f"{dict(x, during=sorted(set(tuple(d[:2]) for d in x['during'])))}")
         x = r["disarm_finger"]
         check(x["posts"] == ["begin"] and x["disarms"] == 1 and
               x["starts"] == 0,
@@ -122515,7 +122552,8 @@ def test_ui2_continue_anyway_slide_on_a_phone():
               r["word"] == "Hold to continue anyway" and
               r["do"] == "Fix it, or hold to continue." and
               r["posts"] == ["begin", "done"] and r["cont"] and
-              r["msg"] == "Continuing anyway." and r["prs"] == "",
+              r["msg"] == "Continuing anyway." and r["prs"] == "" and
+              "Hold to continue anyway" in r["help"],
               f"{where}: today's hold, as before: {r}")
     print("  ok")
 
@@ -122586,6 +122624,7 @@ window.fetch = async (url, opt) => {
   if(post && /\/api\/remote\/stop$/.test(u)){
     TE.posts.push({route:"stop"});
     if(TE.stopLate) await nap(TE.stopLate);
+    if(TE.stopLose) throw new TypeError("Failed to fetch");
     if(TE.state === "SHOW") TE.state = "HOLD";
     return J(200, {ok:true, text:"Stopped. Everything is dark and the schedule is on Hold.", failed:[], hold:{ok:true}});
   }
@@ -122624,7 +122663,7 @@ const continued = () => !!TE.cont;
 const kd = () => getComputedStyle(sb().querySelector(".knob")).display;
 const settle = async () => { TE.offer = true; TE.cont = null; TE.state = "STANDBY"; TE.after = ""; TE.late = 0; TE.refuse = ""; TE.refuseDone = "";
   TE.slowCont = 0; TE.statusLate = 0; TE.statusHold = 0; TE.blind = false; TE.blindAfter = false; TE.getFail = 0; TE.pins = false;
-  TE.stopLate = 0; TE.holdLate = 0; TE.viewOnly = false;
+  TE.stopLate = 0; TE.stopLose = false; TE.holdLate = 0; TE.viewOnly = false;
   PRS_READING++; PRS_STOPPING = 0; PRS_DOUBT = false; PRS_CHECK = false; PRS_STARTED = 0; PRS_WAIT = null; PRS_LINE = null; PRS_SEEN = null;
   await nap(1500);
   // The slot drawn again a moment ago ignores a press for 1 s (alLocked).
@@ -122699,6 +122738,9 @@ if(PART === "desk"){
   await nap(600);
   out.posts = TE.posts.slice(p0).map(p => p.route);
   out.cont = continued(); out.msg = msg(); out.prs = q("alert").dataset.prs || "";
+  await nap(1500);
+  { document.querySelector('#alert [data-q="alert"]').click(); await nap(300);
+    out.help = sheetOpen() ? q("sheet").innerText : ""; }
 } else {
   const cuts = {
     pointercancel:c => pe(c.kn, "pointercancel", c.x, c.y, c.id),
@@ -122735,6 +122777,9 @@ if(PART === "desk"){
   // A tap on the track, and on the handle: nothing sent.
   { const p0 = TE.posts.length; tap(el, ++PID); await nap(300); tap(kn, ++PID); await nap(300);
     out.tap = {posts:TE.posts.length - p0, slide:!!SLIDE}; await settle(); }
+  // The alert's help on a phone: the slide, never a hold.
+  { document.querySelector('#alert [data-q="alert"]').click(); await nap(300);
+    out.help = sheetOpen() ? q("sheet").innerText : ""; const b = q("sheet").querySelector("button"); if(b) b.click(); await nap(300); }
   // Signed out: no handle, says so.
   { TE.viewOnly = true; await nap(900); out.signed_out = {mode:sb().dataset.mode, line:q("pr-sl").textContent, kd:kd()}; await settle(); }
   // The whole slide: nothing sent under 90 percent; at the end 1.0's two
@@ -122779,6 +122824,17 @@ if(PART === "desk"){
     const s = await slide([[1, 0, 0], [async c => { await waitFor(() => TE.posts.slice(c.p0).some(p => p.route === "done"), 3000); s_flip = await sample(2400); }]]);
     s.during = s_flip;
     out[k] = await fin(s, 1500); }
+  // The done press unanswered for 14 s, the engine starting the show all
+  // that time (it continues at 13 s): checking, no handle, never not
+  // continued, while it is in flight (review 1 of #301, 2).
+  { TE.late = 14000; TE.slowCont = 13000;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => TE.posts.slice(c.p0).some(p => p.route === "done"), 3000); }]]);
+    s_flip = await sample(12600);
+    s.during = s_flip.map(x => x.slice(0, 3)); s.again_slide = false;
+    { const k2 = sb().querySelector(".knob"); if(getComputedStyle(k2).display !== "none"){ const kr2 = k2.getBoundingClientRect();
+      pe(k2, "pointerdown", kr2.left + 20, kr2.top + 20, ++PID); s.again_slide = !!SLIDE; pe(k2, "pointerup", kr2.left + 20, kr2.top + 20, PID); } }
+    await nap(2500);
+    out.done_hung = await fin(s, 500); }
   // The engine refuses the done press (409, nothing changed): read; not
   // continued now, never its words on the line.
   { TE.refuseDone = "Continue anyway was refused: show control is off. Nothing was changed.";
@@ -122861,6 +122917,32 @@ if(PART === "desk"){
       q("b-hold").dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:0})); await nap(2600); }]]);
     TE.statusLate = 0;
     out.hold_during_read = await fin(s, 1500); }
+  // Stop show tapped twice (fresh fingers) once the done press is sent,
+  // the engine's yes 3 s late: nothing speaks after the Stop, whether it
+  // arrived or not (review 1 of #301, 1).
+  for(const k of ["stop_after_done", "stop_lost_after_done"]){
+    TE.late = 3000; TE.stopLose = k === "stop_lost_after_done";
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => TE.posts.slice(c.p0).some(p => p.route === "done"), 3000); await nap(100); }]],
+      async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); await nap(200); tap(q("b-stop"), ++PID); await nap(150); tap(q("b-stop"), ++PID);
+        await nap(400); c.said = msg(); await nap(3500); });
+    s.said = s.c.said;
+    out[k] = await fin(s, 300); }
+  // A failed safety press's words (NOT) are never covered by the slide's
+  // own words (review 1 of #301, 3).
+  { say("Purge NOT stopped.", "x", "bad");
+    const s = await slide([[1, 0, 0], [async c => { await nap(120); s_x = msg(); await waitFor(() => continued(), 3000); await nap(600); }]], null, true);
+    s.at_end = s_x;
+    out.not_kept = await fin(s, 600); }
+  // The pinned Stop for Programming flames (a Hold) pressed by a key while
+  // the slide holds, its answer 3 s late: no handle until a read made
+  // after it (review 1 of #301, 4).
+  { TE.pins = true; await waitFor(() => !!document.querySelector('#pins [data-pin="pf"]'), 3000); await nap(1200);
+    for(let i = 0; i < 100 && alLocked(); i++) await nap(50);
+    TE.holdLate = 3000;
+    const s = await slide([[1, 0, 300], [async c => { document.querySelector('#pins [data-pin="pf"]').dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:0}));
+      s_flip = await sample(2700); await nap(1500); }]]);
+    s.during = s_flip;
+    out.pf_pin = await fin(s, 1200); }
   // Disarm flames tapped by a second finger while the slide holds: the
   // slide ends, no done press, and the Disarm is never held back.
   { const s = await slide([[1, 0, 300], [async c => { const b = q("b-disall"), br = b.getBoundingClientRect(), x = br.left + br.width / 2, y = br.top + br.height / 2;

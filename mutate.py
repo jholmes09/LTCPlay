@@ -3972,6 +3972,29 @@ MUTATIONS = [
   "  if(PRS_STARTED) return {mode:\"run\", word:\"Continuing\", started:true};\n",
   ""),
 
+ # Review 1 of #301: the late yes never speaks after a Stop or a Hold; a
+ # done press in flight is never given up on; the slide's words never
+ # cover a NOT; the pinned Stop for Programming flames is a Hold.
+ ("ui 2.0 continue slide: the engine's late yes is said over a Stop or a Hold pressed after the done press",
+  'ltcplay/web/remote2.html',
+  "mine.answer = {ok:j}; if(ev) say(",
+  "mine.answer = {ok:j}; say("),
+
+ ("ui 2.0 continue slide: a done press still unanswered is given up on: the handle and not continued while the engine may still start the show",
+  'ltcplay/web/remote2.html',
+  "  while(!h.answer){\n",
+  "  while(!h.answer && Date.now() - t0 < PRS_ANSWER_MS){\n"),
+
+ ("ui 2.0 continue slide: the slide's own words cover a failed safety press's NOT",
+  'ltcplay/web/remote2.html',
+  "  else prsSay(\"Keep your finger at the end.\",",
+  "  else say(\"Keep your finger at the end.\","),
+
+ ("ui 2.0 continue slide: the pinned Stop for Programming flames is not taken as a Hold",
+  'ltcplay/web/remote2.html',
+  " || b.dataset.pin === \"pf\";\n",
+  ";\n"),
+
 
 
 
