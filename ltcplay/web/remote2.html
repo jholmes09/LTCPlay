@@ -5207,7 +5207,7 @@ window.addEventListener("orientationchange", () => slideCancel("the screen turne
 // never sends a new hold or a Stop purge. The slide's own release and
 // click land on nothing (TP_QUIET); any new touch is a new press.
 const TP_QUIET_MS = 2000, TP_QUIET_CLICK_MS = 400, TP_READ_HOLD_MS = 1500, TP_STOP_WHY = ["Stop purge was pressed", "Stop show was pressed"];
-let TP_QUIET = null, TP_DOUBT = false, TP_READING = 0, TP_CHECK = false, TP_STARTED = 0, TP_LINE = null;
+let TP_QUIET = null, TP_DOUBT = false, TP_READING = 0, TP_CHECK = false, TP_STARTED = 0, TP_STOPPING = 0, TP_LINE = null;
 // The phone's line says only these short words (tpLine), never 1.0's or
 // the engine's own text.
 function tpLine(text){ TP_LINE = {text:text, at:Date.now()}; }
@@ -5223,6 +5223,8 @@ function tpSlideLook(){
   if(TP_DOUBT) return {mode:"unknown", word:"Not known"};
   // A read pending: no handle and nothing said until the engine answers.
   if(TP_CHECK || tpSlideOrphan()) return {mode:"unknown", word:"Checking"};
+  // A Stop pressed: no handle until a read made after it shows the engine.
+  if(TP_STOPPING) return {mode:"unknown", word:"Stopping", stopping:true};
   if(st.running) return {mode:"run", word:st.word};
   // The engine said started and no read since shows it: never the handle
   // (a new hold now would be a second press, which ends it).
@@ -5244,6 +5246,7 @@ function renderTpSlide(){
 // (#tp-st) or the engine's text; "running" only while it runs.
 function tpSlideLine(lk){
   if(TP_DOUBT) return "Not known. Check the tile.";
+  if(lk.stopping) return "Stopping. Checking with the engine.";
   if(lk.mode === "unknown") return "Checking with the engine.";
   if(lk.mode === "starting") return "Keep your finger at the end.";
   if(lk.started) return "Purge started. You can let go.";
@@ -5291,7 +5294,7 @@ function tpSlideCheck(s){
   if(s.el.dataset.mode !== "go"){ slideCancel("the purge changed"); return; }
   if(s.frac < SLIDE_ARM) return;
   const st = tpNow();
-  if(st.running || !st.ok || TP_HOLD || TP_DOUBT || TP_CHECK || TP_STARTED){ slideCancel("the purge changed"); return; }
+  if(st.running || !st.ok || TP_HOLD || TP_DOUBT || TP_CHECK || TP_STARTED || TP_STOPPING){ slideCancel("the purge changed"); return; }
   s.at = Date.now();
   // The engine's purge count before this hold: what proves later that
   // nothing fired.
@@ -5314,23 +5317,28 @@ function tpSlideHoldEnded(s){
 }
 // The engine said started: running (no handle) until a read made after
 // that answer shows the engine's state; read again until it answers.
-async function tpStartedRead(){
-  const me = ++TP_READING;
-  TP_STARTED = Date.now();
+function tpStartedRead(){ return tpStateRead(false, ++TP_READING); }
+// No handle (started, or a Stop pressed) until a read made from here on
+// answers: only the engine's state brings the handle back. Read again
+// until it answers.
+async function tpStateRead(stop, me){
+  if(stop) TP_STOPPING = Date.now(); else TP_STARTED = Date.now();
   renderTpSlide();
   for(;;){
     let mo = null;
     try{ mo = await getJSON("/api/remote/morning", 1500); }catch(_e){}
     if(me !== TP_READING) return;
-    if(mo && mo.timed){ TP_STARTED = 0; MO = mo; try{ renderMorning(); }catch(_e){} renderTpSlide(); return; }
+    if(mo && mo.timed){ TP_STARTED = 0; TP_STOPPING = 0; MO = mo; try{ renderMorning(); }catch(_e){} renderTpSlide(); return; }
     await new Promise(r => setTimeout(r, 500));
   }
 }
-// A Stop purge or a Stop show: its own answer. Any read still pending
-// never speaks after it.
+// A Stop purge or a Stop show, answered or not (a Stop that failed too):
+// its own answer, so any read still pending never speaks after it; and
+// no handle until a fresh read shows whether the engine still purges.
 function tpStopSeen(){
-  TP_READING++; TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;
-  renderTpSlide();
+  TP_READING++;
+  TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;
+  tpStateRead(true, TP_READING);
 }
 function tpSlideEnd(s, why){
   const held = s.phase === "end", done = s.phase === "done";
@@ -5375,7 +5383,11 @@ async function tpSlideRead(why, fires0){
       MO = mo;
       try{ renderMorning(); }catch(_e){}
       const n = tpFires(mo), said = TP_MSG && Date.now() - TP_MSG.at < 3000 ? TP_MSG.text + " " : "";
-      if(t.running){
+      if((mo.purge_state || {}).firing && !t.running){
+        // Another purge (the FIRE key's) is firing: never said as ended.
+        say("A purge is firing.", "No timed purge runs, but the engine says a purge is firing now. Check the tile.", "bad");
+        tpLine("A purge is firing.");
+      } else if(t.running){
         say("Timed purge running.", "The engine says a timed purge is running: " + (t.machines || []).join(", ") + ". Stop purge ends it.", "ok");
       } else if(fires0 !== null && fires0 !== undefined && n === fires0){
         const why2 = why === "let go" ? "You let go before the engine started it. " : why ? "Purge slide stopped: " + why + ". " : "";

@@ -3710,13 +3710,25 @@ MUTATIONS = [
 
  ("ui 2.0 purge slide: a read pending when Stop purge is pressed still speaks after it",
   'ltcplay/web/remote2.html',
-  "  TP_READING++; TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;\n",
+  "  TP_READING++;\n  TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;\n",
   "  TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;\n"),
 
  ("ui 2.0 purge slide: after the started answer the handle shows before a read, so a new slide ends the purge",
   'ltcplay/web/remote2.html',
   "  if(TP_STARTED || (tpSlideGone() && !tpSlideOrphan())) return {mode:\"run\", word:\"Purge started\", started:true};\n",
   ""),
+
+ # Cold review of #297, round three: no handle after a Stop until a read;
+ # a purge firing is never said as ended.
+ ("ui 2.0 purge slide: a Stop brings the handle back before a read shows the engine stopped",
+  'ltcplay/web/remote2.html',
+  "  if(TP_STOPPING) return {mode:\"unknown\", word:\"Stopping\", stopping:true};\n",
+  ""),
+
+ ("ui 2.0 purge slide: another screen's purge still firing is said as ended",
+  'ltcplay/web/remote2.html',
+  "      if((mo.purge_state || {}).firing && !t.running){\n",
+  "      if(false){\n"),
 
 
 

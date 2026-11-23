@@ -120882,7 +120882,7 @@ const q = id => document.getElementById(id);
 const nap = ms => new Promise(r => setTimeout(r, ms));
 const msg = () => q("msg-t") ? q("msg-t").textContent : "";
 let s_pre = null, s_hold_words = "", s_line = "", s_flip = null;
-const TE = {hold:null, running:null, dead:new Set(), after:"", late:0, blind:false, blindAfter:false, failAll:0, readLate:0, runMs:0, refuse:"", fires:0, posts:[]};
+const TE = {hold:null, running:null, dead:new Set(), after:"", late:0, blind:false, blindAfter:false, failAll:0, readLate:0, runMs:0, refuse:"", fires:0, firing:false, stopFail:false, posts:[]};
 const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
 const view = () => {
   const now = Date.now();
@@ -120923,12 +120923,13 @@ window.fetch = async (url, opt) => {
     return J(200, Object.assign(view(), {ok:true, started:true, seconds:b.seconds,
       text:"Timed purge started: front row 1 for " + b.seconds + " s. It stops by itself; Stop purge ends it now."}));
   }
+  if(post && /\/api\/remote\/purge-stop$/.test(u) && TE.stopFail){ TE.posts.push({route:"purge-stop"}); return J(500, {error:"Engine error."}); }
   if(post && /\/api\/remote\/purge-stop$/.test(u)){ TE.posts.push({route:"purge-stop"}); TE.running = null; return J(200, {ok:true, text:"Purge stopped."}); }
   if(!post && /\/api\/remote\/morning$/.test(u)){
     if(TE.readLate) await nap(TE.readLate);
     if(TE.blind) throw new TypeError("Failed to fetch");
     const r = await hf(url, opt); const j = await r.json(); j.timed = view();
-    j.purge_state = Object.assign({}, j.purge_state, {fires:TE.fires}); return J(200, j);
+    j.purge_state = Object.assign({}, j.purge_state, {fires:TE.fires, firing:TE.firing}); return J(200, j);
   }
   return hf(url, opt);
 };
@@ -120941,7 +120942,7 @@ const tap = (el, id) => { const r = el.getBoundingClientRect(), x = r.left + r.w
 const sb = () => q("tp-slide");
 const stops = p => p.filter(x => x.route === "purge-stop").length;
 const settle = async () => { TE.hold = null; TE.running = null; TE.after = ""; TE.late = 0; TE.blind = false; TE.blindAfter = false; TE.failAll = 0;
-  TE.stopped_by_hold = false; TE.readLate = 0; TE.runMs = 0; TE.refuse = ""; TP_READING++; TP_DOUBT = false; TP_CHECK = false;
+  TE.stopped_by_hold = false; TE.readLate = 0; TE.runMs = 0; TE.refuse = ""; TE.firing = false; TE.stopFail = false; TP_READING++; TP_STOPPING = 0; TP_DOUBT = false; TP_CHECK = false;
   TP_STARTED = 0; TP_LINE = null; TP_MSG = null; await nap(1300); };
 // The slide and its line every 60 ms while the engine is being read.
 const sample = async ms => { const out2 = []; for(let t = 0; t < ms; t += 60){ out2.push([sb().dataset.mode, q("tp-sl").textContent,
@@ -121161,6 +121162,26 @@ if(PART === "desk"){
     await nap(1600);
     s.after = {mode:sb().dataset.mode, line:q("tp-sl").textContent};
     out.started_slow = await fin(s, 100); }
+  // Round 3: Stop tapped just after the start, the engine read slowly:
+  // no handle until a read made after the Stop shows the engine.
+  { TE.readLate = 1200;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(40);
+      tap(q("tp-stop"), ++PID); s_flip = await sample(900); }]]);
+    s.during = s_flip; await nap(1500);
+    out.stop_slow = await fin(s, 100); }
+  // Round 3: the Stop fails (a 500) and the reads time out: no handle the
+  // whole time; once a read answers, still purging, never the handle.
+  { TE.stopFail = true; TE.readLate = 1700; TE.runMs = 9000;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(40);
+      tap(q("tp-stop"), ++PID); s_flip = await sample(2400); }]]);
+    s.during = s_flip; TE.readLate = 0; await nap(3000);
+    s.after = {mode:sb().dataset.mode, line:q("tp-sl").textContent};
+    out.stop_fail = await fin(s, 100);
+    TE.running = null; await nap(1500); }
+  // Round 3: another screen's FIRE purge firing when the read comes: never
+  // said as ended, no handle.
+  { const s = await slide([[1, 0, 300], [c => { TE.fires++; TE.firing = true; }]]);
+    out.firing_other = await fin(s, 1500); }
   // N1: an engine refusal's own words never reach the phone line.
   { TE.refuse = "That hold has ended. Let go and hold again. Nothing was fired.";
     out.refused = await fin(await slide([[1, 0, 300]]), 1200); }
@@ -121225,7 +121246,7 @@ def test_ui2_timed_purge_slide_on_a_phone():
         r, bad = {}, False
         for part, need, ms in (("phone", "pre_cuts", 80000),
                                ("phone2", "cuts", 60000),
-                               ("phone3", "again", 120000)):
+                               ("phone3", "again", 150000)):
             x = _ui2_drive_framed(chrome, page, _ui2_status_day(),
                                   whole_js + _UI2_TP_SLIDE_STEPS.replace(
                                       "__PART__", part),
@@ -121385,6 +121406,25 @@ def test_ui2_timed_purge_slide_on_a_phone():
               f"{where}: started, the engine read slowly: running with no "
               f"handle, a new slide never starts, the purge never ended by "
               f"a second press: {ss}")
+        def nogo(d):
+            return d and all(m != "go" and kd == "none" for m, _ln, kd in d)
+        x = r["stop_slow"]
+        check(nogo(x["during"]) and x["stops"] == 1 and
+              x["during"][0][1] == "Stopping. Checking with the engine." and
+              not x["running"] and x["mode"] == "go",
+              f"{where}: Stop just after the start, the engine read slowly: "
+              f"no handle until a read after the Stop: {x}")
+        x = r["stop_fail"]
+        check(nogo(x["during"]) and x["stops"] == 1 and
+              x["after"]["mode"] == "run" and x["running"] and
+              not x["stopped_by_hold"],
+              f"{where}: a Stop that failed, the reads timing out: never the "
+              f"handle while the engine purges: {x}")
+        x = r["firing_other"]
+        check(x["msg"] == "A purge is firing." and
+              x["line"] == "A purge is firing." and x["mode"] == "na",
+              f"{where}: another screen's purge firing: never said ended, "
+              f"no handle: {x}")
         rf = r["refused"]
         check(rf["msg"] == "Purge not started." and
               rf["line"] == "Not started. Nothing was fired." and

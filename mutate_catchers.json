@@ -1486,6 +1486,8 @@
 "ui 2.0 purge slide: a read says not started though the engine's purge count moved": "test_ui2_timed_purge_slide_on_a_phone",
 "ui 2.0 purge slide: a read pending when Stop purge is pressed still speaks after it": "test_ui2_timed_purge_slide_on_a_phone",
 "ui 2.0 purge slide: after the started answer the handle shows before a read, so a new slide ends the purge": "test_ui2_timed_purge_slide_on_a_phone",
+"ui 2.0 purge slide: a Stop brings the handle back before a read shows the engine stopped": "test_ui2_timed_purge_slide_on_a_phone",
+"ui 2.0 purge slide: another screen's purge still firing is said as ended": "test_ui2_timed_purge_slide_on_a_phone",
 "ui 2.0 beats: a refusal waits with no deadline for an armed answer that hangs": "test_ui2_arm_beats_on_a_fixed_timer",
 "ui 2.0 beats: a hold that ends after a refusal lets go without reading the engine state": "test_ui2_arm_beats_on_a_fixed_timer",
 "ui 2.0 beats: an engine state that cannot be read is said as not armed": "test_ui2_arm_beats_on_a_fixed_timer",
