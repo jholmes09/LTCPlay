@@ -120519,6 +120519,7 @@ const nap = ms => new Promise(r => setTimeout(r, ms));
 const msg = () => q("msg-t") ? q("msg-t").textContent : "";
 const LZE = {on:false, lose:false, blind:false, late:0, noarm:false, fail:0};
 const LP = [];
+let s_pin = {};
 const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
 const hf = window.fetch;
 window.fetch = async (url, opt) => {
@@ -120641,6 +120642,20 @@ if(PART === "desk"){
   out.drift_back = await fin(await slide([[0.97, 0, 150], [0.85, 0, 0]]));
   out.drift_up = await fin(await slide([[0.5, 0, 150], [0.93, 0, 0]]));
   out.drift_band = await fin(await slide([[0.95, 0, 100], [0.95, 18, 0]]));
+  // Cold review of #299, for the lasers: a timed purge started at another
+  // screen during the slide. Every screen's status carries its countdown
+  // (morning.timed), and the pinned Stop purge is drawn above the tiles,
+  // moving the slide down: the slide holds on, its lift opens the confirm.
+  { const base = window.__patch; let pinOn = false;
+    window.__patch = st => { st = base(st); if(pinOn) st.morning = Object.assign({}, st.morning,
+      {timed:{left_s:20, seconds:20, elapsed_s:1, machines:["front row 1"], device:"rack", who:"Jeff"}}); return st; };
+    const s = await slide([[0.95, 0, 0], [async c => { const top0 = c.el.getBoundingClientRect().top; pinOn = true;
+      for(let i = 0; i < 150 && !document.querySelector('#pins [data-pin="tp"]'); i++) await nap(10); await nap(300);
+      s_pin = {pin:!!document.querySelector('#pins [data-pin="tp"]'), moved:Math.round(c.el.getBoundingClientRect().top - top0), slide:!!SLIDE}; }]]);
+    Object.assign(s, s_pin);
+    await nap(300); if(sheetBtn("Cancel")) tap(sheetBtn("Cancel"), ++PID);
+    window.__patch = base;
+    out.pin_shift = await fin(s); }
   // Every cancel at 95 percent: no confirm, nothing sent, then the lift
   // (and its click) ignored.
   const cuts = {
@@ -120791,6 +120806,12 @@ def test_ui2_laser_slide_on_a_phone():
         c = r["cancel"]
         check(opened(c) and c["posts"] == [] and not c["sheet_end"],
               f"{where}: Cancel on the confirm sends nothing: {c}")
+        ps = r["pin_shift"]
+        check(ps["pin"] and ps["moved"] > 24 and ps["slide"] and
+              opened(ps) and ps["posts"] == [],
+              f"{where}: the pinned Stop purge drawn above the tiles during "
+              f"the slide moves it past its band: the slide holds on, its "
+              f"lift opens the confirm: {ps}")
         for k in ("u50", "u88", "drift_back"):
             check(nothing(r[k]) and r[k]["mode"] == "arm",
                   f"{where}: {k}: lifted under 90 percent: no confirm, "

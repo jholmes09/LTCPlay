@@ -5129,7 +5129,10 @@ function lzSlideCheck(s){
   if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
   if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
   if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
-  const r = s.el.getBoundingClientRect();
+  const r = s.b0;
+  // The lasers' band is where the slide was when the finger went down
+  // (slideDown): a pinned Stop or an alert drawn above the tiles during
+  // the slide moves it, never the finger.
   if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX) slideCancel("the finger left the slide");
 }
 function lzSlideEnd(s, why){
