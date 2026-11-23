@@ -3700,6 +3700,24 @@ MUTATIONS = [
   "  if(TP_CHECK || tpSlideOrphan()) return {mode:\"unknown\", word:\"Checking\"};\n",
   ""),
 
+ # Cold review of #297, round two: not started only when the engine's
+ # purge count proves it; a Stop silences a pending read; no handle
+ # between the started answer and a read.
+ ("ui 2.0 purge slide: a read says not started though the engine's purge count moved",
+  'ltcplay/web/remote2.html',
+  "      } else if(fires0 !== null && fires0 !== undefined && n === fires0){\n",
+  "      } else if(true){\n"),
+
+ ("ui 2.0 purge slide: a read pending when Stop purge is pressed still speaks after it",
+  'ltcplay/web/remote2.html',
+  "  TP_READING++; TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;\n",
+  "  TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;\n"),
+
+ ("ui 2.0 purge slide: after the started answer the handle shows before a read, so a new slide ends the purge",
+  'ltcplay/web/remote2.html',
+  "  if(TP_STARTED || (tpSlideGone() && !tpSlideOrphan())) return {mode:\"run\", word:\"Purge started\", started:true};\n",
+  ""),
+
 
 
 

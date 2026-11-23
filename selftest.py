@@ -120882,7 +120882,7 @@ const q = id => document.getElementById(id);
 const nap = ms => new Promise(r => setTimeout(r, ms));
 const msg = () => q("msg-t") ? q("msg-t").textContent : "";
 let s_pre = null, s_hold_words = "", s_line = "", s_flip = null;
-const TE = {hold:null, running:null, dead:new Set(), after:"", late:0, blind:false, blindAfter:false, failAll:0, readLate:0, posts:[]};
+const TE = {hold:null, running:null, dead:new Set(), after:"", late:0, blind:false, blindAfter:false, failAll:0, readLate:0, runMs:0, refuse:"", fires:0, posts:[]};
 const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
 const view = () => {
   const now = Date.now();
@@ -120909,12 +120909,13 @@ window.fetch = async (url, opt) => {
     }
     if(TE.dead.has(b.run)) return J(409, {error:"That hold has ended. Let go and hold again. Nothing was fired.", cut:true});
     if(TE.failAll) return J(TE.failAll, {error:"Bad gateway."});
+    if(TE.refuse) return J(409, {error:TE.refuse, cut:true});
     const now = Date.now();
     if(!TE.hold) TE.hold = {run:b.run, start:now, beat:now};
     else if(TE.hold.run !== b.run){ TE.hold = null; return J(409, {error:"Let go and hold again. Nothing was fired.", cut:true}); }
     else TE.hold.beat = now;
     if(now - TE.hold.start < 1000) return J(200, view());
-    TE.dead.add(b.run); TE.hold = null; TE.running = {run:b.run, until:now + b.seconds * 1000, secs:b.seconds};
+    TE.dead.add(b.run); TE.hold = null; TE.running = {run:b.run, until:now + (TE.runMs || b.seconds * 1000), secs:b.seconds}; TE.fires++;
     if(TE.late) await nap(TE.late);
     if(TE.after === "lose"){ if(TE.blindAfter) TE.blind = true; throw new TypeError("Failed to fetch"); }
     if(TE.after === "502") return J(502, {error:"Bad gateway."});
@@ -120926,7 +120927,8 @@ window.fetch = async (url, opt) => {
   if(!post && /\/api\/remote\/morning$/.test(u)){
     if(TE.readLate) await nap(TE.readLate);
     if(TE.blind) throw new TypeError("Failed to fetch");
-    const r = await hf(url, opt); const j = await r.json(); j.timed = view(); return J(200, j);
+    const r = await hf(url, opt); const j = await r.json(); j.timed = view();
+    j.purge_state = Object.assign({}, j.purge_state, {fires:TE.fires}); return J(200, j);
   }
   return hf(url, opt);
 };
@@ -120939,7 +120941,8 @@ const tap = (el, id) => { const r = el.getBoundingClientRect(), x = r.left + r.w
 const sb = () => q("tp-slide");
 const stops = p => p.filter(x => x.route === "purge-stop").length;
 const settle = async () => { TE.hold = null; TE.running = null; TE.after = ""; TE.late = 0; TE.blind = false; TE.blindAfter = false; TE.failAll = 0;
-  TE.stopped_by_hold = false; TE.readLate = 0; TP_READING++; TP_DOUBT = false; TP_CHECK = false; TP_MSG = null; await nap(1300); };
+  TE.stopped_by_hold = false; TE.readLate = 0; TE.runMs = 0; TE.refuse = ""; TP_READING++; TP_DOUBT = false; TP_CHECK = false;
+  TP_STARTED = 0; TP_LINE = null; TP_MSG = null; await nap(1300); };
 // The slide and its line every 60 ms while the engine is being read.
 const sample = async ms => { const out2 = []; for(let t = 0; t < ms; t += 60){ out2.push([sb().dataset.mode, q("tp-sl").textContent,
   getComputedStyle(sb().querySelector(".knob")).display]); await nap(60); } return out2; };
@@ -121131,6 +121134,36 @@ if(PART === "desk"){
     const s = await slide([[1, 0, 300], [async c => { LAST_OK = Date.now() - 5000; renderTimedPurge(); await nap(0); s_flip = await sample(600); }]]);
     s.during = s_flip;
     out.stale_cut = await fin(s, 1500); }
+  // Cold review of #297, second round. R1: a 1.5 s purge whose started
+  // answer was lost, the engine unreadable until it ended: never "not
+  // started": the engine's purge count moved, so a purge fired.
+  { TE.after = "lose"; TE.blindAfter = true; TE.runMs = 1500;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(100); }]]);
+    await nap(3400); TE.blind = false; await nap(1800);
+    out.ran_blind = await fin(s, 100); }
+  // R1: Stop purge tapped while the engine is being read: the read never
+  // speaks after it.
+  { TE.late = 2500; TE.readLate = 1200;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(60);
+      window.dispatchEvent(new Event("blur")); await nap(250); tap(q("tp-stop"), ++PID); }]]);
+    q("msg-t").textContent = "";
+    await nap(2600);
+    out.stop_during = await fin(s, 100);
+    await nap(2500); }
+  // R2: the started answer in, the engine's state read slowly: no handle,
+  // no new slide (it would be a second press, ending the purge).
+  { TE.readLate = 1000;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(40); s_flip = await sample(540); }]]);
+    s.during = s_flip;
+    { const k2 = sb().querySelector(".knob"), kr2 = sb().getBoundingClientRect(); pe(k2, "pointerdown", kr2.left + 20, kr2.top + 20, ++PID);
+      s.again_slide = !!SLIDE; for(let i = 0; i < 12; i++){ pe(k2, "pointermove", kr2.left + 20 + i * 25, kr2.top + 20, PID); await nap(10); }
+      await nap(200); pe(k2, "pointerup", kr2.left + 320, kr2.top + 20, PID); }
+    await nap(1600);
+    s.after = {mode:sb().dataset.mode, line:q("tp-sl").textContent};
+    out.started_slow = await fin(s, 100); }
+  // N1: an engine refusal's own words never reach the phone line.
+  { TE.refuse = "That hold has ended. Let go and hold again. Nothing was fired.";
+    out.refused = await fin(await slide([[1, 0, 300]]), 1200); }
   // After all of it, a slide still starts one.
   { const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(200); }]]); out.again = await fin(s); }
   }
@@ -121158,7 +121191,8 @@ def test_ui2_timed_purge_slide_on_a_phone():
           "the slide starts today's hold (tpStart) only at 90 percent, and "
           "sends nothing itself")
     for f in ("tpSlideCheck", "tpSlideEnd", "tpSlideHoldEnded", "tpSlideRead",
-              "tpSlideLook", "renderTpSlide", "tpSlideLine"):
+              "tpSlideLook", "renderTpSlide", "tpSlideLine", "tpWhyNot",
+              "tpStartedRead", "tpStopSeen"):
         src = _js_function(two, f) or ""
         check(src, f"{f} is there")
         check("tpStopPress" not in src and "purge-stop" not in src,
@@ -121191,7 +121225,7 @@ def test_ui2_timed_purge_slide_on_a_phone():
         r, bad = {}, False
         for part, need, ms in (("phone", "pre_cuts", 80000),
                                ("phone2", "cuts", 60000),
-                               ("phone3", "again", 90000)):
+                               ("phone3", "again", 120000)):
             x = _ui2_drive_framed(chrome, page, _ui2_status_day(),
                                   whole_js + _UI2_TP_SLIDE_STEPS.replace(
                                       "__PART__", part),
@@ -121231,8 +121265,8 @@ def test_ui2_timed_purge_slide_on_a_phone():
                   f["stops"] == 1 and not f["running"] and
                   not f["stopped_by_hold"] and not f["back_left"] and
                   "hold" not in f["hold_words"].lower() and
-                  ("It stops by itself." in f["line_held"] or
-                   f["line_held"].endswith("You can let go.")),
+                  f["line_held"] in ("Purge started. You can let go.",
+                                     "Running. Stop purge ends it."),
                   f"{where}: {k}: nothing sent under 90 percent; at the end "
                   f"today's beats until started; the slide's own release "
                   f"and click stop nothing; a new tap on Stop purge stops "
@@ -121314,9 +121348,7 @@ def test_ui2_timed_purge_slide_on_a_phone():
         check(checking(bl["during"]) and bl["stops"] == 0 and
               bl["read"]["mode"] == "run" and
               bl["read"]["msg"] == "Timed purge running." and
-              ("It stops by itself." in bl["read"]["line"] or
-               bl["read"]["line"] == "Timed purge running. Stop purge ends "
-                                     "it.") and
+              bl["read"]["line"] == "Running. Stop purge ends it." and
               bl["ended"]["mode"] != "run" and
               "running" not in bl["ended"]["line"].lower(),
               f"{where}: started, its answer late, the page blurred: while "
@@ -121330,6 +121362,43 @@ def test_ui2_timed_purge_slide_on_a_phone():
                   f"{where}: {k}: the hold ended before the start, the "
                   f"engine read slowly: checking, no handle, then said as "
                   f"the engine says: {x}")
+        rb = r["ran_blind"]
+        check(rb["msg"] == "A purge fired and ended." and
+              rb["line"] == "A purge fired and ended." and
+              rb["stops"] == 0 and not rb["running"],
+              f"{where}: a purge that fired and ended while the engine was "
+              f"unreadable: said fired, never not started: {rb}")
+        sd = r["stop_during"]
+        check(sd["stops"] == 1 and sd["msg"] == "" and
+              sd["line"] in ("", "Not known yet.") and
+              sd["mode"] != "unknown",
+              f"{where}: Stop purge during the engine read: the read never "
+              f"speaks after it: {sd}")
+        ss = r["started_slow"]
+        check(ss["during"] and all(m == "run" and kd == "none" and
+                                   ln == "Purge started. You can let go."
+                                   for m, ln, kd in ss["during"]) and
+              not ss["again_slide"] and ss["runs"] == 1 and
+              all(h is True for h in ss["holds"]) and ss["running"] and
+              not ss["stopped_by_hold"] and ss["stops"] == 0 and
+              ss["after"]["mode"] == "run",
+              f"{where}: started, the engine read slowly: running with no "
+              f"handle, a new slide never starts, the purge never ended by "
+              f"a second press: {ss}")
+        rf = r["refused"]
+        check(rf["msg"] == "Purge not started." and
+              rf["line"] == "Not started. Nothing was fired." and
+              not rf["running"],
+              f"{where}: an engine refusal: its words never on the phone "
+              f"line: {rf}")
+        lines = [v.get("line", "") for v in r.values()
+                 if isinstance(v, dict)] + \
+            [v.get("line", "") for k in ("pre_cuts", "cuts")
+             for v in r[k].values()]
+        check(all(len(ln.split()) <= 8 and ";" not in ln and
+                  "hold" not in ln.lower() for ln in lines),
+              f"{where}: the phone line only ever says this page's short "
+              f"words: {sorted(set(lines))}")
         g = r["again"]
         check(g["holds"] and all(h is True for h in g["holds"]) and
               g["running"] and g["stops"] == 0,

@@ -2559,7 +2559,9 @@ $("pins").addEventListener("click", async e => {
   const k = b.dataset.pin;
   if(k === "tp"){
     // 1.0's Stop purge: from every screen, never refused for a timed
-    // purge (review of #172).
+    // purge (review of #172). The purge slide's pending read never speaks
+    // after it.
+    if(typeof tpStopSeen === "function") tpStopSeen();
     try{ const j = await post("/api/remote/purge-stop", actor({})); say("Purge stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Purge NOT stopped.", e2.message + " Disarm flames ends it from any screen.", "bad"); }
   } else if(k === "hzt"){
@@ -3116,6 +3118,7 @@ $("tn-run").addEventListener("click", () => runShowHere());
 // same answer read the same way. No confirm: the double tap is its guard.
 async function pressStop(route){
   if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
+  if(typeof tpStopSeen === "function") tpStopSeen();
   HALT_SEQ++;
   // Any Stop ends every armed first tap (Stop show, the strip's, the Run
   // card's): none of them says "not sent" after it.
@@ -5204,11 +5207,16 @@ window.addEventListener("orientationchange", () => slideCancel("the screen turne
 // never sends a new hold or a Stop purge. The slide's own release and
 // click land on nothing (TP_QUIET); any new touch is a new press.
 const TP_QUIET_MS = 2000, TP_QUIET_CLICK_MS = 400, TP_READ_HOLD_MS = 1500, TP_STOP_WHY = ["Stop purge was pressed", "Stop show was pressed"];
-let TP_QUIET = null, TP_DOUBT = false, TP_READING = 0, TP_CHECK = false;
-const TP_RUN_WORDS = "Timed purge running. Stop purge ends it.";
-// The slide's own hold ended by 1.0's code (its blur, hidden, a stale
-// status cut) and the slide has not read the engine yet: nothing known.
-function tpSlideOrphan(){ const s = SLIDE; return !!s && s.i === "tp" && s.phase === "end" && TP_RUN !== s.run && !tpStarted(s); }
+let TP_QUIET = null, TP_DOUBT = false, TP_READING = 0, TP_CHECK = false, TP_STARTED = 0, TP_LINE = null;
+// The phone's line says only these short words (tpLine), never 1.0's or
+// the engine's own text.
+function tpLine(text){ TP_LINE = {text:text, at:Date.now()}; }
+// The engine's count of purges fired (purge_state.fires), or null.
+function tpFires(mo){ const n = mo && mo.purge_state && mo.purge_state.fires; return Number.isInteger(n) ? n : null; }
+// The slide's own hold ended by 1.0's code (started, its blur, hidden, a
+// stale status cut) and the slide's tick has not taken it yet.
+function tpSlideGone(){ const s = SLIDE; return !!s && s.i === "tp" && s.phase === "end" && TP_RUN !== s.run ? s : null; }
+function tpSlideOrphan(){ const s = tpSlideGone(); return !!s && !tpStarted(s); }
 // What the slide shows: the handle only while a start may be slid.
 function tpSlideLook(){
   const st = tpNow();
@@ -5216,6 +5224,9 @@ function tpSlideLook(){
   // A read pending: no handle and nothing said until the engine answers.
   if(TP_CHECK || tpSlideOrphan()) return {mode:"unknown", word:"Checking"};
   if(st.running) return {mode:"run", word:st.word};
+  // The engine said started and no read since shows it: never the handle
+  // (a new hold now would be a second press, which ends it).
+  if(TP_STARTED || (tpSlideGone() && !tpSlideOrphan())) return {mode:"run", word:"Purge started", started:true};
   if(TP_HOLD) return {mode:"starting", word:"Starting. Keep your finger there."};
   if(st.ok) return {mode:"go", word:st.word.replace(/^Hold to purge /, "Purge ")};
   return {mode:"na", word:"Timed purge"};
@@ -5229,16 +5240,31 @@ function renderTpSlide(){
   if(b.title !== lk.word) b.title = lk.word;
   setText(l, tpSlideLine(lk));
 }
-// The phone's line: 1.0's line (#tp-st), never while the engine is being
-// read, never 1.0's words with Hold in them, never "running" once the
-// purge has ended.
+// The phone's line: only this page's own short words, never 1.0's line
+// (#tp-st) or the engine's text; "running" only while it runs.
 function tpSlideLine(lk){
   if(TP_DOUBT) return "Not known. Check the tile.";
   if(lk.mode === "unknown") return "Checking with the engine.";
-  if(TP_HOLD) return "Keep your finger at the end.";
-  const t = $("tp-st").textContent;
-  if(t === TP_RUN_WORDS && lk.mode !== "run"){ if(TP_MSG && TP_MSG.text === TP_RUN_WORDS) TP_MSG = null; return ""; }
-  return /\bHold\b/.test(t) ? "" : t;
+  if(lk.mode === "starting") return "Keep your finger at the end.";
+  if(lk.started) return "Purge started. You can let go.";
+  if(lk.mode === "run") return "Running. Stop purge ends it.";
+  if(TP_LINE && Date.now() - TP_LINE.at < TP_SAY_MS) return TP_LINE.text;
+  return lk.mode === "na" ? tpWhyNot() : "";
+}
+// Why no slide now, in this page's own words (timedPurgeLook's order).
+function tpWhyNot(){
+  const mo = MO, ts = (mo && mo.timed_settings) || {}, t = (mo && mo.timed) || {}, secs = TP_SECS;
+  if(!mo) return "Not known yet.";
+  if(ts.error) return "No timed purge on this show PC.";
+  if(isStale(Date.now(), LAST_OK, 1.0)) return "Status not live. Wait.";
+  if(ST && ST.me && ST.me.view_only) return "Signed out. Sign in to purge.";
+  if(!mo.purge_enabled) return "Purge arming is off here.";
+  if(mo.live_refusal) return "Purge not allowed now.";
+  if(!timedPurgeNames(mo).length) return "Tap a machine or group first.";
+  if(!(Number.isInteger(secs) && secs >= (Number(ts.min_s) || 1) && secs <= (Number(ts.max_s) || 30))) return "Choose the seconds.";
+  if(t.holding && !t.mine) return "Another screen is starting one.";
+  if((mo.purge_state || {}).firing) return "A purge is firing.";
+  return "";
 }
 // The event that ended the slide (a second finger's pointerdown) is not
 // a new press after it.
@@ -5265,8 +5291,11 @@ function tpSlideCheck(s){
   if(s.el.dataset.mode !== "go"){ slideCancel("the purge changed"); return; }
   if(s.frac < SLIDE_ARM) return;
   const st = tpNow();
-  if(st.running || !st.ok || TP_HOLD || TP_DOUBT || TP_CHECK){ slideCancel("the purge changed"); return; }
+  if(st.running || !st.ok || TP_HOLD || TP_DOUBT || TP_CHECK || TP_STARTED){ slideCancel("the purge changed"); return; }
   s.at = Date.now();
+  // The engine's purge count before this hold: what proves later that
+  // nothing fired.
+  s.fires0 = tpFires(MO);
   tpStart();
   if(!TP_HOLD || TP_RUN === null){ slideCancel(""); return; }   // refused at once: tpStart said why
   s.phase = "end"; s.run = TP_RUN;
@@ -5280,8 +5309,28 @@ function tpSlideHoldEnded(s){
   s.phase = "done";
   slideEnd(s);
   tpQuiet(s);
+  if(started) tpStartedRead(); else tpSlideRead("", s.fires0);
   renderTpSlide();
-  if(!started) tpSlideRead("");
+}
+// The engine said started: running (no handle) until a read made after
+// that answer shows the engine's state; read again until it answers.
+async function tpStartedRead(){
+  const me = ++TP_READING;
+  TP_STARTED = Date.now();
+  renderTpSlide();
+  for(;;){
+    let mo = null;
+    try{ mo = await getJSON("/api/remote/morning", 1500); }catch(_e){}
+    if(me !== TP_READING) return;
+    if(mo && mo.timed){ TP_STARTED = 0; MO = mo; try{ renderMorning(); }catch(_e){} renderTpSlide(); return; }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+// A Stop purge or a Stop show: its own answer. Any read still pending
+// never speaks after it.
+function tpStopSeen(){
+  TP_READING++; TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;
+  renderTpSlide();
 }
 function tpSlideEnd(s, why){
   const held = s.phase === "end", done = s.phase === "done";
@@ -5300,19 +5349,21 @@ function tpSlideEnd(s, why){
   // From here until the engine answers: checking, no handle.
   if(read) TP_CHECK = true;
   if(TP_RUN !== null && TP_RUN === s.run) tpLetGo("");
-  renderTpSlide();
   // A Stop is its own answer.
-  if(!read) return;
-  tpSlideRead(why);
+  if(started) tpStartedRead();
+  else if(read) tpSlideRead(why, s.fires0);
+  renderTpSlide();
 }
 // After the slide's hold ended without a started answer: the engine's
 // state read (the let go's own beat first: a hold still shown is waited
-// for), never said as not started without it. Unreadable: not known, the
+// for), never said as not started without it: only when the engine's
+// purge count is the one before the hold. A count that moved: a purge
+// fired (and ended). No count: not known. Unreadable: not known, the
 // handle gone, read again until it answers.
-async function tpSlideRead(why){
+async function tpSlideRead(why, fires0){
   const me = ++TP_READING, t0 = Date.now();
   let told = false;
-  TP_CHECK = true;
+  TP_CHECK = true; TP_STARTED = 0;
   renderTpSlide();
   for(;;){
     let mo = null;
@@ -5323,14 +5374,19 @@ async function tpSlideRead(why){
       TP_DOUBT = false; TP_CHECK = false;
       MO = mo;
       try{ renderMorning(); }catch(_e){}
+      const n = tpFires(mo), said = TP_MSG && Date.now() - TP_MSG.at < 3000 ? TP_MSG.text + " " : "";
       if(t.running){
         say("Timed purge running.", "The engine says a timed purge is running: " + (t.machines || []).join(", ") + ". Stop purge ends it.", "ok");
-        tpSay(TP_RUN_WORDS);
-      } else {
+      } else if(fires0 !== null && fires0 !== undefined && n === fires0){
         const why2 = why === "let go" ? "You let go before the engine started it. " : why ? "Purge slide stopped: " + why + ". " : "";
-        say("Purge not started.", why2 + "The engine says no timed purge is running. Nothing was fired.", "");
-        // 1.0's own words (an engine refusal) stay, unless they say Hold.
-        if(!(TP_MSG && Date.now() - TP_MSG.at < 3000 && !/^Not known/.test(TP_MSG.text) && !/\bHold\b/.test(TP_MSG.text))) tpSay("Not started. Nothing was fired.");
+        say("Purge not started.", why2 + said + "The engine says no timed purge is running and none fired. Nothing was fired.", "");
+        tpLine("Not started. Nothing was fired.");
+      } else if(fires0 !== null && fires0 !== undefined && n !== null && n > fires0){
+        say("A purge fired and ended.", "The engine counted a purge since this slide began, and none runs now. " + (t.last || "") + " Check the tile.", "bad");
+        tpLine("A purge fired and ended.");
+      } else {
+        say("Not known. Check the tile.", "Not running now, but the engine's purge count cannot say whether this slide's purge fired. Check the tile.", "bad");
+        tpLine("Not known. Check the tile.");
       }
       renderTpSlide();
       return;
@@ -5339,7 +5395,6 @@ async function tpSlideRead(why){
     if(!told){
       told = true; TP_DOUBT = true;
       say("Not known. Check the tile.", "Timed purge not known: the engine could not be read. Check the timed purge before you slide again. Stop purge ends one.", "bad");
-      tpSay("Not known. Check the tile.");
       renderTpSlide();
     }
     await new Promise(r => setTimeout(r, 500));
@@ -5359,7 +5414,7 @@ async function tpSlideRead(why){
   ob.observe($("tp-st"), {childList:true, characterData:true, subtree:true});
   ob.observe($("tp-hold"), {childList:true, characterData:true, subtree:true, attributes:true});
   ob.observe($("tp"), {attributes:true, attributeFilter:["hidden"]});
-  $("tp-stop").addEventListener("click", () => slideCancel("Stop purge was pressed"));
+  $("tp-stop").addEventListener("click", () => { slideCancel("Stop purge was pressed"); tpStopSeen(); });
 }
 // The slide's own release and click (its pointer, no touch since, for a
 // bounded time) land on nothing: not Stop purge, not a preset, not the
