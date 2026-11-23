@@ -120499,7 +120499,7 @@ _UI2_LZ_SLIDE_STEPS = r"""
 const q = id => document.getElementById(id);
 const nap = ms => new Promise(r => setTimeout(r, ms));
 const msg = () => q("msg-t") ? q("msg-t").textContent : "";
-const LZE = {on:false, lose:false, blind:false, late:0, noarm:false};
+const LZE = {on:false, lose:false, blind:false, late:0, noarm:false, fail:0};
 const LP = [];
 const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
 const hf = window.fetch;
@@ -120512,6 +120512,8 @@ window.fetch = async (url, opt) => {
     if(LZE.lose === "blind") LZE.blind = true;
     if(LZE.late) await nap(LZE.late);
     if(LZE.lose) throw new TypeError("Failed to fetch");
+    // An answer that is not clear: a 5xx, or a 409 with no code.
+    if(LZE.fail) return new Response(JSON.stringify({error:"Bad gateway."}), {status:LZE.fail, headers:{"Content-Type":"application/json"}});
     return new Response(JSON.stringify({ok:true, text:b.on ? "Lasers ARMED." : "Lasers disarmed."}), {status:200, headers:{"Content-Type":"application/json"}});
   }
   if(/\/api\/remote\/status/.test(u) && LZE.blind) throw new TypeError("Failed to fetch");
@@ -120529,7 +120531,7 @@ const sheetBtn = label => [...q("sh-row").querySelectorAll("button")].find(b => 
 const tap = (el, id) => { const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
   pe(el, "pointerdown", x, y, id); pe(el, "pointerup", x, y, id);
   el.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:id, pointerType:"touch", isPrimary:true, clientX:x, clientY:y, detail:1})); };
-const settle = async () => { if(SHEET_DONE) SHEET_DONE(null); LZE.on = false; LZE.lose = false; LZE.blind = false; LZE.late = 0; LZE.noarm = false;
+const settle = async () => { if(SHEET_DONE) SHEET_DONE(null); LZE.on = false; LZE.lose = false; LZE.blind = false; LZE.late = 0; LZE.noarm = false; LZE.fail = 0;
   LZ_DOUBT = null; await nap(900); };
 // One slide of the lasers' handle: each [fraction of the travel, dy, wait]
 // walked to in 16 px steps (or a function, run with the finger down),
@@ -120670,6 +120672,20 @@ if(PART === "desk"){
     LZE.blind = false; LZE.lose = false; await nap(1500);
     s.after = {mode:lzb().dataset.mode, word:q("lz-w").textContent, msg:msg()};
     out.lost_blind = await fin(s, 100); }
+  // An answer that is not clear (500, 502, 504, a 409 with no code): read
+  // like a lost one, said as the engine says.
+  for(const [k, code, noarm] of [["s502", 502, false], ["s504", 504, false], ["s500_off", 500, true], ["s409", 409, false]]){
+    LZE.fail = code; LZE.noarm = noarm; const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID);
+    out[k] = await fin(s, 900); }
+  // Armed elsewhere under the finger, the finger lifted, then a Disarm
+  // tap 150 ms later, a new finger or one with the slide's own pointerId:
+  // it disarms (never held back).
+  for(const k of ["disarm_new", "disarm_reused"]){
+    const s = await slide([[0.95, 0, 0], [async c => { LZE.on = true;
+      for(let i = 0; i < 300 && lzb().dataset.mode !== "disarm"; i++) await nap(10); await nap(60); }]], async c => {
+      pe(c.kn, "pointerup", c.x, c.y, c.id); await nap(150); c.mode = lzb().dataset.mode; c.age = LZ_QUIET ? Date.now() - LZ_QUIET.at : -1; tap(lzb(), k === "disarm_new" ? ++PID : c.id); });
+    s.mode_at_tap = s.c.mode; s.age_at_tap = s.c.age;
+    out[k] = await fin(s); }
   // After all of it, a slide still arms.
   { const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID); out.again = await fin(s, 900); }
 }
@@ -120814,6 +120830,24 @@ def test_ui2_laser_slide_on_a_phone():
                               "msg": "Lasers armed."},
               f"{where}: the answer lost, the status unreadable: not known, "
               f"the tile never idle; read again, the engine's answer: {lb}")
+        for k, said in (("s502", "Lasers armed."), ("s504", "Lasers armed."),
+                        ("s500_off", "Lasers not armed."),
+                        ("s409", "Lasers armed.")):
+            x = r[k]
+            check(opened(x) and x["posts"] == [arm_body] and
+                  x["msg"] == said and
+                  (k != "s500_off" or
+                   "the engine says no laser is armed" in x["full"]),
+                  f"{where}: {k}: an answer that is not clear is read, "
+                  f"said as the engine says: {x}")
+        for k in ("disarm_new", "disarm_reused"):
+            x = r[k]
+            check(x["mode_at_tap"] == "disarm" and
+                  0 <= x["age_at_tap"] < 400 and
+                  {"all": True, "on": False} in x["posts"] and
+                  x["msg"] == "Lasers disarmed.",
+                  f"{where}: {k}: a Disarm tap after the slide is never "
+                  f"held back: {x}")
         g = r["again"]
         check(opened(g) and g["posts"] == [arm_body],
               f"{where}: after all of it a slide still arms: {g}")

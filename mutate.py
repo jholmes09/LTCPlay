@@ -3613,13 +3613,30 @@ MUTATIONS = [
 
  ('ui 2.0 laser slide: a lost answer is said not armed without reading the engine',
   'ltcplay/web/remote2.html',
-  "    if(extra.on && LZ_SLID && !e.status) return lzLost(e);\n",
+  "    if(extra.on && LZ_SLID && lzUnclear(e)) return lzLost(e);\n",
   ""),
 
  ('ui 2.0 laser slide: a lost answer the engine cannot be read for leaves the tile idle',
   'ltcplay/web/remote2.html',
   "  if(isSt || !la || la.error || lzDoubt()){",
   "  if(isSt || !la || la.error){"),
+
+ # Cold review of #296: an unclear answer (a 5xx, a 409 with no code) is
+ # read as #293 reads it; a Disarm tap after a slide is never held back.
+ ('ui 2.0 laser slide: a 5xx or a 409 with no code is said not armed without reading the engine',
+  'ltcplay/web/remote2.html',
+  "function lzUnclear(e){ return !e.status || e.status >= 500 || (e.status === 409 && !e.code); }",
+  "function lzUnclear(e){ return !e.status; }"),
+
+ ("ui 2.0 laser slide: a Disarm tap with a new finger just after a slide is held back",
+  'ltcplay/web/remote2.html',
+  "  if(tile && tile.dataset.mode !== \"arm\"){\n",
+  "  if(false){\n"),
+
+ ("ui 2.0 laser slide: a Disarm tap that reuses the slide's pointerId is held back",
+  'ltcplay/web/remote2.html',
+  "    if(!qz.fresh && e.pointerId === qz.id && age < LZ_QUIET_ID_MS){",
+  "    if(e.pointerId === qz.id && age < LZ_QUIET_ID_MS){"),
 
 
 

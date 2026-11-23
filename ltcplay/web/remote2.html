@@ -5108,6 +5108,7 @@ function lzTap(e){
 // The answer to a slide's arm lost: the engine's state read, never "not
 // armed" without it. Unreadable: not known, and the tile says so until a
 // status read after this one.
+function lzUnclear(e){ return !e.status || e.status >= 500 || (e.status === 409 && !e.code); }
 function lzDoubt(){ return !!LZ_DOUBT && !(ST && LZ_DOUBT.after !== null && ST.served_at >= LZ_DOUBT.after); }
 async function lzLost(e){
   LZ_DOUBT = {after:null};
@@ -5121,20 +5122,29 @@ async function lzLost(e){
       const on = ls.filter(x => x.armed).length;
       if(on === ls.length) say("Lasers armed.", "The answer was lost; the engine says every laser is armed.", "ok");
       else if(on) say("Lasers: " + on + " of " + ls.length + " armed.", "The answer was lost; the engine says " + on + " of " + ls.length + " lasers are armed.", "bad");
-      else say("Lasers not armed.", "The answer was lost; the engine says no laser is armed.", "bad");
+      else say("Lasers not armed.", (e && e.status ? "The engine answered: " + e.message + " " : "The answer was lost; ") + "the engine says no laser is armed.", "bad");
       return null;
     }
-    if(n === 0) say("Not known. Check the tile.", "Lasers not known: the answer was lost and the engine's state could not be read. Check the Lasers tile.", "bad");
+    if(n === 0) say("Not known. Check the tile.", "Lasers not known: the answer was lost or unclear and the engine's state could not be read. Check the Lasers tile.", "bad");
     await new Promise(r => setTimeout(r, 500));
   }
   return null;
 }
 // The lasers' handle: only on a phone, only while the tile says Arm.
 window.addEventListener("pointerup", e => { const s = SLIDE; if(s && s.i === "lz" && e.pointerId === s.id) s.up = true; }, true);
+// Any touch after the slide ended is a new press: a Disarm with it is
+// never held back.
+window.addEventListener("pointerdown", () => { if(LZ_QUIET && !SLIDE) LZ_QUIET.fresh = true; }, true);
 ["pointerup", "click"].forEach(t => window.addEventListener(t, e => {
   const qz = LZ_QUIET;
   if(SLIDE || !qz || !e.target || !e.target.closest || !e.target.closest("#sheet, #lz-b")) return;
-  const age = Date.now() - qz.at;
+  const age = Date.now() - qz.at, tile = e.target.closest("#lz-b");
+  // The tile says Disarm: only the slide's own release is ignored (its
+  // pointer, no touch since). Any new press disarms.
+  if(tile && tile.dataset.mode !== "arm"){
+    if(!qz.fresh && e.pointerId === qz.id && age < LZ_QUIET_ID_MS){ e.preventDefault(); e.stopImmediatePropagation(); }
+    return;
+  }
   if(age < LZ_QUIET_MS || (e.pointerId === qz.id && age < LZ_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }
 }, true));
 ["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => { if(SLIDE && e.pointerId === SLIDE.id) slideCancel("let go"); }, true));
@@ -5781,9 +5791,10 @@ async function lzPress(extra){
     LZ_DOUBT = null;
     return j;
   }catch(e){
-    // A slide's arm whose answer was lost (no answer at all, not a
-    // refusal): read the engine, never say not armed without it.
-    if(extra.on && LZ_SLID && !e.status) return lzLost(e);
+    // A slide's arm whose answer was lost or unclear (no answer, a 5xx,
+    // a 409 with no code: as #293's armRefused reads them): read the
+    // engine, never say not armed without it.
+    if(extra.on && LZ_SLID && lzUnclear(e)) return lzLost(e);
     say(extra.on ? "Lasers not armed." : "Lasers NOT disarmed.", e.message, "bad");
     if(!extra.on) disarmFailed("Lasers NOT disarmed.", e.message);
     return null;
