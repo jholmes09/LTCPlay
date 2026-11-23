@@ -3742,6 +3742,25 @@ MUTATIONS = [
   "  if(e.pointerId === qz.id){\n    e.preventDefault(); e.stopImmediatePropagation();\n",
   "  if(e.pointerId === qz.id || (t === \"click\" && !(e.pointerId > 0) && e.detail > 0 && age < 400)){\n    e.preventDefault(); e.stopImmediatePropagation();\n"),
 
+ # Cold review of #299, for the purge: the read that brings the handle
+ # back after a Stop waits for the Stop's answer; the pinned Stop purge
+ # drawn above the slide never ends it; the pinned Stop purge ends a held
+ # slide.
+ ("ui 2.0 purge slide: the read after a Stop is sent before the Stop's answer",
+  'ltcplay/web/remote2.html',
+  "    while((TP_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < TP_STOP_WAIT_MS){\n",
+  "    while(false){\n"),
+
+ ("ui 2.0 purge slide: the pinned Stop purge drawn above the slide moves it out of its band and ends it",
+  'ltcplay/web/remote2.html',
+  "  const r = s.b0;\n  // The band is where the slide was when the finger went down (slideDown):\n  // the pinned Stop purge,",
+  "  const r = s.el.getBoundingClientRect();\n  // The band is where the slide was when the finger went down (slideDown):\n  // the pinned Stop purge,"),
+
+ ("ui 2.0 purge slide: the pinned Stop purge leaves a held slide beating",
+  'ltcplay/web/remote2.html',
+  "    if(typeof slideCancel === \"function\") slideCancel(\"Stop purge was pressed\");\n    if(typeof tpStopSeen === \"function\") tpStopSeen();\n",
+  "    if(typeof tpStopSeen === \"function\") tpStopSeen();\n"),
+
  # Step 7b of the phone build: on a touch phone the wave flamer cleaning
  # starts with a slide in front of today's two holds. Nothing is sent
  # before 90 percent; every end after it is read against the engine

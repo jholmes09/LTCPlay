@@ -120884,6 +120884,12 @@ const msg = () => q("msg-t") ? q("msg-t").textContent : "";
 let s_pre = null, s_hold_words = "", s_line = "", s_flip = null;
 const TE = {hold:null, running:null, dead:new Set(), after:"", late:0, blind:false, blindAfter:false, failAll:0, readLate:0, runMs:0, refuse:"", fires:0, firing:false, stopFail:false, posts:[]};
 const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
+// Every screen's status carries the engine's timed purge countdown while
+// one runs, as morning.py's status does (the pinned Stop purge comes from
+// it): {left_s, seconds, elapsed_s, machines, device, who}, else null.
+window.__patch = st => { const t = view();
+  st.morning = Object.assign({}, st.morning, {timed:t.running ? {left_s:t.left_s, seconds:t.seconds, elapsed_s:0, machines:t.machines, device:t.device, who:""} : null});
+  return st; };
 const view = () => {
   const now = Date.now();
   if(TE.hold && now - TE.hold.beat > 350){ TE.dead.add(TE.hold.run); TE.hold = null; }
@@ -120924,7 +120930,13 @@ window.fetch = async (url, opt) => {
       text:"Timed purge started: front row 1 for " + b.seconds + " s. It stops by itself; Stop purge ends it now."}));
   }
   if(post && /\/api\/remote\/purge-stop$/.test(u) && TE.stopFail){ TE.posts.push({route:"purge-stop"}); return J(500, {error:"Engine error."}); }
-  if(post && /\/api\/remote\/purge-stop$/.test(u)){ TE.posts.push({route:"purge-stop"}); TE.running = null; return J(200, {ok:true, text:"Purge stopped."}); }
+  // The engine stops it at once; its answer can come back late (stopLate).
+  if(post && /\/api\/remote\/purge-stop$/.test(u)){ TE.posts.push({route:"purge-stop"}); TE.running = null; if(TE.stopLate) await nap(TE.stopLate);
+    return J(200, {ok:true, text:"Purge stopped."}); }
+  // Stop show (only while a case asks for it): the engine's complete halt
+  // ends the purge at once; its answer late.
+  if(post && /\/api\/remote\/stop$/.test(u) && TE.stopShowLate){ TE.posts.push({route:"stop"}); TE.running = null; await nap(TE.stopShowLate);
+    return J(200, {ok:true, failed:[], text:"Stopped."}); }
   if(!post && /\/api\/remote\/morning$/.test(u)){
     if(TE.holdOne && !TE.running){
       // One answer made now, before the start, delivered 1.4 s late (a
@@ -120950,7 +120962,7 @@ const tap = (el, id) => { const r = el.getBoundingClientRect(), x = r.left + r.w
 const sb = () => q("tp-slide");
 const stops = p => p.filter(x => x.route === "purge-stop").length;
 const settle = async () => { TE.hold = null; TE.running = null; TE.after = ""; TE.late = 0; TE.blind = false; TE.blindAfter = false; TE.failAll = 0;
-  TE.stopped_by_hold = false; TE.readLate = 0; TE.runMs = 0; TE.refuse = ""; TE.firing = false; TE.stopFail = false; TP_READING++; TP_STOPPING = 0; TP_DOUBT = false; TP_CHECK = false;
+  TE.stopped_by_hold = false; TE.readLate = 0; TE.runMs = 0; TE.refuse = ""; TE.firing = false; TE.stopFail = false; TE.stopLate = 0; TE.stopShowLate = 0; TP_READING++; TP_STOPPING = 0; TP_DOUBT = false; TP_CHECK = false;
   TP_STARTED = 0; TP_LINE = null; TP_MSG = null; await nap(1300); };
 // The slide and its line every 60 ms while the engine is being read.
 const sample = async ms => { const out2 = []; for(let t = 0; t < ms; t += 60){ out2.push([sb().dataset.mode, q("tp-sl").textContent,
@@ -120976,7 +120988,7 @@ async function slide(moves, end){
     }
   };
   for(const [f, dy, wait] of moves){
-    if(typeof f === "function"){ await f({el:el, kn:kn, x:x, y:y, id:id, walk:walk, x0:x0, travel:travel, p0:p0}); continue; }
+    if(typeof f === "function"){ await f({el:el, kn:kn, x:x, y:y, id:id, walk:walk, x0:x0, travel:travel, p0:p0, top0:r.top}); continue; }
     await walk(x0 + f * travel, y0 + (dy || 0));
     if(wait) await nap(wait);
   }
@@ -120986,6 +120998,8 @@ async function slide(moves, end){
   res.knob = kn.style.transform;
   return res;
 }
+// The pinned Stop purge (every screen's status says a timed purge runs).
+const pin = () => document.querySelector('#pins [data-pin="tp"]');
 // The slide's own release and click on everything under it.
 const own = c => { for(const el of [q("tp-stop"), sb(), q("tp-hold"), document.querySelector("#tp-presets [data-s]")]){
   if(!el) continue; const r = el.getBoundingClientRect(); pe(el, "pointerup", r.left + 5, r.top + 5, c.id); clk(el, c.id); } };
@@ -121082,6 +121096,29 @@ if(PART === "desk"){
   } else if(PART === "phone2"){
   // Every cancel at the end, before the engine's start.
   await runCuts("cuts", 0.97, 350);
+  } else if(PART === "phone4"){
+  // Cold review of #299, for the purge. A: the step's Stop purge, the
+  // engine stops it at once and its answer comes 1.5 s late: no handle
+  // until a read sent once that answer is in (a new slide before it would
+  // be a second press at the engine).
+  for(const [k, how] of [["stop_late_answer", "step"], ["stop_show_late", "show"]]){
+    TE.running = {run:"rack-1", until:Date.now() + 20000, secs:20};
+    await waitFor(() => sb().dataset.mode === "run", 4000); await nap(200);
+    const p0 = TE.posts.length;
+    if(how === "step"){ TE.stopLate = 1500; tap(q("tp-stop"), ++PID); }
+    else { TE.stopShowLate = 1500; pressStop("stop"); }
+    const d = await sample(1400); await nap(1600);
+    out[k] = await fin({p0:p0, during:d}, 100); }
+  // The pinned Stop purge pressed with a key (a click with no touch) while
+  // the slide still holds (the engine started it, its answer late): the
+  // slide ends, no beat after it, the Stop sent.
+  { TE.late = 2500;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!pin() && !!TE.running, 3500); const n0 = TE.posts.length;
+      pin().dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:0})); const gone = !SLIDE; await nap(500);
+      s_flip = {pin:true, slide:!gone, beats:TE.posts.slice(n0).filter(x => x.route === "purge-timed" && x.hold === true).length}; }]]);
+    s.after = s_flip;
+    out.pin_key = await fin(s, 1500);
+    await nap(2500); }
   } else {
   // The engine started it and its answer was lost, a 502, a 409 with no
   // code: read, said running; nothing let go of or stopped; the lift
@@ -121111,8 +121148,9 @@ if(PART === "desk"){
   // go only (which changes nothing after a start), never a new hold or a
   // Stop purge; read, said running.
   { TE.late = 2500;
-    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => sb().dataset.mode === "run", 3500); await nap(150);
-      s_flip = {mode:sb().dataset.mode, slide:!!SLIDE, posts:TE.posts.length - c.p0}; }]],
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => sb().dataset.mode === "run" && !!pin(), 3500); await nap(150);
+      s_flip = {mode:sb().dataset.mode, slide:!!SLIDE, posts:TE.posts.length - c.p0, pin:!!pin(),
+        moved:Math.round(sb().getBoundingClientRect().top - c.top0)}; }]],
       async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); });
     s.held = s_flip;
     out.flip = await fin(s, 1500);
@@ -121275,7 +121313,8 @@ def test_ui2_timed_purge_slide_on_a_phone():
         r, bad = {}, False
         for part, need, ms in (("phone", "pre_cuts", 80000),
                                ("phone2", "cuts", 60000),
-                               ("phone3", "again", 170000)):
+                               ("phone3", "again", 170000),
+                               ("phone4", "pin_key", 60000)):
             x = _ui2_drive_framed(chrome, page, _ui2_status_day(),
                                   whole_js + _UI2_TP_SLIDE_STEPS.replace(
                                       "__PART__", part),
@@ -121383,6 +121422,9 @@ def test_ui2_timed_purge_slide_on_a_phone():
               f"{where}: lost and unreadable: not known, no handle, a slide "
               f"does nothing; read again, the engine's answer: {b}")
         fl = r["flip"]
+        check(fl["held"]["pin"] and fl["held"]["moved"] > 24,
+              f"{where}: the pinned Stop purge drawn above the slide during "
+              f"the hold moves it more than its band: {fl['held']}")
         check(fl["held"]["mode"] == "run" and fl["held"]["slide"] and
               fl["stops"] == 0 and fl["runs"] == 1 and fl["running"] and
               not fl["stopped_by_hold"] and
@@ -121467,6 +121509,21 @@ def test_ui2_timed_purge_slide_on_a_phone():
             check(x["stops"] == 1 and not x["running"],
                   f"{where}: {k}: a second finger's Stop purge with a plain "
                   f"click (no pointerId) is never held back: {x}")
+        for k in ("stop_late_answer", "stop_show_late"):
+            x = r[k]
+            check(nogo(x["during"]) and x["stops"] + x["posts"].count(
+                  {"route": "stop"}) == 1 and
+                  x["during"][0][1] == "Stopping. Checking with the engine."
+                  and not x["running"] and x["mode"] == "go",
+                  f"{where}: {k}: the engine stopped it, the Stop's answer "
+                  f"1.5 s late: no handle until a read sent after that "
+                  f"answer: {x}")
+        x = r["pin_key"]
+        check(x["after"]["pin"] and not x["after"]["slide"] and
+              x["after"]["beats"] <= 1 and x["stops"] == 1 and
+              not x["running"] and not x["stopped_by_hold"],
+              f"{where}: the pinned Stop purge pressed with a key while the "
+              f"slide holds: the slide ends, no beat after it: {x}")
         rf = r["refused"]
         check(rf["msg"] == "Purge not started." and
               rf["line"] == "Not started. Nothing was fired." and
