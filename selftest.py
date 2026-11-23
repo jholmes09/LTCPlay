@@ -121504,6 +121504,746 @@ def test_ui2_timed_purge_slide_on_a_phone():
     print("  ok")
 
 
+# The cleaning's slide on a touch phone (step 7 of the phone build),
+# against a stand-in for cleaning.py's beat: 1.0 s of beats with no gap
+# over 0.25 s (0.35 s here) completes a hold (idle to phase 1, paused to
+# phase 2), a release before that starts nothing (idle, its last cut
+# "...; nothing started") or leaves it paused, a release after changes
+# nothing, a new hold while one is held ends that hold and a new hold
+# while it runs is refused, and GET cleaning is its view. The answer to a
+# beat can be lost, a 502 or a 409 with no code after the engine acted,
+# or late; the read can be blind or slow; another screen can hold.
+_UI2_WC_SLIDE_STEPS = r"""
+const q = id => document.getElementById(id);
+const nap = ms => new Promise(r => setTimeout(r, ms));
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+let s_pre = null, s_words = "", s_line = "", s_flip = null, s_pin = false;
+const TE = {state:"idle", hold:null, done:null, dead:new Set(), last_cut:"", last_note:"", until:0, after:"", late:0, blind:false,
+  blindAfter:false, failAll:0, readLate:0, runMs:0, refuse:"", stopFail:false, otherOnRelease:false, holdOne:false, held:0, holdMs:1400,
+  second:0, ended_by_press:0, starts:0, posts:[], getFail:0, liveOnly:"", noLive:false, stopLate:0};
+const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
+// Every screen's status carries the engine's cleaning summary, as
+// remote.py's does (the pinned Stop cleaning comes from it).
+window.__patch = st => { if(TE.noLive) delete st.cleaning;
+  else st.cleaning = {available:true, state:TE.liveOnly || TE.state, text:""}; return st; };
+const endHold = why => {
+  const h = TE.hold; if(!h) return;
+  TE.dead.add(h.run); TE.hold = null;
+  if(TE.state === "starting"){ TE.state = "idle"; TE.last_cut = why + "; nothing started"; }
+  else if(TE.state === "acking"){ TE.state = "paused"; TE.last_note = "The go-ahead hold ended before it was complete (" + why + "). Still paused."; }
+};
+const tick = () => {
+  const now = Date.now();
+  if(TE.hold && TE.hold.who === "me" && now - TE.hold.beat > 350) endHold("no beat for 0.25 s");
+  if((TE.state === "phase1" || TE.state === "phase2") && TE.until && now >= TE.until){ TE.state = "idle"; TE.until = 0; TE.last_cut = "Jeff pressed Stop on the rack"; }
+};
+const view = () => { tick(); const h = TE.hold;
+  return {available:true, problem:"", state:TE.state, running:TE.state !== "idle", holder:h ? (h.who === "me" ? "phone" : "rack") : null,
+    mine:!!h && h.who === "me", run:h && h.who === "me" ? h.run : null, progress:null, last_cut:TE.last_cut, last_note:TE.last_note,
+    config_error:"", settings:{}, armed:"disarmed", armed_why:"", locked:[], locked_note:"", blocked:"", beat_stale_ms:250}; };
+const J = (code, o) => new Response(JSON.stringify(o), {status:code, headers:{"Content-Type":"application/json"}});
+const hf = window.fetch;
+window.fetch = async (url, opt) => {
+  const u = String(url), post = !!(opt && opt.method === "POST");
+  if(post && /\/api\/remote\/cleaning-beat$/.test(u)){
+    const b = JSON.parse(opt.body || "{}");
+    TE.posts.push({route:"beat", hold:b.hold, run:b.run, seq:b.seq});
+    tick();
+    if(b.hold !== true){
+      if(TE.hold && TE.hold.run === b.run) endHold("Andy let go before the hold was complete");
+      TE.dead.add(b.run);
+      if(TE.otherOnRelease){ TE.otherOnRelease = false; TE.state = "starting"; TE.hold = {run:"rack-1", who:"other", start:Date.now(), beat:Date.now() + 1e9}; }
+      return J(200, view());
+    }
+    if((TE.state === "phase1" || TE.state === "phase2") && !TE.hold){
+      if(TE.done === b.run){ if(TE.late) await nap(TE.late); return J(200, view()); }
+      TE.second++;
+      return J(409, {error:"The cleaning is already running on its own. Press Stop to end it.", cut:true, running:true});
+    }
+    if(TE.hold && TE.hold.who !== "me") return J(409, {error:"rack is holding the cleaning button. One screen at a time.", cut:true});
+    if(TE.dead.has(b.run)) return J(409, {error:"That hold has ended. Let go and hold the button again.", cut:true});
+    if(TE.failAll) return J(TE.failAll, {error:"Bad gateway."});
+    if(TE.refuse) return J(409, {error:TE.refuse, cut:true});
+    const now = Date.now();
+    if(!TE.hold){
+      if(TE.state !== "idle" && TE.state !== "paused") return J(409, {error:"Not now.", cut:true});
+      TE.state = TE.state === "idle" ? "starting" : "acking";
+      TE.hold = {run:b.run, who:"me", start:now, beat:now};
+    } else if(TE.hold.run !== b.run){ endHold("a new press from the same screen"); TE.ended_by_press++; return J(409, {error:"Let go and hold the button again.", cut:true}); }
+    else TE.hold.beat = now;
+    if(now - TE.hold.start < 1000) return J(200, view());
+    TE.dead.add(b.run); TE.done = b.run; TE.hold = null; TE.starts++;
+    TE.state = TE.state === "starting" ? "phase1" : "phase2";
+    TE.until = TE.runMs ? now + TE.runMs : 0;
+    if(TE.late) await nap(TE.late);
+    if(TE.after === "lose"){ if(TE.blindAfter) TE.blind = true; throw new TypeError("Failed to fetch"); }
+    if(TE.after === "502") return J(502, {error:"Bad gateway."});
+    if(TE.after === "409") return J(409, {error:"Conflict."});
+    return J(200, view());
+  }
+  if(post && /\/api\/remote\/cleaning-stop$/.test(u)){
+    TE.posts.push({route:"stop"});
+    if(TE.stopLate) await nap(TE.stopLate);
+    if(TE.stopFail) return J(500, {error:"Engine error."});
+    if(TE.hold && TE.hold.who === "me") TE.dead.add(TE.hold.run);
+    TE.hold = null; TE.until = 0;
+    if(TE.state !== "idle"){ TE.state = "idle"; TE.last_cut = "Andy pressed Stop on the phone"; }
+    return J(200, {ok:true, text:"The wave flamer cleaning is stopped."});
+  }
+  if(!post && /\/api\/remote\/cleaning$/.test(u)){
+    if(TE.holdOne && TE.state === "idle"){
+      // One answer made now, before the start (idle), delivered late.
+      TE.holdOne = false; TE.held++;
+      const j0 = view(); await nap(TE.holdMs); return J(200, j0);
+    }
+    if(TE.readLate) await nap(TE.readLate);
+    if(TE.blind) throw new TypeError("Failed to fetch");
+    if(TE.getFail) return J(TE.getFail, {error:"Service unavailable."});
+    return J(200, view());
+  }
+  return hf(url, opt);
+};
+let PID = 500;
+const pe = (el, type, x, y, id, prim, kind) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
+  pointerId:id, pointerType:kind || "touch", isPrimary:prim !== false, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+const clk = (el, id) => el.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:id, pointerType:"touch", isPrimary:true, detail:1}));
+const tap = (el, id) => { const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+  pe(el, "pointerdown", x, y, id); pe(el, "pointerup", x, y, id); clk(el, id); };
+const sb = () => q("wc-slide");
+const stops = p => p.filter(x => x.route === "stop").length;
+const running = () => TE.state === "phase1" || TE.state === "phase2";
+const settle = async () => { TE.hold = null; TE.state = "idle"; TE.until = 0; TE.after = ""; TE.late = 0; TE.blind = false; TE.blindAfter = false;
+  TE.failAll = 0; TE.readLate = 0; TE.runMs = 0; TE.refuse = ""; TE.stopFail = false; TE.otherOnRelease = false; TE.holdOne = false;
+  TE.second = 0; TE.ended_by_press = 0; TE.getFail = 0; TE.liveOnly = ""; TE.noLive = false; TE.stopLate = 0; WCS_READING++; WCS_STOPPING = 0; WCS_DOUBT = false; WCS_CHECK = false; WCS_STARTED = 0; WCS_LINE = null;
+  await nap(1300); };
+const sample = async ms => { const out2 = []; for(let t = 0; t < ms; t += 60){ out2.push([sb().dataset.mode, q("wc-sl").textContent,
+  getComputedStyle(sb().querySelector(".knob")).display]); await nap(60); } return out2; };
+const waitFor = async (f, ms) => { for(let i = 0; i < (ms || 3000) / 20 && !f(); i++) await nap(20); return !!f(); };
+async function slide(moves, end, keep){
+  const el = sb(); el.scrollIntoView({block:"center"}); await nap(120);
+  const kn = el.querySelector(".knob"), travel = el.clientWidth - kn.offsetWidth - 2 * kn.offsetLeft, r = el.getBoundingClientRect();
+  const id = ++PID;
+  const x0 = r.left + el.clientLeft + kn.offsetLeft + kn.offsetWidth / 2, y0 = r.top + el.clientTop + kn.offsetTop + kn.offsetHeight / 2;
+  let x = x0, y = y0;
+  const p0 = TE.posts.length;
+  if(!keep) q("msg-t").textContent = "";
+  pe(kn, "pointerdown", x, y, id);
+  const res = {slid:!!SLIDE, p0:p0};
+  const walk = async (tx, ty) => {
+    while(Math.abs(tx - x) > 0.5 || Math.abs(ty - y) > 0.5){
+      const dx = tx - x, dy = ty - y, d = Math.hypot(dx, dy), f = Math.min(1, 16 / d);
+      x += dx * f; y += dy * f; pe(kn, "pointermove", x, y, id); await nap(8);
+    }
+  };
+  for(const [f, dy, wait] of moves){
+    if(typeof f === "function"){ await f({el:el, kn:kn, x:x, y:y, id:id, walk:walk, x0:x0, travel:travel, p0:p0}); continue; }
+    await walk(x0 + f * travel, y0 + (dy || 0));
+    if(wait) await nap(wait);
+  }
+  res.c = {x:x, y:y, id:id, kn:kn, el:el, walk:walk, p0:p0, x0:x0, travel:travel};
+  if(end) await end(res.c); else pe(kn, "pointerup", x, y, id);
+  res.slide_after = !!SLIDE;
+  res.knob = kn.style.transform;
+  return res;
+}
+// The slide's own release and click on everything under it.
+const pin = () => document.querySelector('#pins [data-pin="wc"]');
+const own = c => { for(const el of [q("wc-stop"), sb(), pin()]){
+  if(!el) continue; const r = el.getBoundingClientRect(); pe(el, "pointerup", r.left + 5, r.top + 5, c.id); clk(el, c.id); } };
+async function fin(res, ms){
+  await nap(ms || 900);
+  res.back_left = !!(history.state && history.state.ltcSlide);
+  res.posts = TE.posts.slice(res.p0);
+  res.holds = res.posts.filter(p => p.route === "beat").map(p => p.hold);
+  res.runs = [...new Set(res.posts.filter(p => p.route === "beat").map(p => p.run))].length;
+  res.stops = stops(res.posts);
+  res.state = TE.state; res.second = TE.second; res.ended_by_press = TE.ended_by_press;
+  res.msg = msg(); res.full = MSG_FULL;
+  res.mode = sb().dataset.mode; res.line = q("wc-sl").textContent; res.word = q("wc-sw").textContent;
+  delete res.c;
+  await settle();
+  return res;
+}
+await h.sleep(900);
+{ const b = document.querySelector('#d-seg [data-part="shut"]'); if(b) b.click(); }
+await h.sleep(900);
+{ const b = document.querySelector('#d-steps [data-step="clean"]'); if(b) b.click(); }
+await h.sleep(1200);
+out.vw = W; out.vh = H; out.coarse = matchMedia("(pointer:coarse)").matches;
+out.step = DAY_STEP;
+const PART = "__PART__";
+if(PART === "desk"){
+  // Off a phone: today's hold, as before.
+  const hb = q("wc-hold"); hb.scrollIntoView({block:"center"}); await nap(100);
+  out.slide_shown = getComputedStyle(sb()).display !== "none";
+  out.hold_shown = getComputedStyle(hb).display !== "none";
+  out.word = hb.textContent;
+  const r = hb.getBoundingClientRect(), x = r.left + 20, y = r.top + r.height / 2, kind = out.coarse ? "touch" : "mouse";
+  pe(hb, "pointerdown", x, y, 1, true, kind);
+  await waitFor(() => running(), 2500); await nap(200);
+  pe(hb, "pointerup", x, y, 1, true, kind);
+  await nap(400);
+  out.holds = TE.posts.filter(p => p.route === "beat").map(p => p.hold);
+  out.running = running(); out.wcmsg = q("wc-msg").textContent;
+  await settle();
+} else {
+  const words = () => q("d-ctl").innerText;
+  const cuts = {
+    pointercancel:c => pe(c.kn, "pointercancel", c.x, c.y, c.id),
+    second_finger:c => { pe(body, "pointerdown", 30, 30, 90, false); pe(body, "pointerup", 30, 30, 90, false); },
+    band:async c => { await c.walk(c.x, c.y + 90); },
+    jump:c => pe(c.kn, "pointermove", c.x - 150, c.y, c.id),
+    blur:c => window.dispatchEvent(new Event("blur")),
+    hidden:c => { Object.defineProperty(document, "hidden", {configurable:true, get:() => true});
+      document.dispatchEvent(new Event("visibilitychange")); delete document.hidden; },
+    popstate:async c => { history.back(); await nap(200); },
+    rotate:async c => { fr.style.width = H + "px"; fr.style.height = W + "px"; await nap(300); fr.style.width = W + "px"; fr.style.height = H + "px"; await nap(500); },
+    back_under:async c => { await c.walk(c.x0 + 0.5 * c.travel, c.y); },
+  };
+  const runCuts = async (where, at, wait) => {
+    out[where] = {};
+    for(const k of Object.keys(cuts)){
+      if(where === "pre_cuts" && k === "back_under") continue;
+      const s = await slide([[at, 0, wait]], async c => { c.before = TE.posts.length - c.p0; await cuts[k](c); c.ended = !SLIDE; await nap(30); c.said = msg();
+        pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); });
+      s.ended = s.c.ended; s.said = s.c.said; s.before = s.c.before;
+      out[where][k] = await fin(s, 1100);
+      pe(body, "pointerup", 30, 30, 90, false);
+      await nap(300);
+    }
+  };
+  if(PART === "phone"){
+  const el = sb(); el.scrollIntoView({block:"center"}); await nap(100);
+  const r = el.getBoundingClientRect(), kn = el.querySelector(".knob"), kr = kn.getBoundingClientRect(), cs = getComputedStyle(el);
+  const shown = id => !!q(id) && getComputedStyle(q(id)).display !== "none";
+  out.look = {r:[Math.round(r.left), Math.round(r.right)], knob:[Math.round(kr.left), Math.round(kr.top), Math.round(kr.right), Math.round(kr.bottom)],
+    kshown:getComputedStyle(kn).display !== "none", word:q("wc-sw").textContent, mode:el.dataset.mode,
+    touch:[cs.touchAction, getComputedStyle(kn).touchAction], role:el.tagName.toLowerCase(), aria:kn.getAttribute("aria-hidden"),
+    hidden:["wc-hold", "wc-prog", "wc-block", "wc-msg"].filter(i => !shown(i)), stop:whole(q("wc-stop")), words:words()};
+  // A tap on the track, and on the handle: nothing sent.
+  { const p0 = TE.posts.length; tap(el, ++PID); await nap(300); tap(kn, ++PID); await nap(300); out.tap = {posts:TE.posts.length - p0, slide:!!SLIDE}; await settle(); }
+  // The whole slide: nothing sent under 90 percent; at the end, today's
+  // beats, the engine starts phase 1, the slide's own release and click
+  // on Stop and the slide land on nothing. A new tap on Stop then stops
+  // it, a new finger or one reusing the pointerId.
+  for(const k of ["full", "full_reused"]){
+    const s = await slide([[0.85, 0, 700], [c => { c.pre = TE.posts.length - c.p0; s_pre = c.pre; }], [1, 0, 0],
+      [async c => { await waitFor(() => running(), 3000); await nap(80); s_words = words(); s_line = q("wc-sl").textContent;
+        s_pin = !!pin(); }]],
+      async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); await nap(300);
+        c.own_stops = stops(TE.posts.slice(c.p0)); c.own_running = running();
+        tap(q("wc-stop"), k === "full" ? ++PID : c.id); });
+    s.pre = s_pre; s.hold_words = s_words; s.line_held = s_line; s.own_stops = s.c.own_stops; s.own_running = s.c.own_running;
+    s.pin = s_pin;
+    out[k] = await fin(s);
+  }
+  // Under 90 percent, lifted: nothing sent.
+  out.u50 = await fin(await slide([[0.5, 0, 1500]]));
+  out.u88 = await fin(await slide([[0.88, 0, 1500]]));
+  // At the end, lifted before the engine's 1.0 s: today's let go, the
+  // engine read, said as it says.
+  out.early = await fin(await slide([[1, 0, 400]]));
+  // Every cancel before 90 percent: nothing sent.
+  await runCuts("pre_cuts", 0.6, 200);
+  } else if(PART === "phone2"){
+  // Every cancel at the end, before the engine's start.
+  await runCuts("cuts", 0.97, 350);
+  } else if(PART === "phone3"){
+  // The engine started it and its answer was lost, a 502, a 409 with no
+  // code: read, said running; nothing let go of or stopped; the lift and
+  // its click land on nothing.
+  for(const [k, after] of [["lost", "lose"], ["s502", "502"], ["s409", "409"]]){
+    TE.after = after;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(400); }]],
+      async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); });
+    out[k] = await fin(s, 1200);
+  }
+  // A 502 for every beat: the engine's read cannot prove nothing started.
+  { TE.failAll = 502; out.fail502 = await fin(await slide([[1, 0, 300]]), 1200); }
+  // Lost, and the engine cannot be read: not known, never the start
+  // again (no handle, a slide does nothing); once it reads, its answer.
+  { TE.after = "lose"; TE.blindAfter = true;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(200); }]]);
+    const seen = [];
+    for(let i = 0; i < 6; i++){ await nap(200); seen.push([sb().dataset.mode, q("wc-sl").textContent, msg(), getComputedStyle(sb().querySelector(".knob")).display]); }
+    s.seen = seen;
+    { const k2 = sb().querySelector(".knob"), kr2 = sb().getBoundingClientRect(); pe(k2, "pointerdown", kr2.left + 20, kr2.top + 20, ++PID); s.again_slide = !!SLIDE;
+      pe(k2, "pointerup", kr2.left + 20, kr2.top + 20, PID); }
+    TE.blind = false; await nap(1500);
+    s.after = {mode:sb().dataset.mode, msg:msg(), line:q("wc-sl").textContent};
+    out.blind = await fin(s, 100); }
+  // Started, its answer late; the page blurs: while the engine is read
+  // (slowly), checking with no handle; then running; once it ends (another
+  // screen's Stop), never running.
+  { TE.late = 2500; TE.readLate = 800;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(60);
+      window.dispatchEvent(new Event("blur")); await nap(0); s_flip = await sample(660); }]]);
+    s.during = s_flip;
+    await nap(1200);
+    s.read = {mode:sb().dataset.mode, msg:msg(), line:q("wc-sl").textContent};
+    TE.until = Date.now();
+    await nap(2600);
+    s.ended = {mode:sb().dataset.mode, line:q("wc-sl").textContent};
+    out.blur_late = await fin(s, 100);
+    await nap(2500); }
+  // Lifted before the start, the engine read slowly: checking, no handle,
+  // until it answers.
+  { TE.readLate = 800;
+    const s = await slide([[1, 0, 300]], async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); s_flip = await sample(600); });
+    s.during = s_flip;
+    out.lift_slow = await fin(s, 1500); }
+  // 1.0's stale status cut under the finger: the same.
+  { TE.readLate = 800;
+    const s = await slide([[1, 0, 300], [async c => { LAST_OK = Date.now() - 5000; renderCleaning(); await nap(0); s_flip = await sample(600); }]]);
+    s.during = s_flip;
+    out.stale_cut = await fin(s, 1500); }
+  // Started, its answer lost, the engine unreadable until another screen
+  // stopped it: never "not started".
+  { TE.after = "lose"; TE.blindAfter = true; TE.runMs = 1500;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(100); }]]);
+    await nap(3400); TE.blind = false; await nap(1800);
+    out.ran_blind = await fin(s, 100); }
+  // Stop tapped while the engine is being read: the read never speaks
+  // after it.
+  { TE.late = 2500; TE.readLate = 1200;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(60);
+      window.dispatchEvent(new Event("blur")); await nap(250); tap(q("wc-stop"), ++PID); }]]);
+    q("msg-t").textContent = "";
+    await nap(2600);
+    out.stop_during = await fin(s, 100);
+    await nap(2500); }
+  } else if(PART === "phone4"){
+  // The started answer in, the engine read slowly: no handle, no new
+  // slide (a new press would be refused, or end a hold).
+  { TE.readLate = 1000;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(40); s_flip = await sample(540); }]]);
+    s.during = s_flip;
+    { const k2 = sb().querySelector(".knob"), kr2 = sb().getBoundingClientRect(); pe(k2, "pointerdown", kr2.left + 20, kr2.top + 20, ++PID);
+      s.again_slide = !!SLIDE; for(let i = 0; i < 12; i++){ pe(k2, "pointermove", kr2.left + 20 + i * 25, kr2.top + 20, PID); await nap(10); }
+      await nap(200); pe(k2, "pointerup", kr2.left + 320, kr2.top + 20, PID); }
+    await nap(1600);
+    s.after = {mode:sb().dataset.mode, line:q("wc-sl").textContent};
+    out.started_slow = await fin(s, 100); }
+  // Stop tapped just after the start, the engine read slowly: no handle
+  // until a read made after the Stop shows the engine.
+  { TE.readLate = 1200;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(40);
+      tap(q("wc-stop"), ++PID); s_flip = await sample(900); }]]);
+    s.during = s_flip; await nap(1500);
+    out.stop_slow = await fin(s, 100); }
+  // The Stop fails (a 500) and the reads time out: no handle the whole
+  // time; once a read answers, still running, never the handle.
+  { TE.stopFail = true; TE.readLate = 1700;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(40);
+      tap(q("wc-stop"), ++PID); s_flip = await sample(2400); }]]);
+    s.during = s_flip; TE.readLate = 0; await nap(3000);
+    s.after = {mode:sb().dataset.mode, line:q("wc-sl").textContent};
+    out.stop_fail = await fin(s, 100); }
+  // Lifted before the start as another screen begins its own hold: never
+  // said as this one's, never not started, no handle.
+  { const s = await slide([[1, 0, 300], [c => { TE.otherOnRelease = true; }]]);
+    out.other_hold = await fin(s, 1500); }
+  // Paused after phase 1: the slide is the go-ahead for the bursts.
+  // Lifted early: still paused, said so from the engine's read; slid to
+  // the end: the bursts fire, and Stop ends them.
+  { TE.state = "paused"; await nap(900);
+    const s = await slide([[1, 0, 400]]); s.word0 = s_words;
+    out.paused_early = await fin(s, 1200); }
+  { TE.state = "paused"; await nap(900); const w0 = q("wc-sw").textContent;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(900); s_line = q("wc-sl").textContent; }]],
+      async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); await nap(300); c.st = TE.state; tap(q("wc-stop"), ++PID); });
+    s.word0 = w0; s.line_held = s_line; s.st = s.c.st;
+    out.paused_go = await fin(s, 1200); }
+  // One regular read made before the start (idle) lands late: after the
+  // fresh read made once the engine said it runs (late_poll), or before
+  // it (early_poll). Never the handle while the engine runs.
+  for(const [k, ms, rl] of [["late_poll", 2000, 0], ["early_poll", 1800, 1200]]){
+    // late_poll with no cleaning in the status: only the read numbering
+    // stands between the late read and the handle.
+    TE.holdMs = ms; TE.held = 0; TE.noLive = k === "late_poll";
+    const s = await slide([[0.85, 0, 0], [async c => { TE.holdOne = true; await waitFor(() => TE.held > 0, 1500); TE.readLate = rl; }],
+      [1, 0, 0], [async c => { await waitFor(() => running(), 3000); s_flip = await sample(1800); }]]);
+    s.during = s_flip; s.held = TE.held;
+    out[k] = await fin(s, 100);
+    TE.state = "idle"; await nap(1500); }
+  // Stop tapped by a second finger, its click a plain MouseEvent with no
+  // pointerId (older Safari): never held back, running (its answer late)
+  // or the hold before the start.
+  for(const k of ["stop_plain_running", "stop_plain_hold"]){
+    if(k === "stop_plain_running") TE.late = 2500;
+    const s = await slide([[1, 0, k === "stop_plain_running" ? 0 : 300], [async c => {
+      if(k === "stop_plain_running") await waitFor(() => running(), 3000);
+      const b = q("wc-stop"), br = b.getBoundingClientRect(), x = br.left + br.width / 2, y = br.top + br.height / 2;
+      pe(b, "pointerdown", x, y, 91, false); pe(b, "pointerup", x, y, 91, false);
+      b.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, clientX:x, clientY:y, detail:1})); await nap(400); }]]);
+    out[k] = await fin(s, 1200);
+    pe(body, "pointerup", 30, 30, 91, false);
+    await nap(2500); }
+  // An engine refusal's own words never reach the phone line.
+  { TE.refuse = "Not available now: a show is running.";
+    out.refused = await fin(await slide([[1, 0, 300]]), 1200); }
+  // After all of it, a slide still starts one.
+  { const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(200); }]]); out.again = await fin(s); }
+  } else {
+  // Cold review of #299. F2: the cleaning reads fail (503) as another
+  // screen starts it: every screen's status says it runs, so no handle.
+  { const p0 = TE.posts.length; TE.getFail = 503; await nap(300); TE.state = "phase1"; await nap(400);
+    const d = await sample(1500); out.reads_fail = await fin({p0:p0, during:d}, 100); }
+  // F2: the same with no cleaning in the status: once the last read is
+  // too old, no handle.
+  { const p0 = TE.posts.length; TE.noLive = true; TE.getFail = 503; await nap(300); TE.state = "phase1"; await nap(2300);
+    const d = await sample(1500); out.reads_fail_nolive = await fin({p0:p0, during:d}, 100); }
+  // F2: the status says it runs while the last read said idle.
+  { const p0 = TE.posts.length; TE.liveOnly = "phase1"; await nap(500);
+    const d = await sample(900); out.live_other = await fin({p0:p0, during:d}, 100); }
+  // F3: paused, the step's Stop answered 1.5 s late, the engine read
+  // before: no handle until a read made after the Stop's answer.
+  { TE.state = "paused"; await nap(900); const p0 = TE.posts.length; TE.stopLate = 1500;
+    tap(q("wc-stop"), ++PID); const d = await sample(1400); await nap(1500);
+    out.stop_late_answer = await fin({p0:p0, during:d}, 100); }
+  // F4: the pinned Stop cleaning pressed with a key (a click with no
+  // touch) while the slide holds: the slide ends, no beat after it.
+  { const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!pin(), 1500); s_pin = !!pin(); const n0 = TE.posts.length;
+      pin().dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:0})); const gone = !SLIDE; await nap(500);
+      s_flip = {slide:!gone, beats:TE.posts.slice(n0).filter(x => x.route === "beat" && x.hold === true).length}; }]]);
+    s.pin = s_pin; s.after = s_flip;
+    out.pin_key = await fin(s, 1200); }
+  // F1: a failed Stop says Cleaning NOT stopped; a slide read after it
+  // never covers that.
+  { TE.state = "phase1"; TE.stopFail = true; await waitFor(() => !!pin(), 2000); await nap(300);
+    pin().click(); await nap(1200); const said = msg();
+    TE.stopFail = false; TE.state = "idle";
+    // A failed Stop shows its alert on SHOW: back to the step.
+    document.querySelector('.tab[data-tab="day"]').click(); await nap(600);
+    if(DAY_STEP !== "clean"){ const st = document.querySelector('#d-steps [data-step="clean"]'); if(st) st.click(); }
+    await waitFor(() => sb() && sb().dataset.mode === "go", 4000);
+    const s = await slide([[1, 0, 300]], null, true); s.said0 = said;
+    out.not_over_fail = await fin(s, 1500); }
+  }
+}
+out.hist = history.state;
+"""
+
+
+def test_ui2_cleaning_slide_on_a_phone():
+    section("the wave flamer cleaning's slide on a touch phone (step 7 of "
+            "the phone build): a slide in front of today's two holds, which "
+            "are 1.0's code unchanged; nothing sent until 90 percent; there "
+            "today's beats until the engine says it runs; every cancel "
+            "before 90 percent sends nothing, after it today's let go only, "
+            "and the engine is read before anything is said; a lost, 5xx "
+            "or 409 answer is read, unreadable is not known, never the "
+            "start again; not started only when the engine proves it; "
+            "another screen's hold is never this one's; a Stop is never "
+            "held back; off a phone, the hold as before")
+    page = _ui2_page_inline()
+    two = _ui2_pages()[1]
+    ck = _js_function(two, "wcSlideCheck") or ""
+    check(0 < ck.find("if(s.frac < SLIDE_ARM) return;") < ck.find("wcStart();")
+          and ck.count("wcStart(") == 1 and "post(" not in ck,
+          "the slide starts today's hold (wcStart) only at 90 percent, and "
+          "sends nothing itself")
+    for f in ("wcSlideCheck", "wcSlideEnd", "wcSlideHoldEnded", "wcsRead",
+              "wcsTell", "wcsLook", "renderWcSlide", "wcsLineNow",
+              "wcsWhyNot", "wcsStartedRead", "wcsStateRead", "wcsStopSeen"):
+        src = _js_function(two, f) or ""
+        check(src, f"{f} is there")
+        check("wcStopPress" not in src and "cleaning-stop" not in src and
+              "cleaning-beat" not in src and "post(" not in src,
+              f"{f} never sends a Stop or a beat itself")
+        for s in re.findall(r'say\("([^"]*)"', src):
+            check(len(s.split()) <= 8, f"{f}: 8 words or fewer: {s!r}")
+        _no_dashes(src, f)
+        lits = " ".join(re.findall(r'"([^"]*)"', src))
+        check("hold" not in lits.lower() and ";" not in lits,
+              f"{f}: no Hold and no semicolon in a phone's words: "
+              f"{lits[:200]!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    mo = _morning_view_pico()
+    routes = {"/api/remote/morning": mo}
+    whole_js = ("const whole = el => { if(!el || !el.getClientRects().length) "
+                "return false; const r = el.getBoundingClientRect(); return "
+                "r.left >= 0 && r.right <= innerWidth && r.height >= 55.5; };\n")
+    for size in ((384, 800), (412, 600)):
+        W = size[0]
+        where = f"2.0 on a touch phone, {W}x{size[1]}, the cleaning slide"
+        r, bad = {}, False
+        for part, need, ms in (("phone", "pre_cuts", 80000),
+                               ("phone2", "cuts", 60000),
+                               ("phone3", "stop_during", 120000),
+                               ("phone4", "again", 120000),
+                               ("phone5", "not_over_fail", 90000)):
+            x = _ui2_drive_framed(chrome, page, _ui2_status_day(),
+                                  whole_js + _UI2_WC_SLIDE_STEPS.replace(
+                                      "__PART__", part),
+                                  size, routes=routes, budget_ms=ms)
+            if not check(isinstance(x, dict) and need in x and
+                         not x.get("problems") and
+                         x.get("step") == "clean" and
+                         not (x.get("hist") or {}).get("ltcSlide"),
+                         f"{where} ({part}): driven: {x!r}"[:1500]):
+                bad = True
+                break
+            r.update(x)
+        if bad:
+            continue
+        check(r["coarse"] and [r["vw"], r["vh"]] == list(size),
+              f"{where}: a touch screen of that size: {r['vw']}x{r['vh']}")
+        lk = r["look"]
+        kl, kt, kr_, kb = lk["knob"]
+        check(lk["kshown"] and kr_ - kl == 56 and kb - kt == 56 and
+              kl >= 40 and lk["r"][1] <= W - 40 and lk["mode"] == "go" and
+              lk["word"] == "Start the cleaning" and
+              lk["touch"] == ["pan-y", "none"] and lk["role"] == "button" and
+              lk["aria"] == "true" and
+              sorted(lk["hidden"]) == ["wc-block", "wc-hold", "wc-msg",
+                                       "wc-prog"] and lk["stop"] and
+              "hold" not in lk["words"].lower(),
+              f"{where}: a full width slide, its 56 px handle 40 px from the "
+              f"edges, says what it does, never Hold; Stop whole: {lk}")
+        check(r["tap"] == {"posts": 0, "slide": False},
+              f"{where}: a tap on the track or the handle sends nothing: "
+              f"{r['tap']}")
+        for k in ("full", "full_reused"):
+            f = r[k]
+            check(f["pin"] and f["slid"] and f["pre"] == 0 and f["holds"] and
+                  all(x is True for x in f["holds"]) and f["runs"] == 1 and
+                  f["own_stops"] == 0 and f["own_running"] and
+                  f["stops"] == 1 and f["state"] == "idle" and
+                  f["second"] == 0 and not f["back_left"] and
+                  "hold" not in f["hold_words"].lower() and
+                  f["line_held"] in ("Running on its own. You can let go.",
+                                     "Phase 1 runs. Stop ends it."),
+                  f"{where}: {k}: nothing sent under 90 percent; at the end "
+                  f"today's beats until it runs; the slide's own release "
+                  f"and click stop nothing; a new tap on Stop stops it: {f}")
+        for k in ("u50", "u88"):
+            x = r[k]
+            check(x["slid"] and x["posts"] == [] and x["mode"] == "go" and
+                  not x["slide_after"] and x["knob"] == "",
+                  f"{where}: {k}: lifted under 90 percent: nothing sent: {x}")
+        e = r["early"]
+        check(e["holds"] and e["holds"][-1] is False and
+              all(x is True for x in e["holds"][:-1]) and e["runs"] == 1 and
+              e["stops"] == 0 and e["state"] == "idle" and
+              e["msg"] == "Cleaning not started." and
+              "the engine says nothing started" in e["full"].lower() and
+              e["line"] == "Not started. Nothing runs." and e["mode"] == "go",
+              f"{where}: lifted before the engine's 1.0 s: today's let go, "
+              f"said not started only from the engine's read: {e}")
+        check(sorted(r["pre_cuts"]) == sorted(
+            ["pointercancel", "second_finger", "band", "jump", "blur",
+             "hidden", "popstate", "rotate"]) and sorted(r["cuts"]) ==
+              sorted(list(r["pre_cuts"]) + ["back_under"]),
+              f"{where}: every cancel tried: {sorted(r['cuts'])}")
+        for k, x in r["pre_cuts"].items():
+            check(x["ended"] and x["posts"] == [] and x["said"] ==
+                  ("" if k == "pointercancel" else "Nothing sent.") and
+                  not x["slide_after"] and x["mode"] == "go",
+                  f"{where}: {k} before 90 percent: nothing sent, said "
+                  f"so: {x}")
+        for k, x in r["cuts"].items():
+            check(x["ended"] and x["before"] >= 1 and x["holds"] and
+                  x["holds"][-1] is False and x["runs"] == 1 and
+                  x["stops"] == 0 and x["state"] == "idle" and
+                  x["msg"] == "Cleaning not started." and
+                  "the engine says" in x["full"].lower() and
+                  x["mode"] == "go" and not x["back_left"],
+                  f"{where}: {k} at the end, before the start: today's let "
+                  f"go, the engine read, said not started; the lift and "
+                  f"its click stop nothing: {x}")
+        for k in ("lost", "s502", "s409"):
+            x = r[k]
+            # 1.0's wcBeat lets go on the error (a release after the
+            # start changes nothing at the engine).
+            check(x["holds"] and all(h is True for h in x["holds"][:-1]) and
+                  x["stops"] == 0 and x["state"] == "phase1" and
+                  x["second"] == 0 and
+                  x["msg"] == "Cleaning running." and x["mode"] == "run",
+                  f"{where}: {k}: the engine started it, its answer not "
+                  f"clear: read, said running, never let go of or "
+                  f"stopped: {x}")
+        x = r["fail502"]
+        check(x["holds"] and x["stops"] == 0 and x["state"] == "idle" and
+              x["msg"] == "Not running now." and
+              x["line"] == "Not running now. Check the tile." and
+              x["mode"] == "go",
+              f"{where}: a 502 for every beat: read, not running, never "
+              f"said not started without the engine's proof: {x}")
+        b = r["blind"]
+        check(b["seen"] and all(m == "unknown" and ln ==
+                                "Not known. Check the tile." and
+                                ms == "Not known. Check the tile." and
+                                kd == "none" for m, ln, ms, kd in b["seen"])
+              and not b["again_slide"] and b["stops"] == 0 and
+              b["after"]["mode"] == "run" and
+              b["after"]["msg"] == "Cleaning running.",
+              f"{where}: lost and unreadable: not known, no handle, a slide "
+              f"does nothing; read again, the engine's answer: {b}")
+
+        def checking(d):
+            return d and all(m == "unknown" and kd == "none" and
+                             ln == "Checking with the engine."
+                             for m, ln, kd in d)
+        bl = r["blur_late"]
+        check(checking(bl["during"]) and bl["stops"] == 0 and
+              bl["read"]["mode"] == "run" and
+              bl["read"]["msg"] == "Cleaning running." and
+              bl["read"]["line"] == "Phase 1 runs. Stop ends it." and
+              bl["ended"]["mode"] != "run" and
+              "runs" not in bl["ended"]["line"].lower(),
+              f"{where}: started, its answer late, the page blurred: while "
+              f"the engine is read, checking with no handle; then running; "
+              f"once it ends, never running: {bl}")
+        for k in ("lift_slow", "stale_cut"):
+            x = r[k]
+            check(checking(x["during"]) and x["stops"] == 0 and
+                  x["state"] == "idle" and
+                  x["msg"] == "Cleaning not started.",
+                  f"{where}: {k}: the hold ended before the start, the "
+                  f"engine read slowly: checking, no handle, then said as "
+                  f"the engine says: {x}")
+        rb = r["ran_blind"]
+        check(rb["msg"] == "Not running now." and
+              rb["line"] == "Not running now. Check the tile." and
+              rb["stops"] == 0 and rb["state"] == "idle",
+              f"{where}: a cleaning that started and was stopped while the "
+              f"engine was unreadable: never said not started: {rb}")
+        sd = r["stop_during"]
+        check(sd["stops"] == 1 and sd["msg"] == "" and
+              sd["line"] == "" and sd["mode"] == "go",
+              f"{where}: Stop during the engine read: the read never "
+              f"speaks after it: {sd}")
+        ss = r["started_slow"]
+        check(ss["during"] and all(m == "run" and kd == "none" and
+                                   ln == "Running on its own. You can let go."
+                                   for m, ln, kd in ss["during"]) and
+              not ss["again_slide"] and ss["runs"] == 1 and
+              all(h is True for h in ss["holds"]) and
+              ss["state"] == "phase1" and ss["second"] == 0 and
+              ss["stops"] == 0 and ss["after"]["mode"] == "run",
+              f"{where}: started, the engine read slowly: running with no "
+              f"handle, a new slide never starts: {ss}")
+
+        def nogo(d):
+            return d and all(m != "go" and kd == "none" for m, _ln, kd in d)
+        x = r["stop_slow"]
+        check(nogo(x["during"]) and x["stops"] == 1 and
+              x["during"][0][1] == "Stopping. Checking with the engine." and
+              x["state"] == "idle" and x["mode"] == "go",
+              f"{where}: Stop just after the start, the engine read slowly: "
+              f"no handle until a read after the Stop: {x}")
+        x = r["stop_fail"]
+        check(nogo(x["during"]) and x["stops"] == 1 and
+              x["after"]["mode"] == "run" and x["state"] == "phase1" and
+              x["second"] == 0,
+              f"{where}: a Stop that failed, the reads timing out: never the "
+              f"handle while the engine runs: {x}")
+        x = r["other_hold"]
+        check(x["msg"] == "Another screen is starting it." and
+              x["line"] == "Another screen is starting it." and
+              x["mode"] == "na" and x["state"] == "starting",
+              f"{where}: another screen holding when the read comes: never "
+              f"said as this one's or not started, no handle: {x}")
+        x = r["paused_early"]
+        check(x["holds"] and x["holds"][-1] is False and
+              x["state"] == "paused" and
+              x["msg"] == "Bursts not started." and
+              x["line"] == "Still paused. Nothing fired." and
+              x["mode"] == "go" and x["word"] == "Fire the bursts",
+              f"{where}: paused, the go-ahead lifted early: still paused, "
+              f"said from the engine's read: {x}")
+        x = r["paused_go"]
+        check(x["word0"] == "Fire the bursts" and x["st"] == "phase2" and
+              x["line_held"] == "Bursts firing. Stop ends them." and
+              x["stops"] == 1 and x["state"] == "idle" and x["second"] == 0,
+              f"{where}: paused, the go-ahead slid to the end: the bursts "
+              f"fire, its own lift stops nothing, Stop ends them: {x}")
+        for k in ("late_poll", "early_poll"):
+            x = r[k]
+            check(x["held"] == 1 and x["during"] and
+                  all(m != "go" for m, _l, _k in x["during"]) and
+                  x["stops"] == 0 and x["second"] == 0 and x["runs"] == 1,
+                  f"{where}: {k}: a regular read made before the start, "
+                  f"landing late: never the handle while the engine runs: "
+                  f"{dict(x, during=sorted(set(m for m, _l, _k in x['during'])))}")
+        for k in ("stop_plain_running", "stop_plain_hold"):
+            x = r[k]
+            check(x["stops"] == 1 and x["state"] == "idle",
+                  f"{where}: {k}: a second finger's Stop with a plain click "
+                  f"(no pointerId) is never held back: {x}")
+        rf = r["refused"]
+        check(rf["msg"] in ("Cleaning not started.", "Not running now.") and
+              rf["line"] in ("Not started. Nothing runs.",
+                             "Not running now. Check the tile.") and
+              rf["state"] == "idle",
+              f"{where}: an engine refusal: its words never on the phone "
+              f"line: {rf}")
+        lines = [v.get("line", "") for v in r.values()
+                 if isinstance(v, dict)] + \
+            [v.get("line", "") for k in ("pre_cuts", "cuts")
+             for v in r[k].values()]
+        check(all(len(ln.split()) <= 8 and ";" not in ln and
+                  "hold" not in ln.lower() for ln in lines),
+              f"{where}: the phone line only ever says this page's short "
+              f"words: {sorted(set(lines))}")
+        g = r["again"]
+        check(g["holds"] and all(h is True for h in g["holds"]) and
+              g["state"] == "phase1" and g["stops"] == 0,
+              f"{where}: after all of it a slide still starts one: {g}")
+        # Cold review of #299.
+        for k in ("reads_fail", "reads_fail_nolive", "live_other"):
+            x = r[k]
+            check(x["during"] and all(m != "go" and kd == "none"
+                                      for m, _l, kd in x["during"]) and
+                  x["posts"] == [],
+                  f"{where}: {k}: the engine runs, the last cleaning read "
+                  f"said idle: never the handle: {x}")
+        x = r["stop_late_answer"]
+        check(x["during"] and all(m != "go" and kd == "none"
+                                  for m, _l, kd in x["during"]) and
+              x["stops"] == 1 and x["state"] == "idle" and
+              x["mode"] == "go" and x["word"] == "Start the cleaning",
+              f"{where}: paused, the Stop's answer late: no handle until a "
+              f"read made after the answer, then the engine's idle: {x}")
+        x = r["pin_key"]
+        check(x["pin"] and x["after"]["slide"] is False and
+              x["after"]["beats"] == 0 and x["stops"] == 1 and
+              x["state"] == "idle",
+              f"{where}: the pinned Stop cleaning by key while the slide "
+              f"holds: the slide ends, no beats after: {x}")
+        x = r["not_over_fail"]
+        check(x["said0"] == "Cleaning NOT stopped." and
+              x["msg"] == "Cleaning NOT stopped." and
+              x["line"] == "Not started. Nothing runs.",
+              f"{where}: a failed Stop's words are never covered by a "
+              f"slide's not started: {x}")
+    for size, coarse in (((1280, 800), False), ((768, 1024), True)):
+        r = _ui2_drive_framed(chrome, page, _ui2_status_day(),
+                              whole_js + _UI2_WC_SLIDE_STEPS.replace(
+                                  "__PART__", "desk"),
+                              size, coarse=coarse, routes=routes,
+                              budget_ms=30000)
+        where = (f"2.0 at {size[0]}x{size[1]}, "
+                 f"{'touch' if coarse else 'a mouse'}, the cleaning")
+        if not check(isinstance(r, dict) and "holds" in r and
+                     not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
+            continue
+        check(not r["slide_shown"] and r["hold_shown"] and
+              "Hold to start" in r["word"] and r["holds"] and
+              all(h is True for h in r["holds"][:-1]) and
+              r["running"] and "You can let go" in r["wcmsg"],
+              f"{where}: today's hold, as before: {r}")
+    print("  ok")
+
+
 def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
     section("the not fully loaded banner (Andy, 2026-11-22, a Galaxy S22 "
             "Ultra): from a 360 px phone to a 2560x1440 screen its words "
@@ -136117,6 +136857,7 @@ if __name__ == "__main__":
         test_ui2_flame_slide_to_arm_on_a_phone,
         test_ui2_laser_slide_on_a_phone,
         test_ui2_timed_purge_slide_on_a_phone,
+        test_ui2_cleaning_slide_on_a_phone,
         test_ui2_broken_banner_fits_a_phone_and_a_2k_screen,
         test_ui2_slow_link_page_is_not_called_broken,
         test_ui2_day_makes_only_1_0_presses,
