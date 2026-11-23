@@ -120882,7 +120882,7 @@ const q = id => document.getElementById(id);
 const nap = ms => new Promise(r => setTimeout(r, ms));
 const msg = () => q("msg-t") ? q("msg-t").textContent : "";
 let s_pre = null, s_hold_words = "", s_line = "", s_flip = null;
-const TE = {hold:null, running:null, dead:new Set(), after:"", late:0, blind:false, blindAfter:false, failAll:0, posts:[]};
+const TE = {hold:null, running:null, dead:new Set(), after:"", late:0, blind:false, blindAfter:false, failAll:0, readLate:0, posts:[]};
 const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
 const view = () => {
   const now = Date.now();
@@ -120924,6 +120924,7 @@ window.fetch = async (url, opt) => {
   }
   if(post && /\/api\/remote\/purge-stop$/.test(u)){ TE.posts.push({route:"purge-stop"}); TE.running = null; return J(200, {ok:true, text:"Purge stopped."}); }
   if(!post && /\/api\/remote\/morning$/.test(u)){
+    if(TE.readLate) await nap(TE.readLate);
     if(TE.blind) throw new TypeError("Failed to fetch");
     const r = await hf(url, opt); const j = await r.json(); j.timed = view(); return J(200, j);
   }
@@ -120938,7 +120939,10 @@ const tap = (el, id) => { const r = el.getBoundingClientRect(), x = r.left + r.w
 const sb = () => q("tp-slide");
 const stops = p => p.filter(x => x.route === "purge-stop").length;
 const settle = async () => { TE.hold = null; TE.running = null; TE.after = ""; TE.late = 0; TE.blind = false; TE.blindAfter = false; TE.failAll = 0;
-  TE.stopped_by_hold = false; TP_READING++; TP_DOUBT = false; TP_MSG = null; await nap(1300); };
+  TE.stopped_by_hold = false; TE.readLate = 0; TP_READING++; TP_DOUBT = false; TP_CHECK = false; TP_MSG = null; await nap(1300); };
+// The slide and its line every 60 ms while the engine is being read.
+const sample = async ms => { const out2 = []; for(let t = 0; t < ms; t += 60){ out2.push([sb().dataset.mode, q("tp-sl").textContent,
+  getComputedStyle(sb().querySelector(".knob")).display]); await nap(60); } return out2; };
 const waitFor = async (f, ms) => { for(let i = 0; i < (ms || 3000) / 20 && !f(); i++) await nap(20); return !!f(); };
 // One slide of the handle: each [fraction, dy, wait] walked to in 16 px
 // steps (or a function, run with the finger down), then lifted (or ended
@@ -121101,6 +121105,32 @@ if(PART === "desk"){
     s.held = s_flip;
     out.flip = await fin(s, 1500);
     await nap(2500); }
+  // Cold review of #297: the engine started it, its answer late; the page
+  // blurs (a call, the shade): 1.0 says its hold ended. While the engine
+  // is read (slowly), the slide shows checking, no handle, never "Nothing
+  // was fired"; then said running; once the purge ends, never running.
+  { TE.late = 2500; TE.readLate = 800;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(60);
+      window.dispatchEvent(new Event("blur")); await nap(0); s_flip = await sample(660); }]]);
+    s.during = s_flip;
+    await nap(1200);
+    s.read = {mode:sb().dataset.mode, msg:msg(), line:q("tp-sl").textContent};
+    if(TE.running) TE.running.until = Date.now();
+    await nap(2200);
+    s.ended = {mode:sb().dataset.mode, line:q("tp-sl").textContent, st:q("tp-st").textContent};
+    out.blur_late = await fin(s, 100);
+    await nap(2500); }
+  // Lifted before the start, the engine read slowly: checking, no handle,
+  // until it answers.
+  { TE.readLate = 800;
+    const s = await slide([[1, 0, 300]], async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); s_flip = await sample(600); });
+    s.during = s_flip;
+    out.lift_slow = await fin(s, 1500); }
+  // 1.0's stale status cut under the finger: the same.
+  { TE.readLate = 800;
+    const s = await slide([[1, 0, 300], [async c => { LAST_OK = Date.now() - 5000; renderTimedPurge(); await nap(0); s_flip = await sample(600); }]]);
+    s.during = s_flip;
+    out.stale_cut = await fin(s, 1500); }
   // After all of it, a slide still starts one.
   { const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(200); }]]); out.again = await fin(s); }
   }
@@ -121128,7 +121158,7 @@ def test_ui2_timed_purge_slide_on_a_phone():
           "the slide starts today's hold (tpStart) only at 90 percent, and "
           "sends nothing itself")
     for f in ("tpSlideCheck", "tpSlideEnd", "tpSlideHoldEnded", "tpSlideRead",
-              "tpSlideLook", "renderTpSlide"):
+              "tpSlideLook", "renderTpSlide", "tpSlideLine"):
         src = _js_function(two, f) or ""
         check(src, f"{f} is there")
         check("tpStopPress" not in src and "purge-stop" not in src,
@@ -121161,7 +121191,7 @@ def test_ui2_timed_purge_slide_on_a_phone():
         r, bad = {}, False
         for part, need, ms in (("phone", "pre_cuts", 80000),
                                ("phone2", "cuts", 60000),
-                               ("phone3", "again", 70000)):
+                               ("phone3", "again", 90000)):
             x = _ui2_drive_framed(chrome, page, _ui2_status_day(),
                                   whole_js + _UI2_TP_SLIDE_STEPS.replace(
                                       "__PART__", part),
@@ -121276,6 +121306,30 @@ def test_ui2_timed_purge_slide_on_a_phone():
               f"{where}: shown running under the finger before its answer: "
               f"the slide holds on, the lift never stops it or starts a new "
               f"hold; said running: {fl}")
+        def checking(d):
+            return d and all(m == "unknown" and kd == "none" and
+                             ln == "Checking with the engine."
+                             for m, ln, kd in d)
+        bl = r["blur_late"]
+        check(checking(bl["during"]) and bl["stops"] == 0 and
+              bl["read"]["mode"] == "run" and
+              bl["read"]["msg"] == "Timed purge running." and
+              ("It stops by itself." in bl["read"]["line"] or
+               bl["read"]["line"] == "Timed purge running. Stop purge ends "
+                                     "it.") and
+              bl["ended"]["mode"] != "run" and
+              "running" not in bl["ended"]["line"].lower(),
+              f"{where}: started, its answer late, the page blurred: while "
+              f"the engine is read, checking with no handle, never nothing "
+              f"fired; then running; once it ends, never running: {bl}")
+        for k in ("lift_slow", "stale_cut"):
+            x = r[k]
+            check(checking(x["during"]) and x["stops"] == 0 and
+                  not x["running"] and x["msg"] == "Purge not started." and
+                  "hold" not in x["line"].lower(),
+                  f"{where}: {k}: the hold ended before the start, the "
+                  f"engine read slowly: checking, no handle, then said as "
+                  f"the engine says: {x}")
         g = r["again"]
         check(g["holds"] and all(h is True for h in g["holds"]) and
               g["running"] and g["stops"] == 0,

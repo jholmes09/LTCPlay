@@ -1482,6 +1482,7 @@
 "ui 2.0 purge slide: the slide's own release and click land on Stop purge": "test_ui2_timed_purge_slide_on_a_phone",
 "ui 2.0 purge slide: a Stop purge tap that reuses the slide's pointerId is held back": "test_ui2_timed_purge_slide_on_a_phone",
 "ui 2.0 purge slide: the second finger that ends a slide counts as a new press for its lift": "test_ui2_timed_purge_slide_on_a_phone",
+"ui 2.0 purge slide: while the engine is read after a hold ended, the slide shows its handle and 1.0's Nothing was fired": "test_ui2_timed_purge_slide_on_a_phone",
 "ui 2.0 beats: a refusal waits with no deadline for an armed answer that hangs": "test_ui2_arm_beats_on_a_fixed_timer",
 "ui 2.0 beats: a hold that ends after a refusal lets go without reading the engine state": "test_ui2_arm_beats_on_a_fixed_timer",
 "ui 2.0 beats: an engine state that cannot be read is said as not armed": "test_ui2_arm_beats_on_a_fixed_timer",

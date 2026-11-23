@@ -3693,6 +3693,13 @@ MUTATIONS = [
   "if(TP_QUIET && !SLIDE && e !== TP_QUIET.ev) TP_QUIET.fresh = true;",
   "if(TP_QUIET && !SLIDE) TP_QUIET.fresh = true;"),
 
+ # Cold review of #297: a read pending shows checking, never the handle
+ # or 1.0's own 'Nothing was fired'.
+ ("ui 2.0 purge slide: while the engine is read after a hold ended, the slide shows its handle and 1.0's Nothing was fired",
+  'ltcplay/web/remote2.html',
+  "  if(TP_CHECK || tpSlideOrphan()) return {mode:\"unknown\", word:\"Checking\"};\n",
+  ""),
+
 
 
 
