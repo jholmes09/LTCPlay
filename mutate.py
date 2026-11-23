@@ -3576,6 +3576,51 @@ MUTATIONS = [
   "  slideCancel(\"Back was pressed\");\n",
   ""),
 
+ # Step 6 of the phone build (AUDIT P0 6): on a touch phone the lasers'
+ # Arm is a slide BEFORE today's confirm. Only a lift at 90 percent opens
+ # it; a cancel never does; a tap never does; the slide's own release never
+ # lands on it; the lift never goes around it; a tile armed under the
+ # finger is never disarmed; a lost answer is read, never said not armed.
+ ('ui 2.0 laser slide: a lift under 90 percent opens the confirm',
+  'ltcplay/web/remote2.html',
+  "  if(lift && s.frac >= SLIDE_ARM){ lzSlid(); return; }\n",
+  "  if(lift){ lzSlid(); return; }\n"),
+
+ ('ui 2.0 laser slide: a pointercancel at 90 percent opens the confirm',
+  'ltcplay/web/remote2.html',
+  "  const lift = s.up === true && why === \"let go\";\n",
+  "  const lift = why === \"let go\";\n"),
+
+ ('ui 2.0 laser slide: a tap on a phone opens the confirm with no slide',
+  'ltcplay/web/remote2.html',
+  "  if(b.dataset.mode !== \"disarm\" && slidePhone()) return null;\n",
+  ""),
+
+ ("ui 2.0 laser slide: the slide's own release and click land on the confirm or the tile",
+  'ltcplay/web/remote2.html',
+  "  if(age < LZ_QUIET_MS || (e.pointerId === qz.id && age < LZ_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }\n",
+  ""),
+
+ ('ui 2.0 laser slide: the lift arms with no confirm',
+  'ltcplay/web/remote2.html',
+  "  try{ return await lzTileClick(); } finally { LZ_SLID = false; }\n",
+  "  try{ return await lzPress({lasers:((LZ || {}).lasers || []).map(x => x.id), on:true, confirmed:true}); } finally { LZ_SLID = false; }\n"),
+
+ ('ui 2.0 laser slide: a lift on a tile armed under the finger disarms the lasers',
+  'ltcplay/web/remote2.html',
+  "  if(!b || b.dataset.mode !== \"arm\" || b.disabled){ lzSayNow(); return null; }\n",
+  ""),
+
+ ('ui 2.0 laser slide: a lost answer is said not armed without reading the engine',
+  'ltcplay/web/remote2.html',
+  "    if(extra.on && LZ_SLID && !e.status) return lzLost(e);\n",
+  ""),
+
+ ('ui 2.0 laser slide: a lost answer the engine cannot be read for leaves the tile idle',
+  'ltcplay/web/remote2.html',
+  "  if(isSt || !la || la.error || lzDoubt()){",
+  "  if(isSt || !la || la.error){"),
+
 
 
  # Andy's phone, 2026-11-22: on a touch phone the top line was capped and
