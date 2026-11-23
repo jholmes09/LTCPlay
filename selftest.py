@@ -120196,6 +120196,17 @@ if(PART === "main"){
   out.offhandle = {slide:!!SLIDE, sent:SENT.length - s0, armed:ARMED.length - a0};
   // A scroll that starts on the handle (straight up) leaves the band.
   out.scroll_on_handle = await slide(el, [[200, 0.1, -120]], 2400);
+  // Cold review of #299, for the flames: live flame programming turned on
+  // at the show PC during the hold. Every screen's status carries it
+  // (live_flame), and its pinned Live flame off is drawn above the tiles,
+  // moving the slide down: the slide holds on, the engine arms it.
+  { ENG.asked = true; patchFor(4); const base = window.__patch; let pinOn = false, top0 = 0, seen = {};
+    window.__patch = st => { st = base(st); if(pinOn) st.live_flame = {on:true, who:"Jeff"}; return st; };
+    await nap(700);
+    const s = await slide(g0(), [[300, 1], [350, el => { top0 = el.getBoundingClientRect().top; pinOn = true; }],
+      [1300, el => { seen = {pin:!!document.querySelector('#pins [data-pin="lf"]'), moved:Math.round(el.getBoundingClientRect().top - top0), slide:!!SLIDE}; }]], 2300);
+    out.pin_shift = Object.assign(s, seen);
+    reset(); await nap(800); }
 } else if(PART === "races"){
   // Cold review of #295: the group shows asked for (the tile turns to
   // Disarm under the finger) before the engine's armed answer, 300 or 800
@@ -120404,6 +120415,13 @@ def test_ui2_flame_slide_to_arm_on_a_phone():
             check(sc["armed"] == 0 and sc["released"] >= 1 and gone(sc),
                   f"{where}: a scroll that starts on the handle leaves the "
                   f"band: let go, never armed: {sc}")
+            ps = r["pin_shift"]
+            check(ps["pin"] and ps["moved"] > 24 and ps["slide"] and
+                  ps["armed"] == 1 and ps["released"] == 0 and
+                  not ps["early"] and gone(ps),
+                  f"{where}: the pinned Live flame off drawn above the tiles "
+                  f"during the hold moves the slide past its band: the slide "
+                  f"holds on, the engine arms it: {ps}")
         for k, c in r["cuts"].items():
             check(c["armed"] == 0 and c["held_slide"] and
                   c["released"] >= 1 and gone(c) and c["ended_ms"] <= 800,

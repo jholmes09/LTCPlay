@@ -3746,6 +3746,11 @@ MUTATIONS = [
  # back after a Stop waits for the Stop's answer; the pinned Stop purge
  # drawn above the slide never ends it; the pinned Stop purge ends a held
  # slide.
+ ("ui 2.0 slide: a pinned Stop drawn above the tiles moves the flame slide out of its band and lets go of the arm",
+  'ltcplay/web/remote2.html',
+  "  const r = s.b0;\n  // The band is where the slide was when the finger went down (slideDown):\n  // a pinned Stop drawn above the tiles during the hold",
+  "  const r = s.el.getBoundingClientRect();\n  // The band is where the slide was when the finger went down (slideDown):\n  // a pinned Stop drawn above the tiles during the hold"),
+
  ("ui 2.0 purge slide: the read after a Stop is sent before the Stop's answer",
   'ltcplay/web/remote2.html',
   "    while((TP_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < TP_STOP_WAIT_MS){\n",

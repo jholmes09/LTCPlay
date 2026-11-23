@@ -1509,6 +1509,7 @@
 "ui 2.0 cleaning slide: a Stop brings the handle back before a read shows the engine": "test_ui2_cleaning_slide_on_a_phone",
 "ui 2.0 cleaning slide: a cleaning read sent before the newest one delivered replaces it": "test_ui2_cleaning_slide_on_a_phone",
 "ui 2.0 cleaning slide: the pinned Stop cleaning drawn above the slide moves it out of its band and ends it": "test_ui2_cleaning_slide_on_a_phone",
+"ui 2.0 slide: a pinned Stop drawn above the tiles moves the flame slide out of its band and lets go of the arm": "test_ui2_flame_slide_to_arm_on_a_phone",
 "ui 2.0 purge slide: the read after a Stop is sent before the Stop's answer": "test_ui2_timed_purge_slide_on_a_phone",
 "ui 2.0 purge slide: the pinned Stop purge drawn above the slide moves it out of its band and ends it": "test_ui2_timed_purge_slide_on_a_phone",
 "ui 2.0 purge slide: the pinned Stop purge leaves a held slide beating": "test_ui2_timed_purge_slide_on_a_phone",
