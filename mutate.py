@@ -3834,10 +3834,44 @@ MUTATIONS = [
   "  if(WCS_STOPPING) return {mode:\"unknown\", word:\"Stopping\", stopping:true};\n",
   ""),
 
+ # Cold review of #299: a line drawn above the slide (the pinned Stop
+ # cleaning) never ends it; the live status and a stale read never show
+ # the handle while it runs; a Stop's read waits for its answer; the
+ # pinned Stop ends a held slide; a failed Stop's words stay.
+ ("ui 2.0 cleaning slide: the pinned Stop cleaning drawn above the slide moves it out of its band and ends it",
+  'ltcplay/web/remote2.html',
+  "  const r = s.b0;\n  if(s.ly < r.top - SLIDE_BAND_PX",
+  "  const r = s.el.getBoundingClientRect();\n  if(s.ly < r.top - SLIDE_BAND_PX"),
+
+ ("ui 2.0 cleaning slide: the live status saying it runs is ignored while the cleaning reads fail",
+  'ltcplay/web/remote2.html',
+  "  const live = wcsLive();\n",
+  "  const live = null;\n"),
+
+ ("ui 2.0 cleaning slide: a stale cleaning read still shows the handle",
+  'ltcplay/web/remote2.html',
+  "  if(v && v.available && Date.now() - WCS_READ_AT >= WCS_FRESH_MS)\n",
+  "  if(false)\n"),
+
+ ("ui 2.0 cleaning slide: the read after a Stop is sent before the Stop's answer",
+  'ltcplay/web/remote2.html',
+  "    while((WCS_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < WCS_STOP_WAIT_MS){\n",
+  "    while(false){\n"),
+
+ ("ui 2.0 cleaning slide: the pinned Stop cleaning leaves a held slide beating",
+  'ltcplay/web/remote2.html',
+  "    if(typeof slideCancel === \"function\") slideCancel(\"Stop was pressed\");\n    if(typeof wcsStopSeen === \"function\") wcsStopSeen();\n",
+  "    if(typeof wcsStopSeen === \"function\") wcsStopSeen();\n"),
+
+ ("ui 2.0 cleaning slide: a slide's not started covers a failed Stop's words",
+  'ltcplay/web/remote2.html',
+  "  if(t && /\\bNOT\\b/.test(t.textContent)) return;\n",
+  ""),
+
  ("ui 2.0 cleaning slide: a cleaning read sent before the newest one delivered replaces it",
   'ltcplay/web/remote2.html',
-  "/^\\/api\\/remote\\/(morning|cleaning)(\\?|$)/",
-  "/^\\/api\\/remote\\/(morning)(\\?|$)/"),
+  "    if(n < c.last && c.newest) return c.newest;\n",
+  "    if(n < c.last && c.newest && m[1] !== \"cleaning\") return c.newest;\n"),
 
 
 

@@ -2587,6 +2587,7 @@ $("pins").addEventListener("click", async e => {
   } else if(k === "wc"){
     // 1.0's wcStopPress: the cleaning's Stop, always pressable. The
     // cleaning slide's pending read never speaks after it.
+    if(typeof slideCancel === "function") slideCancel("Stop was pressed");
     if(typeof wcsStopSeen === "function") wcsStopSeen();
     try{ const j = await post("/api/remote/cleaning-stop", actor({})); say("Cleaning stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Cleaning NOT stopped.", e2.message, "bad"); disarmFailed("Cleaning NOT stopped.", e2.message); }
@@ -5479,6 +5480,7 @@ window.addEventListener("pointerdown", e => { if(TP_QUIET && !SLIDE && e !== TP_
     const c = count[m[1]] || (count[m[1]] = {sent:0, last:0, newest:null});
     const n = ++c.sent;
     const j = await read(p, ms);
+    if(m[1] === "cleaning") WCS_READ_AT = Date.now();
     if(n < c.last && c.newest) return c.newest;
     c.last = n; c.newest = j;
     return j;
@@ -5503,11 +5505,12 @@ window.addEventListener("pointerdown", e => { if(TP_QUIET && !SLIDE && e !== TP_
 // nothing at the engine, and the slide never sends a new hold or a Stop.
 // The slide's own release and click land on nothing (WCS_QUIET); any new
 // touch is a new press, and a Stop is never held back.
-const WCS_QUIET_MS = 2000, WCS_READ_HOLD_MS = 1500, WCS_SAY_MS = 6000,
+const WCS_QUIET_MS = 2000, WCS_READ_HOLD_MS = 1500, WCS_SAY_MS = 6000, WCS_FRESH_MS = 2500, WCS_LOST_MS = 5000,
+  WCS_STOP_WAIT_MS = 10000,
   WCS_STOP_WHY = ["Stop was pressed", "Stop show was pressed"],
   WCS_STATES = ["idle", "starting", "acking", "phase1", "paused", "phase2"];
 let WCS_QUIET = null, WCS_DOUBT = false, WCS_READING = 0, WCS_CHECK = false, WCS_STARTED = 0, WCS_STOPPING = 0,
-  WCS_LINE = null, WCS_SAID = {text:"", at:0}, WCS_OB = null;
+  WCS_LINE = null, WCS_SAID = {text:"", at:0}, WCS_OB = null, WCS_READ_AT = 0, WCS_STOP_OUT = 0;
 // The phone's line says only these short words (wcsLine), never 1.0's or
 // the engine's own text.
 function wcsLine(text){ WCS_LINE = {text:text, at:Date.now()}; }
@@ -5535,8 +5538,18 @@ function wcsLook(){
   // (a new press now is refused at best, and ends a hold under way).
   if(WCS_STARTED || (wcsGone() && !wcsOrphan())) return {mode:"run", word:"Running on its own", started:true};
   if(WC_HOLD) return {mode:"starting", word:"Starting. Keep your finger there."};
-  if(state === "phase1") return {mode:"run", word:"Phase 1 running"};
-  if(state === "phase2") return {mode:"run", word:"Bursts firing"};
+  // Every screen's status says what the engine does now (the pinned Stop
+  // cleaning comes from it): running there is running here, whatever the
+  // last cleaning read said.
+  const live = wcsLive();
+  if(state === "phase1" || live === "phase1") return {mode:"run", word:"Phase 1 running"};
+  if(state === "phase2" || live === "phase2") return {mode:"run", word:"Bursts firing", bursts2:true};
+  if(live === "unknown") return {mode:"unknown", word:"Not known", lost:true};
+  // The cleaning reads failing or late: the last one is no proof of now.
+  if(v && v.available && Date.now() - WCS_READ_AT >= WCS_FRESH_MS)
+    return Date.now() - WCS_READ_AT >= WCS_LOST_MS ? {mode:"unknown", word:"Not known", lost:true} : {mode:"unknown", word:"Checking"};
+  // The status and the read disagree: neither is proof yet.
+  if(live && state && live !== state) return {mode:"unknown", word:"Checking"};
   if(st.ok && state === "idle") return {mode:"go", word:"Start the cleaning"};
   if(st.ok && state === "paused") return {mode:"go", word:"Fire the bursts", bursts:true};
   return {mode:"na", word:state === "paused" ? "Paused" : "Cleaning"};
@@ -5553,12 +5566,12 @@ function renderWcSlide(){
 // The phone's line: only this page's own short words; "runs" only while
 // the engine, read, says it runs.
 function wcsLineNow(lk){
-  if(WCS_DOUBT) return "Not known. Check the tile.";
+  if(WCS_DOUBT || lk.lost) return "Not known. Check the tile.";
   if(lk.stopping) return "Stopping. Checking with the engine.";
   if(lk.mode === "unknown") return "Checking with the engine.";
   if(lk.mode === "starting") return "Keep your finger at the end.";
   if(lk.started) return "Running on its own. You can let go.";
-  if(lk.mode === "run") return WC && WC.state === "phase2" ? "Bursts firing. Stop ends them." : "Phase 1 runs. Stop ends it.";
+  if(lk.mode === "run") return lk.bursts2 ? "Bursts firing. Stop ends them." : "Phase 1 runs. Stop ends it.";
   if(WCS_LINE && Date.now() - WCS_LINE.at < WCS_SAY_MS) return WCS_LINE.text;
   if(lk.bursts) return "Phase 1 done. Slide for the bursts.";
   return lk.mode === "na" ? wcsWhyNot() : "";
@@ -5575,6 +5588,16 @@ function wcsWhyNot(){
   if(v.blocked) return "Not allowed now.";
   return "";
 }
+// The cleaning's state in every screen's status (the engine's summary),
+// or null when the status has none.
+function wcsLive(){ const c = ST && ST.cleaning; return c && typeof c.state === "string" ? c.state : null; }
+// The toast: never over a failure the operator must act on (a Stop that
+// did NOT stop); the phone line still says it.
+function wcsSay(short, full, level){
+  const t = $("msg-t");
+  if(t && /\bNOT\b/.test(t.textContent)) return;
+  say(short, full, level);
+}
 // The event that ended the slide (a second finger's pointerdown) is not
 // a new press after it.
 function wcsQuiet(s){ WCS_QUIET = {id:s.id, at:Date.now(), fresh:false, ev:window.event || null}; }
@@ -5586,7 +5609,10 @@ function wcSlideCheck(s){
   if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
   if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
   if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
-  const r = s.el.getBoundingClientRect();
+  // The band is where the slide was when the finger went down: a line
+  // drawn above it (the pinned Stop cleaning, an alert) moves the slide,
+  // never the finger.
+  const r = s.b0;
   if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("the finger moved off the slide"); return; }
   if(s.phase === "end"){
     // The hold waits for the engine's answer, as today's does. Only the
@@ -5626,6 +5652,16 @@ function wcsStartedRead(){ return wcsStateRead(false, ++WCS_READING); }
 async function wcsStateRead(stop, me){
   if(stop) WCS_STOPPING = Date.now(); else WCS_STARTED = Date.now();
   renderWcSlide();
+  if(stop){
+    // The Stop is sent just after this (1.0's press, the pin, Stop show):
+    // only a read sent once its answer is in proves what the engine does.
+    const t0 = Date.now();
+    await new Promise(r => setTimeout(r, 0));
+    while((WCS_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < WCS_STOP_WAIT_MS){
+      await new Promise(r => setTimeout(r, 100));
+      if(me !== WCS_READING) return;
+    }
+  }
   for(;;){
     let v = null, none = false;
     try{ v = await getJSON("/api/remote/cleaning", 1500); }catch(e){ none = !!e && e.status === 404; }
@@ -5659,7 +5695,7 @@ function wcSlideEnd(s, why){
   wcsQuiet(s);
   if(done) return;
   if(!held){
-    if(why && why !== "let go") say("Nothing sent.", "Cleaning slide stopped: " + why + ". Nothing was sent.", "");
+    if(why && why !== "let go") wcsSay("Nothing sent.", "Cleaning slide stopped: " + why + ". Nothing was sent.", "");
     renderWcSlide();
     return;
   }
@@ -5701,7 +5737,7 @@ async function wcsRead(why, c0){
     }
     if(!told){
       told = true; WCS_DOUBT = true;
-      say("Not known. Check the tile.", "Cleaning not known: the engine could not be read. Check it before you slide again. Stop ends it.", "bad");
+      wcsSay("Not known. Check the tile.", "Cleaning not known: the engine could not be read. Check it before you slide again. Stop ends it.", "bad");
       renderWcSlide();
     }
     await new Promise(r => setTimeout(r, 500));
@@ -5714,22 +5750,22 @@ function wcsTell(v, why, c0){
   const st = v.state, why2 = why === "let go" ? "You let go before the engine started it. " : why ? "Cleaning slide stopped: " + why + ". " : "";
   if(st === "starting" || st === "acking"){
     // Another screen's hold, never said as this one's.
-    say("Another screen is starting it.", "Another screen is starting the cleaning now. Check the tile.", "bad");
+    wcsSay("Another screen is starting it.", "Another screen is starting the cleaning now. Check the tile.", "bad");
     wcsLine("Another screen is starting it.");
   } else if(st === "phase1"){
-    say("Cleaning running.", "The engine says phase 1 runs on its own. Stop ends it.", "ok");
+    wcsSay("Cleaning running.", "The engine says phase 1 runs on its own. Stop ends it.", "ok");
   } else if(st === "phase2"){
-    say("Bursts firing.", "The engine says the purge bursts are firing. Stop ends them.", "ok");
+    wcsSay("Bursts firing.", "The engine says the purge bursts are firing. Stop ends them.", "ok");
   } else if(st === "paused" && c0 === "paused"){
-    say("Bursts not started.", why2 + "The engine says it is still paused. Nothing fired.", "");
+    wcsSay("Bursts not started.", why2 + "The engine says it is still paused. Nothing fired.", "");
     wcsLine("Still paused. Nothing fired.");
   } else if(st === "paused"){
-    say("Cleaning running.", "The engine says phase 1 is done and waits for the bursts.", "ok");
+    wcsSay("Cleaning running.", "The engine says phase 1 is done and waits for the bursts.", "ok");
   } else if(c0 === "idle" && /nothing started\.?$/.test(String(v.last_cut || ""))){
-    say("Cleaning not started.", why2 + "The engine says nothing started and none runs.", "");
+    wcsSay("Cleaning not started.", why2 + "The engine says nothing started and none runs.", "");
     wcsLine("Not started. Nothing runs.");
   } else {
-    say("Not running now.", "The engine says no cleaning runs now, but not whether this slide started one. Check the tile.", "bad");
+    wcsSay("Not running now.", "The engine says no cleaning runs now, but not whether this slide started one. Check the tile.", "bad");
     wcsLine("Not running now. Check the tile.");
   }
 }
@@ -5739,9 +5775,23 @@ document.addEventListener("pointerdown", e => {
   if(!b || !slidePhone() || b.dataset.mode !== "go") return;
   e.preventDefault();
   slideDown(e, b, "wc");
-  if(SLIDE && SLIDE.i === "wc" && SLIDE.el === b){ SLIDE.phase = "slide"; SLIDE.run = null; }
+  if(SLIDE && SLIDE.i === "wc" && SLIDE.el === b){
+    const r = b.getBoundingClientRect();
+    SLIDE.phase = "slide"; SLIDE.run = null; SLIDE.b0 = {top:r.top, bottom:r.bottom};
+  }
 });
 document.addEventListener("contextmenu", e => { if(slidePhone() && e.target && e.target.closest && e.target.closest("#wc-slide")) e.preventDefault(); });
+// A cleaning Stop on its way (1.0's wcStopPress, the pin): counted until
+// its answer is in, for wcsStateRead. 1.0's post itself is unchanged;
+// only its name is wrapped.
+{
+  const send = post;
+  post = async function(p){
+    if(!/^\/api\/remote\/cleaning-stop(\?|$)/.test(String(p))) return send.apply(this, arguments);
+    WCS_STOP_OUT++;
+    try{ return await send.apply(this, arguments); } finally { WCS_STOP_OUT--; }
+  };
+}
 // The step's Stop (1.0's wcStopPress, wired by dayWire): the slide ends
 // and its pending read never speaks after it.
 document.addEventListener("click", e => {

@@ -121517,11 +121517,15 @@ _UI2_WC_SLIDE_STEPS = r"""
 const q = id => document.getElementById(id);
 const nap = ms => new Promise(r => setTimeout(r, ms));
 const msg = () => q("msg-t") ? q("msg-t").textContent : "";
-let s_pre = null, s_words = "", s_line = "", s_flip = null;
+let s_pre = null, s_words = "", s_line = "", s_flip = null, s_pin = false;
 const TE = {state:"idle", hold:null, done:null, dead:new Set(), last_cut:"", last_note:"", until:0, after:"", late:0, blind:false,
   blindAfter:false, failAll:0, readLate:0, runMs:0, refuse:"", stopFail:false, otherOnRelease:false, holdOne:false, held:0, holdMs:1400,
-  second:0, ended_by_press:0, starts:0, posts:[]};
+  second:0, ended_by_press:0, starts:0, posts:[], getFail:0, liveOnly:"", noLive:false, stopLate:0};
 const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
+// Every screen's status carries the engine's cleaning summary, as
+// remote.py's does (the pinned Stop cleaning comes from it).
+window.__patch = st => { if(TE.noLive) delete st.cleaning;
+  else st.cleaning = {available:true, state:TE.liveOnly || TE.state, text:""}; return st; };
 const endHold = why => {
   const h = TE.hold; if(!h) return;
   TE.dead.add(h.run); TE.hold = null;
@@ -121579,6 +121583,7 @@ window.fetch = async (url, opt) => {
   }
   if(post && /\/api\/remote\/cleaning-stop$/.test(u)){
     TE.posts.push({route:"stop"});
+    if(TE.stopLate) await nap(TE.stopLate);
     if(TE.stopFail) return J(500, {error:"Engine error."});
     if(TE.hold && TE.hold.who === "me") TE.dead.add(TE.hold.run);
     TE.hold = null; TE.until = 0;
@@ -121593,6 +121598,7 @@ window.fetch = async (url, opt) => {
     }
     if(TE.readLate) await nap(TE.readLate);
     if(TE.blind) throw new TypeError("Failed to fetch");
+    if(TE.getFail) return J(TE.getFail, {error:"Service unavailable."});
     return J(200, view());
   }
   return hf(url, opt);
@@ -121608,19 +121614,19 @@ const stops = p => p.filter(x => x.route === "stop").length;
 const running = () => TE.state === "phase1" || TE.state === "phase2";
 const settle = async () => { TE.hold = null; TE.state = "idle"; TE.until = 0; TE.after = ""; TE.late = 0; TE.blind = false; TE.blindAfter = false;
   TE.failAll = 0; TE.readLate = 0; TE.runMs = 0; TE.refuse = ""; TE.stopFail = false; TE.otherOnRelease = false; TE.holdOne = false;
-  TE.second = 0; TE.ended_by_press = 0; WCS_READING++; WCS_STOPPING = 0; WCS_DOUBT = false; WCS_CHECK = false; WCS_STARTED = 0; WCS_LINE = null;
+  TE.second = 0; TE.ended_by_press = 0; TE.getFail = 0; TE.liveOnly = ""; TE.noLive = false; TE.stopLate = 0; WCS_READING++; WCS_STOPPING = 0; WCS_DOUBT = false; WCS_CHECK = false; WCS_STARTED = 0; WCS_LINE = null;
   await nap(1300); };
 const sample = async ms => { const out2 = []; for(let t = 0; t < ms; t += 60){ out2.push([sb().dataset.mode, q("wc-sl").textContent,
   getComputedStyle(sb().querySelector(".knob")).display]); await nap(60); } return out2; };
 const waitFor = async (f, ms) => { for(let i = 0; i < (ms || 3000) / 20 && !f(); i++) await nap(20); return !!f(); };
-async function slide(moves, end){
+async function slide(moves, end, keep){
   const el = sb(); el.scrollIntoView({block:"center"}); await nap(120);
   const kn = el.querySelector(".knob"), travel = el.clientWidth - kn.offsetWidth - 2 * kn.offsetLeft, r = el.getBoundingClientRect();
   const id = ++PID;
   const x0 = r.left + el.clientLeft + kn.offsetLeft + kn.offsetWidth / 2, y0 = r.top + el.clientTop + kn.offsetTop + kn.offsetHeight / 2;
   let x = x0, y = y0;
   const p0 = TE.posts.length;
-  q("msg-t").textContent = "";
+  if(!keep) q("msg-t").textContent = "";
   pe(kn, "pointerdown", x, y, id);
   const res = {slid:!!SLIDE, p0:p0};
   const walk = async (tx, ty) => {
@@ -121641,7 +121647,8 @@ async function slide(moves, end){
   return res;
 }
 // The slide's own release and click on everything under it.
-const own = c => { for(const el of [q("wc-stop"), sb()]){
+const pin = () => document.querySelector('#pins [data-pin="wc"]');
+const own = c => { for(const el of [q("wc-stop"), sb(), pin()]){
   if(!el) continue; const r = el.getBoundingClientRect(); pe(el, "pointerup", r.left + 5, r.top + 5, c.id); clk(el, c.id); } };
 async function fin(res, ms){
   await nap(ms || 900);
@@ -121721,11 +121728,13 @@ if(PART === "desk"){
   // it, a new finger or one reusing the pointerId.
   for(const k of ["full", "full_reused"]){
     const s = await slide([[0.85, 0, 700], [c => { c.pre = TE.posts.length - c.p0; s_pre = c.pre; }], [1, 0, 0],
-      [async c => { await waitFor(() => running(), 3000); await nap(80); s_words = words(); s_line = q("wc-sl").textContent; }]],
+      [async c => { await waitFor(() => running(), 3000); await nap(80); s_words = words(); s_line = q("wc-sl").textContent;
+        s_pin = !!pin(); }]],
       async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); await nap(300);
         c.own_stops = stops(TE.posts.slice(c.p0)); c.own_running = running();
         tap(q("wc-stop"), k === "full" ? ++PID : c.id); });
     s.pre = s_pre; s.hold_words = s_words; s.line_held = s_line; s.own_stops = s.c.own_stops; s.own_running = s.c.own_running;
+    s.pin = s_pin;
     out[k] = await fin(s);
   }
   // Under 90 percent, lifted: nothing sent.
@@ -121803,7 +121812,7 @@ if(PART === "desk"){
     await nap(2600);
     out.stop_during = await fin(s, 100);
     await nap(2500); }
-  } else {
+  } else if(PART === "phone4"){
   // The started answer in, the engine read slowly: no handle, no new
   // slide (a new press would be refused, or end a hold).
   { TE.readLate = 1000;
@@ -121849,7 +121858,9 @@ if(PART === "desk"){
   // fresh read made once the engine said it runs (late_poll), or before
   // it (early_poll). Never the handle while the engine runs.
   for(const [k, ms, rl] of [["late_poll", 2000, 0], ["early_poll", 1800, 1200]]){
-    TE.holdMs = ms; TE.held = 0;
+    // late_poll with no cleaning in the status: only the read numbering
+    // stands between the late read and the handle.
+    TE.holdMs = ms; TE.held = 0; TE.noLive = k === "late_poll";
     const s = await slide([[0.85, 0, 0], [async c => { TE.holdOne = true; await waitFor(() => TE.held > 0, 1500); TE.readLate = rl; }],
       [1, 0, 0], [async c => { await waitFor(() => running(), 3000); s_flip = await sample(1800); }]]);
     s.during = s_flip; s.held = TE.held;
@@ -121873,6 +121884,41 @@ if(PART === "desk"){
     out.refused = await fin(await slide([[1, 0, 300]]), 1200); }
   // After all of it, a slide still starts one.
   { const s = await slide([[1, 0, 0], [async c => { await waitFor(() => running(), 3000); await nap(200); }]]); out.again = await fin(s); }
+  } else {
+  // Cold review of #299. F2: the cleaning reads fail (503) as another
+  // screen starts it: every screen's status says it runs, so no handle.
+  { const p0 = TE.posts.length; TE.getFail = 503; await nap(300); TE.state = "phase1"; await nap(400);
+    const d = await sample(1500); out.reads_fail = await fin({p0:p0, during:d}, 100); }
+  // F2: the same with no cleaning in the status: once the last read is
+  // too old, no handle.
+  { const p0 = TE.posts.length; TE.noLive = true; TE.getFail = 503; await nap(300); TE.state = "phase1"; await nap(2300);
+    const d = await sample(1500); out.reads_fail_nolive = await fin({p0:p0, during:d}, 100); }
+  // F2: the status says it runs while the last read said idle.
+  { const p0 = TE.posts.length; TE.liveOnly = "phase1"; await nap(500);
+    const d = await sample(900); out.live_other = await fin({p0:p0, during:d}, 100); }
+  // F3: paused, the step's Stop answered 1.5 s late, the engine read
+  // before: no handle until a read made after the Stop's answer.
+  { TE.state = "paused"; await nap(900); const p0 = TE.posts.length; TE.stopLate = 1500;
+    tap(q("wc-stop"), ++PID); const d = await sample(1400); await nap(1500);
+    out.stop_late_answer = await fin({p0:p0, during:d}, 100); }
+  // F4: the pinned Stop cleaning pressed with a key (a click with no
+  // touch) while the slide holds: the slide ends, no beat after it.
+  { const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!pin(), 1500); s_pin = !!pin(); const n0 = TE.posts.length;
+      pin().dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:0})); const gone = !SLIDE; await nap(500);
+      s_flip = {slide:!gone, beats:TE.posts.slice(n0).filter(x => x.route === "beat" && x.hold === true).length}; }]]);
+    s.pin = s_pin; s.after = s_flip;
+    out.pin_key = await fin(s, 1200); }
+  // F1: a failed Stop says Cleaning NOT stopped; a slide read after it
+  // never covers that.
+  { TE.state = "phase1"; TE.stopFail = true; await waitFor(() => !!pin(), 2000); await nap(300);
+    pin().click(); await nap(1200); const said = msg();
+    TE.stopFail = false; TE.state = "idle";
+    // A failed Stop shows its alert on SHOW: back to the step.
+    document.querySelector('.tab[data-tab="day"]').click(); await nap(600);
+    if(DAY_STEP !== "clean"){ const st = document.querySelector('#d-steps [data-step="clean"]'); if(st) st.click(); }
+    await waitFor(() => sb() && sb().dataset.mode === "go", 4000);
+    const s = await slide([[1, 0, 300]], null, true); s.said0 = said;
+    out.not_over_fail = await fin(s, 1500); }
   }
 }
 out.hist = history.state;
@@ -121932,7 +121978,8 @@ def test_ui2_cleaning_slide_on_a_phone():
         for part, need, ms in (("phone", "pre_cuts", 80000),
                                ("phone2", "cuts", 60000),
                                ("phone3", "stop_during", 120000),
-                               ("phone4", "again", 120000)):
+                               ("phone4", "again", 120000),
+                               ("phone5", "not_over_fail", 90000)):
             x = _ui2_drive_framed(chrome, page, _ui2_status_day(),
                                   whole_js + _UI2_WC_SLIDE_STEPS.replace(
                                       "__PART__", part),
@@ -121966,7 +122013,7 @@ def test_ui2_cleaning_slide_on_a_phone():
               f"{r['tap']}")
         for k in ("full", "full_reused"):
             f = r[k]
-            check(f["slid"] and f["pre"] == 0 and f["holds"] and
+            check(f["pin"] and f["slid"] and f["pre"] == 0 and f["holds"] and
                   all(x is True for x in f["holds"]) and f["runs"] == 1 and
                   f["own_stops"] == 0 and f["own_running"] and
                   f["stops"] == 1 and f["state"] == "idle" and
@@ -122151,6 +122198,33 @@ def test_ui2_cleaning_slide_on_a_phone():
         check(g["holds"] and all(h is True for h in g["holds"]) and
               g["state"] == "phase1" and g["stops"] == 0,
               f"{where}: after all of it a slide still starts one: {g}")
+        # Cold review of #299.
+        for k in ("reads_fail", "reads_fail_nolive", "live_other"):
+            x = r[k]
+            check(x["during"] and all(m != "go" and kd == "none"
+                                      for m, _l, kd in x["during"]) and
+                  x["posts"] == [],
+                  f"{where}: {k}: the engine runs, the last cleaning read "
+                  f"said idle: never the handle: {x}")
+        x = r["stop_late_answer"]
+        check(x["during"] and all(m != "go" and kd == "none"
+                                  for m, _l, kd in x["during"]) and
+              x["stops"] == 1 and x["state"] == "idle" and
+              x["mode"] == "go" and x["word"] == "Start the cleaning",
+              f"{where}: paused, the Stop's answer late: no handle until a "
+              f"read made after the answer, then the engine's idle: {x}")
+        x = r["pin_key"]
+        check(x["pin"] and x["after"]["slide"] is False and
+              x["after"]["beats"] == 0 and x["stops"] == 1 and
+              x["state"] == "idle",
+              f"{where}: the pinned Stop cleaning by key while the slide "
+              f"holds: the slide ends, no beats after: {x}")
+        x = r["not_over_fail"]
+        check(x["said0"] == "Cleaning NOT stopped." and
+              x["msg"] == "Cleaning NOT stopped." and
+              x["line"] == "Not started. Nothing runs.",
+              f"{where}: a failed Stop's words are never covered by a "
+              f"slide's not started: {x}")
     for size, coarse in (((1280, 800), False), ((768, 1024), True)):
         r = _ui2_drive_framed(chrome, page, _ui2_status_day(),
                               whole_js + _UI2_WC_SLIDE_STEPS.replace(
