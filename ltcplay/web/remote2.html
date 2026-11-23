@@ -2578,7 +2578,8 @@ $("pins").addEventListener("click", async e => {
   if(k === "tp"){
     // 1.0's Stop purge: from every screen, never refused for a timed
     // purge (review of #172). The purge slide's pending read never speaks
-    // after it.
+    // after it, and a held slide ends (as the step's Stop purge does).
+    if(typeof slideCancel === "function") slideCancel("Stop purge was pressed");
     if(typeof tpStopSeen === "function") tpStopSeen();
     try{ const j = await post("/api/remote/purge-stop", actor({})); say("Purge stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Purge NOT stopped.", e2.message + " Disarm flames ends it from any screen.", "bad"); }
@@ -4967,9 +4968,13 @@ function slideDown(e, el, i){
   // its travel from the layout, never from where a transition has it.
   knob.style.transition = "none";
   knob.style.transform = "";
+  // Where the slide is as the finger goes down: its band (SLIDE_BAND_PX)
+  // is measured from here, never from where a line drawn above it later
+  // (a pinned Stop, an alert) has moved it.
+  const r0 = el.getBoundingClientRect();
   const s = SLIDE = {el:el, knob:knob, i:i, id:e.pointerId, x0:e.clientX, lx:e.clientX, ly:e.clientY,
     travel:Math.max(1, el.clientWidth - knob.offsetWidth - 2 * knob.offsetLeft), frac:0, h:null, t0:0, paused:false, at:0,
-    back:false, tick:0, vw:innerWidth, vh:innerHeight};
+    back:false, tick:0, vw:innerWidth, vh:innerHeight, b0:{top:r0.top, bottom:r0.bottom}};
   s.tick = setInterval(slideCheck, SLIDE_TICK_MS);
   // Back (or a Samsung's swipe from the edge) while the finger is down
   // takes this entry away and ends the slide, never the page.
@@ -5023,7 +5028,11 @@ function slideCheck(){
   if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
   // A resize or a turn that has not fired its event yet.
   if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
-  const r = s.el.getBoundingClientRect();
+  const r = s.b0;
+  // The band is where the slide was when the finger went down (slideDown):
+  // a pinned Stop drawn above the tiles during the hold (live flame
+  // programming, another screen's purge or cleaning) or an alert moves the
+  // slide, never the finger, and never lets go of the arm.
   if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("let go"); return; }
   if(!s.paused){
     // Under 90 percent: never as far as the engine's whole hold. Let go
@@ -5120,7 +5129,10 @@ function lzSlideCheck(s){
   if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
   if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
   if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
-  const r = s.el.getBoundingClientRect();
+  const r = s.b0;
+  // The lasers' band is where the slide was when the finger went down
+  // (slideDown): a pinned Stop or an alert drawn above the tiles during
+  // the slide moves it, never the finger.
   if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX) slideCancel("the finger left the slide");
 }
 function lzSlideEnd(s, why){
@@ -5231,8 +5243,8 @@ window.addEventListener("orientationchange", () => slideCancel("the screen turne
 // the let go after a start changes nothing at the engine, and the slide
 // never sends a new hold or a Stop purge. The slide's own release and
 // click land on nothing (TP_QUIET); any new touch is a new press.
-const TP_QUIET_MS = 2000, TP_READ_HOLD_MS = 1500, TP_STOP_WHY = ["Stop purge was pressed", "Stop show was pressed"];
-let TP_QUIET = null, TP_DOUBT = false, TP_READING = 0, TP_CHECK = false, TP_STARTED = 0, TP_STOPPING = 0, TP_LINE = null;
+const TP_QUIET_MS = 2000, TP_READ_HOLD_MS = 1500, TP_STOP_WAIT_MS = 10000, TP_STOP_WHY = ["Stop purge was pressed", "Stop show was pressed"];
+let TP_QUIET = null, TP_DOUBT = false, TP_READING = 0, TP_CHECK = false, TP_STARTED = 0, TP_STOPPING = 0, TP_LINE = null, TP_STOP_OUT = 0;
 // The phone's line says only these short words (tpLine), never 1.0's or
 // the engine's own text.
 function tpLine(text){ TP_LINE = {text:text, at:Date.now()}; }
@@ -5305,7 +5317,10 @@ function tpSlideCheck(s){
   if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
   if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
   if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
-  const r = s.el.getBoundingClientRect();
+  const r = s.b0;
+  // The band is where the slide was when the finger went down (slideDown):
+  // the pinned Stop purge, drawn above once the engine says it runs, or an
+  // alert moves the slide, never the finger.
   if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("the finger left the slide"); return; }
   if(s.phase === "end"){
     // The control may show the purge running under the finger: the hold
@@ -5349,6 +5364,18 @@ function tpStartedRead(){ return tpStateRead(false, ++TP_READING); }
 async function tpStateRead(stop, me){
   if(stop) TP_STOPPING = Date.now(); else TP_STARTED = Date.now();
   renderTpSlide();
+  if(stop){
+    // The Stop is sent just after this (1.0's tpStopPress, the pin, Stop
+    // show): only a read sent once its answer is in proves what the
+    // engine does. A read answered first could bring the handle back
+    // while the Stop is still on its way (bounded: TP_STOP_WAIT_MS).
+    const t0 = Date.now();
+    await new Promise(r => setTimeout(r, 0));
+    while((TP_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < TP_STOP_WAIT_MS){
+      await new Promise(r => setTimeout(r, 100));
+      if(me !== TP_READING) return;
+    }
+  }
   for(;;){
     let mo = null;
     try{ mo = await getJSON("/api/remote/morning", 1500); }catch(_e){}
@@ -5452,6 +5479,17 @@ async function tpSlideRead(why, fires0){
   ob.observe($("tp-hold"), {childList:true, characterData:true, subtree:true, attributes:true});
   ob.observe($("tp"), {attributes:true, attributeFilter:["hidden"]});
   $("tp-stop").addEventListener("click", () => { slideCancel("Stop purge was pressed"); tpStopSeen(); });
+}
+// A Stop purge on its way (1.0's tpStopPress, the pin): counted until its
+// answer is in, for tpStateRead. 1.0's post itself is unchanged; only its
+// name is wrapped.
+{
+  const send = post;
+  post = async function(p){
+    if(!/^\/api\/remote\/purge-stop(\?|$)/.test(String(p))) return send.apply(this, arguments);
+    TP_STOP_OUT++;
+    try{ return await send.apply(this, arguments); } finally { TP_STOP_OUT--; }
+  };
 }
 // The slide's own release and click (its pointer, no touch since, for a
 // bounded time) land on nothing: not Stop purge, not a preset, not the
