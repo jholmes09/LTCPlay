@@ -3734,13 +3734,111 @@ MUTATIONS = [
  # newer one; a click with no pointerId is never held back.
  ("ui 2.0 purge slide: a morning read sent before the newest one delivered replaces it",
   'ltcplay/web/remote2.html',
-  "    if(n < last && newest) return newest;\n",
+  "    if(n < c.last && c.newest) return c.newest;\n",
   ""),
 
  ("ui 2.0 purge slide: a Stop purge click with no pointerId is held back after a slide",
   'ltcplay/web/remote2.html',
   "  if(e.pointerId === qz.id){\n    e.preventDefault(); e.stopImmediatePropagation();\n",
   "  if(e.pointerId === qz.id || (t === \"click\" && !(e.pointerId > 0) && e.detail > 0 && age < 400)){\n    e.preventDefault(); e.stopImmediatePropagation();\n"),
+
+ # Step 7b of the phone build: on a touch phone the wave flamer cleaning
+ # starts with a slide in front of today's two holds. Nothing is sent
+ # before 90 percent; every end after it is read against the engine
+ # before anything is said, unreadable is not known, not started only when
+ # the engine proves it, another screen's hold is never this one's; no
+ # handle while a read is pending, after a started answer or a Stop; the
+ # slide's own release lands on nothing, a new tap and a plain click do.
+ ("ui 2.0 cleaning slide: the cleaning hold starts at the touch, before 90 percent",
+  'ltcplay/web/remote2.html',
+  "  if(s.frac < SLIDE_ARM) return;\n  const st = wcNow(), state = WC && WC.state;\n",
+  "  const st = wcNow(), state = WC && WC.state;\n"),
+
+ ("ui 2.0 cleaning slide: a slide stopped after 90 percent says not started without reading the engine",
+  'ltcplay/web/remote2.html',
+  "  else if(read) wcsRead(why, s.c0);\n",
+  "  else if(read){ WCS_CHECK = false; say(\"Cleaning not started.\", \"Nothing was started.\", \"\"); }\n"),
+
+ ("ui 2.0 cleaning slide: a hold that ended with a lost, 5xx or 409 answer is never read against the engine",
+  'ltcplay/web/remote2.html',
+  "  if(started) wcsStartedRead(); else wcsRead(\"\", s.c0);\n",
+  "  if(started) wcsStartedRead(); else WCS_CHECK = false;\n"),
+
+ ("ui 2.0 cleaning slide: an engine that cannot be read is said as not started",
+  'ltcplay/web/remote2.html',
+  "    const state = v && typeof v.available === \"boolean\" && WCS_STATES.includes(v.state) ? v.state : null;\n",
+  "    if(!v) v = {available:true, state:\"idle\", last_cut:\"; nothing started\"};\n    const state = v && typeof v.available === \"boolean\" && WCS_STATES.includes(v.state) ? v.state : null;\n"),
+
+ ("ui 2.0 cleaning slide: an engine that cannot be read stops checking and is not said as not known",
+  'ltcplay/web/remote2.html',
+  "      told = true; WCS_DOUBT = true;\n",
+  "      told = true; WCS_CHECK = false;\n"),
+
+ ("ui 2.0 cleaning slide: the finger leaving the band does not end the slide",
+  'ltcplay/web/remote2.html',
+  "  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel(\"the finger moved off the slide\"); return; }\n",
+  ""),
+
+ ("ui 2.0 cleaning slide: the slide's own release and click land on Stop",
+  'ltcplay/web/remote2.html',
+  "  if(e.pointerId === qz.id){ e.preventDefault(); e.stopImmediatePropagation(); }\n}, true));\n",
+  "}, true));\n"),
+
+ ("ui 2.0 cleaning slide: a Stop tap that reuses the slide's pointerId is held back",
+  'ltcplay/web/remote2.html',
+  "  if(!qz || SLIDE || qz.fresh) return;\n",
+  "  if(!qz || SLIDE) return;\n"),
+
+ ("ui 2.0 cleaning slide: the second finger that ends a slide counts as a new press for its lift",
+  'ltcplay/web/remote2.html',
+  "if(WCS_QUIET && !SLIDE && e !== WCS_QUIET.ev) WCS_QUIET.fresh = true;",
+  "if(WCS_QUIET && !SLIDE) WCS_QUIET.fresh = true;"),
+
+ ("ui 2.0 cleaning slide: a Stop click with no pointerId is held back after a slide",
+  'ltcplay/web/remote2.html',
+  "  if(e.pointerId === qz.id){ e.preventDefault(); e.stopImmediatePropagation(); }\n}, true));\n",
+  "  if(e.pointerId === qz.id || (t === \"click\" && !(e.pointerId > 0) && e.detail > 0)){ e.preventDefault(); e.stopImmediatePropagation(); }\n}, true));\n"),
+
+ ("ui 2.0 cleaning slide: while the engine is read after a hold ended, the slide shows its handle",
+  'ltcplay/web/remote2.html',
+  "  if(WCS_CHECK || wcsOrphan()) return {mode:\"unknown\", word:\"Checking\"};\n",
+  ""),
+
+ ("ui 2.0 cleaning slide: an idle engine is said as not started without its proof",
+  'ltcplay/web/remote2.html',
+  "  } else if(c0 === \"idle\" && /nothing started\\.?$/.test(String(v.last_cut || \"\"))){\n",
+  "  } else if(true){\n"),
+
+ ("ui 2.0 cleaning slide: another screen's hold is said as this slide's",
+  'ltcplay/web/remote2.html',
+  "  if(st === \"starting\" || st === \"acking\"){\n",
+  "  if(false){\n"),
+
+ ("ui 2.0 cleaning slide: a read pending when Stop is pressed still speaks after it",
+  'ltcplay/web/remote2.html',
+  "  WCS_READING++;\n  WCS_CHECK = false; WCS_DOUBT = false; WCS_STARTED = 0; WCS_LINE = null;\n",
+  "  WCS_CHECK = false; WCS_DOUBT = false; WCS_STARTED = 0; WCS_LINE = null;\n"),
+
+ ("ui 2.0 cleaning slide: the step's Stop leaves the slide's pending read to speak after it",
+  'ltcplay/web/remote2.html',
+  "closest(\"#wc-stop\")){ slideCancel(\"Stop was pressed\"); wcsStopSeen(); }",
+  "closest(\"#wc-stop\")){}"),
+
+ ("ui 2.0 cleaning slide: after the started answer an older read brings the handle back before a fresh read",
+  'ltcplay/web/remote2.html',
+  "  if(WCS_STARTED || (wcsGone() && !wcsOrphan())) return {mode:\"run\", word:\"Running on its own\", started:true};\n",
+  ""),
+
+ ("ui 2.0 cleaning slide: a Stop brings the handle back before a read shows the engine",
+  'ltcplay/web/remote2.html',
+  "  if(WCS_STOPPING) return {mode:\"unknown\", word:\"Stopping\", stopping:true};\n",
+  ""),
+
+ ("ui 2.0 cleaning slide: a cleaning read sent before the newest one delivered replaces it",
+  'ltcplay/web/remote2.html',
+  "/^\\/api\\/remote\\/(morning|cleaning)(\\?|$)/",
+  "/^\\/api\\/remote\\/(morning)(\\?|$)/"),
+
 
 
 

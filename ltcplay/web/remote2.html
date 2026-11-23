@@ -157,6 +157,8 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) var(--p
 .knob{display:none}
 /* The timed purge's slide (step 7): drawn on a touch phone only. */
 #tp-slide,#tp-sl{display:none}
+/* The cleaning's slide (step 7): drawn on a touch phone only. */
+#wc-slide,#wc-sl{display:none}
 .b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E;pointer-events:none}
 .b:disabled .fill{display:none}
 /* The quiet tone: signed out, no contact or the show not running. Only
@@ -923,6 +925,22 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     touch-action:none;z-index:1}
   #tp-sl{display:block}
   #tp-sl:empty{display:none}
+  /* The cleaning (step 7): the same slide in front of today's two holds
+     (the start, then the bursts). Today's button, its lines and 1.0's
+     message line are not drawn here: their words say Hold. */
+  #wc-hold,#wc-block,#wc-prog,#d-msg #wc-msg{display:none}
+  #wc-slide{display:flex;position:relative;flex:1 1 100%;min-width:0;margin:0 24px;justify-content:center;padding:0 8px 0 64px;
+    touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  #wc-slide[data-mode="starting"],#wc-slide[data-mode="run"]{background:var(--red-deep);border:3px solid var(--red);color:#fff}
+  #wc-slide[data-mode="run"],#wc-slide[data-mode="na"],#wc-slide[data-mode="unknown"]{padding:0 8px}
+  #wc-slide[data-mode="na"]{opacity:.45}
+  #wc-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
+  #wc-sw{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  #wc-slide[data-mode="go"] > .knob,#wc-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
+    position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:var(--green-ink);
+    touch-action:none;z-index:1}
+  #wc-sl{display:block}
+  #wc-sl:empty{display:none}
 }
 /* PHONE LAYOUT END */
 </style>
@@ -2567,7 +2585,9 @@ $("pins").addEventListener("click", async e => {
   } else if(k === "hzt"){
     hazerTestOff();
   } else if(k === "wc"){
-    // 1.0's wcStopPress: the cleaning's Stop, always pressable.
+    // 1.0's wcStopPress: the cleaning's Stop, always pressable. The
+    // cleaning slide's pending read never speaks after it.
+    if(typeof wcsStopSeen === "function") wcsStopSeen();
     try{ const j = await post("/api/remote/cleaning-stop", actor({})); say("Cleaning stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Cleaning NOT stopped.", e2.message, "bad"); disarmFailed("Cleaning NOT stopped.", e2.message); }
   } else if(k === "lf"){
@@ -3119,6 +3139,7 @@ $("tn-run").addEventListener("click", () => runShowHere());
 async function pressStop(route){
   if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
   if(typeof tpStopSeen === "function") tpStopSeen();
+  if(typeof wcsStopSeen === "function") wcsStopSeen();
   HALT_SEQ++;
   // Any Stop ends every armed first tap (Stop show, the strip's, the Run
   // card's): none of them says "not sent" after it.
@@ -4953,8 +4974,9 @@ function slideDown(e, el, i){
   // takes this entry away and ends the slide, never the page.
   try{ history.pushState({ltcSlide:true}, ""); s.back = true; }catch(_e){}
   // The lasers' slide sends nothing: its lift opens the confirm (lzSlideEnd).
-  // The timed purge's sends nothing until 90 percent (tpSlideCheck).
-  if(i !== "lz" && i !== "tp") slideHold(s);
+  // The timed purge's and the cleaning's send nothing until 90 percent
+  // (tpSlideCheck, wcSlideCheck).
+  if(i !== "lz" && i !== "tp" && i !== "wc") slideHold(s);
 }
 // The hold, the same as a press and hold: armStart or armAllStart.
 function slideHold(s){
@@ -4987,6 +5009,7 @@ function slideCheck(){
   if(!s) return;
   if(s.i === "lz"){ lzSlideCheck(s); return; }
   if(s.i === "tp"){ tpSlideCheck(s); return; }
+  if(s.i === "wc"){ wcSlideCheck(s); return; }
   // The hold ended by itself (armed, refused, lapsed), and said so.
   if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }
   if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
@@ -5030,6 +5053,7 @@ function slideCancel(why){
   if(!s) return;
   if(s.i === "lz"){ lzSlideEnd(s, why); return; }
   if(s.i === "tp"){ tpSlideEnd(s, why); return; }
+  if(s.i === "wc"){ wcSlideEnd(s, why); return; }
   if(s.h && HOLD === s.h) slideStop(s, why);
   else if(s.paused && why) slideSaid(s.groups, why);
   slideEnd(s);
@@ -5442,22 +5466,306 @@ window.addEventListener("pointerdown", e => { if(TP_QUIET && !SLIDE && e !== TP_
     e.preventDefault(); e.stopImmediatePropagation();
   }
 }, true));
-// Every /api/remote/morning read numbered when sent: an answer sent
-// before the last one delivered (a slow regular poll landing after the
-// slide's fresh read) never replaces it; the caller gets the newer one.
-// 1.0's getJSON itself is unchanged; only its name is wrapped.
+// Every /api/remote/morning and /api/remote/cleaning read numbered when
+// sent, each route on its own count: an answer sent before the last one
+// delivered (a slow regular poll landing after a slide's fresh read)
+// never replaces it; the caller gets the newer one. 1.0's getJSON itself
+// is unchanged; only its name is wrapped.
 {
-  const read = getJSON;
-  let sent = 0, last = 0, newest = null;
+  const read = getJSON, count = {};
   getJSON = async function(p, ms){
-    if(!/^\/api\/remote\/morning(\?|$)/.test(String(p))) return read(p, ms);
-    const n = ++sent;
+    const m = /^\/api\/remote\/(morning|cleaning)(\?|$)/.exec(String(p));
+    if(!m) return read(p, ms);
+    const c = count[m[1]] || (count[m[1]] = {sent:0, last:0, newest:null});
+    const n = ++c.sent;
     const j = await read(p, ms);
-    if(n < last && newest) return newest;
-    last = n; newest = j;
+    if(n < c.last && c.newest) return c.newest;
+    c.last = n; c.newest = j;
     return j;
   };
 }
+
+// ---- the cleaning's slide, touch phones only (step 7 of the phone build) ----
+// On a touch phone the wave flamer cleaning starts with a slide in front
+// of today's two holds (1.0's code above, unchanged): the start from idle,
+// and later the go-ahead for the purge bursts while it is paused. The
+// slide sends nothing until its handle reaches SLIDE_ARM (90 percent);
+// there it starts today's hold (wcStart: the same beats every 100 ms, the
+// same bodies, the same answers), and the finger stays at the end until
+// the engine says it runs on its own. Before 90 percent every end sends
+// nothing. After it, back under 90 percent, the lift, pointercancel, a
+// second pointer, a jump, the band, blur, hidden, Back, a resize or turn,
+// the step or the screen changing send today's let go (wcLetGo) and
+// nothing else, and the engine is read before anything is said: never
+// "not started" without that read, never the handle while it cannot be
+// read (not known, until a read). A cleaning the engine started is never
+// let go of or stopped by the slide: the let go after a start changes
+// nothing at the engine, and the slide never sends a new hold or a Stop.
+// The slide's own release and click land on nothing (WCS_QUIET); any new
+// touch is a new press, and a Stop is never held back.
+const WCS_QUIET_MS = 2000, WCS_READ_HOLD_MS = 1500, WCS_SAY_MS = 6000,
+  WCS_STOP_WHY = ["Stop was pressed", "Stop show was pressed"],
+  WCS_STATES = ["idle", "starting", "acking", "phase1", "paused", "phase2"];
+let WCS_QUIET = null, WCS_DOUBT = false, WCS_READING = 0, WCS_CHECK = false, WCS_STARTED = 0, WCS_STOPPING = 0,
+  WCS_LINE = null, WCS_SAID = {text:"", at:0}, WCS_OB = null;
+// The phone's line says only these short words (wcsLine), never 1.0's or
+// the engine's own text.
+function wcsLine(text){ WCS_LINE = {text:text, at:Date.now()}; }
+// 1.0's message line (#wc-msg) and when it last changed: wcBeat's own
+// "You can let go" is the engine's answer that the hold was complete.
+function wcsSaid(){
+  if(WCS_OB && WCS_OB.takeRecords().length) WCS_SAID = {text:$("wc-msg").textContent, at:Date.now()};
+  return WCS_SAID;
+}
+function wcsStarted(s){ const m = wcsSaid(); return m.at >= s.at && /You can let go/.test(m.text); }
+// The slide's own hold ended by 1.0's code (started, its blur, a stale
+// status cut, an error) and the slide's tick has not taken it yet.
+function wcsGone(){ const s = SLIDE; return !!s && s.i === "wc" && s.phase === "end" && WC_RUN !== s.run ? s : null; }
+function wcsOrphan(){ const s = wcsGone(); return !!s && !wcsStarted(s); }
+// What the slide shows: the handle only while the engine, read, is idle
+// or paused and a hold may start.
+function wcsLook(){
+  const v = WC, st = wcNow(), state = v && v.state;
+  if(WCS_DOUBT) return {mode:"unknown", word:"Not known"};
+  // A read pending: no handle and nothing said until the engine answers.
+  if(WCS_CHECK || wcsOrphan()) return {mode:"unknown", word:"Checking"};
+  // A Stop pressed: no handle until a read made after it shows the engine.
+  if(WCS_STOPPING) return {mode:"unknown", word:"Stopping", stopping:true};
+  // The engine said it runs and no read since shows it: never the handle
+  // (a new press now is refused at best, and ends a hold under way).
+  if(WCS_STARTED || (wcsGone() && !wcsOrphan())) return {mode:"run", word:"Running on its own", started:true};
+  if(WC_HOLD) return {mode:"starting", word:"Starting. Keep your finger there."};
+  if(state === "phase1") return {mode:"run", word:"Phase 1 running"};
+  if(state === "phase2") return {mode:"run", word:"Bursts firing"};
+  if(st.ok && state === "idle") return {mode:"go", word:"Start the cleaning"};
+  if(st.ok && state === "paused") return {mode:"go", word:"Fire the bursts", bursts:true};
+  return {mode:"na", word:state === "paused" ? "Paused" : "Cleaning"};
+}
+function renderWcSlide(){
+  const b = $("wc-slide"), l = $("wc-sl");
+  if(!b || !l) return;
+  const lk = wcsLook();
+  if(b.dataset.mode !== lk.mode) b.dataset.mode = lk.mode;
+  setText($("wc-sw"), lk.word);
+  if(b.title !== lk.word) b.title = lk.word;
+  setText(l, wcsLineNow(lk));
+}
+// The phone's line: only this page's own short words; "runs" only while
+// the engine, read, says it runs.
+function wcsLineNow(lk){
+  if(WCS_DOUBT) return "Not known. Check the tile.";
+  if(lk.stopping) return "Stopping. Checking with the engine.";
+  if(lk.mode === "unknown") return "Checking with the engine.";
+  if(lk.mode === "starting") return "Keep your finger at the end.";
+  if(lk.started) return "Running on its own. You can let go.";
+  if(lk.mode === "run") return WC && WC.state === "phase2" ? "Bursts firing. Stop ends them." : "Phase 1 runs. Stop ends it.";
+  if(WCS_LINE && Date.now() - WCS_LINE.at < WCS_SAY_MS) return WCS_LINE.text;
+  if(lk.bursts) return "Phase 1 done. Slide for the bursts.";
+  return lk.mode === "na" ? wcsWhyNot() : "";
+}
+// Why no slide now, in this page's own words (cleaningState's order).
+function wcsWhyNot(){
+  const v = WC, state = v && v.state;
+  if(!v || typeof v.available !== "boolean") return "Not known yet.";
+  if(!v.available) return "No cleaning on this show PC.";
+  if(isStale(Date.now(), LAST_OK, 1.0)) return "Status not live. Wait.";
+  if(ST && ST.me && ST.me.view_only) return "Signed out. Sign in to clean.";
+  if((state === "starting" || state === "acking") && !v.mine) return "Another screen is starting it.";
+  if(state === "starting" || state === "acking") return "Wait for the engine.";
+  if(v.blocked) return "Not allowed now.";
+  return "";
+}
+// The event that ended the slide (a second finger's pointerdown) is not
+// a new press after it.
+function wcsQuiet(s){ WCS_QUIET = {id:s.id, at:Date.now(), fresh:false, ev:window.event || null}; }
+function wcSlideCheck(s){
+  // Today's hold ended by itself (started, refused, cut, an error, the
+  // page's own blur): the engine is read unless it said started.
+  if(s.phase === "end" && WC_RUN !== s.run){ wcSlideHoldEnded(s); return; }
+  if(!s.el.isConnected || !s.el.getClientRects().length){ slideCancel("the step changed"); return; }
+  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
+  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
+  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
+  const r = s.el.getBoundingClientRect();
+  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("the finger moved off the slide"); return; }
+  if(s.phase === "end"){
+    // The hold waits for the engine's answer, as today's does. Only the
+    // handle going back lets go.
+    if(s.frac < SLIDE_ARM) slideCancel("the handle moved back");
+    return;
+  }
+  // Nothing sent yet. The control changed (running, not allowed, not
+  // known): the slide ends.
+  if(s.el.dataset.mode !== "go"){ slideCancel("the cleaning changed"); return; }
+  if(s.frac < SLIDE_ARM) return;
+  const st = wcNow(), state = WC && WC.state;
+  if(!st.ok || (state !== "idle" && state !== "paused") || WC_HOLD || WCS_DOUBT || WCS_CHECK || WCS_STARTED || WCS_STOPPING){
+    slideCancel("the cleaning changed"); return;
+  }
+  s.at = Date.now();
+  // The engine's state before this hold: idle (the start) or paused (the
+  // go-ahead for the bursts).
+  s.c0 = state;
+  wcStart();
+  if(!WC_HOLD || WC_RUN === null){ slideCancel(""); return; }   // refused at once
+  s.phase = "end"; s.run = WC_RUN;
+  renderWcSlide();
+}
+function wcSlideHoldEnded(s){
+  const started = wcsStarted(s);
+  if(!started) WCS_CHECK = true;
+  s.phase = "done";
+  slideEnd(s);
+  wcsQuiet(s);
+  if(started) wcsStartedRead(); else wcsRead("", s.c0);
+  renderWcSlide();
+}
+// The engine said it runs: no handle until a read made after that answer
+// shows the engine's state; read again until it answers.
+function wcsStartedRead(){ return wcsStateRead(false, ++WCS_READING); }
+async function wcsStateRead(stop, me){
+  if(stop) WCS_STOPPING = Date.now(); else WCS_STARTED = Date.now();
+  renderWcSlide();
+  for(;;){
+    let v = null, none = false;
+    try{ v = await getJSON("/api/remote/cleaning", 1500); }catch(e){ none = !!e && e.status === 404; }
+    if(me !== WCS_READING) return;
+    // No cleaning in this engine: nothing to show, nothing to read.
+    if(none){ WCS_STARTED = 0; WCS_STOPPING = 0; WC = null; renderWcSlide(); return; }
+    if(v && typeof v.available === "boolean" && WCS_STATES.includes(v.state)){
+      WCS_STARTED = 0; WCS_STOPPING = 0;
+      if(!WC_HOLD) WC = v;
+      try{ renderCleaning(); }catch(_e){}
+      renderWcSlide();
+      return;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+// A Stop (the step's, the pinned one, Stop show), answered or not (a Stop
+// that failed too): its own answer, so any read still pending never
+// speaks after it; and no handle until a fresh read shows the engine.
+function wcsStopSeen(){
+  WCS_READING++;
+  WCS_CHECK = false; WCS_DOUBT = false; WCS_STARTED = 0; WCS_LINE = null;
+  // Never read (another tab, no cleaning in this engine): nothing to show.
+  if(!WC){ renderWcSlide(); return; }
+  wcsStateRead(true, WCS_READING);
+}
+function wcSlideEnd(s, why){
+  const held = s.phase === "end", done = s.phase === "done";
+  s.phase = "done";
+  slideEnd(s);
+  wcsQuiet(s);
+  if(done) return;
+  if(!held){
+    if(why && why !== "let go") say("Nothing sent.", "Cleaning slide stopped: " + why + ". Nothing was sent.", "");
+    renderWcSlide();
+    return;
+  }
+  // Today's let go, only for this slide's own hold (a cleaning the engine
+  // started is not changed by it).
+  const started = WC_RUN !== s.run && wcsStarted(s), read = !started && !WCS_STOP_WHY.includes(why);
+  // From here until the engine answers: checking, no handle.
+  if(read) WCS_CHECK = true;
+  if(WC_RUN !== null && WC_RUN === s.run) wcLetGo("");
+  // A Stop is its own answer.
+  if(started) wcsStartedRead();
+  else if(read) wcsRead(why, s.c0);
+  renderWcSlide();
+}
+// After the slide's hold ended without the engine's started answer: the
+// engine's state read (this screen's own hold still shown is waited for,
+// then not known), never said as not started without it. Unreadable: not
+// known, no handle, read again until it answers.
+async function wcsRead(why, c0){
+  const me = ++WCS_READING, t0 = Date.now();
+  let told = false;
+  WCS_CHECK = true; WCS_STARTED = 0;
+  renderWcSlide();
+  for(;;){
+    let v = null, none = false;
+    try{ v = await getJSON("/api/remote/cleaning", 1500); }catch(e){ none = !!e && e.status === 404; }
+    if(me !== WCS_READING) return;
+    if(none){ WCS_DOUBT = false; WCS_CHECK = false; WC = null; renderWcSlide(); return; }
+    const state = v && typeof v.available === "boolean" && WCS_STATES.includes(v.state) ? v.state : null;
+    const mine = (state === "starting" || state === "acking") && !!v.mine;
+    if(mine && Date.now() - t0 < WCS_READ_HOLD_MS){ await new Promise(r => setTimeout(r, 250)); continue; }
+    if(state && !mine){
+      WCS_DOUBT = false; WCS_CHECK = false;
+      if(!WC_HOLD) WC = v;
+      try{ renderCleaning(); }catch(_e){}
+      wcsTell(v, why, c0);
+      renderWcSlide();
+      return;
+    }
+    if(!told){
+      told = true; WCS_DOUBT = true;
+      say("Not known. Check the tile.", "Cleaning not known: the engine could not be read. Check it before you slide again. Stop ends it.", "bad");
+      renderWcSlide();
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+// What the engine's read says, in this page's words. Not started only
+// when the engine proves it: still paused after a go-ahead, or idle with
+// its last run ended before its hold was complete.
+function wcsTell(v, why, c0){
+  const st = v.state, why2 = why === "let go" ? "You let go before the engine started it. " : why ? "Cleaning slide stopped: " + why + ". " : "";
+  if(st === "starting" || st === "acking"){
+    // Another screen's hold, never said as this one's.
+    say("Another screen is starting it.", "Another screen is starting the cleaning now. Check the tile.", "bad");
+    wcsLine("Another screen is starting it.");
+  } else if(st === "phase1"){
+    say("Cleaning running.", "The engine says phase 1 runs on its own. Stop ends it.", "ok");
+  } else if(st === "phase2"){
+    say("Bursts firing.", "The engine says the purge bursts are firing. Stop ends them.", "ok");
+  } else if(st === "paused" && c0 === "paused"){
+    say("Bursts not started.", why2 + "The engine says it is still paused. Nothing fired.", "");
+    wcsLine("Still paused. Nothing fired.");
+  } else if(st === "paused"){
+    say("Cleaning running.", "The engine says phase 1 is done and waits for the bursts.", "ok");
+  } else if(c0 === "idle" && /nothing started\.?$/.test(String(v.last_cut || ""))){
+    say("Cleaning not started.", why2 + "The engine says nothing started and none runs.", "");
+    wcsLine("Not started. Nothing runs.");
+  } else {
+    say("Not running now.", "The engine says no cleaning runs now, but not whether this slide started one. Check the tile.", "bad");
+    wcsLine("Not running now. Check the tile.");
+  }
+}
+// The slide is drawn with the step (dayBody), so its touch is taken here.
+document.addEventListener("pointerdown", e => {
+  const b = e.target && e.target.closest ? e.target.closest("#wc-slide") : null;
+  if(!b || !slidePhone() || b.dataset.mode !== "go") return;
+  e.preventDefault();
+  slideDown(e, b, "wc");
+  if(SLIDE && SLIDE.i === "wc" && SLIDE.el === b){ SLIDE.phase = "slide"; SLIDE.run = null; }
+});
+document.addEventListener("contextmenu", e => { if(slidePhone() && e.target && e.target.closest && e.target.closest("#wc-slide")) e.preventDefault(); });
+// The step's Stop (1.0's wcStopPress, wired by dayWire): the slide ends
+// and its pending read never speaks after it.
+document.addEventListener("click", e => {
+  if(e.target && e.target.closest && e.target.closest("#wc-stop")){ slideCancel("Stop was pressed"); wcsStopSeen(); }
+}, true);
+// Redrawn whenever today's panel is (1.0's renderCleaning, wrapped by
+// name only; its code is unchanged).
+{
+  const draw = renderCleaning;
+  renderCleaning = function(){ draw(); renderWcSlide(); };
+  WCS_OB = new MutationObserver(() => { WCS_SAID = {text:$("wc-msg").textContent, at:Date.now()}; });
+  WCS_OB.observe($("wc-msg"), {childList:true, characterData:true, subtree:true});
+}
+// The slide's own release and click (its pointer, no touch since, for a
+// bounded time) land on nothing: not Stop, not the slide. Any new touch is
+// a new press and is never held back, and an event whose pointer is not
+// known (a plain click) is never held back.
+window.addEventListener("pointerdown", e => { if(WCS_QUIET && !SLIDE && e !== WCS_QUIET.ev) WCS_QUIET.fresh = true; }, true);
+["pointerup", "click"].forEach(t => window.addEventListener(t, e => {
+  const qz = WCS_QUIET;
+  if(!qz || SLIDE || qz.fresh) return;
+  if(Date.now() - qz.at >= WCS_QUIET_MS){ WCS_QUIET = null; return; }
+  if(e.pointerId === qz.id){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true));
 
 // What a group's tile says: an icon, a word, a short line.
 const LAMP_SHORT = {"dirty edge":"DIRTY EDGE", "chatter":"CHATTER", "arm input stale":"NO SIGNAL",
@@ -7403,7 +7711,9 @@ $("d-q").addEventListener("click", () => {
   const k = DAY_STEP;
   let extra = "";
   if(k === "clean" && WC && WC.settings) extra = cleaningNote(WC);
-  sheet(($("d-t").textContent || "Step"), `<div>${esc(DAY_HELP[k] || "")}</div>${extra ? `<div class="dim">${esc(extra)}</div>` : ""}`, [{label:"Close", cls:"blue"}]);
+  // On a touch phone the cleaning is a slide, never a hold.
+  const help = k === "clean" && slidePhone() ? "Slide to the end until phase 1 starts. Later slide again for the bursts. Stop ends it." : DAY_HELP[k];
+  sheet(($("d-t").textContent || "Step"), `<div>${esc(help || "")}</div>${extra ? `<div class="dim">${esc(extra)}</div>` : ""}`, [{label:"Close", cls:"blue"}]);
 });
 function cleaningNote(v){
   const s = v.settings || {};
@@ -7650,8 +7960,10 @@ function dayBuild(k){
   else if(k === "locks" || k === "locks-shut") box.innerHTML = `<div class="dgrid" id="d-locks"></div>`;
   else if(k === "hazers") box.innerHTML = `<div class="drow"><button class="b green" id="d-hz-open"${ST && ST.hazers && ST.hazers.available ? "" : " hidden"}>${icon("wind")}Levels</button><button data-safe class="b safe" id="d-hz-off">${icon("shield")}Hazers off</button></div>`;
   else if(k === "clean") box.innerHTML = `<div class="drow"><span class="dbig" id="wc-armed"></span></div>` +
-    `<div class="drow"><button class="b green hold" id="wc-hold">${icon("ring")}<span id="wc-hold-l">Hold to start</span></button><button data-safe class="b red" id="wc-stop">${icon("stop")}Stop</button></div>` +
-    `<div id="wc-prog" class="dbig"></div><div id="wc-block" class="dim"></div>`;
+    `<div class="drow"><button class="b green hold" id="wc-hold">${icon("ring")}<span id="wc-hold-l">Hold to start</span></button>` +
+    `<button type="button" class="b green" id="wc-slide" data-mode="na" aria-label="Cleaning"><span class="knob" aria-hidden="true"><svg class="i"><use href="#i-right"/></svg></span><span id="wc-sw">Cleaning</span></button>` +
+    `<button data-safe class="b red" id="wc-stop">${icon("stop")}Stop</button></div>` +
+    `<div id="wc-prog" class="dbig"></div><div id="wc-block" class="dim"></div><div class="pline" id="wc-sl" aria-live="polite"></div>`;
   else box.innerHTML = "";
   dayWire(k);
 }
