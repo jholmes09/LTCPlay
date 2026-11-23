@@ -897,6 +897,14 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:var(--green-ink);
     touch-action:none;z-index:1}
   .knob svg.i{width:32px;height:32px}
+  /* The lasers' arm (step 6): a purple slide, the same handle, before
+     the same "Arm all N lasers?" confirm. */
+  #lz-b[data-mode="arm"]:not(:disabled){touch-action:pan-y;justify-content:center;padding:0 8px 0 64px;margin:0 24px;width:auto;
+    background:#5b4fc0;border-color:#A898FF;color:#fff}
+  #lz-b[data-mode="arm"]:not(:disabled) > svg{display:none}
+  #lz-b[data-mode="arm"]:not(:disabled) > .knob{display:flex;align-items:center;justify-content:center;
+    position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:#2e2477;
+    touch-action:none;z-index:1}
 }
 /* PHONE LAYOUT END */
 </style>
@@ -4921,7 +4929,8 @@ function slideDown(e, el, i){
   // Back (or a Samsung's swipe from the edge) while the finger is down
   // takes this entry away and ends the slide, never the page.
   try{ history.pushState({ltcSlide:true}, ""); s.back = true; }catch(_e){}
-  slideHold(s);
+  // The lasers' slide sends nothing: its lift opens the confirm (lzSlideEnd).
+  if(i !== "lz") slideHold(s);
 }
 // The hold, the same as a press and hold: armStart or armAllStart.
 function slideHold(s){
@@ -4952,6 +4961,7 @@ function slideHeld(h){ return Math.max(0, ...h.parts.map(p => p.held || 0)); }
 function slideCheck(){
   const s = SLIDE;
   if(!s) return;
+  if(s.i === "lz"){ lzSlideCheck(s); return; }
   // The hold ended by itself (armed, refused, lapsed), and said so.
   if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }
   if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
@@ -4993,6 +5003,7 @@ function slideMove(e){
 function slideCancel(why){
   const s = SLIDE;
   if(!s) return;
+  if(s.i === "lz"){ lzSlideEnd(s, why); return; }
   if(s.h && HOLD === s.h) slideStop(s, why);
   else if(s.paused && why) slideSaid(s.groups, why);
   slideEnd(s);
@@ -5039,6 +5050,103 @@ window.addEventListener("pointermove", slideMove, true);
 // code, which lets go of the hold first).
 $("sa-off").addEventListener("click", () => slideCancel("arming from a screen was switched off"));
 $("u-out").addEventListener("click", () => slideCancel("Signed out"));
+// ---- the lasers' slide, touch phones only (step 6 of the phone build) ----
+// Laser arm is one POST with confirmed:true and no engine hold, so the
+// slide sends nothing: lifted at SLIDE_ARM (90 percent) or more it opens
+// today's "Arm all N lasers?" confirm (lzTileClick, unchanged), and only
+// that confirm's Arm posts. Every other end (pointercancel, a second
+// pointer, the band, Back, blur, a resize, the tile changing) sends
+// nothing. The slide's own release, and a click that follows it, never
+// reach the confirm drawn under the finger, nor the tile under it
+// (LZ_QUIET). A lost answer to that POST is read against the engine; if
+// it cannot be read, the tile shows not known (LZ_DOUBT), never idle.
+const LZ_QUIET_MS = 400, LZ_QUIET_ID_MS = 2000;
+let LZ_QUIET = null, LZ_SLID = false, LZ_DOUBT = null;
+function lzSlideCheck(s){
+  if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
+  // Armed elsewhere, not known, refused: the handle is gone.
+  if(!s.knob.getClientRects().length){ slideCancel("the tile changed"); return; }
+  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
+  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
+  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
+  const r = s.el.getBoundingClientRect();
+  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX) slideCancel("the finger left the slide");
+}
+function lzSlideEnd(s, why){
+  const lift = s.up === true && why === "let go";
+  slideEnd(s);
+  LZ_QUIET = {id:s.id, at:Date.now()};
+  if(lift && s.frac >= SLIDE_ARM){ lzSlid(); return; }
+  // Lifted short: nothing was sent, nothing to say.
+  if(lift || !why) return;
+  if(why === "the tile changed"){ lzSayNow(); return; }
+  say("Nothing sent.", "Laser slide stopped: " + why + ". Nothing was sent.", "");
+}
+// The lasers as the status shows them, said (a state read: the poll).
+function lzSayNow(){
+  const la = ST && ST.laser_arm, ls = (la && la.lasers) || [];
+  if(stale() || !la || la.error || lzDoubt()){ say("Not known. Check the tile.", "Lasers not known. Nothing was sent. Check the Lasers tile.", "bad"); return; }
+  const on = ls.filter(x => x.armed).length;
+  if(on === ls.length && on) say("Lasers armed.", "Lasers armed. Nothing was sent.", "ok");
+  else if(on) say("Lasers: " + on + " of " + ls.length + " armed.", "Nothing was sent.", "");
+  else say("Nothing sent.", "Nothing was sent.", "");
+}
+// The slide reached the end and lifted: today's confirm, only while the
+// tile still says Arm (a tile that turned to Disarm is never disarmed).
+async function lzSlid(){
+  const b = $("lz-b");
+  if(!b || b.dataset.mode !== "arm" || b.disabled){ lzSayNow(); return null; }
+  LZ_SLID = true;
+  try{ return await lzTileClick(); } finally { LZ_SLID = false; }
+}
+// A tap on the lasers' tile: on a phone, Arm is the slide only.
+function lzTap(e){
+  const b = $("lz-b");
+  if(b.dataset.mode !== "disarm" && slidePhone()) return null;
+  return lzTileClick();
+}
+// The answer to a slide's arm lost: the engine's state read, never "not
+// armed" without it. Unreadable: not known, and the tile says so until a
+// status read after this one.
+function lzUnclear(e){ return !e.status || e.status >= 500 || (e.status === 409 && !e.code); }
+function lzDoubt(){ return !!LZ_DOUBT && !(ST && LZ_DOUBT.after !== null && ST.served_at >= LZ_DOUBT.after); }
+async function lzLost(e){
+  LZ_DOUBT = {after:null};
+  try{ renderLasers(stale()); }catch(_e){}
+  for(let n = 0; LZ_DOUBT && LZ_DOUBT.after === null; n++){
+    let s = null;
+    try{ s = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    const la = s && s.laser_arm, ls = (la && la.lasers) || [];
+    if(s && la && !la.error && ls.length){
+      LZ_DOUBT.after = s.served_at;
+      const on = ls.filter(x => x.armed).length;
+      if(on === ls.length) say("Lasers armed.", "The answer was lost; the engine says every laser is armed.", "ok");
+      else if(on) say("Lasers: " + on + " of " + ls.length + " armed.", "The answer was lost; the engine says " + on + " of " + ls.length + " lasers are armed.", "bad");
+      else say("Lasers not armed.", (e && e.status ? "The engine answered: " + e.message + " " : "The answer was lost; ") + "the engine says no laser is armed.", "bad");
+      return null;
+    }
+    if(n === 0) say("Not known. Check the tile.", "Lasers not known: the answer was lost or unclear and the engine's state could not be read. Check the Lasers tile.", "bad");
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return null;
+}
+// The lasers' handle: only on a phone, only while the tile says Arm.
+window.addEventListener("pointerup", e => { const s = SLIDE; if(s && s.i === "lz" && e.pointerId === s.id) s.up = true; }, true);
+// Any touch after the slide ended is a new press: a Disarm with it is
+// never held back.
+window.addEventListener("pointerdown", () => { if(LZ_QUIET && !SLIDE) LZ_QUIET.fresh = true; }, true);
+["pointerup", "click"].forEach(t => window.addEventListener(t, e => {
+  const qz = LZ_QUIET;
+  if(SLIDE || !qz || !e.target || !e.target.closest || !e.target.closest("#sheet, #lz-b")) return;
+  const age = Date.now() - qz.at, tile = e.target.closest("#lz-b");
+  // The tile says Disarm: only the slide's own release is ignored (its
+  // pointer, no touch since). Any new press disarms.
+  if(tile && tile.dataset.mode !== "arm"){
+    if(!qz.fresh && e.pointerId === qz.id && age < LZ_QUIET_ID_MS){ e.preventDefault(); e.stopImmediatePropagation(); }
+    return;
+  }
+  if(age < LZ_QUIET_MS || (e.pointerId === qz.id && age < LZ_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true));
 ["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => { if(SLIDE && e.pointerId === SLIDE.id) slideCancel("let go"); }, true));
 // A second pointer of any kind, anywhere: the slide ends, and no hold
 // starts until every pointer is up (holdSecond).
@@ -5579,7 +5687,7 @@ function renderGroups(fl){
       `<div class="tile unknown" data-lamp="${i}"><div class="tn"></div><div class="ts">${icon("x")}<span class="word"></span><span class="lk" hidden>${icon("lock")}<span></span></span></div>` +
       `<button class="b armb" data-arm="${i}" data-mode="hold"><div class="fill"></div>${icon("ring")}<span class="act"></span><span class="knob" aria-hidden="true">${icon("right")}</span></button></div>`).join("") +
       (hasLz ? `<div class="tile lz" id="lz"><div class="tn">Lasers</div><div class="ts">${icon("laser")}<span class="word" id="lz-w"></span><span class="lk" id="lz-lk" hidden>${icon("lock")}<span></span></span></div>` +
-        `<button class="b" id="lz-b">${icon("laser")}<span id="lz-bl">Arm lasers</span></button></div>` : "");
+        `<button class="b" id="lz-b">${icon("laser")}<span id="lz-bl">Arm lasers</span><span class="knob" aria-hidden="true">${icon("right")}</span></button></div>` : "");
     // One button per group, 1.0's: its mode when the finger went down
     // decides (clickAction). Hold to arm starts on the press and stops on
     // the release; Disarm goes on the click.
@@ -5595,7 +5703,13 @@ function renderGroups(fl){
       });
       b.addEventListener("contextmenu", e => e.preventDefault());
     });
-    if(hasLz) $("lz-b").addEventListener("click", lzTileClick);
+    if(hasLz){
+      const lb = $("lz-b");
+      lb.addEventListener("click", lzTap);
+      // On a phone the lasers' Arm is a slide (step 6): its handle only.
+      lb.addEventListener("pointerdown", e => { if(lb.dataset.mode === "arm" && slidePhone()){ e.preventDefault(); slideDown(e, lb, "lz"); } });
+      lb.addEventListener("contextmenu", e => { if(slidePhone()) e.preventDefault(); });
+    }
     layoutGroups();
   }
   const on = !!(ST && ST.arming && ST.arming.enabled);
@@ -5674,14 +5788,20 @@ async function lzPress(extra){
   try{
     const j = await post("/api/remote/laser-arm", actor(extra));
     say(extra.on ? "Lasers armed." : "Lasers disarmed.", j.text || "Done.", "ok");
+    LZ_DOUBT = null;
     return j;
   }catch(e){
+    // A slide's arm whose answer was lost or unclear (no answer, a 5xx,
+    // a 409 with no code: as #293's armRefused reads them): read the
+    // engine, never say not armed without it.
+    if(extra.on && LZ_SLID && lzUnclear(e)) return lzLost(e);
     say(extra.on ? "Lasers not armed." : "Lasers NOT disarmed.", e.message, "bad");
     if(!extra.on) disarmFailed("Lasers NOT disarmed.", e.message);
     return null;
   }
 }
 function lzDisarmAll(){
+  if(typeof slideCancel === "function") slideCancel("Disarm lasers was pressed");
   return lzPress({all:true, on:false});
 }
 function renderLasers(isSt){
@@ -5693,7 +5813,7 @@ function renderLasers(isSt){
   const armed = ls.filter(x => x.armed);
   const locked = ls.filter(x => x.locked).length;
   let cls = "tile lz", word, btn;
-  if(isSt || !la || la.error){ cls += " unknown"; word = "UNKNOWN"; btn = "disarm"; }
+  if(isSt || !la || la.error || lzDoubt()){ cls += " unknown"; word = "UNKNOWN"; btn = "disarm"; }
   else if(!armed.length){ word = "OFF"; btn = "arm"; }
   // BEYOND's output comes on only once every laser is armed.
   else if(armed.length === ls.length){ cls += la.output_permitted ? " armed" : " held"; word = la.output_permitted ? "ARMED" : "ARMED, DARK"; btn = "disarm"; }

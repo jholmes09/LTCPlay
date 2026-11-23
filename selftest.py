@@ -120489,6 +120489,387 @@ def test_ui2_flame_slide_to_arm_on_a_phone():
     print("  ok")
 
 
+# The lasers' slide on a touch phone (step 6 of the phone build, AUDIT P0
+# 6): a purple slide BEFORE today's "Arm all N lasers?" confirm, which
+# still posts once with confirmed:true. A stand-in for the laser-arm route
+# and the status: LZE.on is what the engine has armed, LZE.lose loses the
+# answer (the engine armed all the same unless LZE.noarm), LZE.blind makes
+# the status unreadable from the post on, LZE.late holds the answer back.
+_UI2_LZ_SLIDE_STEPS = r"""
+const q = id => document.getElementById(id);
+const nap = ms => new Promise(r => setTimeout(r, ms));
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+const LZE = {on:false, lose:false, blind:false, late:0, noarm:false, fail:0};
+const LP = [];
+const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
+const hf = window.fetch;
+window.fetch = async (url, opt) => {
+  const u = String(url);
+  if(opt && opt.method === "POST" && /\/api\/remote\/laser-arm$/.test(u)){
+    const b = JSON.parse(opt.body || "{}");
+    const seen = Object.assign({}, b); delete seen.seen; LP.push(seen);
+    if(!LZE.noarm) LZE.on = b.on === true;
+    if(LZE.lose === "blind") LZE.blind = true;
+    if(LZE.late) await nap(LZE.late);
+    if(LZE.lose) throw new TypeError("Failed to fetch");
+    // An answer that is not clear: a 5xx, or a 409 with no code.
+    if(LZE.fail) return new Response(JSON.stringify({error:"Bad gateway."}), {status:LZE.fail, headers:{"Content-Type":"application/json"}});
+    return new Response(JSON.stringify({ok:true, text:b.on ? "Lasers ARMED." : "Lasers disarmed."}), {status:200, headers:{"Content-Type":"application/json"}});
+  }
+  if(/\/api\/remote\/status/.test(u) && LZE.blind) throw new TypeError("Failed to fetch");
+  return hf(url, opt);
+};
+window.__patch = st => { st.laser_arm.lasers = st.laser_arm.lasers.map(l => Object.assign({}, l, {armed:LZE.on, locked:false}));
+  st.laser_arm.output_permitted = LZE.on; return st; };
+let PID = 300;
+const pe = (el, type, x, y, id, prim) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
+  pointerId:id, pointerType:"touch", isPrimary:prim !== false, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+const lzb = () => q("lz-b");
+const sheetOpen = () => !q("sheet").hidden;
+const sheetBtn = label => [...q("sh-row").querySelectorAll("button")].find(b => b.textContent.trim() === label);
+// A finger's tap on el: down, up, click, all one pointer.
+const tap = (el, id) => { const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+  pe(el, "pointerdown", x, y, id); pe(el, "pointerup", x, y, id);
+  el.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:id, pointerType:"touch", isPrimary:true, clientX:x, clientY:y, detail:1})); };
+const settle = async () => { if(SHEET_DONE) SHEET_DONE(null); LZE.on = false; LZE.lose = false; LZE.blind = false; LZE.late = 0; LZE.noarm = false; LZE.fail = 0;
+  LZ_DOUBT = null; await nap(900); };
+// One slide of the lasers' handle: each [fraction of the travel, dy, wait]
+// walked to in 16 px steps (or a function, run with the finger down),
+// then lifted (or ended by `end`).
+async function slide(moves, end){
+  const el = lzb(); el.scrollIntoView({block:"center"}); await nap(120);
+  const kn = el.querySelector(".knob"), travel = el.clientWidth - kn.offsetWidth - 2 * kn.offsetLeft, r = el.getBoundingClientRect();
+  const id = ++PID;
+  const x0 = r.left + el.clientLeft + kn.offsetLeft + kn.offsetWidth / 2, y0 = r.top + el.clientTop + kn.offsetTop + kn.offsetHeight / 2;
+  let x = x0, y = y0;
+  const p0 = LP.length;
+  q("msg-t").textContent = "";
+  pe(kn, "pointerdown", x, y, id);
+  const res = {slid:!!SLIDE, p0:p0};
+  const walk = async (tx, ty) => {
+    while(Math.abs(tx - x) > 0.5 || Math.abs(ty - y) > 0.5){
+      const dx = tx - x, dy = ty - y, d = Math.hypot(dx, dy), f = Math.min(1, 16 / d);
+      x += dx * f; y += dy * f; pe(kn, "pointermove", x, y, id); await nap(8);
+    }
+  };
+  for(const [f, dy, wait] of moves){
+    if(typeof f === "function"){ await f({el:el, kn:kn, x:x, y:y, id:id}); continue; }
+    await walk(x0 + f * travel, y0 + (dy || 0));
+    if(wait) await nap(wait);
+  }
+  res.sheet_held = sheetOpen();
+  res.c = {x:x, y:y, id:id, kn:kn, el:el, walk:walk};
+  if(end) await end(res.c); else pe(kn, "pointerup", x, y, id);
+  res.slide_after = !!SLIDE;
+  res.sheet = sheetOpen();
+  res.q = res.sheet ? q("sh-h").textContent : "";
+  res.knob = kn.style.transform;
+  return res;
+}
+async function fin(res, ms){
+  await nap(ms || 700);
+  res.back_left = !!(history.state && history.state.ltcSlide);
+  res.posts = LP.slice(res.p0);
+  res.msg = msg(); res.full = MSG_FULL;
+  res.mode = lzb().dataset.mode; res.word = q("lz-w").textContent;
+  res.sheet_end = sheetOpen();
+  delete res.c;
+  await settle();
+  return res;
+}
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1500);
+out.vw = W; out.vh = H; out.coarse = matchMedia("(pointer:coarse)").matches;
+const PART = "__PART__";
+if(PART === "desk"){
+  // Off a phone: today's tap, its confirm, one post.
+  const el = lzb(); el.scrollIntoView({block:"center"}); await nap(100);
+  out.knob = getComputedStyle(el.querySelector(".knob")).display;
+  out.said = el.innerText.trim();
+  const p0 = LP.length;
+  el.click(); await nap(200);
+  out.sheet = sheetOpen(); out.q = q("sh-h").textContent;
+  if(out.sheet) sheetBtn("Arm").click();
+  await nap(600);
+  out.posts = LP.slice(p0); out.msg = msg();
+  await settle();
+} else {
+  const el = lzb(); el.scrollIntoView({block:"center"}); await nap(100);
+  const r = el.getBoundingClientRect(), kn = el.querySelector(".knob"), kr = kn.getBoundingClientRect(), cs = getComputedStyle(el);
+  out.look = {r:[Math.round(r.left), Math.round(r.right)], knob:[Math.round(kr.left), Math.round(kr.top), Math.round(kr.right), Math.round(kr.bottom)],
+    kshown:getComputedStyle(kn).display !== "none", bg:cs.backgroundColor, said:el.innerText.trim(), mode:el.dataset.mode,
+    touch:[cs.touchAction, getComputedStyle(kn).touchAction], role:el.tagName.toLowerCase(), aria:kn.getAttribute("aria-hidden")};
+  // A tap on the track (not the handle), and a tap on the handle: nothing.
+  { const p0 = LP.length; tap(el, ++PID); await nap(300); out.tap = {sheet:sheetOpen(), slide:!!SLIDE};
+    tap(kn, ++PID); await nap(300); out.tap.knob_sheet = sheetOpen(); out.tap.posts = LP.length - p0; await settle(); }
+  // The whole slide, lifted: the confirm, nothing sent. The slide's own
+  // release and click land on the sheet's Arm: ignored. A tap on Arm then
+  // posts once, as today.
+  { const s = await slide([[1, 0, 100]]);
+    s.posts_at_sheet = LP.length - s.p0;
+    const arm = sheetBtn("Arm");
+    if(arm){ const ar = arm.getBoundingClientRect(); pe(arm, "pointerup", ar.left + 5, ar.top + 5, s.c.id);
+      arm.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:s.c.id, pointerType:"touch", isPrimary:true, detail:1})); }
+    await nap(100);
+    s.own = {sheet:sheetOpen(), posts:LP.length - s.p0};
+    await nap(500);
+    if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID);
+    out.full = await fin(s, 900); }
+  // Cancel on the confirm: nothing sent.
+  { const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Cancel")) tap(sheetBtn("Cancel"), ++PID); out.cancel = await fin(s); }
+  // Under 90 percent, and drift across 90 percent just before the lift.
+  out.u50 = await fin(await slide([[0.5, 0, 200]]));
+  out.u88 = await fin(await slide([[0.88, 0, 200]]));
+  out.drift_back = await fin(await slide([[0.97, 0, 150], [0.85, 0, 0]]));
+  out.drift_up = await fin(await slide([[0.5, 0, 150], [0.93, 0, 0]]));
+  out.drift_band = await fin(await slide([[0.95, 0, 100], [0.95, 18, 0]]));
+  // Every cancel at 95 percent: no confirm, nothing sent, then the lift
+  // (and its click) ignored.
+  const cuts = {
+    pointercancel:c => pe(c.kn, "pointercancel", c.x, c.y, c.id),
+    second_finger:c => { pe(body, "pointerdown", 30, 30, 90, false); pe(body, "pointerup", 30, 30, 90, false); },
+    band:async c => { await c.walk(c.x, c.y + 90); },
+    jump:c => pe(c.kn, "pointermove", c.x - 150, c.y, c.id),
+    blur:c => window.dispatchEvent(new Event("blur")),
+    hidden:c => { Object.defineProperty(document, "hidden", {configurable:true, get:() => true});
+      document.dispatchEvent(new Event("visibilitychange")); delete document.hidden; },
+    popstate:async c => { history.back(); await nap(200); },
+    rotate:async c => { fr.style.width = H + "px"; fr.style.height = W + "px"; await nap(300); fr.style.width = W + "px"; fr.style.height = H + "px"; await nap(500); },
+    disarm_lasers:c => q("m-disl").click(),
+    stop:c => pressStop("stop"),
+  };
+  out.cuts = {};
+  for(const k of Object.keys(cuts)){
+    const s = await slide([[0.95, 0, 100]], async c => { await cuts[k](c); c.ended = !SLIDE; c.said = msg();
+      pe(c.kn, "pointerup", c.x, c.y, c.id); c.el.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:c.id, pointerType:"touch", isPrimary:true, detail:1})); });
+    s.ended = s.c.ended; s.said = s.c.said;
+    out.cuts[k] = await fin(s);
+    pe(body, "pointerup", 30, 30, 90, false);
+    await nap(1500);
+  }
+  // Armed elsewhere with the finger down: the tile turns to Disarm, the
+  // slide ends, says armed; its lift and click never disarm.
+  { const s = await slide([[0.95, 0, 0], [async c => { LZE.on = true; await nap(1000); }]], c => {
+      pe(c.kn, "pointerup", c.x, c.y, c.id); c.el.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:c.id, pointerType:"touch", isPrimary:true, detail:1})); });
+    out.flip_held = await fin(s); }
+  // The tile turns to Disarm at the very moment of the lift (no tick in
+  // between): no confirm, never a disarm.
+  { const s = await slide([[0.95, 0, 0], [async c => { LZE.on = true; ST = window.__patch(JSON.parse(JSON.stringify(ST))); renderLasers(false); }]]);
+    out.flip_lift = await fin(s); }
+  // The armed answer late, the status already armed (the tile Disarm):
+  // armed, never not armed, never a disarm.
+  { LZE.late = 1500; const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID);
+    await nap(1100); s.mid = {mode:lzb().dataset.mode, msg:msg()}; out.late = await fin(s, 900); }
+  // The answer lost: read, said as the engine says.
+  { LZE.lose = true; const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID); out.lost_armed = await fin(s, 900); }
+  { LZE.lose = true; LZE.noarm = true; const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID); out.lost_off = await fin(s, 900); }
+  // Lost, and the status unreadable: not known, the tile never idle; once
+  // the status reads again, the engine's answer.
+  { LZE.lose = "blind"; const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID);
+    const seen = [];
+    for(let i = 0; i < 6; i++){ await nap(150); seen.push([lzb().dataset.mode, q("lz-w").textContent, msg()]); }
+    s.seen = seen;
+    LZE.blind = false; LZE.lose = false; await nap(1500);
+    s.after = {mode:lzb().dataset.mode, word:q("lz-w").textContent, msg:msg()};
+    out.lost_blind = await fin(s, 100); }
+  // An answer that is not clear (500, 502, 504, a 409 with no code): read
+  // like a lost one, said as the engine says.
+  for(const [k, code, noarm] of [["s502", 502, false], ["s504", 504, false], ["s500_off", 500, true], ["s409", 409, false]]){
+    LZE.fail = code; LZE.noarm = noarm; const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID);
+    out[k] = await fin(s, 900); }
+  // Armed elsewhere under the finger, the finger lifted, then a Disarm
+  // tap 150 ms later, a new finger or one with the slide's own pointerId:
+  // it disarms (never held back).
+  for(const k of ["disarm_new", "disarm_reused"]){
+    const s = await slide([[0.95, 0, 0], [async c => { LZE.on = true;
+      for(let i = 0; i < 300 && lzb().dataset.mode !== "disarm"; i++) await nap(10); await nap(60); }]], async c => {
+      pe(c.kn, "pointerup", c.x, c.y, c.id); await nap(150); c.mode = lzb().dataset.mode; c.age = LZ_QUIET ? Date.now() - LZ_QUIET.at : -1; tap(lzb(), k === "disarm_new" ? ++PID : c.id); });
+    s.mode_at_tap = s.c.mode; s.age_at_tap = s.c.age;
+    out[k] = await fin(s); }
+  // After all of it, a slide still arms.
+  { const s = await slide([[1, 0, 50]]); await nap(500); if(sheetBtn("Arm")) tap(sheetBtn("Arm"), ++PID); out.again = await fin(s, 900); }
+}
+out.hist = history.state;
+"""
+
+
+def test_ui2_laser_slide_on_a_phone():
+    section("the lasers' slide on a touch phone (step 6 of the phone build, "
+            "AUDIT P0 6): purple, before today's Arm all N lasers? "
+            "confirm, which posts once; the slide's own release never "
+            "lands on that confirm; every cancel sends nothing; a lost "
+            "answer is read, or said not known, never idle; a tile armed "
+            "under the finger is never disarmed; off a phone, the tap as "
+            "before")
+    page = _ui2_page_inline()
+    two = _ui2_pages()[1]
+    lz = _js_function(two, "lzTileClick") or ""
+    check('if(!(await confirmBox("Arm all " + ls.length + " lasers?", '
+          '"Output starts when all are armed.", "Arm", "green"))) return '
+          'null;\n  return lzPress({lasers:ids, on:true, confirmed:true});'
+          in lz, "the lasers' confirm and its one post, as today")
+    sl = _js_function(two, "lzSlid") or ""
+    check("lzTileClick()" in sl and "lzPress" not in sl,
+          "the slide's lift goes through today's confirm, never around it")
+    for f in ("lzSlideEnd", "lzSayNow", "lzLost"):
+        for s in re.findall(r'say\("([^"]*)"', _js_function(two, f) or ""):
+            check(len(s.split()) <= 8, f"{f}: 8 words or fewer: {s!r}")
+        _no_dashes(_js_function(two, f) or "", f)
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    morning = {"/api/remote/morning": _morning_view_pico()}
+    for size in ((384, 800), (412, 600)):
+        W = size[0]
+        where = f"2.0 on a touch phone, {W}x{size[1]}, the lasers' slide"
+        r = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                              _UI2_LZ_SLIDE_STEPS.replace("__PART__",
+                                                          "phone"),
+                              size, routes=morning, budget_ms=120000)
+        if not check(isinstance(r, dict) and "again" in r and
+                     not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
+            continue
+        check(r["coarse"] and [r["vw"], r["vh"]] == list(size) and
+              not (r["hist"] or {}).get("ltcSlide"),
+              f"{where}: a touch screen of that size, no Back guard left: "
+              f"{r['vw']}x{r['vh']} {r['hist']}")
+        lk = r["look"]
+        kl, kt, kr_, kb = lk["knob"]
+        check(lk["kshown"] and kr_ - kl == 56 and kb - kt == 56 and
+              kl >= 40 and lk["r"][1] <= W - 40 and
+              lk["bg"] == "rgb(91, 79, 192)" and lk["said"] == "Arm lasers"
+              and lk["mode"] == "arm" and lk["touch"] == ["pan-y", "none"]
+              and lk["role"] == "button" and lk["aria"] == "true",
+              f"{where}: purple, full width, its 56 px handle 40 px from "
+              f"the edges, says Arm lasers, a button: {lk}")
+        check(r["tap"] == {"sheet": False, "slide": False,
+                           "knob_sheet": False, "posts": 0},
+              f"{where}: a tap, on the track or the handle, opens nothing "
+              f"and sends nothing: {r['tap']}")
+        arm_body = {"lasers": ["L1", "L2"], "on": True, "confirmed": True}
+
+        def opened(x):
+            return (x["slid"] and not x["sheet_held"] and x["sheet"] and
+                    x["q"] == "Arm all 2 lasers?" and not x["slide_after"]
+                    and x["knob"] == "" and not x["back_left"])
+
+        def nothing(x):
+            return (x["slid"] and not x["sheet"] and not x["sheet_end"] and
+                    x["posts"] == [] and not x["slide_after"] and
+                    x["knob"] == "" and not x["back_left"])
+        f = r["full"]
+        check(opened(f) and f["posts_at_sheet"] == 0 and
+              f["own"] == {"sheet": True, "posts": 0} and
+              f["posts"] == [arm_body] and f["msg"] == "Lasers armed." and
+              f["mode"] == "disarm",
+              f"{where}: slid to the end and lifted: the confirm, nothing "
+              f"sent; the slide's own release and click on its Arm "
+              f"ignored; a tap on Arm posts once: {f}")
+        c = r["cancel"]
+        check(opened(c) and c["posts"] == [] and not c["sheet_end"],
+              f"{where}: Cancel on the confirm sends nothing: {c}")
+        for k in ("u50", "u88", "drift_back"):
+            check(nothing(r[k]) and r[k]["mode"] == "arm",
+                  f"{where}: {k}: lifted under 90 percent: no confirm, "
+                  f"nothing sent: {r[k]}")
+        for k in ("drift_up", "drift_band"):
+            check(opened(r[k]) and r[k]["posts"] == [],
+                  f"{where}: {k}: lifted at 90 percent or more: the "
+                  f"confirm: {r[k]}")
+        check(sorted(r["cuts"]) == sorted(
+            ["pointercancel", "second_finger", "band", "jump", "blur",
+             "hidden", "popstate", "rotate", "disarm_lasers", "stop"]),
+              f"{where}: every cancel tried: {sorted(r['cuts'])}")
+        for k, x in r["cuts"].items():
+            posts = [p for p in x["posts"] if p.get("on") is True]
+            check(x["ended"] and nothing(dict(x, posts=posts)) and
+                  "not armed" not in (x["said"] + x["msg"]).lower(),
+                  f"{where}: a slide at 95 percent ended by {k}: no "
+                  f"confirm, no arm sent, its lift ignored: {x}")
+            if k not in ("disarm_lasers", "stop"):
+                check(x["said"] == "Nothing sent." and x["posts"] == [],
+                      f"{where}: {k} said: {x['said']!r} {x['posts']}")
+        for k in ("flip_held", "flip_lift"):
+            x = r[k]
+            check(x["slid"] and not x["sheet"] and x["posts"] == [] and
+                  x["msg"] == "Lasers armed." and x["mode"] == "disarm" and
+                  not x["slide_after"],
+                  f"{where}: {k}: armed elsewhere under the finger: no "
+                  f"confirm, never a disarm, said armed: {x}")
+        la = r["late"]
+        check(opened(la) and la["posts"] == [arm_body] and
+              la["mid"]["mode"] == "disarm" and
+              "not" not in la["mid"]["msg"].lower() and
+              la["msg"] == "Lasers armed." and la["mode"] == "disarm",
+              f"{where}: the answer late, the status already armed: armed, "
+              f"never not armed, never a disarm: {la}")
+        lo = r["lost_armed"]
+        check(opened(lo) and lo["posts"] == [arm_body] and
+              lo["msg"] == "Lasers armed." and "lost" in lo["full"] and
+              lo["mode"] == "disarm",
+              f"{where}: the answer lost, the engine armed them: read, said "
+              f"armed: {lo}")
+        lf = r["lost_off"]
+        check(opened(lf) and lf["posts"] == [arm_body] and
+              lf["msg"] == "Lasers not armed." and
+              "the engine says no laser is armed" in lf["full"] and
+              lf["mode"] == "arm",
+              f"{where}: the answer lost, nothing armed: said not armed "
+              f"only from the engine's read: {lf}")
+        lb = r["lost_blind"]
+        check(opened(lb) and lb["posts"] == [arm_body] and
+              all(m == "disarm" and w == "UNKNOWN" for m, w, _t in
+                  lb["seen"]) and
+              lb["seen"][-1][2] == "Not known. Check the tile." and
+              lb["after"] == {"mode": "disarm", "word": "ARMED",
+                              "msg": "Lasers armed."},
+              f"{where}: the answer lost, the status unreadable: not known, "
+              f"the tile never idle; read again, the engine's answer: {lb}")
+        for k, said in (("s502", "Lasers armed."), ("s504", "Lasers armed."),
+                        ("s500_off", "Lasers not armed."),
+                        ("s409", "Lasers armed.")):
+            x = r[k]
+            check(opened(x) and x["posts"] == [arm_body] and
+                  x["msg"] == said and
+                  (k != "s500_off" or
+                   "the engine says no laser is armed" in x["full"]),
+                  f"{where}: {k}: an answer that is not clear is read, "
+                  f"said as the engine says: {x}")
+        for k in ("disarm_new", "disarm_reused"):
+            x = r[k]
+            check(x["mode_at_tap"] == "disarm" and
+                  0 <= x["age_at_tap"] < 400 and
+                  {"all": True, "on": False} in x["posts"] and
+                  x["msg"] == "Lasers disarmed.",
+                  f"{where}: {k}: a Disarm tap after the slide is never "
+                  f"held back: {x}")
+        g = r["again"]
+        check(opened(g) and g["posts"] == [arm_body],
+              f"{where}: after all of it a slide still arms: {g}")
+    for size, coarse in (((1280, 800), False), ((768, 1024), True)):
+        r = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                              _UI2_LZ_SLIDE_STEPS.replace("__PART__", "desk"),
+                              size, coarse=coarse, routes=morning,
+                              budget_ms=30000)
+        where = (f"2.0 at {size[0]}x{size[1]}, "
+                 f"{'touch' if coarse else 'a mouse'}, Arm lasers")
+        if not check(isinstance(r, dict) and "posts" in r and
+                     not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
+            continue
+        check(r["knob"] == "none" and r["said"] == "Arm lasers" and
+              r["sheet"] and r["q"] == "Arm all 2 lasers?" and
+              r["posts"] == [{"lasers": ["L1", "L2"], "on": True,
+                              "confirmed": True}] and
+              r["msg"] == "Lasers armed.",
+              f"{where}: a tap, its confirm, one post, as before: {r}")
+    print("  ok")
+
+
 def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
     section("the not fully loaded banner (Andy, 2026-11-22, a Galaxy S22 "
             "Ultra): from a 360 px phone to a 2560x1440 screen its words "
@@ -135100,6 +135481,7 @@ if __name__ == "__main__":
         test_ui2_arm_beats_on_a_fixed_timer,
         test_ui2_phone_layout_whole_on_a_touch_phone,
         test_ui2_flame_slide_to_arm_on_a_phone,
+        test_ui2_laser_slide_on_a_phone,
         test_ui2_broken_banner_fits_a_phone_and_a_2k_screen,
         test_ui2_slow_link_page_is_not_called_broken,
         test_ui2_day_makes_only_1_0_presses,
