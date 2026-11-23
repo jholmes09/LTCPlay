@@ -5206,7 +5206,7 @@ window.addEventListener("orientationchange", () => slideCancel("the screen turne
 // the let go after a start changes nothing at the engine, and the slide
 // never sends a new hold or a Stop purge. The slide's own release and
 // click land on nothing (TP_QUIET); any new touch is a new press.
-const TP_QUIET_MS = 2000, TP_QUIET_CLICK_MS = 400, TP_READ_HOLD_MS = 1500, TP_STOP_WHY = ["Stop purge was pressed", "Stop show was pressed"];
+const TP_QUIET_MS = 2000, TP_READ_HOLD_MS = 1500, TP_STOP_WHY = ["Stop purge was pressed", "Stop show was pressed"];
 let TP_QUIET = null, TP_DOUBT = false, TP_READING = 0, TP_CHECK = false, TP_STARTED = 0, TP_STOPPING = 0, TP_LINE = null;
 // The phone's line says only these short words (tpLine), never 1.0's or
 // the engine's own text.
@@ -5430,17 +5430,34 @@ async function tpSlideRead(why, fires0){
 }
 // The slide's own release and click (its pointer, no touch since, for a
 // bounded time) land on nothing: not Stop purge, not a preset, not the
-// slide. Any new touch is a new press and is never held back.
+// slide. Any new touch is a new press and is never held back, and an
+// event whose pointer is not known (a plain click) is never held back.
 window.addEventListener("pointerdown", e => { if(TP_QUIET && !SLIDE && e !== TP_QUIET.ev) TP_QUIET.fresh = true; }, true);
 ["pointerup", "click"].forEach(t => window.addEventListener(t, e => {
   const qz = TP_QUIET;
   if(SLIDE || !qz || qz.fresh) return;
   const age = Date.now() - qz.at;
   if(age >= TP_QUIET_MS){ TP_QUIET = null; return; }
-  if(e.pointerId === qz.id || (t === "click" && !(e.pointerId > 0) && e.detail > 0 && age < TP_QUIET_CLICK_MS)){
+  if(e.pointerId === qz.id){
     e.preventDefault(); e.stopImmediatePropagation();
   }
 }, true));
+// Every /api/remote/morning read numbered when sent: an answer sent
+// before the last one delivered (a slow regular poll landing after the
+// slide's fresh read) never replaces it; the caller gets the newer one.
+// 1.0's getJSON itself is unchanged; only its name is wrapped.
+{
+  const read = getJSON;
+  let sent = 0, last = 0, newest = null;
+  getJSON = async function(p, ms){
+    if(!/^\/api\/remote\/morning(\?|$)/.test(String(p))) return read(p, ms);
+    const n = ++sent;
+    const j = await read(p, ms);
+    if(n < last && newest) return newest;
+    last = n; newest = j;
+    return j;
+  };
+}
 
 // What a group's tile says: an icon, a word, a short line.
 const LAMP_SHORT = {"dirty edge":"DIRTY EDGE", "chatter":"CHATTER", "arm input stale":"NO SIGNAL",

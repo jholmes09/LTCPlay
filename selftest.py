@@ -120926,6 +120926,14 @@ window.fetch = async (url, opt) => {
   if(post && /\/api\/remote\/purge-stop$/.test(u) && TE.stopFail){ TE.posts.push({route:"purge-stop"}); return J(500, {error:"Engine error."}); }
   if(post && /\/api\/remote\/purge-stop$/.test(u)){ TE.posts.push({route:"purge-stop"}); TE.running = null; return J(200, {ok:true, text:"Purge stopped."}); }
   if(!post && /\/api\/remote\/morning$/.test(u)){
+    if(TE.holdOne && !TE.running){
+      // One answer made now, before the start, delivered 1.4 s late (a
+      // slow link).
+      TE.holdOne = false; TE.held = (TE.held || 0) + 1;
+      const r0 = await hf(url, opt); const j0 = await r0.json(); j0.timed = view();
+      j0.purge_state = Object.assign({}, j0.purge_state, {fires:TE.fires, firing:TE.firing});
+      await nap(1400); return J(200, j0);
+    }
     if(TE.readLate) await nap(TE.readLate);
     if(TE.blind) throw new TypeError("Failed to fetch");
     const r = await hf(url, opt); const j = await r.json(); j.timed = view();
@@ -121182,6 +121190,27 @@ if(PART === "desk"){
   // said as ended, no handle.
   { const s = await slide([[1, 0, 300], [c => { TE.fires++; TE.firing = true; }]]);
     out.firing_other = await fin(s, 1500); }
+  // Round 4: one regular read made before the start lands 1.4 s late,
+  // after the fresh read: never the handle while the engine purges.
+  { TE.runMs = 6000;
+    const s = await slide([[1, 0, 0], [async c => { await nap(50); TE.holdOne = true; await waitFor(() => !!TE.running, 3000);
+      s_flip = await sample(1800); }]]);
+    s.during = s_flip; s.held = TE.held || 0;
+    out.late_poll = await fin(s, 100);
+    TE.running = null; await nap(1500); }
+  // Round 4: Stop purge tapped by a second finger, its click a plain
+  // MouseEvent with no pointerId (older Safari): never held back, the
+  // purge running (its answer late) or the hold before the start.
+  for(const k of ["stop_plain_running", "stop_plain_hold"]){
+    if(k === "stop_plain_running") TE.late = 2500;
+    const s = await slide([[1, 0, k === "stop_plain_running" ? 0 : 300], [async c => {
+      if(k === "stop_plain_running") await waitFor(() => !!TE.running, 3000);
+      const b = q("tp-stop"), br = b.getBoundingClientRect(), x = br.left + br.width / 2, y = br.top + br.height / 2;
+      pe(b, "pointerdown", x, y, 91, false); pe(b, "pointerup", x, y, 91, false);
+      b.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, clientX:x, clientY:y, detail:1})); await nap(400); }]]);
+    out[k] = await fin(s, 1200);
+    pe(body, "pointerup", 30, 30, 91, false);
+    await nap(2500); }
   // N1: an engine refusal's own words never reach the phone line.
   { TE.refuse = "That hold has ended. Let go and hold again. Nothing was fired.";
     out.refused = await fin(await slide([[1, 0, 300]]), 1200); }
@@ -121246,7 +121275,7 @@ def test_ui2_timed_purge_slide_on_a_phone():
         r, bad = {}, False
         for part, need, ms in (("phone", "pre_cuts", 80000),
                                ("phone2", "cuts", 60000),
-                               ("phone3", "again", 150000)):
+                               ("phone3", "again", 170000)):
             x = _ui2_drive_framed(chrome, page, _ui2_status_day(),
                                   whole_js + _UI2_TP_SLIDE_STEPS.replace(
                                       "__PART__", part),
@@ -121425,6 +121454,19 @@ def test_ui2_timed_purge_slide_on_a_phone():
               x["line"] == "A purge is firing." and x["mode"] == "na",
               f"{where}: another screen's purge firing: never said ended, "
               f"no handle: {x}")
+        x = r["late_poll"]
+        check(x["held"] == 1 and x["during"] and
+              all(m != "go" for m, _l, _k in x["during"]) and
+              x["stops"] == 0 and
+              not x["stopped_by_hold"] and x["runs"] == 1,
+              f"{where}: a regular read made before the start, landing after "
+              f"the fresh read: never the handle while the engine purges: "
+              f"{dict(x, during=sorted(set(m for m, _l, _k in x['during'])))}")
+        for k in ("stop_plain_running", "stop_plain_hold"):
+            x = r[k]
+            check(x["stops"] == 1 and not x["running"],
+                  f"{where}: {k}: a second finger's Stop purge with a plain "
+                  f"click (no pointerId) is never held back: {x}")
         rf = r["refused"]
         check(rf["msg"] == "Purge not started." and
               rf["line"] == "Not started. Nothing was fired." and

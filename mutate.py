@@ -3650,13 +3650,13 @@ MUTATIONS = [
 
  ("ui 2.0 purge slide: a slide stopped after 90 percent says not started without reading the engine",
   'ltcplay/web/remote2.html',
-  "  if(started || TP_STOP_WHY.includes(why)) return;\n  tpSlideRead(why);\n",
-  "  if(started || TP_STOP_WHY.includes(why)) return;\n  say(\"Purge not started.\", \"Nothing was fired.\", \"\");\n"),
+  "  else if(read) tpSlideRead(why, s.fires0);\n",
+  "  else if(read){ TP_CHECK = false; say(\"Purge not started.\", \"Nothing was fired.\", \"\"); }\n"),
 
  ("ui 2.0 purge slide: a hold that ended with a lost, 5xx or 409 answer is never read against the engine",
   'ltcplay/web/remote2.html',
-  "  if(!started) tpSlideRead(\"\");\n",
-  ""),
+  "  if(started) tpStartedRead(); else tpSlideRead(\"\", s.fires0);\n",
+  "  if(started) tpStartedRead(); else TP_CHECK = false;\n"),
 
  ("ui 2.0 purge slide: an engine that cannot be read is said as not started",
   'ltcplay/web/remote2.html',
@@ -3729,6 +3729,18 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "      if((mo.purge_state || {}).firing && !t.running){\n",
   "      if(false){\n"),
+
+ # Cold review of #297, round four: a late morning read never replaces a
+ # newer one; a click with no pointerId is never held back.
+ ("ui 2.0 purge slide: a morning read sent before the newest one delivered replaces it",
+  'ltcplay/web/remote2.html',
+  "    if(n < last && newest) return newest;\n",
+  ""),
+
+ ("ui 2.0 purge slide: a Stop purge click with no pointerId is held back after a slide",
+  'ltcplay/web/remote2.html',
+  "  if(e.pointerId === qz.id){\n    e.preventDefault(); e.stopImmediatePropagation();\n",
+  "  if(e.pointerId === qz.id || (t === \"click\" && !(e.pointerId > 0) && e.detail > 0 && age < 400)){\n    e.preventDefault(); e.stopImmediatePropagation();\n"),
 
 
 
