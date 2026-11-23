@@ -3638,6 +3638,62 @@ MUTATIONS = [
   "    if(!qz.fresh && e.pointerId === qz.id && age < LZ_QUIET_ID_MS){",
   "    if(e.pointerId === qz.id && age < LZ_QUIET_ID_MS){"),
 
+ # Step 7 of the phone build: on a touch phone the timed purge starts with
+ # a slide in front of today's hold. Nothing is sent before 90 percent;
+ # every end after it is read against the engine before anything is said,
+ # unreadable is not known; a purge shown running under the finger is not
+ # let go of; the slide's own release lands on nothing, a new tap does.
+ ("ui 2.0 purge slide: the timed purge hold starts at the touch, before 90 percent",
+  'ltcplay/web/remote2.html',
+  "  if(s.frac < SLIDE_ARM) return;\n  const st = tpNow();\n",
+  "  const st = tpNow();\n"),
+
+ ("ui 2.0 purge slide: a slide stopped after 90 percent says not started without reading the engine",
+  'ltcplay/web/remote2.html',
+  "  if(started || TP_STOP_WHY.includes(why)) return;\n  tpSlideRead(why);\n",
+  "  if(started || TP_STOP_WHY.includes(why)) return;\n  say(\"Purge not started.\", \"Nothing was fired.\", \"\");\n"),
+
+ ("ui 2.0 purge slide: a hold that ended with a lost, 5xx or 409 answer is never read against the engine",
+  'ltcplay/web/remote2.html',
+  "  if(!started) tpSlideRead(\"\");\n",
+  ""),
+
+ ("ui 2.0 purge slide: an engine that cannot be read is said as not started",
+  'ltcplay/web/remote2.html',
+  "    const t = mo && mo.timed;\n",
+  "    const t = (mo && mo.timed) || {running:false, holding:false};\n"),
+
+ ("ui 2.0 purge slide: a purge not known leaves the slide ready to start again",
+  'ltcplay/web/remote2.html',
+  "  if(TP_DOUBT) return {mode:\"unknown\", word:\"Not known\"};\n",
+  ""),
+
+ ("ui 2.0 purge slide: a slide whose control shows running under the finger lets go before the engine answers",
+  'ltcplay/web/remote2.html',
+  "    if(s.frac < SLIDE_ARM) slideCancel(\"the handle went back\");\n",
+  "    if(s.frac < SLIDE_ARM || s.el.dataset.mode === \"run\") slideCancel(\"the handle went back\");\n"),
+
+ ("ui 2.0 purge slide: the finger leaving the band does not end the slide",
+  'ltcplay/web/remote2.html',
+  "  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel(\"the finger left the slide\"); return; }\n  if(s.phase === \"end\"){\n",
+  "  if(s.phase === \"end\"){\n"),
+
+ ("ui 2.0 purge slide: the slide's own release and click land on Stop purge",
+  'ltcplay/web/remote2.html',
+  "    e.preventDefault(); e.stopImmediatePropagation();\n  }\n}, true));\n",
+  "  }\n}, true));\n"),
+
+ ("ui 2.0 purge slide: a Stop purge tap that reuses the slide's pointerId is held back",
+  'ltcplay/web/remote2.html',
+  "  if(SLIDE || !qz || qz.fresh) return;\n",
+  "  if(SLIDE || !qz) return;\n"),
+
+ ("ui 2.0 purge slide: the second finger that ends a slide counts as a new press for its lift",
+  'ltcplay/web/remote2.html',
+  "if(TP_QUIET && !SLIDE && e !== TP_QUIET.ev) TP_QUIET.fresh = true;",
+  "if(TP_QUIET && !SLIDE) TP_QUIET.fresh = true;"),
+
+
 
 
  # Andy's phone, 2026-11-22: on a touch phone the top line was capped and
