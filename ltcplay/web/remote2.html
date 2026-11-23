@@ -155,6 +155,8 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) var(--p
 /* The flame slide's handle: drawn on a touch phone only (the phone's
    block below); everywhere else an arm is the hold, as before. */
 .knob{display:none}
+/* The timed purge's slide (step 7): drawn on a touch phone only. */
+#tp-slide,#tp-sl{display:none}
 .b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E;pointer-events:none}
 .b:disabled .fill{display:none}
 /* The quiet tone: signed out, no contact or the show not running. Only
@@ -905,6 +907,22 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #lz-b[data-mode="arm"]:not(:disabled) > .knob{display:flex;align-items:center;justify-content:center;
     position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:#2e2477;
     touch-action:none;z-index:1}
+  /* The timed purge (step 7): a slide in front of today's hold, the
+     same 56 px handle 40 px or more from both edges. Today's button and
+     its line are not drawn here: their words say Hold. */
+  #tp-hold,#tp-st{display:none}
+  #tp-slide{display:flex;position:relative;flex:1 1 100%;min-width:0;margin:0 24px;justify-content:center;padding:0 8px 0 64px;
+    touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  #tp-slide[data-mode="starting"],#tp-slide[data-mode="run"]{background:var(--red-deep);border:3px solid var(--red);color:#fff}
+  #tp-slide[data-mode="run"],#tp-slide[data-mode="na"],#tp-slide[data-mode="unknown"]{padding:0 8px}
+  #tp-slide[data-mode="na"]{opacity:.45}
+  #tp-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
+  #tp-sw{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  #tp-slide[data-mode="go"] > .knob,#tp-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
+    position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:var(--green-ink);
+    touch-action:none;z-index:1}
+  #tp-sl{display:block}
+  #tp-sl:empty{display:none}
 }
 /* PHONE LAYOUT END */
 </style>
@@ -1070,8 +1088,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
             <div class="drow"><b>Timed purge</b><div class="drow" id="tp-presets" role="group" aria-label="Seconds"></div>
               <label class="drow">Other <input class="f" id="tp-secs" type="number" inputmode="numeric" min="1" max="30" step="1" aria-label="Seconds"> s</label></div>
             <div class="drow"><button class="b green hold" id="tp-hold" title="Hold it like a Hold to arm button. The selected machines fire for the seconds chosen, then stop by themselves.">Hold to start a timed purge</button>
+              <button type="button" class="b green" id="tp-slide" data-mode="na" aria-label="Timed purge"><span class="knob" aria-hidden="true"><svg class="i"><use href="#i-right"/></svg></span><span id="tp-sw">Timed purge</span></button>
               <button data-safe class="b red" id="tp-stop" title="Ends a timed purge now, from any screen.">Stop purge</button></div>
             <div class="pline" id="tp-st" aria-live="polite"></div>
+            <div class="pline" id="tp-sl" aria-live="polite"></div>
           </div>
         </div>
         <!-- The Hazers step's Turn on or off (hazertest.py, Jeff and
@@ -2539,7 +2559,9 @@ $("pins").addEventListener("click", async e => {
   const k = b.dataset.pin;
   if(k === "tp"){
     // 1.0's Stop purge: from every screen, never refused for a timed
-    // purge (review of #172).
+    // purge (review of #172). The purge slide's pending read never speaks
+    // after it.
+    if(typeof tpStopSeen === "function") tpStopSeen();
     try{ const j = await post("/api/remote/purge-stop", actor({})); say("Purge stopped.", j.text || "Stopped.", "ok"); }
     catch(e2){ say("Purge NOT stopped.", e2.message + " Disarm flames ends it from any screen.", "bad"); }
   } else if(k === "hzt"){
@@ -3096,6 +3118,7 @@ $("tn-run").addEventListener("click", () => runShowHere());
 // same answer read the same way. No confirm: the double tap is its guard.
 async function pressStop(route){
   if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
+  if(typeof tpStopSeen === "function") tpStopSeen();
   HALT_SEQ++;
   // Any Stop ends every armed first tap (Stop show, the strip's, the Run
   // card's): none of them says "not sent" after it.
@@ -4930,7 +4953,8 @@ function slideDown(e, el, i){
   // takes this entry away and ends the slide, never the page.
   try{ history.pushState({ltcSlide:true}, ""); s.back = true; }catch(_e){}
   // The lasers' slide sends nothing: its lift opens the confirm (lzSlideEnd).
-  if(i !== "lz") slideHold(s);
+  // The timed purge's sends nothing until 90 percent (tpSlideCheck).
+  if(i !== "lz" && i !== "tp") slideHold(s);
 }
 // The hold, the same as a press and hold: armStart or armAllStart.
 function slideHold(s){
@@ -4962,6 +4986,7 @@ function slideCheck(){
   const s = SLIDE;
   if(!s) return;
   if(s.i === "lz"){ lzSlideCheck(s); return; }
+  if(s.i === "tp"){ tpSlideCheck(s); return; }
   // The hold ended by itself (armed, refused, lapsed), and said so.
   if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }
   if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
@@ -5004,6 +5029,7 @@ function slideCancel(why){
   const s = SLIDE;
   if(!s) return;
   if(s.i === "lz"){ lzSlideEnd(s, why); return; }
+  if(s.i === "tp"){ tpSlideEnd(s, why); return; }
   if(s.h && HOLD === s.h) slideStop(s, why);
   else if(s.paused && why) slideSaid(s.groups, why);
   slideEnd(s);
@@ -5163,6 +5189,274 @@ window.addEventListener("orientationchange", () => slideCancel("the screen turne
   const f = () => { slideCancel("the screen changed"); try{ layoutGroups(); }catch(_e){} };
   // An older Safari has addListener only.
   if(SLIDE_MQ.addEventListener) SLIDE_MQ.addEventListener("change", f); else if(SLIDE_MQ.addListener) SLIDE_MQ.addListener(f);
+}
+// ---- the timed purge's slide, touch phones only (step 7 of the phone build) ----
+// On a touch phone the timed purge starts with a slide in front of
+// today's hold (1.0's code above, unchanged). The slide sends nothing
+// until its handle reaches SLIDE_ARM (90 percent); there it starts today's
+// hold (tpStart: the same beats, the same bodies), and the finger stays
+// at the end until the engine says the purge started (its 1.0 s of
+// beats). Before 90 percent every end sends nothing. After it, back under
+// 90 percent, the lift, pointercancel, a second pointer, a jump, the band,
+// blur, hidden, Back, a resize or turn, the step or the screen changing
+// send today's let go (tpLetGo) and nothing else, and the engine is read
+// before anything is said: never "not started" without that read, never
+// the start again while it cannot be read (not known, until a read). A
+// purge the engine started is never let go of or stopped by the slide:
+// the let go after a start changes nothing at the engine, and the slide
+// never sends a new hold or a Stop purge. The slide's own release and
+// click land on nothing (TP_QUIET); any new touch is a new press.
+const TP_QUIET_MS = 2000, TP_READ_HOLD_MS = 1500, TP_STOP_WHY = ["Stop purge was pressed", "Stop show was pressed"];
+let TP_QUIET = null, TP_DOUBT = false, TP_READING = 0, TP_CHECK = false, TP_STARTED = 0, TP_STOPPING = 0, TP_LINE = null;
+// The phone's line says only these short words (tpLine), never 1.0's or
+// the engine's own text.
+function tpLine(text){ TP_LINE = {text:text, at:Date.now()}; }
+// The engine's count of purges fired (purge_state.fires), or null.
+function tpFires(mo){ const n = mo && mo.purge_state && mo.purge_state.fires; return Number.isInteger(n) ? n : null; }
+// The slide's own hold ended by 1.0's code (started, its blur, hidden, a
+// stale status cut) and the slide's tick has not taken it yet.
+function tpSlideGone(){ const s = SLIDE; return !!s && s.i === "tp" && s.phase === "end" && TP_RUN !== s.run ? s : null; }
+function tpSlideOrphan(){ const s = tpSlideGone(); return !!s && !tpStarted(s); }
+// What the slide shows: the handle only while a start may be slid.
+function tpSlideLook(){
+  const st = tpNow();
+  if(TP_DOUBT) return {mode:"unknown", word:"Not known"};
+  // A read pending: no handle and nothing said until the engine answers.
+  if(TP_CHECK || tpSlideOrphan()) return {mode:"unknown", word:"Checking"};
+  // A Stop pressed: no handle until a read made after it shows the engine.
+  if(TP_STOPPING) return {mode:"unknown", word:"Stopping", stopping:true};
+  if(st.running) return {mode:"run", word:st.word};
+  // The engine said started and no read since shows it: never the handle
+  // (a new hold now would be a second press, which ends it).
+  if(TP_STARTED || (tpSlideGone() && !tpSlideOrphan())) return {mode:"run", word:"Purge started", started:true};
+  if(TP_HOLD) return {mode:"starting", word:"Starting. Keep your finger there."};
+  if(st.ok) return {mode:"go", word:st.word.replace(/^Hold to purge /, "Purge ")};
+  return {mode:"na", word:"Timed purge"};
+}
+function renderTpSlide(){
+  const b = $("tp-slide"), l = $("tp-sl");
+  if(!b || !l) return;
+  const lk = tpSlideLook();
+  if(b.dataset.mode !== lk.mode) b.dataset.mode = lk.mode;
+  setText($("tp-sw"), lk.word);
+  if(b.title !== lk.word) b.title = lk.word;
+  setText(l, tpSlideLine(lk));
+}
+// The phone's line: only this page's own short words, never 1.0's line
+// (#tp-st) or the engine's text; "running" only while it runs.
+function tpSlideLine(lk){
+  if(TP_DOUBT) return "Not known. Check the tile.";
+  if(lk.stopping) return "Stopping. Checking with the engine.";
+  if(lk.mode === "unknown") return "Checking with the engine.";
+  if(lk.mode === "starting") return "Keep your finger at the end.";
+  if(lk.started) return "Purge started. You can let go.";
+  if(lk.mode === "run") return "Running. Stop purge ends it.";
+  if(TP_LINE && Date.now() - TP_LINE.at < TP_SAY_MS) return TP_LINE.text;
+  return lk.mode === "na" ? tpWhyNot() : "";
+}
+// Why no slide now, in this page's own words (timedPurgeLook's order).
+function tpWhyNot(){
+  const mo = MO, ts = (mo && mo.timed_settings) || {}, t = (mo && mo.timed) || {}, secs = TP_SECS;
+  if(!mo) return "Not known yet.";
+  if(ts.error) return "No timed purge on this show PC.";
+  if(isStale(Date.now(), LAST_OK, 1.0)) return "Status not live. Wait.";
+  if(ST && ST.me && ST.me.view_only) return "Signed out. Sign in to purge.";
+  if(!mo.purge_enabled) return "Purge arming is off here.";
+  if(mo.live_refusal) return "Purge not allowed now.";
+  if(!timedPurgeNames(mo).length) return "Tap a machine or group first.";
+  if(!(Number.isInteger(secs) && secs >= (Number(ts.min_s) || 1) && secs <= (Number(ts.max_s) || 30))) return "Choose the seconds.";
+  if(t.holding && !t.mine) return "Another screen is starting one.";
+  if((mo.purge_state || {}).firing) return "A purge is firing.";
+  return "";
+}
+// The event that ended the slide (a second finger's pointerdown) is not
+// a new press after it.
+function tpQuiet(s){ TP_QUIET = {id:s.id, at:Date.now(), fresh:false, ev:window.event || null}; }
+function tpSlideCheck(s){
+  // Today's hold ended by itself (started, refused, cut, an error, the
+  // page's own blur or hidden): the engine is read unless it said started.
+  if(s.phase === "end" && TP_RUN !== s.run){ tpSlideHoldEnded(s); return; }
+  if(!s.el.isConnected || !s.el.getClientRects().length){ slideCancel("the step changed"); return; }
+  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
+  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
+  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
+  const r = s.el.getBoundingClientRect();
+  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("the finger left the slide"); return; }
+  if(s.phase === "end"){
+    // The control may show the purge running under the finger: the hold
+    // waits for the engine's answer, as today's does. Only the handle
+    // going back lets go.
+    if(s.frac < SLIDE_ARM) slideCancel("the handle went back");
+    return;
+  }
+  // Nothing sent yet. The control changed (running, not allowed, not
+  // known): the slide ends.
+  if(s.el.dataset.mode !== "go"){ slideCancel("the purge changed"); return; }
+  if(s.frac < SLIDE_ARM) return;
+  const st = tpNow();
+  if(st.running || !st.ok || TP_HOLD || TP_DOUBT || TP_CHECK || TP_STARTED || TP_STOPPING){ slideCancel("the purge changed"); return; }
+  s.at = Date.now();
+  // The engine's purge count before this hold: what proves later that
+  // nothing fired.
+  s.fires0 = tpFires(MO);
+  tpStart();
+  if(!TP_HOLD || TP_RUN === null){ slideCancel(""); return; }   // refused at once: tpStart said why
+  s.phase = "end"; s.run = TP_RUN;
+  renderTpSlide();
+}
+// The engine said started (tpBeat's own words): the finger may lift.
+function tpStarted(s){ return !!TP_MSG && TP_MSG.at >= s.at && / You can let go\.$/.test(TP_MSG.text); }
+function tpSlideHoldEnded(s){
+  const started = tpStarted(s);
+  if(!started) TP_CHECK = true;
+  s.phase = "done";
+  slideEnd(s);
+  tpQuiet(s);
+  if(started) tpStartedRead(); else tpSlideRead("", s.fires0);
+  renderTpSlide();
+}
+// The engine said started: running (no handle) until a read made after
+// that answer shows the engine's state; read again until it answers.
+function tpStartedRead(){ return tpStateRead(false, ++TP_READING); }
+// No handle (started, or a Stop pressed) until a read made from here on
+// answers: only the engine's state brings the handle back. Read again
+// until it answers.
+async function tpStateRead(stop, me){
+  if(stop) TP_STOPPING = Date.now(); else TP_STARTED = Date.now();
+  renderTpSlide();
+  for(;;){
+    let mo = null;
+    try{ mo = await getJSON("/api/remote/morning", 1500); }catch(_e){}
+    if(me !== TP_READING) return;
+    if(mo && mo.timed){ TP_STARTED = 0; TP_STOPPING = 0; MO = mo; try{ renderMorning(); }catch(_e){} renderTpSlide(); return; }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+// A Stop purge or a Stop show, answered or not (a Stop that failed too):
+// its own answer, so any read still pending never speaks after it; and
+// no handle until a fresh read shows whether the engine still purges.
+function tpStopSeen(){
+  TP_READING++;
+  TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;
+  tpStateRead(true, TP_READING);
+}
+function tpSlideEnd(s, why){
+  const held = s.phase === "end", done = s.phase === "done";
+  s.phase = "done";
+  slideEnd(s);
+  tpQuiet(s);
+  if(done) return;
+  if(!held){
+    if(why && why !== "let go") say("Nothing sent.", "Purge slide stopped: " + why + ". Nothing was sent.", "");
+    renderTpSlide();
+    return;
+  }
+  // Today's let go, only for this slide's own hold (a purge the engine
+  // started is not changed by it).
+  const started = TP_RUN !== s.run && tpStarted(s), read = !started && !TP_STOP_WHY.includes(why);
+  // From here until the engine answers: checking, no handle.
+  if(read) TP_CHECK = true;
+  if(TP_RUN !== null && TP_RUN === s.run) tpLetGo("");
+  // A Stop is its own answer.
+  if(started) tpStartedRead();
+  else if(read) tpSlideRead(why, s.fires0);
+  renderTpSlide();
+}
+// After the slide's hold ended without a started answer: the engine's
+// state read (the let go's own beat first: a hold still shown is waited
+// for), never said as not started without it: only when the engine's
+// purge count is the one before the hold. A count that moved: a purge
+// fired (and ended). No count: not known. Unreadable: not known, the
+// handle gone, read again until it answers.
+async function tpSlideRead(why, fires0){
+  const me = ++TP_READING, t0 = Date.now();
+  let told = false;
+  TP_CHECK = true; TP_STARTED = 0;
+  renderTpSlide();
+  for(;;){
+    let mo = null;
+    try{ mo = await getJSON("/api/remote/morning", 1500); }catch(_e){}
+    if(me !== TP_READING) return;
+    const t = mo && mo.timed;
+    if(t && (t.running || !t.holding || Date.now() - t0 >= TP_READ_HOLD_MS)){
+      TP_DOUBT = false; TP_CHECK = false;
+      MO = mo;
+      try{ renderMorning(); }catch(_e){}
+      const n = tpFires(mo), said = TP_MSG && Date.now() - TP_MSG.at < 3000 ? TP_MSG.text + " " : "";
+      if((mo.purge_state || {}).firing && !t.running){
+        // Another purge (the FIRE key's) is firing: never said as ended.
+        say("A purge is firing.", "No timed purge runs, but the engine says a purge is firing now. Check the tile.", "bad");
+        tpLine("A purge is firing.");
+      } else if(t.running){
+        say("Timed purge running.", "The engine says a timed purge is running: " + (t.machines || []).join(", ") + ". Stop purge ends it.", "ok");
+      } else if(fires0 !== null && fires0 !== undefined && n === fires0){
+        const why2 = why === "let go" ? "You let go before the engine started it. " : why ? "Purge slide stopped: " + why + ". " : "";
+        say("Purge not started.", why2 + said + "The engine says no timed purge is running and none fired. Nothing was fired.", "");
+        tpLine("Not started. Nothing was fired.");
+      } else if(fires0 !== null && fires0 !== undefined && n !== null && n > fires0){
+        say("A purge fired and ended.", "The engine counted a purge since this slide began, and none runs now. " + (t.last || "") + " Check the tile.", "bad");
+        tpLine("A purge fired and ended.");
+      } else {
+        say("Not known. Check the tile.", "Not running now, but the engine's purge count cannot say whether this slide's purge fired. Check the tile.", "bad");
+        tpLine("Not known. Check the tile.");
+      }
+      renderTpSlide();
+      return;
+    }
+    if(t && t.holding){ await new Promise(r => setTimeout(r, 250)); continue; }
+    if(!told){
+      told = true; TP_DOUBT = true;
+      say("Not known. Check the tile.", "Timed purge not known: the engine could not be read. Check the timed purge before you slide again. Stop purge ends one.", "bad");
+      renderTpSlide();
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+{
+  const b = $("tp-slide");
+  b.addEventListener("pointerdown", e => {
+    if(!slidePhone() || b.dataset.mode !== "go") return;
+    e.preventDefault();
+    slideDown(e, b, "tp");
+    if(SLIDE && SLIDE.i === "tp" && SLIDE.el === b){ SLIDE.phase = "slide"; SLIDE.run = null; }
+  });
+  b.addEventListener("contextmenu", e => { if(slidePhone()) e.preventDefault(); });
+  // Redrawn whenever today's control is (1.0's renderTimedPurge).
+  const ob = new MutationObserver(() => renderTpSlide());
+  ob.observe($("tp-st"), {childList:true, characterData:true, subtree:true});
+  ob.observe($("tp-hold"), {childList:true, characterData:true, subtree:true, attributes:true});
+  ob.observe($("tp"), {attributes:true, attributeFilter:["hidden"]});
+  $("tp-stop").addEventListener("click", () => { slideCancel("Stop purge was pressed"); tpStopSeen(); });
+}
+// The slide's own release and click (its pointer, no touch since, for a
+// bounded time) land on nothing: not Stop purge, not a preset, not the
+// slide. Any new touch is a new press and is never held back, and an
+// event whose pointer is not known (a plain click) is never held back.
+window.addEventListener("pointerdown", e => { if(TP_QUIET && !SLIDE && e !== TP_QUIET.ev) TP_QUIET.fresh = true; }, true);
+["pointerup", "click"].forEach(t => window.addEventListener(t, e => {
+  const qz = TP_QUIET;
+  if(SLIDE || !qz || qz.fresh) return;
+  const age = Date.now() - qz.at;
+  if(age >= TP_QUIET_MS){ TP_QUIET = null; return; }
+  if(e.pointerId === qz.id){
+    e.preventDefault(); e.stopImmediatePropagation();
+  }
+}, true));
+// Every /api/remote/morning read numbered when sent: an answer sent
+// before the last one delivered (a slow regular poll landing after the
+// slide's fresh read) never replaces it; the caller gets the newer one.
+// 1.0's getJSON itself is unchanged; only its name is wrapped.
+{
+  const read = getJSON;
+  let sent = 0, last = 0, newest = null;
+  getJSON = async function(p, ms){
+    if(!/^\/api\/remote\/morning(\?|$)/.test(String(p))) return read(p, ms);
+    const n = ++sent;
+    const j = await read(p, ms);
+    if(n < last && newest) return newest;
+    last = n; newest = j;
+    return j;
+  };
 }
 
 // What a group's tile says: an icon, a word, a short line.

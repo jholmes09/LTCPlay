@@ -120870,6 +120870,640 @@ def test_ui2_laser_slide_on_a_phone():
     print("  ok")
 
 
+# The timed purge's slide on a touch phone (step 7 of the phone build),
+# against a stand-in for morning.py's timed_beat: 1.0 s of beats with no
+# gap over 0.25 s (0.35 s here) starts it, a release before that fires
+# nothing and after it changes nothing, a new hold while one runs ends it,
+# and /api/remote/morning carries its timed view. The answer to a beat can
+# be lost, a 502 or a 409 with no code after the engine acted, or late;
+# the morning read can be blind.
+_UI2_TP_SLIDE_STEPS = r"""
+const q = id => document.getElementById(id);
+const nap = ms => new Promise(r => setTimeout(r, ms));
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+let s_pre = null, s_hold_words = "", s_line = "", s_flip = null;
+const TE = {hold:null, running:null, dead:new Set(), after:"", late:0, blind:false, blindAfter:false, failAll:0, readLate:0, runMs:0, refuse:"", fires:0, firing:false, stopFail:false, posts:[]};
+const W = innerWidth, H = innerHeight, fr = window.frameElement, body = document.body;
+const view = () => {
+  const now = Date.now();
+  if(TE.hold && now - TE.hold.beat > 350){ TE.dead.add(TE.hold.run); TE.hold = null; }
+  if(TE.running && now >= TE.running.until) TE.running = null;
+  const r = TE.running;
+  return {running:!!r, left_s:r ? Math.round((r.until - now) / 100) / 10 : null, seconds:r ? r.secs : null, elapsed_s:null,
+    machines:r ? ["front row 1"] : [], firing:[], waiting:[], device:r ? "phone" : null, who:"", holding:!!TE.hold,
+    holder:TE.hold ? "phone" : null, mine:!!TE.hold, held_s:null, hold_s:1.0, last:""};
+};
+const J = (code, o) => new Response(JSON.stringify(o), {status:code, headers:{"Content-Type":"application/json"}});
+const hf = window.fetch;
+window.fetch = async (url, opt) => {
+  const u = String(url), post = !!(opt && opt.method === "POST");
+  if(post && /\/api\/remote\/purge-timed$/.test(u)){
+    const b = JSON.parse(opt.body || "{}");
+    TE.posts.push({route:"purge-timed", hold:b.hold, run:b.run, seq:b.seq, seconds:b.seconds});
+    view();
+    if(b.hold !== true){ if(TE.hold && TE.hold.run === b.run) TE.hold = null; TE.dead.add(b.run); return J(200, view()); }
+    if(TE.running){
+      if(TE.running.run === b.run){ if(TE.late) await nap(TE.late); return J(200, view()); }
+      TE.running = null; TE.stopped_by_hold = true;
+      return J(409, {error:"A second purge press ended the timed purge.", cut:true, ended:true});
+    }
+    if(TE.dead.has(b.run)) return J(409, {error:"That hold has ended. Let go and hold again. Nothing was fired.", cut:true});
+    if(TE.failAll) return J(TE.failAll, {error:"Bad gateway."});
+    if(TE.refuse) return J(409, {error:TE.refuse, cut:true});
+    const now = Date.now();
+    if(!TE.hold) TE.hold = {run:b.run, start:now, beat:now};
+    else if(TE.hold.run !== b.run){ TE.hold = null; return J(409, {error:"Let go and hold again. Nothing was fired.", cut:true}); }
+    else TE.hold.beat = now;
+    if(now - TE.hold.start < 1000) return J(200, view());
+    TE.dead.add(b.run); TE.hold = null; TE.running = {run:b.run, until:now + (TE.runMs || b.seconds * 1000), secs:b.seconds}; TE.fires++;
+    if(TE.late) await nap(TE.late);
+    if(TE.after === "lose"){ if(TE.blindAfter) TE.blind = true; throw new TypeError("Failed to fetch"); }
+    if(TE.after === "502") return J(502, {error:"Bad gateway."});
+    if(TE.after === "409") return J(409, {error:"Conflict."});
+    return J(200, Object.assign(view(), {ok:true, started:true, seconds:b.seconds,
+      text:"Timed purge started: front row 1 for " + b.seconds + " s. It stops by itself; Stop purge ends it now."}));
+  }
+  if(post && /\/api\/remote\/purge-stop$/.test(u) && TE.stopFail){ TE.posts.push({route:"purge-stop"}); return J(500, {error:"Engine error."}); }
+  if(post && /\/api\/remote\/purge-stop$/.test(u)){ TE.posts.push({route:"purge-stop"}); TE.running = null; return J(200, {ok:true, text:"Purge stopped."}); }
+  if(!post && /\/api\/remote\/morning$/.test(u)){
+    if(TE.holdOne && !TE.running){
+      // One answer made now, before the start, delivered 1.4 s late (a
+      // slow link).
+      TE.holdOne = false; TE.held = (TE.held || 0) + 1;
+      const r0 = await hf(url, opt); const j0 = await r0.json(); j0.timed = view();
+      j0.purge_state = Object.assign({}, j0.purge_state, {fires:TE.fires, firing:TE.firing});
+      await nap(1400); return J(200, j0);
+    }
+    if(TE.readLate) await nap(TE.readLate);
+    if(TE.blind) throw new TypeError("Failed to fetch");
+    const r = await hf(url, opt); const j = await r.json(); j.timed = view();
+    j.purge_state = Object.assign({}, j.purge_state, {fires:TE.fires, firing:TE.firing}); return J(200, j);
+  }
+  return hf(url, opt);
+};
+let PID = 500;
+const pe = (el, type, x, y, id, prim, kind) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
+  pointerId:id, pointerType:kind || "touch", isPrimary:prim !== false, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
+const clk = (el, id) => el.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:id, pointerType:"touch", isPrimary:true, detail:1}));
+const tap = (el, id) => { const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+  pe(el, "pointerdown", x, y, id); pe(el, "pointerup", x, y, id); clk(el, id); };
+const sb = () => q("tp-slide");
+const stops = p => p.filter(x => x.route === "purge-stop").length;
+const settle = async () => { TE.hold = null; TE.running = null; TE.after = ""; TE.late = 0; TE.blind = false; TE.blindAfter = false; TE.failAll = 0;
+  TE.stopped_by_hold = false; TE.readLate = 0; TE.runMs = 0; TE.refuse = ""; TE.firing = false; TE.stopFail = false; TP_READING++; TP_STOPPING = 0; TP_DOUBT = false; TP_CHECK = false;
+  TP_STARTED = 0; TP_LINE = null; TP_MSG = null; await nap(1300); };
+// The slide and its line every 60 ms while the engine is being read.
+const sample = async ms => { const out2 = []; for(let t = 0; t < ms; t += 60){ out2.push([sb().dataset.mode, q("tp-sl").textContent,
+  getComputedStyle(sb().querySelector(".knob")).display]); await nap(60); } return out2; };
+const waitFor = async (f, ms) => { for(let i = 0; i < (ms || 3000) / 20 && !f(); i++) await nap(20); return !!f(); };
+// One slide of the handle: each [fraction, dy, wait] walked to in 16 px
+// steps (or a function, run with the finger down), then lifted (or ended
+// by `end`).
+async function slide(moves, end){
+  const el = sb(); el.scrollIntoView({block:"center"}); await nap(120);
+  const kn = el.querySelector(".knob"), travel = el.clientWidth - kn.offsetWidth - 2 * kn.offsetLeft, r = el.getBoundingClientRect();
+  const id = ++PID;
+  const x0 = r.left + el.clientLeft + kn.offsetLeft + kn.offsetWidth / 2, y0 = r.top + el.clientTop + kn.offsetTop + kn.offsetHeight / 2;
+  let x = x0, y = y0;
+  const p0 = TE.posts.length;
+  q("msg-t").textContent = "";
+  pe(kn, "pointerdown", x, y, id);
+  const res = {slid:!!SLIDE, p0:p0};
+  const walk = async (tx, ty) => {
+    while(Math.abs(tx - x) > 0.5 || Math.abs(ty - y) > 0.5){
+      const dx = tx - x, dy = ty - y, d = Math.hypot(dx, dy), f = Math.min(1, 16 / d);
+      x += dx * f; y += dy * f; pe(kn, "pointermove", x, y, id); await nap(8);
+    }
+  };
+  for(const [f, dy, wait] of moves){
+    if(typeof f === "function"){ await f({el:el, kn:kn, x:x, y:y, id:id, walk:walk, x0:x0, travel:travel, p0:p0}); continue; }
+    await walk(x0 + f * travel, y0 + (dy || 0));
+    if(wait) await nap(wait);
+  }
+  res.c = {x:x, y:y, id:id, kn:kn, el:el, walk:walk, p0:p0, x0:x0, travel:travel};
+  if(end) await end(res.c); else pe(kn, "pointerup", x, y, id);
+  res.slide_after = !!SLIDE;
+  res.knob = kn.style.transform;
+  return res;
+}
+// The slide's own release and click on everything under it.
+const own = c => { for(const el of [q("tp-stop"), sb(), q("tp-hold"), document.querySelector("#tp-presets [data-s]")]){
+  if(!el) continue; const r = el.getBoundingClientRect(); pe(el, "pointerup", r.left + 5, r.top + 5, c.id); clk(el, c.id); } };
+async function fin(res, ms){
+  await nap(ms || 900);
+  res.back_left = !!(history.state && history.state.ltcSlide);
+  res.posts = TE.posts.slice(res.p0);
+  res.holds = res.posts.filter(p => p.route === "purge-timed").map(p => p.hold);
+  res.runs = [...new Set(res.posts.filter(p => p.route === "purge-timed").map(p => p.run))].length;
+  res.stops = stops(res.posts);
+  res.running = !!TE.running; res.stopped_by_hold = !!TE.stopped_by_hold;
+  res.msg = msg(); res.full = MSG_FULL;
+  res.mode = sb().dataset.mode; res.line = q("tp-sl").textContent; res.word = q("tp-sw").textContent;
+  delete res.c;
+  await settle();
+  return res;
+}
+await h.sleep(900);
+{ const b = document.querySelector('#d-steps [data-step="purge"]'); if(b) b.click(); }
+await h.sleep(1200);
+out.vw = W; out.vh = H; out.coarse = matchMedia("(pointer:coarse)").matches;
+const PART = "__PART__";
+if(PART === "desk"){
+  // Off a phone: today's hold, as before.
+  const hb = q("tp-hold"); hb.scrollIntoView({block:"center"}); await nap(100);
+  out.slide_shown = getComputedStyle(sb()).display !== "none";
+  out.hold_shown = getComputedStyle(hb).display !== "none";
+  out.word = hb.textContent;
+  const r = hb.getBoundingClientRect(), x = r.left + 20, y = r.top + r.height / 2, kind = out.coarse ? "touch" : "mouse";
+  pe(hb, "pointerdown", x, y, 1, true, kind);
+  await waitFor(() => !!TE.running, 2500); await nap(200);
+  pe(hb, "pointerup", x, y, 1, true, kind);
+  await nap(400);
+  out.holds = TE.posts.filter(p => p.route === "purge-timed").map(p => p.hold);
+  out.running = !!TE.running; out.st = q("tp-st").textContent;
+  await settle();
+} else {
+  const words = () => q("d-tp").innerText;
+  const cuts = {
+    pointercancel:c => pe(c.kn, "pointercancel", c.x, c.y, c.id),
+    second_finger:c => { pe(body, "pointerdown", 30, 30, 90, false); pe(body, "pointerup", 30, 30, 90, false); },
+    band:async c => { await c.walk(c.x, c.y + 90); },
+    jump:c => pe(c.kn, "pointermove", c.x - 150, c.y, c.id),
+    blur:c => window.dispatchEvent(new Event("blur")),
+    hidden:c => { Object.defineProperty(document, "hidden", {configurable:true, get:() => true});
+      document.dispatchEvent(new Event("visibilitychange")); delete document.hidden; },
+    popstate:async c => { history.back(); await nap(200); },
+    rotate:async c => { fr.style.width = H + "px"; fr.style.height = W + "px"; await nap(300); fr.style.width = W + "px"; fr.style.height = H + "px"; await nap(500); },
+    back_under:async c => { await c.walk(c.x0 + 0.5 * c.travel, c.y); },
+  };
+  const runCuts = async (where, at, wait) => {
+    out[where] = {};
+    for(const k of Object.keys(cuts)){
+      if(where === "pre_cuts" && k === "back_under") continue;
+      const s = await slide([[at, 0, wait]], async c => { c.before = TE.posts.length - c.p0; await cuts[k](c); c.ended = !SLIDE; await nap(30); c.said = msg();
+        pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); });
+      s.ended = s.c.ended; s.said = s.c.said; s.before = s.c.before;
+      out[where][k] = await fin(s, 1100);
+      pe(body, "pointerup", 30, 30, 90, false);
+      await nap(300);
+    }
+  };
+  if(PART === "phone"){
+  const el = sb(); el.scrollIntoView({block:"center"}); await nap(100);
+  const r = el.getBoundingClientRect(), kn = el.querySelector(".knob"), kr = kn.getBoundingClientRect(), cs = getComputedStyle(el);
+  out.look = {r:[Math.round(r.left), Math.round(r.right)], knob:[Math.round(kr.left), Math.round(kr.top), Math.round(kr.right), Math.round(kr.bottom)],
+    kshown:getComputedStyle(kn).display !== "none", word:q("tp-sw").textContent, mode:el.dataset.mode,
+    touch:[cs.touchAction, getComputedStyle(kn).touchAction], role:el.tagName.toLowerCase(), aria:kn.getAttribute("aria-hidden"),
+    hold_shown:getComputedStyle(q("tp-hold")).display !== "none", st_shown:getComputedStyle(q("tp-st")).display !== "none",
+    stop:whole(q("tp-stop")), words:words()};
+  // A tap on the track, and on the handle: nothing sent.
+  { const p0 = TE.posts.length; tap(el, ++PID); await nap(300); tap(kn, ++PID); await nap(300); out.tap = {posts:TE.posts.length - p0, slide:!!SLIDE}; await settle(); }
+  // The whole slide: nothing sent under 90 percent; at the end, today's
+  // beats, the engine starts it, and the slide's own release and click
+  // on Stop purge, the slide, a preset land on nothing. A new tap on
+  // Stop purge then stops it, a new finger or one reusing the pointerId.
+  for(const k of ["full", "full_reused"]){
+    const s = await slide([[0.85, 0, 700], [c => { c.pre = TE.posts.length - c.p0; s_pre = c.pre; }], [1, 0, 0],
+      [async c => { await waitFor(() => !!TE.running, 3000); await nap(80); s_hold_words = words(); s_line = q("tp-sl").textContent; }]],
+      async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); await nap(300);
+        c.own_stops = stops(TE.posts.slice(c.p0)); c.own_running = !!TE.running;
+        tap(q("tp-stop"), k === "full" ? ++PID : c.id); });
+    s.pre = s_pre; s.hold_words = s_hold_words; s.line_held = s_line; s.own_stops = s.c.own_stops; s.own_running = s.c.own_running;
+    out[k] = await fin(s);
+  }
+  // Under 90 percent, lifted: nothing sent.
+  out.u50 = await fin(await slide([[0.5, 0, 1500]]));
+  out.u88 = await fin(await slide([[0.88, 0, 1500]]));
+  // At the end, lifted before the engine's 1.0 s: today's let go, the
+  // engine read, said as it says.
+  out.early = await fin(await slide([[1, 0, 400]]));
+  // Every cancel before 90 percent: nothing sent.
+  await runCuts("pre_cuts", 0.6, 200);
+  } else if(PART === "phone2"){
+  // Every cancel at the end, before the engine's start.
+  await runCuts("cuts", 0.97, 350);
+  } else {
+  // The engine started it and its answer was lost, a 502, a 409 with no
+  // code: read, said running; nothing let go of or stopped; the lift
+  // and its click land on nothing.
+  for(const [k, after] of [["lost", "lose"], ["s502", "502"], ["s409", "409"]]){
+    TE.after = after;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(400); }]],
+      async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); });
+    out[k] = await fin(s, 1200);
+  }
+  // A 502 for every beat, the engine never acted: read, said not started.
+  { TE.failAll = 502; out.fail502 = await fin(await slide([[1, 0, 300]]), 1200); }
+  // Lost, and the engine cannot be read: not known, never the start
+  // again (no handle, a slide does nothing); once it reads, its answer.
+  { TE.after = "lose"; TE.blindAfter = true;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(200); }]]);
+    const seen = [];
+    for(let i = 0; i < 6; i++){ await nap(200); seen.push([sb().dataset.mode, q("tp-sl").textContent, msg(), getComputedStyle(sb().querySelector(".knob")).display]); }
+    s.seen = seen;
+    { const k2 = sb().querySelector(".knob"), kr2 = sb().getBoundingClientRect(); pe(k2, "pointerdown", kr2.left + 20, kr2.top + 20, ++PID); s.again_slide = !!SLIDE;
+      pe(k2, "pointerup", kr2.left + 20, kr2.top + 20, PID); }
+    TE.blind = false; await nap(1500);
+    s.after = {mode:sb().dataset.mode, msg:msg(), line:q("tp-sl").textContent};
+    out.blind = await fin(s, 100); }
+  // The poll shows it running under the finger before any beat's answer
+  // (every answer late): the slide holds on; the lift sends today's let
+  // go only (which changes nothing after a start), never a new hold or a
+  // Stop purge; read, said running.
+  { TE.late = 2500;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => sb().dataset.mode === "run", 3500); await nap(150);
+      s_flip = {mode:sb().dataset.mode, slide:!!SLIDE, posts:TE.posts.length - c.p0}; }]],
+      async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); clk(c.el, c.id); own(c); });
+    s.held = s_flip;
+    out.flip = await fin(s, 1500);
+    await nap(2500); }
+  // Cold review of #297: the engine started it, its answer late; the page
+  // blurs (a call, the shade): 1.0 says its hold ended. While the engine
+  // is read (slowly), the slide shows checking, no handle, never "Nothing
+  // was fired"; then said running; once the purge ends, never running.
+  { TE.late = 2500; TE.readLate = 800;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(60);
+      window.dispatchEvent(new Event("blur")); await nap(0); s_flip = await sample(660); }]]);
+    s.during = s_flip;
+    await nap(1200);
+    s.read = {mode:sb().dataset.mode, msg:msg(), line:q("tp-sl").textContent};
+    if(TE.running) TE.running.until = Date.now();
+    await nap(2200);
+    s.ended = {mode:sb().dataset.mode, line:q("tp-sl").textContent, st:q("tp-st").textContent};
+    out.blur_late = await fin(s, 100);
+    await nap(2500); }
+  // Lifted before the start, the engine read slowly: checking, no handle,
+  // until it answers.
+  { TE.readLate = 800;
+    const s = await slide([[1, 0, 300]], async c => { pe(c.kn, "pointerup", c.x, c.y, c.id); s_flip = await sample(600); });
+    s.during = s_flip;
+    out.lift_slow = await fin(s, 1500); }
+  // 1.0's stale status cut under the finger: the same.
+  { TE.readLate = 800;
+    const s = await slide([[1, 0, 300], [async c => { LAST_OK = Date.now() - 5000; renderTimedPurge(); await nap(0); s_flip = await sample(600); }]]);
+    s.during = s_flip;
+    out.stale_cut = await fin(s, 1500); }
+  // Cold review of #297, second round. R1: a 1.5 s purge whose started
+  // answer was lost, the engine unreadable until it ended: never "not
+  // started": the engine's purge count moved, so a purge fired.
+  { TE.after = "lose"; TE.blindAfter = true; TE.runMs = 1500;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(100); }]]);
+    await nap(3400); TE.blind = false; await nap(1800);
+    out.ran_blind = await fin(s, 100); }
+  // R1: Stop purge tapped while the engine is being read: the read never
+  // speaks after it.
+  { TE.late = 2500; TE.readLate = 1200;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(60);
+      window.dispatchEvent(new Event("blur")); await nap(250); tap(q("tp-stop"), ++PID); }]]);
+    q("msg-t").textContent = "";
+    await nap(2600);
+    out.stop_during = await fin(s, 100);
+    await nap(2500); }
+  // R2: the started answer in, the engine's state read slowly: no handle,
+  // no new slide (it would be a second press, ending the purge).
+  { TE.readLate = 1000;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(40); s_flip = await sample(540); }]]);
+    s.during = s_flip;
+    { const k2 = sb().querySelector(".knob"), kr2 = sb().getBoundingClientRect(); pe(k2, "pointerdown", kr2.left + 20, kr2.top + 20, ++PID);
+      s.again_slide = !!SLIDE; for(let i = 0; i < 12; i++){ pe(k2, "pointermove", kr2.left + 20 + i * 25, kr2.top + 20, PID); await nap(10); }
+      await nap(200); pe(k2, "pointerup", kr2.left + 320, kr2.top + 20, PID); }
+    await nap(1600);
+    s.after = {mode:sb().dataset.mode, line:q("tp-sl").textContent};
+    out.started_slow = await fin(s, 100); }
+  // Round 3: Stop tapped just after the start, the engine read slowly:
+  // no handle until a read made after the Stop shows the engine.
+  { TE.readLate = 1200;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(40);
+      tap(q("tp-stop"), ++PID); s_flip = await sample(900); }]]);
+    s.during = s_flip; await nap(1500);
+    out.stop_slow = await fin(s, 100); }
+  // Round 3: the Stop fails (a 500) and the reads time out: no handle the
+  // whole time; once a read answers, still purging, never the handle.
+  { TE.stopFail = true; TE.readLate = 1700; TE.runMs = 9000;
+    const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(40);
+      tap(q("tp-stop"), ++PID); s_flip = await sample(2400); }]]);
+    s.during = s_flip; TE.readLate = 0; await nap(3000);
+    s.after = {mode:sb().dataset.mode, line:q("tp-sl").textContent};
+    out.stop_fail = await fin(s, 100);
+    TE.running = null; await nap(1500); }
+  // Round 3: another screen's FIRE purge firing when the read comes: never
+  // said as ended, no handle.
+  { const s = await slide([[1, 0, 300], [c => { TE.fires++; TE.firing = true; }]]);
+    out.firing_other = await fin(s, 1500); }
+  // Round 4: one regular read made before the start lands 1.4 s late,
+  // after the fresh read: never the handle while the engine purges.
+  { TE.runMs = 6000;
+    const s = await slide([[1, 0, 0], [async c => { await nap(50); TE.holdOne = true; await waitFor(() => !!TE.running, 3000);
+      s_flip = await sample(1800); }]]);
+    s.during = s_flip; s.held = TE.held || 0;
+    out.late_poll = await fin(s, 100);
+    TE.running = null; await nap(1500); }
+  // Round 4: Stop purge tapped by a second finger, its click a plain
+  // MouseEvent with no pointerId (older Safari): never held back, the
+  // purge running (its answer late) or the hold before the start.
+  for(const k of ["stop_plain_running", "stop_plain_hold"]){
+    if(k === "stop_plain_running") TE.late = 2500;
+    const s = await slide([[1, 0, k === "stop_plain_running" ? 0 : 300], [async c => {
+      if(k === "stop_plain_running") await waitFor(() => !!TE.running, 3000);
+      const b = q("tp-stop"), br = b.getBoundingClientRect(), x = br.left + br.width / 2, y = br.top + br.height / 2;
+      pe(b, "pointerdown", x, y, 91, false); pe(b, "pointerup", x, y, 91, false);
+      b.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, clientX:x, clientY:y, detail:1})); await nap(400); }]]);
+    out[k] = await fin(s, 1200);
+    pe(body, "pointerup", 30, 30, 91, false);
+    await nap(2500); }
+  // N1: an engine refusal's own words never reach the phone line.
+  { TE.refuse = "That hold has ended. Let go and hold again. Nothing was fired.";
+    out.refused = await fin(await slide([[1, 0, 300]]), 1200); }
+  // After all of it, a slide still starts one.
+  { const s = await slide([[1, 0, 0], [async c => { await waitFor(() => !!TE.running, 3000); await nap(200); }]]); out.again = await fin(s); }
+  }
+}
+out.hist = history.state;
+"""
+
+
+def test_ui2_timed_purge_slide_on_a_phone():
+    section("the timed purge's slide on a touch phone (step 7 of the phone "
+            "build): a slide in front of today's hold, which is 1.0's code "
+            "unchanged; nothing sent until 90 percent; there today's beats "
+            "until the engine starts it; every cancel before 90 percent "
+            "sends nothing, after it today's let go only, and the engine is "
+            "read before anything is said; a lost, 5xx or 409 answer after "
+            "the engine acted is read, unreadable is not known, never the "
+            "start again; a purge started under the finger is never let go "
+            "of or stopped; the slide's own release lands on nothing; off "
+            "a phone, the hold as before")
+    page = _ui2_page_inline()
+    two = _ui2_pages()[1]
+    ck = _js_function(two, "tpSlideCheck") or ""
+    check(0 < ck.find("if(s.frac < SLIDE_ARM) return;") < ck.find("tpStart();")
+          and ck.count("tpStart(") == 1 and "post(" not in ck,
+          "the slide starts today's hold (tpStart) only at 90 percent, and "
+          "sends nothing itself")
+    for f in ("tpSlideCheck", "tpSlideEnd", "tpSlideHoldEnded", "tpSlideRead",
+              "tpSlideLook", "renderTpSlide", "tpSlideLine", "tpWhyNot",
+              "tpStartedRead", "tpStopSeen"):
+        src = _js_function(two, f) or ""
+        check(src, f"{f} is there")
+        check("tpStopPress" not in src and "purge-stop" not in src,
+              f"{f} never sends a Stop purge")
+        for s in re.findall(r'say\("([^"]*)"', src):
+            check(len(s.split()) <= 8, f"{f}: 8 words or fewer: {s!r}")
+        _no_dashes(src, f)
+        lits = " ".join(re.findall(r'"([^"]*)"', src))
+        check("hold" not in lits.replace("Hold to purge ", "").lower(),
+              f"{f}: no Hold in a phone's words: {lits[:200]!r}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    mo = _morning_view_pico(selected=("m1",))
+    mo["timed_settings"] = {"presets": [2, 5, 10, 20, 30], "default_s": 5,
+                            "max_s": 30, "min_s": 1, "hold_s": 1.0}
+    routes = {"/api/remote/morning": mo}
+    whole_js = ("const whole = el => { if(!el || !el.getClientRects().length) "
+                "return false; const r = el.getBoundingClientRect(); return "
+                "r.left >= 0 && r.right <= innerWidth && r.height >= 55.5; };\n")
+    for size in ((384, 800), (412, 600)):
+        W = size[0]
+        where = f"2.0 on a touch phone, {W}x{size[1]}, the timed purge slide"
+        # Three drives, each well inside the browser's time limit.
+        r, bad = {}, False
+        for part, need, ms in (("phone", "pre_cuts", 80000),
+                               ("phone2", "cuts", 60000),
+                               ("phone3", "again", 170000)):
+            x = _ui2_drive_framed(chrome, page, _ui2_status_day(),
+                                  whole_js + _UI2_TP_SLIDE_STEPS.replace(
+                                      "__PART__", part),
+                                  size, routes=routes, budget_ms=ms)
+            if not check(isinstance(x, dict) and need in x and
+                         not x.get("problems") and
+                         not (x.get("hist") or {}).get("ltcSlide"),
+                         f"{where} ({part}): driven: {x!r}"[:1500]):
+                bad = True
+                break
+            r.update(x)
+        if bad:
+            continue
+        check(r["coarse"] and [r["vw"], r["vh"]] == list(size) and
+              not (r["hist"] or {}).get("ltcSlide"),
+              f"{where}: a touch screen of that size, no Back guard left: "
+              f"{r['vw']}x{r['vh']} {r['hist']}")
+        lk = r["look"]
+        kl, kt, kr_, kb = lk["knob"]
+        check(lk["kshown"] and kr_ - kl == 56 and kb - kt == 56 and
+              kl >= 40 and lk["r"][1] <= W - 40 and lk["mode"] == "go" and
+              lk["word"] == "Purge front row 1 for 5 s" and
+              lk["touch"] == ["pan-y", "none"] and lk["role"] == "button" and
+              lk["aria"] == "true" and not lk["hold_shown"] and
+              not lk["st_shown"] and lk["stop"] and
+              "hold" not in lk["words"].lower(),
+              f"{where}: a full width slide, its 56 px handle 40 px from the "
+              f"edges, says what it does, never Hold; Stop purge whole: {lk}")
+        check(r["tap"] == {"posts": 0, "slide": False},
+              f"{where}: a tap on the track or the handle sends nothing: "
+              f"{r['tap']}")
+        for k in ("full", "full_reused"):
+            f = r[k]
+            check(f["slid"] and f["pre"] == 0 and f["holds"] and
+                  all(x is True for x in f["holds"]) and f["runs"] == 1 and
+                  f["own_stops"] == 0 and f["own_running"] and
+                  f["stops"] == 1 and not f["running"] and
+                  not f["stopped_by_hold"] and not f["back_left"] and
+                  "hold" not in f["hold_words"].lower() and
+                  f["line_held"] in ("Purge started. You can let go.",
+                                     "Running. Stop purge ends it."),
+                  f"{where}: {k}: nothing sent under 90 percent; at the end "
+                  f"today's beats until started; the slide's own release "
+                  f"and click stop nothing; a new tap on Stop purge stops "
+                  f"it: {f}")
+        for k in ("u50", "u88"):
+            x = r[k]
+            check(x["slid"] and x["posts"] == [] and x["mode"] == "go" and
+                  not x["slide_after"] and x["knob"] == "",
+                  f"{where}: {k}: lifted under 90 percent: nothing sent: {x}")
+        e = r["early"]
+        check(e["holds"] and e["holds"][-1] is False and
+              all(x is True for x in e["holds"][:-1]) and e["runs"] == 1 and
+              e["stops"] == 0 and not e["running"] and
+              e["msg"] == "Purge not started." and
+              "the engine says no timed purge is running" in
+              e["full"].lower() and e["mode"] == "go",
+              f"{where}: lifted before the engine's 1.0 s: today's let go, "
+              f"said not started only from the engine's read: {e}")
+        check(sorted(r["pre_cuts"]) == sorted(
+            ["pointercancel", "second_finger", "band", "jump", "blur",
+             "hidden", "popstate", "rotate"]) and sorted(r["cuts"]) ==
+              sorted(list(r["pre_cuts"]) + ["back_under"]),
+              f"{where}: every cancel tried: {sorted(r['cuts'])}")
+        for k, x in r["pre_cuts"].items():
+            # A pointercancel is a lift to every slide: nothing to say.
+            check(x["ended"] and x["posts"] == [] and x["said"] ==
+                  ("" if k == "pointercancel" else "Nothing sent.") and
+                  not x["slide_after"] and
+                  x["mode"] == "go",
+                  f"{where}: {k} before 90 percent: nothing sent, said "
+                  f"so: {x}")
+        for k, x in r["cuts"].items():
+            check(x["ended"] and x["before"] >= 1 and x["holds"] and
+                  x["holds"][-1] is False and x["runs"] == 1 and
+                  x["stops"] == 0 and not x["running"] and
+                  x["msg"] == "Purge not started." and
+                  "not known" not in x["line"].lower() and
+                  x["mode"] == "go" and not x["back_left"],
+                  f"{where}: {k} at the end, before the start: today's let "
+                  f"go, the engine read, said not started; the lift and "
+                  f"its click stop nothing: {x}")
+        for k in ("lost", "s502", "s409"):
+            x = r[k]
+            check(x["holds"] and all(h is True for h in x["holds"]) and
+                  x["stops"] == 0 and x["running"] and
+                  not x["stopped_by_hold"] and
+                  x["msg"] == "Timed purge running." and x["mode"] == "run",
+                  f"{where}: {k}: the engine started it, its answer not "
+                  f"clear: read, said running, never let go of or "
+                  f"stopped: {x}")
+        x = r["fail502"]
+        check(x["holds"] and x["stops"] == 0 and not x["running"] and
+              x["msg"] == "Purge not started." and x["mode"] == "go",
+              f"{where}: a 502 for every beat, the engine never acted: read, "
+              f"said not started: {x}")
+        b = r["blind"]
+        check(b["seen"] and all(m == "unknown" and ln ==
+                                "Not known. Check the tile." and
+                                ms == "Not known. Check the tile." and
+                                kd == "none" for m, ln, ms, kd in b["seen"])
+              and not b["again_slide"] and b["stops"] == 0 and
+              b["after"]["mode"] == "run" and
+              b["after"]["msg"] == "Timed purge running.",
+              f"{where}: lost and unreadable: not known, no handle, a slide "
+              f"does nothing; read again, the engine's answer: {b}")
+        fl = r["flip"]
+        check(fl["held"]["mode"] == "run" and fl["held"]["slide"] and
+              fl["stops"] == 0 and fl["runs"] == 1 and fl["running"] and
+              not fl["stopped_by_hold"] and
+              fl["msg"] == "Timed purge running.",
+              f"{where}: shown running under the finger before its answer: "
+              f"the slide holds on, the lift never stops it or starts a new "
+              f"hold; said running: {fl}")
+        def checking(d):
+            return d and all(m == "unknown" and kd == "none" and
+                             ln == "Checking with the engine."
+                             for m, ln, kd in d)
+        bl = r["blur_late"]
+        check(checking(bl["during"]) and bl["stops"] == 0 and
+              bl["read"]["mode"] == "run" and
+              bl["read"]["msg"] == "Timed purge running." and
+              bl["read"]["line"] == "Running. Stop purge ends it." and
+              bl["ended"]["mode"] != "run" and
+              "running" not in bl["ended"]["line"].lower(),
+              f"{where}: started, its answer late, the page blurred: while "
+              f"the engine is read, checking with no handle, never nothing "
+              f"fired; then running; once it ends, never running: {bl}")
+        for k in ("lift_slow", "stale_cut"):
+            x = r[k]
+            check(checking(x["during"]) and x["stops"] == 0 and
+                  not x["running"] and x["msg"] == "Purge not started." and
+                  "hold" not in x["line"].lower(),
+                  f"{where}: {k}: the hold ended before the start, the "
+                  f"engine read slowly: checking, no handle, then said as "
+                  f"the engine says: {x}")
+        rb = r["ran_blind"]
+        check(rb["msg"] == "A purge fired and ended." and
+              rb["line"] == "A purge fired and ended." and
+              rb["stops"] == 0 and not rb["running"],
+              f"{where}: a purge that fired and ended while the engine was "
+              f"unreadable: said fired, never not started: {rb}")
+        sd = r["stop_during"]
+        check(sd["stops"] == 1 and sd["msg"] == "" and
+              sd["line"] in ("", "Not known yet.") and
+              sd["mode"] != "unknown",
+              f"{where}: Stop purge during the engine read: the read never "
+              f"speaks after it: {sd}")
+        ss = r["started_slow"]
+        check(ss["during"] and all(m == "run" and kd == "none" and
+                                   ln == "Purge started. You can let go."
+                                   for m, ln, kd in ss["during"]) and
+              not ss["again_slide"] and ss["runs"] == 1 and
+              all(h is True for h in ss["holds"]) and ss["running"] and
+              not ss["stopped_by_hold"] and ss["stops"] == 0 and
+              ss["after"]["mode"] == "run",
+              f"{where}: started, the engine read slowly: running with no "
+              f"handle, a new slide never starts, the purge never ended by "
+              f"a second press: {ss}")
+        def nogo(d):
+            return d and all(m != "go" and kd == "none" for m, _ln, kd in d)
+        x = r["stop_slow"]
+        check(nogo(x["during"]) and x["stops"] == 1 and
+              x["during"][0][1] == "Stopping. Checking with the engine." and
+              not x["running"] and x["mode"] == "go",
+              f"{where}: Stop just after the start, the engine read slowly: "
+              f"no handle until a read after the Stop: {x}")
+        x = r["stop_fail"]
+        check(nogo(x["during"]) and x["stops"] == 1 and
+              x["after"]["mode"] == "run" and x["running"] and
+              not x["stopped_by_hold"],
+              f"{where}: a Stop that failed, the reads timing out: never the "
+              f"handle while the engine purges: {x}")
+        x = r["firing_other"]
+        check(x["msg"] == "A purge is firing." and
+              x["line"] == "A purge is firing." and x["mode"] == "na",
+              f"{where}: another screen's purge firing: never said ended, "
+              f"no handle: {x}")
+        x = r["late_poll"]
+        check(x["held"] == 1 and x["during"] and
+              all(m != "go" for m, _l, _k in x["during"]) and
+              x["stops"] == 0 and
+              not x["stopped_by_hold"] and x["runs"] == 1,
+              f"{where}: a regular read made before the start, landing after "
+              f"the fresh read: never the handle while the engine purges: "
+              f"{dict(x, during=sorted(set(m for m, _l, _k in x['during'])))}")
+        for k in ("stop_plain_running", "stop_plain_hold"):
+            x = r[k]
+            check(x["stops"] == 1 and not x["running"],
+                  f"{where}: {k}: a second finger's Stop purge with a plain "
+                  f"click (no pointerId) is never held back: {x}")
+        rf = r["refused"]
+        check(rf["msg"] == "Purge not started." and
+              rf["line"] == "Not started. Nothing was fired." and
+              not rf["running"],
+              f"{where}: an engine refusal: its words never on the phone "
+              f"line: {rf}")
+        lines = [v.get("line", "") for v in r.values()
+                 if isinstance(v, dict)] + \
+            [v.get("line", "") for k in ("pre_cuts", "cuts")
+             for v in r[k].values()]
+        check(all(len(ln.split()) <= 8 and ";" not in ln and
+                  "hold" not in ln.lower() for ln in lines),
+              f"{where}: the phone line only ever says this page's short "
+              f"words: {sorted(set(lines))}")
+        g = r["again"]
+        check(g["holds"] and all(h is True for h in g["holds"]) and
+              g["running"] and g["stops"] == 0,
+              f"{where}: after all of it a slide still starts one: {g}")
+    for size, coarse in (((1280, 800), False), ((768, 1024), True)):
+        r = _ui2_drive_framed(chrome, page, _ui2_status_day(),
+                              whole_js + _UI2_TP_SLIDE_STEPS.replace(
+                                  "__PART__", "desk"),
+                              size, coarse=coarse, routes=routes,
+                              budget_ms=30000)
+        where = (f"2.0 at {size[0]}x{size[1]}, "
+                 f"{'touch' if coarse else 'a mouse'}, the timed purge")
+        if not check(isinstance(r, dict) and "holds" in r and
+                     not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
+            continue
+        check(not r["slide_shown"] and r["hold_shown"] and
+              r["word"].startswith("Hold to purge") and r["holds"] and
+              all(h is True for h in r["holds"]) and r["running"] and
+              "It stops by itself." in r["st"],
+              f"{where}: today's hold, as before: {r}")
+    print("  ok")
+
+
 def test_ui2_broken_banner_fits_a_phone_and_a_2k_screen():
     section("the not fully loaded banner (Andy, 2026-11-22, a Galaxy S22 "
             "Ultra): from a 360 px phone to a 2560x1440 screen its words "
@@ -135482,6 +136116,7 @@ if __name__ == "__main__":
         test_ui2_phone_layout_whole_on_a_touch_phone,
         test_ui2_flame_slide_to_arm_on_a_phone,
         test_ui2_laser_slide_on_a_phone,
+        test_ui2_timed_purge_slide_on_a_phone,
         test_ui2_broken_banner_fits_a_phone_and_a_2k_screen,
         test_ui2_slow_link_page_is_not_called_broken,
         test_ui2_day_makes_only_1_0_presses,

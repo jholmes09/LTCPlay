@@ -3638,6 +3638,111 @@ MUTATIONS = [
   "    if(!qz.fresh && e.pointerId === qz.id && age < LZ_QUIET_ID_MS){",
   "    if(e.pointerId === qz.id && age < LZ_QUIET_ID_MS){"),
 
+ # Step 7 of the phone build: on a touch phone the timed purge starts with
+ # a slide in front of today's hold. Nothing is sent before 90 percent;
+ # every end after it is read against the engine before anything is said,
+ # unreadable is not known; a purge shown running under the finger is not
+ # let go of; the slide's own release lands on nothing, a new tap does.
+ ("ui 2.0 purge slide: the timed purge hold starts at the touch, before 90 percent",
+  'ltcplay/web/remote2.html',
+  "  if(s.frac < SLIDE_ARM) return;\n  const st = tpNow();\n",
+  "  const st = tpNow();\n"),
+
+ ("ui 2.0 purge slide: a slide stopped after 90 percent says not started without reading the engine",
+  'ltcplay/web/remote2.html',
+  "  else if(read) tpSlideRead(why, s.fires0);\n",
+  "  else if(read){ TP_CHECK = false; say(\"Purge not started.\", \"Nothing was fired.\", \"\"); }\n"),
+
+ ("ui 2.0 purge slide: a hold that ended with a lost, 5xx or 409 answer is never read against the engine",
+  'ltcplay/web/remote2.html',
+  "  if(started) tpStartedRead(); else tpSlideRead(\"\", s.fires0);\n",
+  "  if(started) tpStartedRead(); else TP_CHECK = false;\n"),
+
+ ("ui 2.0 purge slide: an engine that cannot be read is said as not started",
+  'ltcplay/web/remote2.html',
+  "    const t = mo && mo.timed;\n",
+  "    const t = (mo && mo.timed) || {running:false, holding:false};\n"),
+
+ ("ui 2.0 purge slide: a purge not known leaves the slide ready to start again",
+  'ltcplay/web/remote2.html',
+  "  if(TP_DOUBT) return {mode:\"unknown\", word:\"Not known\"};\n",
+  ""),
+
+ ("ui 2.0 purge slide: a slide whose control shows running under the finger lets go before the engine answers",
+  'ltcplay/web/remote2.html',
+  "    if(s.frac < SLIDE_ARM) slideCancel(\"the handle went back\");\n",
+  "    if(s.frac < SLIDE_ARM || s.el.dataset.mode === \"run\") slideCancel(\"the handle went back\");\n"),
+
+ ("ui 2.0 purge slide: the finger leaving the band does not end the slide",
+  'ltcplay/web/remote2.html',
+  "  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel(\"the finger left the slide\"); return; }\n  if(s.phase === \"end\"){\n",
+  "  if(s.phase === \"end\"){\n"),
+
+ ("ui 2.0 purge slide: the slide's own release and click land on Stop purge",
+  'ltcplay/web/remote2.html',
+  "    e.preventDefault(); e.stopImmediatePropagation();\n  }\n}, true));\n",
+  "  }\n}, true));\n"),
+
+ ("ui 2.0 purge slide: a Stop purge tap that reuses the slide's pointerId is held back",
+  'ltcplay/web/remote2.html',
+  "  if(SLIDE || !qz || qz.fresh) return;\n",
+  "  if(SLIDE || !qz) return;\n"),
+
+ ("ui 2.0 purge slide: the second finger that ends a slide counts as a new press for its lift",
+  'ltcplay/web/remote2.html',
+  "if(TP_QUIET && !SLIDE && e !== TP_QUIET.ev) TP_QUIET.fresh = true;",
+  "if(TP_QUIET && !SLIDE) TP_QUIET.fresh = true;"),
+
+ # Cold review of #297: a read pending shows checking, never the handle
+ # or 1.0's own 'Nothing was fired'.
+ ("ui 2.0 purge slide: while the engine is read after a hold ended, the slide shows its handle and 1.0's Nothing was fired",
+  'ltcplay/web/remote2.html',
+  "  if(TP_CHECK || tpSlideOrphan()) return {mode:\"unknown\", word:\"Checking\"};\n",
+  ""),
+
+ # Cold review of #297, round two: not started only when the engine's
+ # purge count proves it; a Stop silences a pending read; no handle
+ # between the started answer and a read.
+ ("ui 2.0 purge slide: a read says not started though the engine's purge count moved",
+  'ltcplay/web/remote2.html',
+  "      } else if(fires0 !== null && fires0 !== undefined && n === fires0){\n",
+  "      } else if(true){\n"),
+
+ ("ui 2.0 purge slide: a read pending when Stop purge is pressed still speaks after it",
+  'ltcplay/web/remote2.html',
+  "  TP_READING++;\n  TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;\n",
+  "  TP_CHECK = false; TP_DOUBT = false; TP_STARTED = 0; TP_LINE = null;\n"),
+
+ ("ui 2.0 purge slide: after the started answer the handle shows before a read, so a new slide ends the purge",
+  'ltcplay/web/remote2.html',
+  "  if(TP_STARTED || (tpSlideGone() && !tpSlideOrphan())) return {mode:\"run\", word:\"Purge started\", started:true};\n",
+  ""),
+
+ # Cold review of #297, round three: no handle after a Stop until a read;
+ # a purge firing is never said as ended.
+ ("ui 2.0 purge slide: a Stop brings the handle back before a read shows the engine stopped",
+  'ltcplay/web/remote2.html',
+  "  if(TP_STOPPING) return {mode:\"unknown\", word:\"Stopping\", stopping:true};\n",
+  ""),
+
+ ("ui 2.0 purge slide: another screen's purge still firing is said as ended",
+  'ltcplay/web/remote2.html',
+  "      if((mo.purge_state || {}).firing && !t.running){\n",
+  "      if(false){\n"),
+
+ # Cold review of #297, round four: a late morning read never replaces a
+ # newer one; a click with no pointerId is never held back.
+ ("ui 2.0 purge slide: a morning read sent before the newest one delivered replaces it",
+  'ltcplay/web/remote2.html',
+  "    if(n < last && newest) return newest;\n",
+  ""),
+
+ ("ui 2.0 purge slide: a Stop purge click with no pointerId is held back after a slide",
+  'ltcplay/web/remote2.html',
+  "  if(e.pointerId === qz.id){\n    e.preventDefault(); e.stopImmediatePropagation();\n",
+  "  if(e.pointerId === qz.id || (t === \"click\" && !(e.pointerId > 0) && e.detail > 0 && age < 400)){\n    e.preventDefault(); e.stopImmediatePropagation();\n"),
+
+
 
 
  # Andy's phone, 2026-11-22: on a touch phone the top line was capped and
