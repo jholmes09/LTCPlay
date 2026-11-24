@@ -120066,14 +120066,16 @@ const paneTop = () => [...document.querySelectorAll("#t-show .tr .b, #t-show .tr
 function look(t){
   const vw = innerWidth, vh = innerHeight, m = R(main), bad = [];
   if(root.scrollWidth > root.clientWidth + 1) bad.push("the page scrolls sideways: " + root.scrollWidth + " > " + root.clientWidth);
-  if(main.scrollWidth > main.clientWidth + 1) bad.push("the pane is wider than the screen: " + main.scrollWidth + " > " + main.clientWidth);
+  if(main.scrollWidth > main.clientWidth + 1){
+    const mr = R(main).right, past = [...main.querySelectorAll("*")].filter(e => e.getClientRects().length && R(e).width > 0 && R(e).right > mr + 1)
+      .slice(-3).map(e => (e.id || e.tagName) + " \"" + e.textContent.trim().slice(0, 20) + "\" to " + Math.round(R(e).right));
+    bad.push("the pane is wider than the screen: " + main.scrollWidth + " > " + main.clientWidth + " (" + past.join("; ") + ")");
+  }
   for(const el of [...pinned(), ...paneTop(), ...document.querySelectorAll("header, #next, footer, #wx")].filter(shown)){
     const r = R(el);
     if(r.left < -1 || r.right > vw + 1) bad.push((el.id || el.className || el.tagName) + " past the edge: " + Math.round(r.left) + ".." + Math.round(r.right) + " of " + vw);
   }
-  // A header tab is as tall, and as wide as its word and icon (Day: 36
-  // px on a 360 px phone, the row has no more room).
-  const small = [...pinned(), ...paneTop()].filter(el => { const r = R(el); return (el.matches(".tab") ? Math.min(r.width + 8, r.height) : Math.min(r.width, r.height)) < 44 - 0.5; })
+  const small = [...pinned(), ...paneTop()].filter(el => { const r = R(el); return Math.min(r.width, r.height) < 44 - 0.5; })
     .map(el => (el.id || el.textContent.trim().slice(0, 14)) + " " + Math.round(R(el).width) + "x" + Math.round(R(el).height));
   if(small.length) bad.push("a tap under 44 px: " + small.join(", "));
   const ps = pinned(), over = [];
@@ -120083,7 +120085,8 @@ function look(t){
   }
   if(over.length) bad.push("controls overlap: " + over.join(", "));
   // The words on the pinned and top-row controls are never cut.
-  const cut = [...pinned(), ...paneTop()].filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.id || el.textContent.trim().slice(0, 14));
+  const cut = [...pinned(), ...paneTop()].filter(el => el.scrollWidth > el.clientWidth + 1)
+    .map(el => (el.id || el.textContent.trim().slice(0, 14)) + " " + el.scrollWidth + ">" + el.clientWidth);
   if(cut.length) bad.push("a control's words cut: " + cut.join(", "));
   // Off SHOW on a touch phone the safety strip is pinned at the pane's
   // top (elsewhere it scrolls with the pane, or is in the footer).

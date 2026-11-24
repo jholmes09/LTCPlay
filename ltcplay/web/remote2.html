@@ -233,7 +233,8 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 #b-go .lbl{display:flex;flex-direction:column;align-items:flex-start;text-align:left}
 /* Stop show's two lines: "Stop show" over "tap twice" (the Windows
    stress test, 2026-11-09). */
-#b-stop .lbl,#m-stop .lbl,#b-runoff .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
+/* Their words wrap where a narrow screen has no room, never cut. */
+#b-stop .lbl,#m-stop .lbl,#b-runoff .lbl{display:flex;flex-direction:column;align-items:center;white-space:normal;text-align:center}
 #b-stop,#b-runoff{font-size:var(--fs);gap:6px;padding-left:8px;padding-right:8px}
 #b-stop .lbl small:empty,#m-stop .lbl small:empty{display:none}
 .tr .q{align-self:center}
@@ -863,9 +864,11 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #tabs{flex:1 1 auto;flex-wrap:nowrap;gap:2px}
   .tab{flex:1 1 auto;min-width:max-content;flex-direction:column;justify-content:center;gap:0;padding:2px 0;min-height:48px;font-size:14px;line-height:1.15}
   .tab svg.i,.hb svg.i{width:22px;height:22px}
+  /* Each tab 44 px wide or more, however short its word ("Day"). */
+  .tab::after{content:"";width:44px;height:0}
   .hright{flex:0 0 auto;flex-wrap:nowrap;gap:4px;margin-left:auto}
   .hright #brand{display:none}
-  .hb{flex-direction:column;justify-content:center;gap:0;min-height:48px;min-width:48px;padding:2px 4px;font-size:13px;line-height:1.15}
+  .hb{flex-direction:column;justify-content:center;gap:0;min-height:48px;min-width:44px;padding:2px 2px;font-size:13px;line-height:1.15}
   #user > span{max-width:5.2em;overflow:hidden;text-overflow:ellipsis}
   #sys > span{white-space:normal;max-width:6.5em;text-align:center}
   #sys .chev{display:none}
@@ -921,7 +924,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      wrap, and narrower than five whole buttons they take a second row.
      The columns are the screen's, and Stop show keeps its place while
      hidden, so a press never moves under a finger. */
-  main > #mini{display:grid;grid-template-columns:repeat(auto-fit,minmax(58px,1fr));gap:4px}
+  main > #mini{display:grid;grid-template-columns:repeat(auto-fit,minmax(64px,1fr));gap:4px}
   main > #mini .lbl{white-space:normal}
   main > #mini .b small{font-size:13px;line-height:1.05}
   main > #mini .b svg.i{display:none}
@@ -994,6 +997,9 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
    transport keep their room, without their icons. */
 @media (max-width:380px){
   .dhead .seg .b > svg.i, #t-show .tr .b > svg.i{display:none}
+  /* Startup and Shutdown each half the row: their words shrink with the
+     screen rather than be cut (CI's fonts at 275 px: "Shutdow"). */
+  .dhead .seg .b{padding:0 4px;font-size:min(var(--fs), 6.5vw)}
   #t-show .tr .b{padding:0 6px} #t-show .tr .lbl{white-space:normal}
   /* SHOW's state strip a row each (it scrolls with the pane): the state,
      the timecode and the times at their size, never shrunk to fit. */
@@ -1001,6 +1007,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   /* The pinned rows a little shorter, every tap still 44 px or more. */
   .tab,.hb{min-height:44px}
   main > #mini .b{min-height:48px;padding:0 2px}
+  /* The announcements' note wraps beside its heading, and their names
+     ("Cancellation") shrink with the screen: never past the edge. */
+  .ann .head{height:auto;min-height:var(--ann-h)} #ann-note{flex:1 1 0;min-width:0}
+  #ann-btns .b{font-size:min(var(--fs), 6vw)}
 }
 </style>
 </head>
