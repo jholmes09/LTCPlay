@@ -1180,7 +1180,8 @@ MUTATIONS = [
   "            return True"),
 
  ("arm: a stale page can hold to arm", "ltcplay/remote.py",
-  "        if seen is None or abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:",
+  "        if seen is None or \\\n"
+  "                abs(self.wall() - seen / 1000.0) > ARM_PAGE_FRESH_S:",
   "        if seen is None:"),
 
  ("arm: a stale flamesafe status can arm", "ltcplay/remote.py",
@@ -1192,16 +1193,26 @@ MUTATIONS = [
   "        if g[\"armed\"] == \"armed\" or g[\"wanted\"]:", "        if False:"),
 
  ("arm: a second browser can hold the same group", "ltcplay/remote.py",
-  "            if h is not None and now - h[\"beat\"] <= BEAT_STALE_S:\n"
+  "            if self.hold_live(h, now) and \\\n"
+  "                    (h[\"token\"] != token or\n"
+  "                     now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
   "                theirs = h[\"who\"]",
   "            if False:\n                theirs = h[\"who\"]"),
 
  ("arm: a second tab on the same device restarts a live hold",
   "ltcplay/remote.py",
-  "            if h is not None and now - h[\"beat\"] <= BEAT_STALE_S:\n"
+  "                    (h[\"token\"] != token or\n"
+  "                     now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
   "                theirs = h[\"who\"]",
-  "            if h is not None and h[\"token\"] != token and \\\n"
-  "                    now - h[\"beat\"] <= BEAT_STALE_S:\n"
+  "                    h[\"token\"] != token:\n"
+  "                theirs = h[\"who\"]"),
+
+ ("arm: a second device takes over a live hold in a gap",
+  "ltcplay/remote.py",
+  "                    (h[\"token\"] != token or\n"
+  "                     now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
+  "                theirs = h[\"who\"]",
+  "                    (now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
   "                theirs = h[\"who\"]"),
 
  ("countdown: a held show's time left keeps running", "ltcplay/remote.py",
@@ -1480,15 +1491,90 @@ MUTATIONS = [
   "BEYOND_BLANK_DEFAULT = \"timecode\""),
 
  ("arm: an interrupted hold carries on", "ltcplay/remote.py",
-  "                        now - h[\"beat\"] <= BEAT_STALE_S and\n"
+  "                        self.hold_live(h, now) and\n"
   "                        \"wanted_at\" not in h)\n"
   "                if live:",
   "                        True and\n"
   "                        \"wanted_at\" not in h)\n                if live:"),
 
  ("arm: the deck is told a quiet hold is still fresh", "ltcplay/remote.py",
-  "                              \"fresh\": age <= BEAT_STALE_S,",
+  "                              \"fresh\": self.hold_live(h, now),",
   "                              \"fresh\": True,"),
+
+ # -- arming from a phone on a slow link (Jeff, 2026-11-24) --
+ ("arm: a long gap between beats counts in full toward the hold",
+  "ltcplay/remote.py",
+  "                        0.0, min(now - h[\"beat\"], ARM_BEAT_CREDIT_S))",
+  "                        0.0, now - h[\"beat\"])"),
+
+ ("arm: a short touch whose beats arrive slowly proves 1 s (arrival only)",
+  "ltcplay/remote.py",
+  "        return max(0.0, min(credit, max(0, beats) * ARM_BEAT_PERIOD_S))",
+  "        return max(0.0, credit)"),
+
+ ("arm: a beat read late moves the last beat back",
+  "ltcplay/remote.py",
+  "                    h[\"beat\"] = max(h[\"beat\"], now)",
+  "                    h[\"beat\"] = now"),
+
+ ("arm: the deck is told the time since the press, not the beats counted",
+  "ltcplay/remote.py",
+  "                              \"held_s\": round(self._hold_held(h), 3),\n"
+  "                              \"fresh\": self.hold_live(h, now),",
+  "                              \"held_s\": round(h[\"beat\"] - h[\"start\"], 3),\n"
+  "                              \"fresh\": self.hold_live(h, now),"),
+
+ ("arm: a press sent before a Stop or a disarm starts a hold after it",
+  "ltcplay/remote.py",
+  "        if self._arm_cut_since(i, seen / 1000.0):\n"
+  "            return refuse(409, ARM_CUT)",
+  "        if False:\n            return refuse(409, ARM_CUT)"),
+
+ ("arm: a Stop leaves no mark for a press that lands after it",
+  "ltcplay/remote.py",
+  "                gone, self._holds = self._holds, {}\n"
+  "                self._arm_cut[\"all\"] = (self.clock(), self.wall())",
+  "                gone, self._holds = self._holds, {}"),
+
+ ("arm: a group's Disarm leaves no mark for a press that lands after it",
+  "ltcplay/remote.py",
+  "            self._arm_cut[i] = (self.clock(), self.wall())\n"
+  "            self._disarm_ids += 1",
+  "            self._disarm_ids += 1"),
+
+ ("arm: the deck disarms a group when the screen hold that armed it goes",
+  "ltcplay/streamdeck.py",
+  "    def _screen_release(self, i):\n"
+  "        self._vholds.pop(i, None)",
+  "    def _screen_release(self, i):\n"
+  "        if self.arm.wanted[i] and i in self._vholds:\n"
+  "            self._do_disarm(i, who=\"the screen went\")\n"
+  "        self._vholds.pop(i, None)"),
+
+ # round 2 of the cold review of #303 (2026-11-24)
+ ("cleaning: a phone's hold to arm another group, in a gap, does not block it",
+  "ltcplay/cleaning.py",
+  "                     if h.get(\"group\") != name and remote.hold_live(h, now)]",
+  "                     if h.get(\"group\") != name and\n"
+  "                     now - h[\"beat\"] <= 0.25]"),
+
+ ("arm: the press to its first beat gets only the 1.5 s of a later gap",
+  "ltcplay/remote.py",
+  "            bound = ARM_FIRST_GAP_S if not int(h.get(\"beats\") or 0) \\\n"
+  "                else ARM_BEAT_GAP_S",
+  "            bound = ARM_BEAT_GAP_S"),
+
+ ("arm: every gap gets the first beat's 2.0 s",
+  "ltcplay/remote.py",
+  "            bound = ARM_FIRST_GAP_S if not int(h.get(\"beats\") or 0) \\\n"
+  "                else ARM_BEAT_GAP_S",
+  "            bound = ARM_FIRST_GAP_S"),
+
+ ("arm: a wall clock stepped back turns the Stop mark off",
+  "ltcplay/remote.py",
+  "        return any(c is not None and 0 <= mono - c[0] <= ARM_PAGE_FRESH_S",
+  "        return any(c is not None and\n"
+  "                   0 <= self.wall() - c[1] <= ARM_PAGE_FRESH_S"),
 
  ('arm: Disarm all leaves screen holds running', 'ltcplay/remote.py',
   '        if name == "disarm-all":\n'
@@ -1498,8 +1584,9 @@ MUTATIONS = [
 
  ("arm: a group disarm leaves its hold running", "ltcplay/remote.py",
   "        self._drop_hold(i)\n        with self._arm_lock:\n"
-  "            self._disarm_ids += 1",
-  "        with self._arm_lock:\n            self._disarm_ids += 1"),
+  "            self._arm_cut[i] = (self.clock(), self.wall())",
+  "        with self._arm_lock:\n"
+  "            self._arm_cut[i] = (self.clock(), self.wall())"),
 
  ("arm: deck-input is served to the network", "ltcplay/remote.py",
   "            if not ctx.local:\n                return 403, {\"error\": "
@@ -3410,7 +3497,7 @@ MUTATIONS = [
 
  ('ui 2.0 touch: Hold to continue anyway is not tracked off the button',
   'ltcplay/web/remote2.html',
-  "  holdTrack(ev, $(\"al-act\"), () => {",
+  "  if(ev) holdTrack(ev, $(\"al-act\"), () => {",
   "  if(false) holdTrack(ev, $(\"al-act\"), () => {"),
 
  ('ui 2.0 touch: a second finger on a hold button leaves the first hold running',
@@ -3518,48 +3605,127 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "  h.stop.abort();\n  const doubt = [];\n",
   "  const doubt = [];\n"),
- # Step 5 of the phone build (AUDIT P0 1, P1 7 to 9): on a touch phone a
- # flame arm is a slide. The engine arms on its own once beats have lasted
- # 1.0 s plus the deck's 0.6 s, so the beats must stop under 90 percent;
- # every cancel lets go; the hold stays on until the engine's armed answer
- # or the finger's lift; off a phone the arm is the hold as before.
- ('ui 2.0 slide: a slide held under 90 percent beats on until the engine arms',
+ # Flame arm on a touch phone (Andy and Jeff, 2026-11-23): a tap and a
+ # pop-up, not a slide. Nothing is sent before the pop-up's Arm; a second
+ # Arm while it is checked never starts a second hold; the line says only
+ # what an engine read after it shows; an older read never stands over a
+ # newer one. Arm flames says All armed only when every group is, and an
+ # Arm all outcome never says nothing was armed while a group is.
+ ('ui 2.0 flame pop-up: Cancel on the pop-up still arms',
   'ltcplay/web/remote2.html',
-  "    if(s.frac < SLIDE_ARM && (Date.now() - s.t0 >= SLIDE_GATE_MS || slideHeld(s.h) >= SLIDE_GATE_HELD_S)){\n",
-  "    if(false){\n"),
+  "  } finally { FA_ASKING = false; }\n  if(!yes) return;\n",
+  "  } finally { FA_ASKING = false; }\n"),
 
- ("ui 2.0 slide: a slide at 90 percent ends without waiting for the engine's armed answer, its hold left running",
+ ('ui 2.0 flame pop-up: a second Arm while it is checked starts a second hold',
   'ltcplay/web/remote2.html',
-  "  if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }\n",
-  "  if(!s.paused && (HOLD !== s.h || s.frac >= SLIDE_ARM)){ slideEnd(s); return; }\n"),
+  "  if(faBusy() || HOLD){ say(\"Checking. Wait.\"",
+  "  if(false){ say(\"Checking. Wait.\""),
 
- ('ui 2.0 slide: a cancelled slide springs back but does not let go of its hold',
+ ("ui 2.0 flame pop-up: the engine's state unreadable after the arm is said from the page's last status",
   'ltcplay/web/remote2.html',
-  "  if(s.h && HOLD === s.h) slideStop(s, why);\n",
-  "  if(false) slideStop(s, why);\n"),
+  "  if(!s){ fa.base = Infinity; faShow(fa, flamesRead(null, true, fa.groups)); try{ renderStale(); }catch(_e){} return; }\n",
+  "  if(!s){ fa.base = -Infinity; faShow(fa, flamesRead((ST || {}).flames, false, fa.groups)); try{ renderStale(); }catch(_e){} return; }\n"),
 
- # Cold review of #295: the group asked for before the engine's armed
- # answer, or a drift under 90 percent at the arm moment, must never be
- # said as not armed or let go without the engine's state read (#293).
- ('ui 2.0 slide: a slide whose tile turns to Disarm under the finger lets go before the armed answer',
+ ('ui 2.0 flame pop-up: a read older than one already shown is used',
   'ltcplay/web/remote2.html',
-  "  if(!s.knob.getClientRects().length && !slidePending(s)){",
-  "  if(!s.knob.getClientRects().length){"),
-
- ('ui 2.0 slide: a slide stopped under 90 percent lets go without reading the engine state',
-  'ltcplay/web/remote2.html',
-  "  s.h.parts.forEach(p => { if(!p.end && !p.err) p.err = new Error(why || \"the slide ended\"); });\n",
+  "    if(s && faServed(s) < FA_SEEN) s = null;\n",
   ""),
 
- ('ui 2.0 slide: a pointerleave or lost capture during a slide lets go with no state read',
+ # Cold review of #302: the pop-up arms only what it named (F1); an Arm
+ # all outcome is never read from a status built before the hold's
+ # answers (F2); a refusal at the Arm tap is said with its reason (F3); a
+ # busy group's Arm is Checking and takes no tap (F5); contact lost after
+ # an armed read is Not known (F6); an arm never stays Checking (F7).
+ ('ui 2.0 flame pop-up: Arm arms what the plan is at the tap, not what the pop-up named',
   'ltcplay/web/remote2.html',
-  "  if(SLIDE && e.pointerId === SLIDE.id) e.stopPropagation();\n",
+  "  if(!plan || now.go.join(\",\") !== plan.go.join(\",\")){ faRefused(",
+  "  if(false){ faRefused("),
+
+ ('ui 2.0 flame read: an Arm all outcome is read from a status built before the words',
+  'ltcplay/web/remote2.html',
+  "    if(!ST || faServed(ST) < a.base) return null;\n",
+  "    if(!ST) return null;\n"),
+
+ ('ui 2.0 flame pop-up: a refusal at the Arm tap is not said',
+  'ltcplay/web/remote2.html',
+  "  if(!now.go.length){ faRefused(now.why); return; }\n",
+  "  if(!now.go.length) return;\n"),
+
+ ("ui 2.0 flame pop-up: a busy group's Arm is not shown Checking",
+  'ltcplay/web/remote2.html',
+  "    if(faBusy() && FA.groups.indexOf(i) >= 0){ ab.disabled = true; setText(ab.querySelector(\".act\"), \"Checking\"); }\n",
   ""),
 
- ("ui 2.0 slide: a paused slide's lift says not armed without a read",
+ ("ui 2.0 flame pop-up: a busy group's Arm takes a tap between statuses",
   'ltcplay/web/remote2.html',
-  "  else if(s.paused && why) slideSaid(s.groups, why);\n",
-  "  else if(s.paused && why) armSay(\"Hold stopped: \" + why, why === \"let go\" ? 0 : 2);\n"),
+  "    if(faBusy() && FA.groups.indexOf(i) >= 0) el.disabled = true;\n",
+  ""),
+
+ ('ui 2.0 flame pop-up: contact lost after an armed read still says Armed',
+  'ltcplay/web/remote2.html',
+  "    if(stale()) return faWords(fa, flamesRead(null, true, fa.groups));\n",
+  ""),
+
+ ('ui 2.0 flame pop-up: a throw inside the arm leaves every Arm on Checking',
+  'ltcplay/web/remote2.html',
+  "    if(!fa.done) fa.done = Date.now();\n    try{ renderStale(); }catch(_e){}\n  }\n}\n",
+  "    try{ renderStale(); }catch(_e){}\n  }\n}\n"),
+
+ # Round 2 of the cold review of #302, and Jeff's change (2026-11-24): the
+ # flame arm on a phone is the lasers' slide in front of the pop-up. The
+ # slide sends nothing; only a lift at 90 percent opens the pop-up; the
+ # slide's own release never lands on it; its band is where it was at the
+ # touch. The pop-up's line waits for a read after the hold (N1); a Stop,
+ # a Disarm or a change of groups while it is open sends nothing (N2, N3).
+ ('ui 2.0 flame slide: a pointercancel at 90 percent opens the pop-up',
+  'ltcplay/web/remote2.html',
+  "  const lifted = s.up === true && why === \"let go\";\n",
+  "  const lifted = why === \"let go\";\n"),
+
+ ('ui 2.0 flame slide: a lift under 90 percent opens the pop-up',
+  'ltcplay/web/remote2.html',
+  "  if(lifted && s.frac >= SLIDE_ARM && s.target !== undefined){ faAsk(s.target); return; }\n",
+  "  if(lifted && s.target !== undefined){ faAsk(s.target); return; }\n"),
+
+ ("ui 2.0 flame slide: the slide's own release and click land on the pop-up",
+  'ltcplay/web/remote2.html',
+  "  if(age < FAS_QUIET_MS || (e.pointerId === qz.id && age < FAS_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }\n",
+  ""),
+
+ ('ui 2.0 flame slide: a pinned Stop drawn above the tiles moves the slide out of its band and ends it',
+  'ltcplay/web/remote2.html',
+  "  const band = s.b0;\n",
+  "  const band = s.el.getBoundingClientRect();\n"),
+
+ ('ui 2.0 flame pop-up: a status built before the arm says the outcome while the read after it is lost',
+  'ltcplay/web/remote2.html',
+  "    if(!ST || !(fa.base < Infinity) || faServed(ST) < fa.base || faServed(ST) <= FA_SEEN) return null;\n",
+  "    if(!ST || faServed(ST) <= FA_SEEN) return null;\n"),
+
+ ("ui 2.0 flame pop-up: a Stop, a Disarm or a group change seen with the pop-up open still arms",
+  'ltcplay/web/remote2.html',
+  "  if(plan.epoch !== FA_EPOCH || plan.sig !== faSig()){",
+  "  if(plan.epoch !== FA_EPOCH){"),
+
+ ("ui 2.0 flame pop-up: this screen's Stop leaves the pop-up open",
+  'ltcplay/web/remote2.html',
+  "  if(FA_ASKING && SHEET_DONE) SHEET_DONE(null);\n",
+  ""),
+
+ ('ui 2.0 flame pop-up: a Stop elsewhere that changes only stop_held still arms',
+  'ltcplay/web/remote2.html',
+  "    sch.state || \"\", !!sch.attached, !!sch.held, !!sch.stop_held, !!(ST && ST.alert_hold && ST.alert_hold.held),\n",
+  "    sch.state || \"\", !!sch.attached,\n"),
+
+ ('ui 2.0 flame read: Arm flames says All armed with any group armed',
+  'ltcplay/web/remote_rules.js',
+  "  r.state = r.armed.length === pick.length ? \"all\" :",
+  "  r.state = r.armed.length ? \"all\" :"),
+
+ ('ui 2.0 flame read: an Arm all outcome says nothing was armed while the engine reads groups armed',
+  'ltcplay/web/remote2.html',
+  "      full = armTextNow(t, r, groupNames());\n      if(!/Not known:/.test(t)) short = flamesReadLine(r.state, false);\n",
+  "      if(!/Not known:/.test(t) && r.state === \"all\") short = flamesReadLine(r.state, false);\n"),
 
  ('ui 2.0 slide: every screen is a phone, so a desktop press and hold never arms',
   'ltcplay/web/remote2.html',
@@ -3746,10 +3912,6 @@ MUTATIONS = [
  # back after a Stop waits for the Stop's answer; the pinned Stop purge
  # drawn above the slide never ends it; the pinned Stop purge ends a held
  # slide.
- ("ui 2.0 slide: a pinned Stop drawn above the tiles moves the flame slide out of its band and lets go of the arm",
-  'ltcplay/web/remote2.html',
-  "  const r = s.b0;\n  // The band is where the slide was when the finger went down (slideDown):\n  // a pinned Stop drawn above the tiles during the hold",
-  "  const r = s.el.getBoundingClientRect();\n  // The band is where the slide was when the finger went down (slideDown):\n  // a pinned Stop drawn above the tiles during the hold"),
 
  ("ui 2.0 laser slide: a pinned Stop drawn above the tiles moves the slide out of its band and ends it",
   'ltcplay/web/remote2.html',
@@ -3901,6 +4063,164 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "    if(n < c.last && c.newest) return c.newest;\n",
   "    if(n < c.last && c.newest && m[1] !== \"cleaning\") return c.newest;\n"),
+
+ # Step 7c of the phone build: on a touch phone Continue anyway is a slide
+ # in the alert slot in front of today's hold. Nothing is sent before 90
+ # percent; every end before the done press is read against the engine
+ # before anything is said; an unclear answer is read, and read again while
+ # the engine could still be starting the show; unreadable is not known;
+ # continued only from the engine's status; no handle while a read or an
+ # answer is pending, after the engine's yes or after a Hold; a pinned Stop
+ # drawn above never ends the slide; a Hold or Disarm ends a held slide; the
+ # slide's own release lands on nothing, a new tap and a plain click do.
+ ("ui 2.0 continue slide: Continue anyway's hold starts before 90 percent",
+  'ltcplay/web/remote2.html',
+  "  if(s.frac < SLIDE_ARM) return;\n  if(PR_HOLD || PRS_DOUBT",
+  "  if(PR_HOLD || PRS_DOUBT"),
+
+ ("ui 2.0 continue slide: a slide stopped before the done press says not continued without reading the engine",
+  'ltcplay/web/remote2.html',
+  "  else if(!PRS_STOP_WHY.includes(why)) prsRead(why, false, h.answer && h.answer.err);\n",
+  "  else if(!PRS_STOP_WHY.includes(why)) prsSay(\"Not continued.\", \"Nothing was sent.\", \"\");\n"),
+
+ ("ui 2.0 continue slide: a lost, 5xx or 409 answer to the done press is said as not continued without reading the engine",
+  'ltcplay/web/remote2.html',
+  "  prsRead(\"\", true, a ? a.err : null);\n",
+  "  { prsSay(\"Not continued.\", \"\", \"\"); prsLine(\"Not continued. Nothing started.\"); }\n"),
+
+ ("ui 2.0 continue slide: an unclear answer is said as not continued while the engine may still be starting the show",
+  'ltcplay/web/remote2.html',
+  "      if(!over && prsOffer(v) && !prsDone(v) && !isLive(v) && Date.now() - t0 < PRS_SETTLE_MS){ await prsNap(300); continue; }\n",
+  ""),
+
+ ("ui 2.0 continue slide: a 409 with no code is taken as the engine's finished refusal",
+  'ltcplay/web/remote2.html',
+  " && !(err.status === 409 && !err.code));\n",
+  ");\n"),
+
+ ("ui 2.0 continue slide: an engine that cannot be read stops checking and is not said as not known",
+  'ltcplay/web/remote2.html',
+  "      told = true; PRS_DOUBT = true;\n      prsSay(",
+  "      told = true; PRS_CHECK = false;\n      prsSay("),
+
+ ("ui 2.0 continue slide: while the engine is read or the answer is pending, the slide shows its handle",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_CHECK || PRS_WAIT || prsGone()) return {mode:\"unknown\", word:\"Checking\"};\n",
+  ""),
+
+ ("ui 2.0 continue slide: the engine continued but its status is not read: an older status brings the handle back",
+  'ltcplay/web/remote2.html',
+  "  return b && (!a || (Number(b.served_at) || 0) > (Number(a.served_at) || 0)) ? b : a;\n",
+  "  return a;\n"),
+
+ ("ui 2.0 continue slide: a status read sent before the newest one delivered replaces it",
+  'ltcplay/web/remote2.html',
+  "/^\\/api\\/remote\\/(morning|cleaning|status)(\\?|$)/",
+  "/^\\/api\\/remote\\/(morning|cleaning)(\\?|$)/"),
+
+ ("ui 2.0 continue slide: the engine's status saying it continued is not believed",
+  'ltcplay/web/remote2.html',
+  "  if(prsDone(v)){\n",
+  "  if(false){\n"),
+
+ ("ui 2.0 continue slide: a pinned Stop drawn above the slide moves it out of its band and ends it",
+  'ltcplay/web/remote2.html',
+  "  const b0 = s.b0;\n",
+  "  const b0 = s.el.getBoundingClientRect();\n"),
+
+ ("ui 2.0 continue slide: a Hold or Disarm leaves a held slide to send its done press",
+  'ltcplay/web/remote2.html',
+  "  if(SLIDE && SLIDE.i === \"pr\") slideCancel(hold ? \"Hold was pressed\" : \"a safety press was made\");\n",
+  ""),
+
+ ("ui 2.0 continue slide: the read after a Hold is sent before the Hold's answer",
+  'ltcplay/web/remote2.html',
+  "    while((PRS_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < PRS_STOP_WAIT_MS){\n",
+  "    while(false){\n"),
+
+ ("ui 2.0 continue slide: a read pending when Hold is pressed still speaks after it",
+  'ltcplay/web/remote2.html',
+  "  const use = prsInUse();\n  PRS_READING++;\n",
+  "  const use = prsInUse();\n"),
+
+ ("ui 2.0 continue slide: the slide's own release and click land on Hold, Disarm and Details",
+  'ltcplay/web/remote2.html',
+  "  if(e.pointerId === qz.id){ e.stopImmediatePropagation(); e.preventDefault(); }\n",
+  ""),
+
+ ("ui 2.0 continue slide: a Stop tap that reuses the slide's pointerId is held back",
+  'ltcplay/web/remote2.html',
+  "  if(!qz || qz.fresh || SLIDE) return;\n",
+  "  if(!qz || SLIDE) return;\n"),
+
+ ("ui 2.0 continue slide: a Stop click with no pointerId is held back after a slide",
+  'ltcplay/web/remote2.html',
+  "  if(e.pointerId === qz.id){ e.stopImmediatePropagation(); e.preventDefault(); }\n",
+  "  if(e.pointerId === qz.id || (t === \"click\" && !(e.pointerId > 0) && e.detail > 0)){ e.stopImmediatePropagation(); e.preventDefault(); }\n"),
+
+ ("ui 2.0 continue slide: after the engine's yes the handle comes back before a read shows the engine",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_STARTED) return {mode:\"run\", word:\"Continuing\", started:true};\n",
+  ""),
+
+ # Review 1 of #301: the late yes never speaks after a Stop or a Hold; a
+ # done press in flight is never given up on; the slide's words never
+ # cover a NOT; the pinned Stop for Programming flames is a Hold.
+ ("ui 2.0 continue slide: the engine's late yes is said over a Stop or a Hold pressed after the done press",
+  'ltcplay/web/remote2.html',
+  "mine.answer = {ok:j}; if(ev) say(",
+  "mine.answer = {ok:j}; say("),
+
+ ("ui 2.0 continue slide: a done press still unanswered is given up on: the handle and not continued while the engine may still start the show",
+  'ltcplay/web/remote2.html',
+  "  while(!h.answer){\n",
+  "  while(!h.answer && Date.now() - t0 < PRS_ANSWER_MS){\n"),
+
+ ("ui 2.0 continue slide: the slide's own words cover a failed safety press's NOT",
+  'ltcplay/web/remote2.html',
+  "  else prsSay(\"Keep your finger at the end.\",",
+  "  else say(\"Keep your finger at the end.\","),
+
+ ("ui 2.0 continue slide: the pinned Stop for Programming flames is not taken as a Hold",
+  'ltcplay/web/remote2.html',
+  " || b.dataset.pin === \"pf\";\n",
+  ";\n"),
+
+ # Review 2 of #301: a done press in flight is remembered across a Stop, a
+ # Hold and lost contact; one that never settles is given up on after
+ # PRS_DONE_MS, said as no answer yet, never as not continued.
+ ("ui 2.0 continue slide: a Hold, a Stop or lost contact while the done press is in flight brings the handle back",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT || PRS_AFTER) return {mode:\"unknown\", word:\"Checking\"};\n",
+  ""),
+
+ ("ui 2.0 continue slide: a done press that never settles is never given up on",
+  'ltcplay/web/remote2.html',
+  "      no(e);\n",
+  "      if(false) no(e);\n"),
+
+ # Review 3 of #301: a done press the engine never answered blocks the
+ # handle for the engine's whole window (preroll.hold_done, 30 s, and a
+ # margin); a show started after a Stop or a Hold is said.
+ ("ui 2.0 continue slide: a done press the engine never answered is taken as over: the handle back inside the engine's window",
+  'ltcplay/web/remote2.html',
+  "  if(!real){ prsWindow(h); return; }\n",
+  ""),
+
+ ("ui 2.0 continue slide: the engine's window for a done press is not waited for",
+  'ltcplay/web/remote2.html',
+  "  PRS_VALID_MS = 30000 + 8000,\n",
+  "  PRS_VALID_MS = 0,\n"),
+
+ ("ui 2.0 continue slide: a show started after a Stop or a Hold is never said, the Stop's or Hold's words stay",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT && !isLive(prsNow())) prsWatchLive(PRS_INFLIGHT);\n",
+  ""),
+
+ ("ui 2.0 continue slide: a Stop of a live show that did not arrive is covered by show started",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT && !isLive(prsNow())) prsWatchLive(PRS_INFLIGHT);\n",
+  "  if(PRS_INFLIGHT) prsWatchLive(PRS_INFLIGHT);\n"),
 
 
 
@@ -15803,9 +16123,9 @@ def build():
 
  ('screen arm: a hold asked for then disarmed carries on',
   'ltcplay/remote.py',
-  '                        now - h["beat"] <= BEAT_STALE_S and\n'
+  '                        self.hold_live(h, now) and\n'
   '                        "wanted_at" not in h)',
-  '                        now - h["beat"] <= BEAT_STALE_S)'),
+  '                        self.hold_live(h, now))'),
 
  ('screen arm: Arrange mode unreadable lets the hold go on',
   'ltcplay/remote.py',
@@ -21877,7 +22197,7 @@ def build():
   '  if(false){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS2[id]'),
 
  ("ui2 page: lifting the finger does not let go of a hold to arm", "ltcplay/web/remote2.html",
-  '        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
+  '        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all && !faBusy()) armStop("let go"); }));',
   '        b.addEventListener(ev, () => {}));'),
 
  ("ui2 page: the copied hold beats faster than 1.0's", "ltcplay/web/remote2.html",

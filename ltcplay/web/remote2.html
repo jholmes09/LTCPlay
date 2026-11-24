@@ -166,6 +166,8 @@ footer{display:flex;align-items:center;gap:var(--gap);padding:var(--gap) var(--p
 #tp-slide,#tp-sl{display:none}
 /* The cleaning's slide (step 7): drawn on a touch phone only. */
 #wc-slide,#wc-sl{display:none}
+/* Continue anyway's slide (step 7): drawn on a touch phone only. */
+#pr-slide,#pr-sl{display:none}
 .b:disabled{cursor:default;background:#100d0a;border:2px dashed #5b5040;color:#B3A68E;pointer-events:none}
 .b:disabled .fill{display:none}
 /* The quiet tone: signed out, no contact or the show not running. Only
@@ -237,6 +239,9 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 .tr .b{min-height:0;height:100%;font-size:calc(var(--fs) + 2px)}
 #b-go{font-size:calc(var(--fs) + 6px)}
 #b-go .lbl{display:flex;flex-direction:column;align-items:flex-start;text-align:left}
+/* Arm flames' small line on one line: a longer word (Some armed) never
+   makes the button taller, which moved the tiles under a held finger. */
+#armall-why{white-space:nowrap}
 /* Stop show's two lines: "Stop show" over "tap twice" (the Windows
    stress test, 2026-11-09). */
 /* Their words wrap where a narrow screen has no room, never cut. */
@@ -953,11 +958,12 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #wx,#msg-more{min-height:44px;padding:0 10px}
   #wx{font-size:17px}
   #msg-t{font-size:16px}
-  /* Flame slide to arm (step 5): one tile a row, and each group's arm and
-     Arm all a full width slide, its 56 px handle 40 px or more from both
-     edges of the screen (a Samsung's Back swipe and Edge panel). Only the
-     handle starts it: the rest of the track scrolls the page. The words
-     say what it does, nothing about how. */
+  /* Flame arm (2026-11-24, the lasers' slide): one tile a row, and each
+     group's Arm and Arm all flames a full width slide, its 56 px handle
+     40 px or more from both edges of the screen (a Samsung's Back swipe
+     and Edge panel). Only the handle starts it: the rest of the track
+     scrolls the page. Its lift opens the pop-up that arms. The words say
+     what it does, nothing about how. */
   :root{--tile-btn:64px}
   .armb.hold:not(:disabled), #b-armall:not(:disabled){touch-action:pan-y;justify-content:center;padding:0 8px 0 64px}
   .armb.hold:not(:disabled){margin:0 24px;width:auto}
@@ -1009,6 +1015,22 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
     touch-action:none;z-index:1}
   #wc-sl{display:block}
   #wc-sl:empty{display:none}
+  /* Continue anyway (step 7): a slide in the alert slot in place of
+     today's hold button, whose words say Hold. Its own row, then its
+     line under it. */
+  #alert[data-prs] #al-act{display:none}
+  #alert[data-prs] #pr-slide{display:flex;position:relative;order:5;flex:1 1 100%;min-width:0;margin:0 24px;justify-content:center;
+    padding:0 8px 0 64px;min-height:60px;touch-action:pan-y;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  #pr-slide[data-mode="starting"],#pr-slide[data-mode="run"]{background:var(--red-deep);border:3px solid var(--red);color:#fff}
+  #pr-slide[data-mode="run"],#pr-slide[data-mode="na"],#pr-slide[data-mode="unknown"]{padding:0 8px}
+  #pr-slide[data-mode="na"]{opacity:.45}
+  #pr-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
+  #pr-sw{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  #pr-slide[data-mode="go"] > .knob,#pr-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
+    position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:#4a3200;
+    touch-action:none;z-index:1}
+  #alert[data-prs] #pr-sl{display:block;order:6;flex:1 1 100%}
+  #alert[data-prs] #pr-sl:empty{display:none}
 }
 /* PHONE LAYOUT END */
 /* Narrower than about 380 px (a phone at a large display size or text
@@ -1172,6 +1194,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <button class="at" id="al-text" disabled><span class="tt"><b id="al-what">No alerts</b><span id="al-do"></span></span><span class="more" id="al-more"><svg class="i"><use href="#i-info"/></svg><span class="w">Details</span></span></button>
       <button class="b" id="al-next" hidden><span id="al-n"></span><svg class="i"><use href="#i-right"/></svg></button>
       <button class="b blue" id="al-act" hidden><div class="fill"></div><svg class="i"><use href="#i-check"/></svg><span id="al-act-l">Acknowledge</span></button>
+      <button type="button" class="b amber" id="pr-slide" data-mode="na" aria-label="Continue anyway"><span class="knob" aria-hidden="true"><svg class="i"><use href="#i-right"/></svg></span><span id="pr-sw">Continue anyway</span></button>
+      <div class="pline" id="pr-sl" aria-live="polite"></div>
       <button class="q" data-q="alert" aria-label="Help: alerts">?</button>
     </div>
     <div class="flames">
@@ -2505,7 +2529,9 @@ function alertItems(st){
   const pch = prerollChoice(s.preroll, s.schedule || {});
   if(pch && pch.continued) items.push({key:"pr-cont", tone:"warn", what:"Continued anyway.", do:"Some outputs are off.", full:pch.text});
   else if(pch && pch.cleared) items.push({key:"pr-cleared", tone:"warn", what:"Rig check passed.", do:String((s.preroll.cleared || {}).say || "Press Resume.").replace(/^Rig check passed\. /, ""), full:pch.text});
-  else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:"Fix it, or hold to continue.", full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
+  // On a touch phone Continue anyway is a slide (prsLook), never a hold.
+  else if(pch) items.push({key:"preroll", tone:"bad", what:"Rig check failed.", do:typeof SLIDE_MQ !== "undefined" && SLIDE_MQ.matches ? "Fix it, or slide to continue." : "Fix it, or hold to continue.",
+    full:pch.text, act:"pr-continue", recheck:true, holdMs:pch.holdMs || 1000});
   else { const prl = prerollLook(s.preroll); if(prl.trouble) items.push({key:"pr-trouble", tone:"warn", what:"Rig check failed.", do:"Tap here for details.", full:prl.trouble}); }
   (s.alerts || []).forEach(a => items.push({key:"a" + a.id, tone:a.severity === "fault" ? "bad" : "warn",
     what:ALERT_WHAT[a.kind] || "Alert.", do:ALERT_DO[a.kind] || "Tap here for details.", full:a.full || a.text, act:"ack", id:a.id, ver:a.ver}));
@@ -2572,7 +2598,8 @@ function renderAlertSlot(){
   if(sig !== AL_SHOWN){ AL_SHOWN = sig; AL_SHOWN_AT = Date.now(); }
   const box = $("alert");
   // A Continue anyway hold ends the moment its alert is not the one shown.
-  if(PR_HOLD && !(it && it.act === "pr-continue")){ prHoldEnd(); say("Let go: nothing was done.", "The rig check's alert changed during the hold: nothing was done.", "warn"); }
+  // The slide's own hold says nothing here: the engine is read first.
+  if(PR_HOLD && !(it && it.act === "pr-continue")){ const sl = PR_HOLD.slid; prHoldEnd(); if(!sl) say("Let go: nothing was done.", "The rig check's alert changed during the hold: nothing was done.", "warn"); }
   if(!it){
     box.className = "none"; setIcon($("al-i"), "check");
     setText($("al-what"), "No alerts"); setText($("al-do"), ""); setText($("al-n"), "");
@@ -2608,7 +2635,7 @@ function drawSlotStale(){
   setText($("al-what"), "Connection lost."); setText($("al-do"), "Stop, Hold, Disarm still work.");
   $("al-text").disabled = true;
   ["al-next", "al-act"].forEach(id => { $(id).hidden = true; });
-  if(PR_HOLD){ prHoldEnd(); say("Let go: nothing was done.", "Contact was lost during the hold: nothing was done.", "warn"); }
+  if(PR_HOLD){ const sl = PR_HOLD.slid; prHoldEnd(); if(!sl) say("Let go: nothing was done.", "Contact was lost during the hold: nothing was done.", "warn"); }
 }
 function alertStep(d){
   const n = ALERTS.length; if(!n) return;
@@ -2726,7 +2753,7 @@ function renderMini(isSt){
 }
 $("m-hold").addEventListener("click", () => press("hold"));
 $("m-stop").addEventListener("click", e => stopTap2("m-stop", e));
-$("m-disf").addEventListener("click", () => { slideCancel("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
+$("m-disf").addEventListener("click", () => { slideCancel("Disarm all flame groups"); faCut("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
 $("m-disl").addEventListener("click", () => lzDisarmAll());
 $("m-snd").addEventListener("click", () => annPress("announce-stop"));
 
@@ -2815,7 +2842,7 @@ function holdSecond(e){
   HOLD_TWO = true;
   HOLD_PT = null;
   if(HOLD) armStop("two pointers on the screen; nothing armed. Let go, then hold again");
-  if(PR_HOLD){ prHoldEnd(); say("Let go: nothing done.", "Two pointers on the screen: nothing was done. Let go, then hold again.", "warn"); }
+  if(PR_HOLD){ const sl = PR_HOLD.slid; prHoldEnd(); if(!sl) say("Let go: nothing done.", "Two pointers on the screen: nothing was done. Let go, then hold again.", "warn"); }
   return true;
 }
 ["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => {
@@ -2843,25 +2870,40 @@ $("al-act").addEventListener("pointerdown", async (ev) => {
   if(holdSecond(ev)) return;
   if(PR_HOLD) return;
   if(alLocked()){ say("Nothing done. Look, then press again.", "The alert changed less than a second ago, so nothing was done.", "warn"); return; }
+  prHoldGo(ev);
+});
+// The hold itself, from the button's press (ev) or from the phone's slide
+// at 90 percent (no ev: prsSlideCheck follows that finger itself). The
+// slide's hold keeps what happened on it (sent: the done press is on its
+// way; answer: what it answered) and says nothing itself: the slide says
+// the engine's yes (prsAwait, never after a Stop or a Hold) and reads the
+// engine first on anything else (prsRead).
+async function prHoldGo(ev){
   const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
   const it = ALERTS.find(i => i.key === ALERT_KEY);
-  say("Keep holding...", it ? it.full : "", "warn");
+  if(ev) say("Keep holding...", it ? it.full : "", "warn");
+  else prsSay("Keep your finger at the end.", it ? it.full : "", "warn");
   setText($("al-act-l"), PR_HOLD_WORDS);
   $("al-act").classList.add("holding");
   const f = $("al-act").querySelector(".fill");
   if(f){ f.style.transition = "none"; f.style.width = "0"; void f.offsetWidth; f.style.transition = "width " + (PR_HOLD_MS + 100) + "ms linear"; f.style.width = "100%"; }
-  const mine = PR_HOLD = {token:token, timer:null};
-  holdTrack(ev, $("al-act"), () => { if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done.", "The finger left the button: nothing was done.", "warn"); } });
-  try{ await post("/api/remote/preroll-continue", actor({phase:"begin", token:token})); }
-  catch(e){ prHoldEnd(); say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); return; }
+  const mine = PR_HOLD = {token:token, timer:null, slid:!ev, sent:false, answer:null};
+  if(ev) holdTrack(ev, $("al-act"), () => { if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done.", "The finger left the button: nothing was done.", "warn"); } });
+  try{ await post("/api/remote/preroll-continue", actor({phase:"begin", token:token})); mine.began = Date.now(); }
+  catch(e){ prHoldEnd(); mine.answer = {err:e, begin:true}; if(ev) say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); return; }
   if(PR_HOLD !== mine) return;
   mine.timer = setTimeout(async () => {
     if(PR_HOLD !== mine) return;
     prHoldEnd();
-    try{ const j = await post("/api/remote/preroll-continue", actor({phase:"done", token:token})); say("Continuing anyway.", String(j.text || ""), "ok"); }
-    catch(e){ say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); }
+    mine.sent = true;
+    // The slide's done press is remembered until it settles (prsSettled):
+    // no handle and no second slide meanwhile, whatever else happens.
+    if(!ev) PRS_INFLIGHT = mine;
+    try{ const j = await post("/api/remote/preroll-continue", actor({phase:"done", token:token})); mine.answer = {ok:j}; if(ev) say("Continuing anyway.", String(j.text || ""), "ok"); }
+    catch(e){ mine.answer = {err:e}; if(ev) say(short8(e.message, "Refused. Tap Details."), e.message, "bad"); }
+    if(!ev) prsSettled(mine);
   }, PR_HOLD_MS + 100);
-});
+}
 ["pointerup", "pointerleave", "pointercancel"].forEach(t => $("al-act").addEventListener(t, () => {
   if(PR_HOLD){ prHoldEnd(); say("Let go too early: nothing done.", "Let go too early: nothing was done.", "warn"); }
 }));
@@ -2953,6 +2995,7 @@ function renderStale(){
     if(el.dataset.mode === "disarm"){ el.disabled = false; return; }
     if(!holding(i)) el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;
     if(!holding(i) && rearmWaitFor(i) > 0) el.disabled = true;
+    if(faBusy() && FA.groups.indexOf(i) >= 0) el.disabled = true;
   });
   if(isSt) document.querySelectorAll(".tile[data-lamp]").forEach(t => {
     t.className = "tile unknown"; setIcon(t.querySelector(".ts svg"), "x");
@@ -3307,8 +3350,10 @@ $("tn-run").addEventListener("click", () => runShowHere());
 // same answer read the same way. No confirm: the double tap is its guard.
 async function pressStop(route){
   if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
+  if(typeof faCut === "function") faCut("Stop show was pressed");
   if(typeof tpStopSeen === "function") tpStopSeen();
   if(typeof wcsStopSeen === "function") wcsStopSeen();
+  if(typeof prsStopSeen === "function") prsStopSeen();
   HALT_SEQ++;
   // Any Stop ends every armed first tap (Stop show, the strip's, the Run
   // card's): none of them says "not sent" after it.
@@ -5092,32 +5137,278 @@ function armShort(text){
   if(/^Armed/i.test(t)) return "Armed.";
   return short8(t, "Tap Details.");
 }
-function armSay(text, level){ say(armShort(text), text, level >= 2 ? "bad" : (level === 1 ? "ok" : "")); }
+// On a touch phone the words never say "hold" (Andy and Jeff, 2026-11-23:
+// a phone has no hold to arm).
+function armShortPhone(text){
+  const t = String(text || ""), s = armShort(t);
+  if(s === "Keep holding...") return "Arming...";
+  if(s === "Wait, then hold again.") return "Re-arm wait. Try again soon.";
+  if(s === "Hold stopped. Tap Details.") return "Stopped. Tap Details.";
+  return /hold/i.test(s) || /[;\u2013\u2014]/.test(s) ? "Not armed. Tap Details." : s;
+}
+// An Arm all outcome said is kept (ARM_SAID) and made true to the
+// engine while it is on the line (armSaidNow): never "nothing was armed"
+// or "Not armed: <group>" while the engine reads that group armed or
+// asked for, and "Not known" rather than "Nothing armed" while the state
+// cannot be read. Only a status the engine served no earlier than a read
+// the page asked for after the words (ARM_SAID.base, the engine's own
+// served_at) is used: a status built before the hold's answers and
+// arriving late is never read as the outcome (cold review of #302, F2).
+let ARM_SAID = null;
+function armWords(text, level, src){
+  const ph = slidePhone(), t = String(text || "");
+  let short = ph ? armShortPhone(t) : armShort(t), full = t, cls = level >= 2 ? "bad" : (level === 1 ? "ok" : "");
+  if(/^Arm all: /.test(t) && src){
+    const r = flamesRead(src.st && src.st.flames, src.stale, null);
+    if(r.state === "unknown") short = /Not known:/.test(t) ? "Some groups not known. Tap Details." : "Not known. Check the tile.";
+    else {
+      full = armTextNow(t, r, groupNames());
+      if(!/Not known:/.test(t)) short = flamesReadLine(r.state, false);
+      if(r.state === "all") cls = "ok";
+    }
+  }
+  if(ph) full = phoneArmText(full);
+  return {short:short, full:full, cls:cls};
+}
+function armSay(text, level){
+  if(faQuiet(text)) return;
+  const w = armWords(text, level, null);
+  if(!/^Arm all: /.test(String(text || ""))){ ARM_SAID = null; say(w.short, w.full, w.cls); return; }
+  const a = ARM_SAID = {w:w, base:Infinity, make:() => {
+    if(stale()) return armWords(text, level, {st:null, stale:true});
+    if(!ST || faServed(ST) < a.base) return null;
+    return armWords(text, level, {st:ST, stale:false});
+  }};
+  say(w.short, w.full, w.cls);
+  // The read asked for after the words: the engine served it after the
+  // hold's answers.
+  getJSON("/api/remote/status", 1500).then(s => {
+    if(ARM_SAID !== a || !s) return;
+    a.base = faServed(s);
+    armSaidShow(a, armWords(text, level, {st:s, stale:false}));
+  }).catch(() => {});
+}
+// ---- flame arm on a touch phone: a tap, then a pop-up (Andy and Jeff on
+// a phone, 2026-11-23: "Slider ARM function is shit. Make it like the
+// laser arm function with a pop-up box instead.") ----
+// On a touch phone ((max-width:500px) and (pointer:coarse)) a group's Arm
+// and Arm all flames are a tap that opens a pop-up naming what will be
+// armed, with Cancel and Arm. Nothing is sent before Arm on the pop-up.
+// The lasers' own arm is a slide, then its confirm; the flames' is the tap
+// and the pop-up alone, with no slide. Arm runs the same hold as
+// everywhere else (armStart or armAllStart: the same beats, the engine's
+// own 1.0 s plus the deck's 0.6 s, every rule of the engine and the deck),
+// with no finger on the glass: the page beats until the engine answers.
+// Every way a hold ends still ends it: Stop, every Disarm, blur, a hidden
+// or closed page, sign out, arming switched off, a stale page.
+// While it runs, and while the engine is read after it, the button says
+// Checking and takes no tap (a second Arm is refused, never sent). The
+// line then says only what an engine read after the hold shows
+// (flamesRead): never armed without a read, "Not known. Check the tile."
+// when it cannot be read. A read older than the newest one shown is never
+// used. Disarm stays one tap, never held back. Off a phone (a desktop, an
+// iPad, the rack screen) an arm is the press and hold, as before.
+const FA_QUIET_MS = 2600, FA_MAX_MS = 8000, FA_READ_TRIES = 6, FA_READ_GAP_MS = 500;
+let FA = null, FA_SEQ = 0, FA_SEEN = 0, FA_ASKING = false;
+function faBusy(){ return !!FA && !FA.done; }
+// The hold's own words while the pop-up's arm runs, and a moment after it
+// (a read the hold's end started that answers late): kept for Details,
+// never on the line.
+function faQuiet(text){
+  if(!FA || (FA.done && Date.now() - FA.done > FA_QUIET_MS)) return false;
+  FA.said.push(String(text || ""));
+  return true;
+}
+function faNames(gs){ const n = groupNames(); return gs.map(i => n[i] || ("group " + (i + 1))).join(", "); }
+// What the pop-up was opened on (cold review of #302, round 2, N2 and
+// N3): every group's name and state, the schedule's state and arming.
+// A Stop or a Disarm from anywhere (this screen, another one, the Deck)
+// changes it, and so does flamesafe's group order; FA_EPOCH counts this
+// screen's own Stops and Disarms. Either changed at the Arm tap: nothing
+// is sent.
+let FA_EPOCH = 0;
+function faSig(){
+  const fl = (ST && ST.flames) || {};
+  const sch = (ST && ST.schedule) || {};
+  // A Stop, Hold or alert hold from anywhere shows in the schedule's view
+  // even when its state does not change (already HOLD, nothing attached):
+  // stop_held, held, the alert hold (round 3, L1).
+  return JSON.stringify([(fl.groups || []).map(g => [g.name, g.armed, !!g.wanted]), !!fl.stale,
+    sch.state || "", !!sch.attached, !!sch.held, !!sch.stop_held, !!(ST && ST.alert_hold && ST.alert_hold.held),
+    !!(ST && ST.arming && ST.arming.enabled)]);
+}
+// What a pop-up arm of `i` (a group, or "all") would arm right now:
+// {go, out, why}. The same rules armStart and armAllStart apply.
+function faPlan(i){
+  if(i === "all"){
+    const waits = {};
+    (((ST && ST.flames) || {}).groups || []).forEach((_g, k) => { waits[k] = rearmWaitFor(k); });
+    const p = armAllPlan(ST, Date.now(), LAST_OK, waits);
+    return {go:p.go, out:p.out, why:p.go.length ? "" : (p.out.length ? p.out[0].why : p.why)};
+  }
+  const as = armState(ST, Date.now(), LAST_OK, i);
+  const w = as.ok ? rearmWaitFor(i) : 0;
+  return {go:as.ok && !(w > 0) ? [i] : [], out:[], why:!as.ok ? as.why : w > 0 ? rearmText(w) : ""};
+}
+// Nothing was sent: the reason on the line (8 words or fewer), the whole
+// of it behind Details.
+function faRefused(why, changed){
+  const w = String(why || "");
+  say(changed ? "Changed. Nothing sent. Tap Arm again." : faRefusedLine(w),
+    phoneArmText((changed ? "What would arm changed while the pop-up was open: " + w : "Not armed: " + w).replace(/[.\s]+$/, "") + ". Nothing was sent."), "bad");
+}
+async function faAsk(i){
+  if(faBusy() || FA_ASKING){ say("Checking. Wait.", "An arm is being checked with the engine. Nothing more was sent.", ""); return; }
+  if(HOLD){ say("Not armed. Nothing sent.", "Another arm is running. Nothing was sent.", "bad"); return; }
+  const all = i === "all";
+  const plan = faPlan(i);
+  if(!plan.go.length){ faRefused(plan.why); return; }
+  plan.sig = faSig(); plan.epoch = FA_EPOCH;
+  FA_ASKING = true;
+  let yes = false;
+  try{
+    yes = await confirmBox(all ? "Arm all flames?" : "Arm " + faNames(plan.go) + "?",
+      "Arms: " + faNames(plan.go) + "." + (plan.out.length ? " Stays off: " + faNames(plan.out.map(o => o.group)) + "." : ""), "Arm", "green");
+  } finally { FA_ASKING = false; }
+  if(!yes) return;
+  faGo(all ? "all" : i, plan);
+}
+// Arm on the pop-up: the one tap that sends, and only what the pop-up
+// named (cold review of #302, F1): the plan is made again at the tap, and
+// if it is not the same (a re-arm wait over, arming switched off, live
+// flame programming, contact lost, a group armed or disarmed meanwhile)
+// nothing is sent and the line says so. The check and the start are in
+// the same tick, so the hold holds exactly the groups named.
+async function faGo(i, plan){
+  if(faBusy() || HOLD){ say("Checking. Wait.", "An arm is being checked with the engine. Nothing more was sent.", ""); return; }
+  const now = faPlan(i);
+  if(!now.go.length){ faRefused(now.why); return; }
+  if(!plan || now.go.join(",") !== plan.go.join(",")){ faRefused("now it would arm " + faNames(now.go), true); return; }
+  if(plan.epoch !== FA_EPOCH || plan.sig !== faSig()){ faRefused("a Stop, a Disarm or a group's state came in", true); return; }
+  const gs = (((ST && ST.flames) || {}).groups || []).map((_g, k) => k);
+  const fa = FA = {seq:++FA_SEQ, all:i === "all", groups:i === "all" ? gs : [i], said:[], done:0, h:null, at:Date.now()};
+  // Never stuck on Checking: whatever happens, the arm is over at the end.
+  try{
+    ARM_SAID = null;
+    if(fa.all) armAllStart(); else armStart(i);
+    fa.h = HOLD;
+    if(fa.h && fa.h.parts.map(p => p.group).join(",") !== plan.go.join(",")){ armStop("what would arm changed"); fa.h = null; }
+    if(!fa.h){
+      fa.done = Date.now();
+      faRefused((fa.said.filter(t => !/^Keep holding/.test(t)).pop() || "refused").replace(/^Not armed: /, ""));
+      return;
+    }
+    say("Checking...", "", "");
+    try{ renderStale(); }catch(_e){}
+    const t0 = Date.now();
+    while(fa.h && HOLD === fa.h){
+      if(Date.now() - t0 > FA_MAX_MS){ armStop("the engine did not answer in time"); break; }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    if(FA !== fa) return;
+    await faRead(fa);
+  } finally {
+    if(!fa.done) fa.done = Date.now();
+    try{ renderStale(); }catch(_e){}
+  }
+}
+// The engine read after the arm, and what the line says.
+// Stop or a Disarm pressed while a pop-up arm runs: the hold ends at once,
+// and the line is left to the Stop's or the Disarm's own words (a failed
+// Stop or Disarm is never written over).
+function faCut(why){
+  FA_EPOCH++;
+  if(FA_ASKING && SHEET_DONE) SHEET_DONE(null);
+  if(!faBusy()) return;
+  FA.cut = true;
+  if(HOLD && HOLD === FA.h) armStop(why);
+}
+function faServed(x){ return (x && Number.isFinite(Number(x.served_at))) ? Number(x.served_at) : -Infinity; }
+async function faRead(fa){
+  // Only a read asked for after the hold ended says what came of it, and
+  // never one older than a read already shown (FA_SEEN). Until one
+  // arrives the line says Not known, and the read is asked for again
+  // (cold review of #302, round 2, N1: a lost read let a late status
+  // built before the arm say Not armed).
+  let s = null;
+  for(let n = 0; n < FA_READ_TRIES && !s && !fa.cut; n++){
+    if(n) await new Promise(r => setTimeout(r, FA_READ_GAP_MS));
+    if(FA !== fa) return;
+    try{ s = await getJSON("/api/remote/status", 1500); }catch(_e){ s = null; }
+    if(FA !== fa) return;
+    if(s && faServed(s) < FA_SEEN) s = null;
+    if(n === 0 && !s && !fa.cut){ fa.base = Infinity; faShow(fa, flamesRead(null, true, fa.groups)); }
+  }
+  fa.done = Date.now();
+  if(fa.cut){ try{ renderStale(); }catch(_e){} return; }
+  if(!s){ fa.base = Infinity; faShow(fa, flamesRead(null, true, fa.groups)); try{ renderStale(); }catch(_e){} return; }
+  FA_SEEN = faServed(s);
+  fa.base = FA_SEEN;
+  faShow(fa, flamesRead(s.flames, false, fa.groups));
+  try{ renderStale(); }catch(_e){}
+}
+// The line for a pop-up arm, and each newer status after it: only one the
+// engine served no earlier than the read after the hold (fa.base); contact
+// lost is Not known.
+function faShow(fa, r){
+  const w = faWords(fa, r);
+  const a = ARM_SAID = {w:w, make:() => {
+    if(stale()) return faWords(fa, flamesRead(null, true, fa.groups));
+    if(!ST || !(fa.base < Infinity) || faServed(ST) < fa.base || faServed(ST) <= FA_SEEN) return null;
+    FA_SEEN = faServed(ST);
+    return faWords(fa, flamesRead(ST.flames, false, fa.groups));
+  }};
+  say(w.short, w.full, w.cls);
+  return a;
+}
+// The line and Details for a pop-up arm, from an engine read: 8 words or
+// fewer, no "hold", no raw engine text on the line.
+function faWords(fa, r){
+  const one = !fa.all;
+  const short = flamesReadLine(r.state, one);
+  let full = "Read from the engine after the arm.";
+  if(r.state === "unknown") full = "Not known: the engine's state could not be read, so a group may be armed. Check the tiles.";
+  else {
+    const nm = a => faNames(a);
+    if(r.armed.length) full += " Armed: " + nm(r.armed) + ".";
+    if(r.asked.length) full += " Asked for: " + nm(r.asked) + ". The lamp shows when armed.";
+    if(r.off.length) full += " Not armed: " + nm(r.off) + ".";
+    const why = fa.said.filter(t => !/^Keep holding|^Armed|is asked for/i.test(t)).pop();
+    if(r.off.length && why) full += " Why: " + (/hold/i.test(why) ? phoneArmWhy(why) + "." : phoneArmText(why));
+  }
+  return {short:short, full:phoneArmText(full), cls:r.state === "all" ? "ok" : r.state === "unknown" || r.state === "none" || r.state === "some" ? "bad" : ""};
+}
+function armSaidShow(a, w){
+  if(ARM_SAID !== a || !w) return;
+  if($("msg-t").textContent !== a.w.short || MSG_FULL !== (a.w.full !== a.w.short ? a.w.full : "")){ ARM_SAID = null; return; }
+  if(w.short === a.w.short && w.full === a.w.full && w.cls === a.w.cls) return;
+  a.w = w;
+  setText($("msg-t"), w.short);
+  $("msg").className = w.cls;
+  MSG_FULL = w.full !== w.short ? w.full : "";
+  $("msg-more").hidden = !MSG_FULL;
+}
+function armSaidNow(){
+  const a = ARM_SAID;
+  if(a) armSaidShow(a, a.make());
+}
 document.addEventListener("visibilitychange", () => { if(document.hidden){ slideCancel("the page was hidden"); armStop("the page was hidden"); } });
 window.addEventListener("pagehide", () => { slideCancel("the page closed"); armStop("the page closed"); });
 window.addEventListener("blur", () => { slideCancel("the page lost focus"); armStop("the page lost focus"); });
 
-// ---- flame slide to arm, touch phones only (step 5 of the phone build) ----
+// ---- the slide, touch phones only (steps 6 to 8 of the phone build) ----
 // On a touch phone ((max-width:500px) and (pointer:coarse), read when the
-// finger goes down and fixed for that touch) each group's arm and Arm all
-// are a slide. It is the same hold as everywhere else: armStart or
-// armAllStart, the same beats, the same engine, started when the finger
-// touches the handle. The engine arms only once beats have lasted 1.0 s
-// plus the deck's 0.6 s, so the beats carry on past SLIDE_GATE_MS (or past
-// SLIDE_GATE_HELD_S of hold the engine has answered) only while the handle
-// is at SLIDE_ARM (90 percent) or more. Under it the hold is let go, and a
-// new hold starts once the handle is back at 90 percent (the engine then
-// needs its whole hold again). The slide never shows armed: the engine's
-// armed answer or its status says so, and the tile turns to Disarm.
-// Everything else ends the slide, lets go of its hold and springs the
-// handle back: the lift, pointercancel, a second pointer of any kind, a
-// jump (a wet screen), the finger leaving the band, blur, a hidden or
-// closed page, a resize or rotation, the phone test changing, the tiles
-// drawn again, Back, sign out, arming switched off, a Disarm, a Stop.
-// Off a phone (a desktop, an iPad, the rack screen) an arm is the hold,
-// exactly as before. A keyboard and a screen reader still cannot arm.
+// finger goes down and fixed for that touch) the lasers' Arm, the timed
+// purge and the cleaning are a slide (their own parts below). The flames'
+// arm was a slide too (step 5) until 2026-11-23: it is a tap and a pop-up
+// now (faAsk). Everything else ends a slide and springs the handle back:
+// the lift, pointercancel, a second pointer of any kind, a jump (a wet
+// screen), the finger leaving the band, blur, a hidden or closed page, a
+// resize or rotation, the phone test changing, the controls drawn again,
+// Back, sign out, arming switched off, a Disarm, a Stop. A slide's own
+// part says what each one does.
 const SLIDE_MQ = matchMedia("(max-width:500px) and (pointer:coarse)");
-const SLIDE_ARM = 0.9, SLIDE_GATE_MS = 500, SLIDE_GATE_HELD_S = 0.7, SLIDE_AGAIN_MS = 300,
+const SLIDE_ARM = 0.9,
   SLIDE_JUMP_PX = 64, SLIDE_BAND_PX = 24, SLIDE_TICK_MS = 50;
 let SLIDE = null, SLIDE_BACK = 0;
 function slidePhone(){ return SLIDE_MQ.matches; }
@@ -5140,75 +5431,26 @@ function slideDown(e, el, i){
   // (a pinned Stop, an alert) has moved it.
   const r0 = el.getBoundingClientRect();
   const s = SLIDE = {el:el, knob:knob, i:i, id:e.pointerId, x0:e.clientX, lx:e.clientX, ly:e.clientY,
-    travel:Math.max(1, el.clientWidth - knob.offsetWidth - 2 * knob.offsetLeft), frac:0, h:null, t0:0, paused:false, at:0,
+    travel:Math.max(1, el.clientWidth - knob.offsetWidth - 2 * knob.offsetLeft), frac:0,
     back:false, tick:0, vw:innerWidth, vh:innerHeight, b0:{top:r0.top, bottom:r0.bottom}};
   s.tick = setInterval(slideCheck, SLIDE_TICK_MS);
   // Back (or a Samsung's swipe from the edge) while the finger is down
   // takes this entry away and ends the slide, never the page.
   try{ history.pushState({ltcSlide:true}, ""); s.back = true; }catch(_e){}
   // The lasers' slide sends nothing: its lift opens the confirm (lzSlideEnd).
-  // The timed purge's and the cleaning's send nothing until 90 percent
-  // (tpSlideCheck, wcSlideCheck).
-  if(i !== "lz" && i !== "tp" && i !== "wc") slideHold(s);
+  // The timed purge's, the cleaning's and Continue anyway's send nothing
+  // until 90 percent (tpSlideCheck, wcSlideCheck, prsSlideCheck); the
+  // flames' send nothing at all (faSlideEnd opens the pop-up).
 }
-// The hold, the same as a press and hold: armStart or armAllStart.
-function slideHold(s){
-  s.t0 = Date.now(); s.paused = false;
-  if(s.i === "all") armAllStart(); else armStart(s.i);
-  s.h = HOLD;
-  if(s.h) s.groups = s.h.parts.map(p => p.group);
-  // Refused at once (armStart said why): nothing to slide.
-  if(!s.h) slideEnd(s);
-}
-// Every group of the slide's hold still holding shows armed or asked for
-// in the status: the engine's armed answer is on its way.
-function slidePending(s){
-  if(s.paused || !s.h || HOLD !== s.h) return false;
-  const gs = ((ST && ST.flames) || {}).groups || [];
-  const live = s.h.parts.filter(p => !p.end);
-  return live.length > 0 && live.every(p => { const g = gs[p.group]; return !!g && (g.armed === "armed" || !!g.wanted); });
-}
-// A slide's hold stopped: each part still holding goes through #293's
-// doubt path (armStop reads the engine's state before it says anything or
-// lets go), so an armed answer cut off here is never said as not armed.
-function slideStop(s, why){
-  if(!s.h || HOLD !== s.h) return;
-  s.h.parts.forEach(p => { if(!p.end && !p.err) p.err = new Error(why || "the slide ended"); });
-  armStop(why);
-}
-function slideHeld(h){ return Math.max(0, ...h.parts.map(p => p.held || 0)); }
 function slideCheck(){
   const s = SLIDE;
   if(!s) return;
   if(s.i === "lz"){ lzSlideCheck(s); return; }
   if(s.i === "tp"){ tpSlideCheck(s); return; }
   if(s.i === "wc"){ wcSlideCheck(s); return; }
-  // The hold ended by itself (armed, refused, lapsed), and said so.
-  if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }
-  if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
-  // The tile turned to Disarm under the finger: its group is asked for, so
-  // the engine's armed answer is on its way. The hold waits for it, as a
-  // press and hold does (holdLapsed); nothing is let go.
-  if(!s.knob.getClientRects().length && !slidePending(s)){ slideCancel("the controls were drawn again"); return; }
-  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
-  // Signed out (the sheet's Sign out, or the engine says view only).
-  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
-  // A resize or a turn that has not fired its event yet.
-  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
-  const r = s.b0;
-  // The band is where the slide was when the finger went down (slideDown):
-  // a pinned Stop drawn above the tiles during the hold (live flame
-  // programming, another screen's purge or cleaning) or an alert moves the
-  // slide, never the finger, and never lets go of the arm.
-  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("let go"); return; }
-  if(!s.paused){
-    // Under 90 percent: never as far as the engine's whole hold. Let go
-    // through the doubt path: the engine may have armed it this instant.
-    if(s.frac < SLIDE_ARM && (Date.now() - s.t0 >= SLIDE_GATE_MS || slideHeld(s.h) >= SLIDE_GATE_HELD_S)){
-      slideStop(s, "");
-      s.h = null; s.paused = true; s.at = Date.now();
-    }
-  } else if(s.frac >= SLIDE_ARM && Date.now() - s.at >= SLIDE_AGAIN_MS) slideHold(s);
+  if(s.i === "pr"){ prsSlideCheck(s); return; }
+  if(s.i === "fa"){ faSlideCheck(s); return; }
+  slideCancel("");
 }
 function slideMove(e){
   const s = SLIDE;
@@ -5231,27 +5473,9 @@ function slideCancel(why){
   if(s.i === "lz"){ lzSlideEnd(s, why); return; }
   if(s.i === "tp"){ tpSlideEnd(s, why); return; }
   if(s.i === "wc"){ wcSlideEnd(s, why); return; }
-  if(s.h && HOLD === s.h) slideStop(s, why);
-  else if(s.paused && why) slideSaid(s.groups, why);
+  if(s.i === "pr"){ prsSlideEnd(s, why); return; }
+  if(s.i === "fa"){ faSlideEnd(s, why); return; }
   slideEnd(s);
-}
-// A slide that ended while paused under 90 percent (its hold already let
-// go): the engine's state is read before anything is said, never "not
-// armed" without it.
-async function slideSaid(groups, why){
-  const nows = await Promise.all(groups.map(i => groupNow(i)));
-  if(HOLD) return;
-  const on = nows.filter(n => n.armed), unk = nows.filter(n => !n.known);
-  if(groups.length === 1){
-    if(on.length) armSay(ASKED_WORDS(on[0].name), 1);
-    else if(unk.length) armSay(UNKNOWN_WORDS(unk[0].name), 2);
-    else armSay("Hold stopped: " + why, why === "let go" ? 0 : 2);
-    return;
-  }
-  if(!on.length && !unk.length){ armSay("Hold stopped: " + why, why === "let go" ? 0 : 2); return; }
-  // armAllText's words for a group not known.
-  armSay("Arm all:" + (on.length ? " " + on.map(n => n.name).join(", ") + " asked for." : "") +
-    (unk.length ? " Not known: " + unk.map(n => n.name).join(", ") + " (the engine's state could not be read; check the tiles before you hold again)." : ""), unk.length ? 2 : 1);
 }
 function slideEnd(s){
   if(SLIDE !== s) return;
@@ -5265,14 +5489,6 @@ function slideEnd(s){
   }
 }
 window.addEventListener("pointermove", slideMove, true);
-// The buttons' own pointerleave and lostpointercapture let go of a hold at
-// once, with no state read. During a slide they never reach them (the
-// handle hidden while its group is asked for may lose the capture, or the
-// finger past the track's end leave the button): the slide ends only
-// through its own path, which reads the engine's state first.
-["pointerleave", "lostpointercapture"].forEach(t => window.addEventListener(t, e => {
-  if(SLIDE && e.pointerId === SLIDE.id) e.stopPropagation();
-}, true));
 // Arming switched off and Sign out (their own handlers are 1.0's copied
 // code, which lets go of the hold first).
 $("sa-off").addEventListener("click", () => slideCancel("arming from a screen was switched off"));
@@ -5361,7 +5577,7 @@ async function lzLost(e){
   return null;
 }
 // The lasers' handle: only on a phone, only while the tile says Arm.
-window.addEventListener("pointerup", e => { const s = SLIDE; if(s && s.i === "lz" && e.pointerId === s.id) s.up = true; }, true);
+window.addEventListener("pointerup", e => { const s = SLIDE; if(s && (s.i === "lz" || s.i === "fa") && e.pointerId === s.id) s.up = true; }, true);
 // Any touch after the slide ended is a new press: a Disarm with it is
 // never held back.
 window.addEventListener("pointerdown", () => { if(LZ_QUIET && !SLIDE) LZ_QUIET.fresh = true; }, true);
@@ -5376,6 +5592,60 @@ window.addEventListener("pointerdown", () => { if(LZ_QUIET && !SLIDE) LZ_QUIET.f
     return;
   }
   if(age < LZ_QUIET_MS || (e.pointerId === qz.id && age < LZ_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true));
+// ---- the flames' slide, touch phones only (Jeff, 2026-11-24: the
+// flame arm's front end the same as the lasers') ----
+// Each group's Arm and Arm all flames are a slide, the lasers' slide with
+// the same handle and the same rules, that sends NOTHING: the finger is
+// never held at the end. Lifted at SLIDE_ARM (90 percent) or more it opens
+// the flame pop-up (faAsk: what will be armed, Cancel and Arm), and only
+// the pop-up's Arm sends. Every other end (lifted short, pointercancel, a
+// second pointer, the band, a jump, Back, blur, a resize, the tile
+// changing) sends nothing and says so. The band is where the slide was
+// when the finger went down (slideDown's b0): a pinned Stop drawn above
+// the tiles moves the slide, never the finger. The slide's own release and
+// click never reach the pop-up drawn under the finger, nor a tile under
+// it (FA_QUIET, the lasers' LZ_QUIET rules); a new touch is a new press,
+// so a Disarm or a Stop is never held back. No slide starts while an arm
+// is asked for or being checked.
+let FA_QUIET = null;
+const FAS_QUIET_MS = LZ_QUIET_MS, FAS_QUIET_ID_MS = LZ_QUIET_ID_MS;
+function faSlideDown(e, el, target){
+  if(faBusy() || FA_ASKING) return;
+  slideDown(e, el, "fa");
+  if(SLIDE && SLIDE.el === el) SLIDE.target = target;
+}
+function faSlideCheck(s){
+  if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
+  if(!s.knob.getClientRects().length){ slideCancel("the tile changed"); return; }
+  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
+  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
+  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
+  const band = s.b0;
+  if(s.ly < band.top - SLIDE_BAND_PX || s.ly > band.bottom + SLIDE_BAND_PX) slideCancel("the finger left the slide");
+}
+function faSlideEnd(s, why){
+  const lifted = s.up === true && why === "let go";
+  slideEnd(s);
+  FA_QUIET = {id:s.id, at:Date.now()};
+  if(lifted && s.frac >= SLIDE_ARM && s.target !== undefined){ faAsk(s.target); return; }
+  // As the lasers' (lzSlideEnd): lifted short or a tap sends nothing and
+  // says nothing, so a line such as a Stop NOT sent is never covered.
+  if(lifted || !why || why === "the tile changed") return;
+  say("Nothing sent.", "Flame slide stopped: " + why + ". Nothing was sent.", "");
+}
+window.addEventListener("pointerdown", () => { if(FA_QUIET && !SLIDE) FA_QUIET.fresh = true; }, true);
+["pointerup", "click"].forEach(t => window.addEventListener(t, e => {
+  const qz = FA_QUIET;
+  if(SLIDE || !qz || !e.target || !e.target.closest || !e.target.closest("#sheet, [data-arm], #b-armall")) return;
+  const age = Date.now() - qz.at, tile = e.target.closest("[data-arm]");
+  // A group's tile that says Disarm: only the slide's own release is
+  // ignored (its pointer, no touch since). Any new press disarms.
+  if(tile && tile.dataset.mode !== "hold"){
+    if(!qz.fresh && e.pointerId === qz.id && age < FAS_QUIET_ID_MS){ e.preventDefault(); e.stopImmediatePropagation(); }
+    return;
+  }
+  if(age < FAS_QUIET_MS || (e.pointerId === qz.id && age < FAS_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }
 }, true));
 ["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => { if(SLIDE && e.pointerId === SLIDE.id) slideCancel("let go"); }, true));
 // A second pointer of any kind, anywhere: the slide ends, and no hold
@@ -5672,15 +5942,15 @@ window.addEventListener("pointerdown", e => { if(TP_QUIET && !SLIDE && e !== TP_
     e.preventDefault(); e.stopImmediatePropagation();
   }
 }, true));
-// Every /api/remote/morning and /api/remote/cleaning read numbered when
-// sent, each route on its own count: an answer sent before the last one
-// delivered (a slow regular poll landing after a slide's fresh read)
-// never replaces it; the caller gets the newer one. 1.0's getJSON itself
-// is unchanged; only its name is wrapped.
+// Every /api/remote/morning, /api/remote/cleaning and /api/remote/status
+// read numbered when sent, each route on its own count: an answer sent
+// before the last one delivered (a slow regular poll landing after a
+// slide's fresh read) never replaces it; the caller gets the newer one.
+// 1.0's getJSON itself is unchanged; only its name is wrapped.
 {
   const read = getJSON, count = {};
   getJSON = async function(p, ms){
-    const m = /^\/api\/remote\/(morning|cleaning)(\?|$)/.exec(String(p));
+    const m = /^\/api\/remote\/(morning|cleaning|status)(\?|$)/.exec(String(p));
     if(!m) return read(p, ms);
     const c = count[m[1]] || (count[m[1]] = {sent:0, last:0, newest:null});
     const n = ++c.sent;
@@ -6022,6 +6292,487 @@ window.addEventListener("pointerdown", e => { if(WCS_QUIET && !SLIDE && e !== WC
   if(e.pointerId === qz.id){ e.preventDefault(); e.stopImmediatePropagation(); }
 }, true));
 
+// ---- Continue anyway's slide, touch phones only (step 7 of the phone build) ----
+// On a touch phone Continue anyway (after a failed rig check, in the alert
+// slot) is a slide in front of today's hold (prHoldGo: 1.0's two presses,
+// begin, then done once it has filled; the engine times the hold). The
+// slide sends nothing until its handle reaches SLIDE_ARM (90 percent);
+// there it starts that hold, and the finger stays at the end until the
+// done press is sent. Before 90 percent every end sends nothing. After
+// it, until the done press is sent, back under 90 percent, the lift,
+// pointercancel, a second pointer, a jump, the band, blur, hidden, Back, a
+// resize or turn, the alert changing, contact lost or a safety press let
+// go (1.0's let go: the done press is never sent), and the engine is read
+// before anything is said. Once the done press is sent nothing the finger
+// does can take it back: its answer is waited for, and anything but the
+// engine's yes (lost, no answer, 5xx, a 409) is read against the engine:
+// continued only when the engine's status says so, never "not continued"
+// without that read, and while that read could still be overtaken by the
+// engine's own start (its answer unclear) read again a while first.
+// Unreadable: not known, no handle, read again until it answers. No handle
+// while a read is pending, after the engine's yes until a read shows the
+// engine, or after a Stop or a Hold until a read made after its answer:
+// a second Continue anyway could start the show twice, or resume a Hold.
+// The slide's own release and click land on nothing (PRS_QUIET); any new
+// touch is a new press, and a Stop is never held back.
+const PRS_QUIET_MS = 2000, PRS_SAY_MS = 6000, PRS_ANSWER_MS = 8000, PRS_SETTLE_MS = 4000, PRS_STOP_WAIT_MS = 10000, PRS_DONE_MS = 20000,
+  // The engine takes a done press up to 30 s after its begin
+  // (preroll.hold_done), whatever the page did with the request: a done
+  // press with no answer from the engine may start the show until then.
+  // Counted from the begin's answer, with a margin.
+  PRS_VALID_MS = 30000 + 8000,
+  PRS_STOP_WHY = ["Stop show was pressed", "Hold was pressed"];
+let PRS_QUIET = null, PRS_DOUBT = false, PRS_READING = 0, PRS_CHECK = false, PRS_STARTED = 0, PRS_STOPPING = 0,
+  PRS_WAIT = null, PRS_LINE = null, PRS_SEEN = null, PRS_STOP_OUT = 0, PRS_INFLIGHT = null, PRS_AFTER = 0, PRS_AFTER_N = 0;
+const prsNap = ms => new Promise(r => setTimeout(r, ms));
+// The phone's line says only these short words (prsLine), never 1.0's or
+// the engine's own text.
+function prsLine(text){ PRS_LINE = {text:text, at:Date.now()}; }
+// The newest status this page has: the poll's, or the slide's own read
+// when that was served later.
+function prsNow(){
+  const a = ST, b = PRS_SEEN;
+  return b && (!a || (Number(b.served_at) || 0) > (Number(a.served_at) || 0)) ? b : a;
+}
+function prsSeen(v){
+  if(!PRS_SEEN || (Number(v.served_at) || 0) >= (Number(PRS_SEEN.served_at) || 0)) PRS_SEEN = v;
+  // The engine continued: a done press still on its way can no longer
+  // start a second show (Continue anyway is once per failed check).
+  if(PRS_INFLIGHT && prsDone(v)) PRS_INFLIGHT = null;
+}
+function prsReadable(v){ return !!v && typeof v === "object" && !!v.schedule && v.preroll !== undefined; }
+// The engine continued (preroll.py's continued, set once the show it
+// started is live).
+function prsDone(st){ return !!(st && st.preroll && st.preroll.continued); }
+// A failed rig check that Continue anyway may still go past.
+function prsOffer(st){ const p = prerollChoice(st && st.preroll, (st && st.schedule) || {}); return !!p && !p.continued && !p.cleared; }
+// The alert slot shows the failed rig check (contact not lost).
+function prsHere(){
+  const it = ALERTS.find(i => i.key === ALERT_KEY);
+  return !!it && it.act === "pr-continue" && !$("alert").classList.contains("stale");
+}
+// The slide's own hold ended (the done press sent, refused, cut) and the
+// slide's tick has not taken it yet.
+function prsGone(){ const s = SLIDE; return !!s && s.i === "pr" && s.phase === "end" && PR_HOLD !== s.ph ? s : null; }
+function prsInUse(){ return slidePhone() && (prsHere() || (!!SLIDE && SLIDE.i === "pr") || PRS_CHECK || !!PRS_WAIT || !!PRS_INFLIGHT || !!PRS_AFTER || !!PRS_STARTED || PRS_DOUBT || !!PRS_STOPPING); }
+// What the slide shows: the handle only while the newest status offers a
+// failed check to continue past and this screen may.
+function prsLook(){
+  if(PRS_DOUBT) return {mode:"unknown", word:"Not known"};
+  // A read or an answer pending: no handle, nothing said until it is in.
+  if(PRS_CHECK || PRS_WAIT || prsGone()) return {mode:"unknown", word:"Checking"};
+  // The slide's done press still unsettled (a Stop, a Hold or lost contact
+  // since), or settled with no read made after it yet: never the handle.
+  if(PRS_INFLIGHT || PRS_AFTER) return {mode:"unknown", word:"Checking"};
+  // A Stop or a Hold pressed: no handle until a read made after it.
+  if(PRS_STOPPING) return {mode:"unknown", word:"Stopping", stopping:true};
+  // The engine said yes and no read since shows it: never the handle.
+  if(PRS_STARTED) return {mode:"run", word:"Continuing", started:true};
+  const s = SLIDE;
+  if(s && s.i === "pr" && s.phase === "end") return {mode:"starting", word:"Keep your finger there"};
+  const st = prsNow();
+  if(prsDone(st)) return {mode:"run", word:"Continued anyway", done:true};
+  if(isLive(st)) return {mode:"run", word:"Show is live", live:true};
+  if(prsHere() && !stale() && !PR_HOLD && mayRow(ST, "show") && !(ST && ST.me && ST.me.view_only) && prsOffer(st))
+    return {mode:"go", word:"Continue anyway"};
+  return {mode:"na", word:"Continue anyway"};
+}
+function renderPrSlide(){
+  const b = $("pr-slide"), l = $("pr-sl"), box = $("alert");
+  if(!b || !l || !box) return;
+  const lk = prsLook(), line = prsLineNow(lk);
+  const on = prsInUse() || (slidePhone() && !!PRS_LINE && Date.now() - PRS_LINE.at < PRS_SAY_MS);
+  if(on && box.dataset.prs !== "1") box.dataset.prs = "1";
+  else if(!on && box.dataset.prs) delete box.dataset.prs;
+  if(b.dataset.mode !== lk.mode) b.dataset.mode = lk.mode;
+  setText($("pr-sw"), lk.word);
+  if(b.title !== lk.word) b.title = lk.word;
+  setText(l, on ? line : "");
+}
+// The phone's line: only this page's own short words; continued only
+// while the engine, read, says so.
+function prsLineNow(lk){
+  if(PRS_DOUBT) return "Not known. Check the tile.";
+  if(lk.stopping) return "Stopping. Checking with the engine.";
+  if(lk.mode === "unknown") return "Checking with the engine.";
+  if(lk.mode === "starting") return "Keep your finger at the end.";
+  if(lk.started) return "Continuing. The show starts now.";
+  if(PRS_LINE && Date.now() - PRS_LINE.at < PRS_SAY_MS) return PRS_LINE.text;
+  if(lk.done) return "Continued anyway. Show started late.";
+  if(lk.live) return "Show is live.";
+  return lk.mode === "na" ? prsWhyNot() : "";
+}
+// Why no slide now, in this page's own words.
+function prsWhyNot(){
+  if(!prsHere()) return "";
+  if(stale()) return "Status not live. Wait.";
+  if(ST && ST.me && ST.me.view_only) return "Signed out. Sign in first.";
+  if(!mayRow(ST, "show")) return "Needs the run permission.";
+  return "";
+}
+// The toast: never over a failure the operator must act on (a Stop that
+// did NOT stop); the phone line still says it.
+function prsSay(short, full, level){
+  const t = $("msg-t");
+  if(t && /\bNOT\b/.test(t.textContent || "")) return;
+  say(short, full, level);
+}
+// The event that ended the slide (a second finger's pointerdown) is not
+// a new press after it.
+function prsQuiet(s){ PRS_QUIET = {id:s.id, at:Date.now(), fresh:false, ev:window.event || null}; }
+function prsSlideCheck(s){
+  // Today's hold ended by itself (the done press sent, refused, its
+  // alert changed, contact lost): its answer waited for, or the engine read.
+  if(s.phase === "end" && PR_HOLD !== s.ph){ prsSlideHoldEnded(s); return; }
+  if(!s.el.isConnected || !s.el.getClientRects().length){ slideCancel("the alert changed"); return; }
+  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
+  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
+  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
+  // The band is where the slide was when the finger went down: a line
+  // drawn above it (a pinned Stop, an alert) moves the slide, never the
+  // finger.
+  const b0 = s.b0;
+  if(s.ly < b0.top - SLIDE_BAND_PX || s.ly > b0.bottom + SLIDE_BAND_PX){ slideCancel("the finger left the slide"); return; }
+  if(s.phase === "end"){
+    // Until the done press is sent only the handle at the end keeps it.
+    if(s.frac < SLIDE_ARM) slideCancel("the handle moved back");
+    return;
+  }
+  // Nothing sent yet. The alert or the control changed: the slide ends.
+  if(s.el.dataset.mode !== "go" || AL_SHOWN !== s.sig){ slideCancel("the alert changed"); return; }
+  if(s.frac < SLIDE_ARM) return;
+  if(PR_HOLD || PRS_DOUBT || PRS_CHECK || PRS_WAIT || PRS_INFLIGHT || PRS_AFTER || PRS_STARTED || PRS_STOPPING || !prsHere() || alLocked() || !prsOffer(prsNow())){
+    slideCancel("the alert changed"); return;
+  }
+  s.at = Date.now();
+  prHoldGo(null);
+  if(!PR_HOLD){ slideCancel(""); return; }
+  s.phase = "end"; s.ph = PR_HOLD;
+  renderPrSlide();
+}
+function prsSlideHoldEnded(s){
+  const h = s.ph;
+  s.phase = "done";
+  slideEnd(s);
+  prsQuiet(s);
+  if(h.sent) prsAwait(h); else prsRead("", false, h.answer && h.answer.err);
+  renderPrSlide();
+}
+function prsSlideEnd(s, why){
+  const held = s.phase === "end", done = s.phase === "done";
+  s.phase = "done";
+  slideEnd(s);
+  prsQuiet(s);
+  if(done) return;
+  if(!held){
+    if(why && why !== "let go") prsSay("Nothing sent.", "Continue anyway slide stopped: " + why + ". Nothing was sent.", "");
+    renderPrSlide();
+    return;
+  }
+  const h = s.ph;
+  // 1.0's let go: the done press is never sent.
+  if(PR_HOLD === h) prHoldEnd();
+  if(h.sent) prsAwait(h);
+  // A Stop or a Hold is its own answer (prsStopSeen).
+  else if(!PRS_STOP_WHY.includes(why)) prsRead(why, false, h.answer && h.answer.err);
+  renderPrSlide();
+}
+// The done press is on its way: checking, no handle, for as long as it is
+// unanswered (the engine may be starting the show all that time: never
+// "not continued" and never a second slide meanwhile). After
+// PRS_ANSWER_MS the engine's status is read each second: once it shows
+// the show continued or live, that is said. The engine's yes, said here
+// (never after a Stop or a Hold): no handle until a read shows the
+// engine; any other answer: the engine read.
+async function prsAwait(h){
+  const me = ++PRS_READING, t0 = Date.now();
+  let next = t0 + PRS_ANSWER_MS;
+  PRS_WAIT = h; PRS_CHECK = false; PRS_STARTED = 0;
+  renderPrSlide();
+  while(!h.answer){
+    await prsNap(50);
+    if(me !== PRS_READING){ if(PRS_WAIT === h) PRS_WAIT = null; return; }
+    if(Date.now() < next) continue;
+    next = Date.now() + 1000;
+    let v = null;
+    try{ v = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    if(me !== PRS_READING){ if(PRS_WAIT === h) PRS_WAIT = null; return; }
+    if(prsReadable(v) && (prsDone(v) || isLive(v))){
+      PRS_WAIT = null; PRS_DOUBT = false; PRS_CHECK = false;
+      prsSeen(v); prsTell(v, "", true, null); renderPrSlide();
+      return;
+    }
+  }
+  PRS_WAIT = null;
+  const a = h.answer;
+  if(a && a.ok){ prsSay("Continuing anyway.", String(a.ok.text || ""), "ok"); prsStateRead(false, me); return; }
+  if(a && a.err && a.err.hung){ prsSay("No answer yet. Check the tile.", a.err.message, "bad"); prsLine("No answer yet. Check the tile."); }
+  prsRead("", true, a ? a.err : null);
+}
+// The slide's done press settled (answered, refused, lost or given up on).
+// When nothing else waits for it (a Stop or a Hold since), a
+// read made from here on is still needed before the handle can come
+// back; it says nothing (the Stop or the Hold is its own answer).
+async function prsSettled(h){
+  if(PRS_INFLIGHT !== h) return;
+  // Only the engine's own answer (its yes, or a 4xx refusal) ends the
+  // request at the engine. No answer, an abort or a 5xx: the engine may
+  // still take that done press until its window is over (prsWindow).
+  const a = h.answer, real = !!a && (!!a.ok || (!!a.err && !!a.err.status && a.err.status < 500));
+  if(!real){ prsWindow(h); return; }
+  PRS_INFLIGHT = null;
+  // Its slide still holds it (prsSlideHoldEnded takes it next), or
+  // prsAwait waits for it: they read and say what follows.
+  if(PRS_WAIT === h || (SLIDE && SLIDE.i === "pr" && SLIDE.ph === h)) return;
+  const me = ++PRS_AFTER_N;
+  PRS_AFTER = me;
+  renderPrSlide();
+  for(;;){
+    let v = null;
+    try{ v = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    if(me !== PRS_AFTER_N) return;
+    if(prsReadable(v)){ prsSeen(v); PRS_AFTER = 0; renderPrSlide(); return; }
+    await prsNap(500);
+  }
+}
+// A done press the engine never answered: checking, no handle and no
+// second slide until the engine's window for it (PRS_VALID_MS from the
+// begin's answer) is over, and then a read made after that. The engine
+// is read each second meanwhile: once it shows it continued, that ends it
+// at once (prsSeen) and is said (after a Stop or a Hold prsWatchLive says
+// it instead).
+async function prsWindow(h){
+  const until = (h.began || Date.now()) + PRS_VALID_MS;
+  while(Date.now() < until){
+    await prsNap(1000);
+    if(PRS_INFLIGHT !== h) return;
+    let v = null;
+    try{ v = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    if(PRS_INFLIGHT !== h) return;
+    if(prsReadable(v) && prsDone(v)){
+      prsSeen(v);
+      if(!h.watch){ prsSay("Continued anyway.", "The engine says the show was continued anyway, late. Some outputs are off for it.", "ok"); prsLine("Continued anyway. Show started late."); }
+      renderPrSlide();
+      return;
+    }
+  }
+  for(;;){
+    let v = null;
+    try{ v = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    if(PRS_INFLIGHT !== h) return;
+    if(prsReadable(v)){ prsSeen(v); PRS_INFLIGHT = null; renderPrSlide(); return; }
+    await prsNap(500);
+  }
+}
+// A Stop or a Hold pressed while the slide's done press is unsettled: the
+// engine may still start the show after it (Continue anyway resumes a
+// Hold, and starts from a Stop's Hold). Once a read made after the Stop's
+// or the Hold's answer shows a show live, that is said, in place of the
+// Stop's or the Hold's words.
+async function prsWatchLive(h){
+  if(h.watch) return;
+  h.watch = true;
+  const t0 = Date.now();
+  await prsNap(0);
+  while((PRS_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < PRS_STOP_WAIT_MS) await prsNap(100);
+  for(;;){
+    const last = PRS_INFLIGHT !== h;
+    let v = null;
+    try{ v = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    if(prsReadable(v) && isLive(v)){
+      prsSeen(v);
+      if(prsDone(v) === true){
+        prsSay("Show started. Continued anyway.", "The engine says the show started after all: this slide's Continue anyway reached it. Stop show ends it.", "bad");
+        prsLine("Show started. Continued anyway.");
+      } else {
+        prsSay("Show is live. Check the tile.", "The engine says a show is live now. Stop show ends it.", "bad");
+        prsLine("Show is live. Check the tile.");
+      }
+      renderPrSlide();
+      return;
+    }
+    if(last) return;
+    await prsNap(500);
+  }
+}
+// No handle (the engine's yes, or a Stop or a Hold pressed) until a read
+// made from here on answers; after the yes, until it shows the show
+// continued or live (or a while has passed). Read again until it answers.
+async function prsStateRead(stop, me){
+  const t0 = Date.now();
+  if(stop) PRS_STOPPING = t0; else PRS_STARTED = t0;
+  renderPrSlide();
+  if(stop){
+    // The Stop or the Hold is sent just after this: only a read sent once
+    // its answer is in proves what the engine does.
+    await prsNap(0);
+    while((PRS_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < PRS_STOP_WAIT_MS){
+      await prsNap(100);
+      if(me !== PRS_READING) return;
+    }
+  }
+  for(;;){
+    let v = null;
+    try{ v = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    if(me !== PRS_READING) return;
+    if(prsReadable(v) && (stop || prsDone(v) || isLive(v) || Date.now() - t0 >= PRS_SETTLE_MS)){
+      prsSeen(v);
+      PRS_STARTED = 0; PRS_STOPPING = 0;
+      if(!stop && prsDone(v)) prsLine("Continued anyway. Show started late.");
+      renderPrSlide();
+      return;
+    }
+    await prsNap(300);
+  }
+}
+// A Stop show or a Hold, answered or not: its own answer, so any read
+// still pending never speaks after it; and no handle until a fresh read.
+function prsStopSeen(){
+  const use = prsInUse();
+  PRS_READING++;
+  PRS_CHECK = false; PRS_DOUBT = false; PRS_STARTED = 0; PRS_WAIT = null; PRS_LINE = null;
+  if(!use){ PRS_STOPPING = 0; renderPrSlide(); return; }
+  // Only a show that was not live when it was pressed: a Stop of a live
+  // show keeps its own words (a Stop that did not arrive above all).
+  if(PRS_INFLIGHT && !isLive(prsNow())) prsWatchLive(PRS_INFLIGHT);
+  prsStateRead(true, PRS_READING);
+}
+// After the slide's hold ended without the engine's yes: the engine's
+// status read before anything is said. An answer the engine gave (400,
+// 403, a 409 with its code) or a done press never sent: that request is
+// over, so the read says what happened. Anything else (lost, no answer,
+// 5xx, a 409 with no code) may still be at work at the engine: read again
+// a while before saying it was not continued. Unreadable: not known, no
+// handle, read again until it answers.
+async function prsRead(why, sent, err){
+  const me = ++PRS_READING, t0 = Date.now();
+  const over = !sent || (!!err && !!err.status && err.status < 500 && !(err.status === 409 && !err.code));
+  let told = false;
+  PRS_CHECK = true; PRS_STARTED = 0; PRS_WAIT = null;
+  renderPrSlide();
+  for(;;){
+    let v = null;
+    try{ v = await getJSON("/api/remote/status", 1500); }catch(_e){}
+    if(me !== PRS_READING) return;
+    if(prsReadable(v)){
+      if(!over && prsOffer(v) && !prsDone(v) && !isLive(v) && Date.now() - t0 < PRS_SETTLE_MS){ await prsNap(300); continue; }
+      PRS_DOUBT = false; PRS_CHECK = false;
+      prsSeen(v);
+      prsTell(v, why, over, err);
+      renderPrSlide();
+      return;
+    }
+    if(!told){
+      told = true; PRS_DOUBT = true;
+      prsSay("Not known. Check the tile.", "Continue anyway not known: the engine could not be read. Check the alert and the show before you slide again. Stop show ends a show.", "bad");
+      renderPrSlide();
+    }
+    await prsNap(500);
+  }
+}
+// What the engine's read says, in this page's words. Not continued only
+// when the request is over and the engine still offers the failed check
+// with no show live.
+function prsTell(v, why, over, err){
+  const why2 = why === "let go" ? "You let go before it was sent. " : why ? "Continue anyway slide stopped: " + why + ". " : "";
+  const said = err && err.message ? "The engine answered: " + err.message + " " : "";
+  if(prsDone(v)){
+    prsSay("Continued anyway.", said + "The engine says the show was continued anyway, late. Some outputs are off for it.", "ok");
+    prsLine("Continued anyway. Show started late.");
+  } else if(isLive(v)){
+    prsSay("Show is live.", said + "The engine says a show is live now. Check it. Stop show ends it.", "bad");
+    prsLine("Show is live. Check the tile.");
+  } else if(prsOffer(v) && over){
+    prsSay("Not continued.", why2 + said + "The engine says the rig check is still failed and no show started. Nothing was started.", "");
+    prsLine("Not continued. Nothing started.");
+  } else if(prsOffer(v) && ((err && err.hung) || PRS_INFLIGHT)){
+    // The done press given up on, or one the engine may still take:
+    // never said as not continued.
+    prsSay("No answer yet. Check the tile.", "The engine never answered this slide's Continue anyway. It says no show started now. Check the alert before you slide again.", "bad");
+    prsLine("No answer yet. Check the tile.");
+  } else if(prsOffer(v)){
+    prsSay("Not continued now.", said + "The engine says no show started, but its answer to this slide was not clear. Check the alert before you slide again.", "bad");
+    prsLine("Not continued now. Check the tile.");
+  } else {
+    prsSay("Nothing to continue now.", why2 + said + "The engine shows no failed rig check to continue past and no show live.", "");
+    prsLine("Nothing to continue now.");
+  }
+}
+{
+  const b = $("pr-slide");
+  b.addEventListener("pointerdown", e => {
+    if(!slidePhone() || b.dataset.mode !== "go") return;
+    e.preventDefault();
+    if(alLocked()){ prsSay("Nothing done. Look, then slide again.", "The alert changed less than a second ago, so nothing was done.", "warn"); return; }
+    slideDown(e, b, "pr");
+    if(SLIDE && SLIDE.i === "pr" && SLIDE.el === b){
+      const r = b.getBoundingClientRect();
+      SLIDE.phase = "slide"; SLIDE.ph = null; SLIDE.sig = AL_SHOWN; SLIDE.b0 = {top:r.top, bottom:r.bottom};
+      renderPrSlide();
+    }
+  });
+  b.addEventListener("contextmenu", e => { if(slidePhone()) e.preventDefault(); });
+  // Redrawn whenever the alert slot is (renderAlertSlot and drawSlotStale,
+  // wrapped by name only; their code is unchanged).
+  const draw = renderAlertSlot, lost = drawSlotStale;
+  renderAlertSlot = function(){ draw(); renderPrSlide(); };
+  drawSlotStale = function(){ lost(); renderPrSlide(); };
+  const f = () => renderPrSlide();
+  if(SLIDE_MQ.addEventListener) SLIDE_MQ.addEventListener("change", f); else if(SLIDE_MQ.addListener) SLIDE_MQ.addListener(f);
+}
+// A safety press (Stop show, Hold, a pinned Stop, Disarm) ends a held
+// slide before its done press is sent: a Continue anyway after a Hold
+// would resume it. A Hold's read waits for its answer (PRS_STOP_OUT), the
+// pinned Stop for Programming flames' too (it is a Hold).
+document.addEventListener("click", e => {
+  const b = e.target && e.target.closest ? e.target.closest("[data-safe]") : null;
+  if(!b) return;
+  // The pinned Stop for Programming flames is 1.0's Hold (its pin's press).
+  const hold = b.id === "b-hold" || b.id === "m-hold" || b.dataset.pin === "pf";
+  if(SLIDE && SLIDE.i === "pr") slideCancel(hold ? "Hold was pressed" : "a safety press was made");
+  if(hold) prsStopSeen();
+}, true);
+// The slide's own done press is given up on after PRS_DONE_MS: aborted,
+// and its answer is then "no answer" (a lost answer: the engine is read),
+// even when the request never ends. 1.0's post itself is unchanged; only
+// its name is wrapped, and only the slide's done press is bounded.
+{
+  const send = post;
+  post = function(p, body, signal){
+    const h = PRS_INFLIGHT;
+    if(!h || signal || !body || body.phase !== "done" || body.token !== h.token ||
+       !/^\/api\/remote\/preroll-continue(\?|$)/.test(String(p))) return send.apply(this, arguments);
+    const ctl = new AbortController();
+    let t = 0;
+    const late = new Promise((_ok, no) => { t = setTimeout(() => {
+      try{ ctl.abort(); }catch(_e){}
+      const e = new Error("No answer from the engine in " + (PRS_DONE_MS / 1000) + " s.");
+      e.hung = true;
+      no(e);
+    }, PRS_DONE_MS); });
+    return Promise.race([send.call(this, p, body, ctl.signal), late]).finally(() => clearTimeout(t));
+  };
+}
+{
+  const send = post;
+  post = async function(p){
+    if(!/^\/api\/remote\/hold(\?|$)/.test(String(p))) return send.apply(this, arguments);
+    PRS_STOP_OUT++;
+    try{ return await send.apply(this, arguments); } finally { PRS_STOP_OUT--; }
+  };
+}
+// The slide's own release and click (its pointer, no touch since, for a
+// bounded time) land on nothing: not Stop show, not Details, not the
+// slide. Any new touch is a new press and is never held back, and an event
+// whose pointer is not known (a plain click) is never held back.
+window.addEventListener("pointerdown", e => { if(PRS_QUIET && !SLIDE && e !== PRS_QUIET.ev) PRS_QUIET.fresh = true; }, true);
+["pointerup", "click"].forEach(t => window.addEventListener(t, e => {
+  const qz = PRS_QUIET;
+  if(!qz || qz.fresh || SLIDE) return;
+  if(Date.now() - qz.at >= PRS_QUIET_MS){ PRS_QUIET = null; return; }
+  if(e.pointerId === qz.id){ e.stopImmediatePropagation(); e.preventDefault(); }
+}, true));
+
 // What a group's tile says: an icon, a word, a short line.
 const LAMP_SHORT = {"dirty edge":"DIRTY EDGE", "chatter":"CHATTER", "arm input stale":"NO SIGNAL",
   "arm input has never asserted":"NEVER ARMED", "safety program fault":"FAULT"};
@@ -6044,7 +6795,7 @@ function armLabel(mode, c, leftMs, as){
   // Signed out: Sign in; signed in without the right: says so (review of
   // #175).
   if(as && as.signin) return {icon:"user", text:signWhy(typeof ST !== "undefined" ? ST : null, "arm", true), cls:""};
-  return {icon:"ring", text:"Hold to arm", cls:"green hold"};
+  return {icon:"ring", text:slidePhone() ? "Arm" : "Hold to arm", cls:"green hold"};
 }
 function setArmMode(el, mode, c){
   el.dataset.mode = mode;
@@ -6550,12 +7301,14 @@ function renderGroups(fl){
     // the release; Disarm goes on the click.
     box.querySelectorAll("[data-arm]").forEach(b => {
       const i = Number(b.dataset.arm);
-      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ if(slidePhone()){ slideDown(e, b, i); return; } if(holdSecond(e)) return; armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
+      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ if(slidePhone()){ faSlideDown(e, b, i); return; } if(holdSecond(e)) return; armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
       ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
-        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));
+        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all && !faBusy()) armStop("let go"); }));
       b.addEventListener("click", e => {
         const down = b.dataset.down || ""; delete b.dataset.down;
-        if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ slideCancel("disarm"); armStop("disarm"); press("group-disarm", {group:i}); }
+        if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ slideCancel("disarm"); faCut("disarm"); armStop("disarm"); press("group-disarm", {group:i}); }
+        // A phone: Arm is the slide only (faSlideEnd opens the pop-up).
+        else if(slidePhone()) return;
         else if(e.detail === 0 && b.dataset.mode === "hold") armSay(KEY_HOLD_WORDS, 2);
       });
       b.addEventListener("contextmenu", e => e.preventDefault());
@@ -6596,6 +7349,8 @@ function renderGroups(fl){
     setText(ab.querySelector(".act"), lab.text);
     if(!holding(i)) ab.disabled = !as.ok;
     if(on && c !== "armed" && c !== "unknown" && left > 0 && !holding(i)) ab.disabled = true;
+    // A pop-up arm under way: Checking, and no tap (faGo).
+    if(faBusy() && FA.groups.indexOf(i) >= 0){ ab.disabled = true; setText(ab.querySelector(".act"), "Checking"); }
     const ref = REARM_REFUSED_AT[i];
   });
 }
@@ -6609,25 +7364,30 @@ function renderAllButtons(isSt){
   // Lit only when 1.0 offers Arm all and its hold would not be refused at
   // once (live flame programming one group at a time).
   const can = (HOLD && HOLD.all) || (allButtonMode(ST, isSt) === "arm" && !armAllRefusal(ST));
-  if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
+  if(faBusy()) b.disabled = true;
+  else if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
   // Why it is off, in a word or two (the cell is narrow; the SHOW tab must
   // not scroll); the engine's own refusal in full on the button's title.
   const ar = armAllRefusal(ST);
   // Off, it reads "Arm flames" over the reason: two lines, as tall as the
   // live label, so the SHOW tab never grows.
-  setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? signWhy(ST, "arm", true) :
-    ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : "All armed");
-  setText($("armall-l"), b.disabled ? "Arm flames" : "Hold: arm flames");
+  // Once Arm all is not offered, what the groups read: "All armed" only
+  // when every one reads armed (flamesReadWord).
+  setText($("armall-why"), faBusy() ? "Checking" : !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? signWhy(ST, "arm", true) :
+    ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : flamesReadWord(ST && ST.flames, isSt));
+  setText($("armall-l"), b.disabled || slidePhone() ? "Arm flames" : "Hold: arm flames");
+  armSaidNow();
   b.title = b.disabled && ar ? ar : "";
   $("b-disall").disabled = false;
 }
 const ARMALL = $("b-armall");
-ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ if(slidePhone()){ slideDown(e, ARMALL, "all"); return; } if(holdSecond(e)) return; armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
+ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ if(slidePhone()){ faSlideDown(e, ARMALL, "all"); return; } if(holdSecond(e)) return; armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
 ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
-  ARMALL.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));
+  ARMALL.addEventListener(ev, () => { if(HOLD && HOLD.all && !faBusy()) armStop("let go"); }));
 ARMALL.addEventListener("contextmenu", e => e.preventDefault());
-ARMALL.addEventListener("click", e => { if(e.detail === 0) armSay(KEY_HOLD_WORDS, 2); });
-$("b-disall").addEventListener("click", () => { slideCancel("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
+// A phone: Arm all flames is the slide only (faSlideEnd opens the pop-up).
+ARMALL.addEventListener("click", e => { if(slidePhone()) return; if(e.detail === 0) armSay(KEY_HOLD_WORDS, 2); });
+$("b-disall").addEventListener("click", () => { slideCancel("Disarm all flame groups"); faCut("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
 
 // ---- lasers: one tile. Disarm is one press and never held back; Arm is
 // 1.0's laser arm for every laser, with its confirm.
@@ -7228,7 +7988,10 @@ const QHELP = {
 };
 function qOpen(k){
   const q = QHELP[k]; if(!q) return;
-  sheet(q[0], `<ul>${q[1].map(r => `<li><b>${esc(r[0])}:</b> ${esc(r[1])}</li>`).join("")}</ul>`, [{label:"Close", cls:"blue"}]);
+  let rows = q[1];
+  // On a touch phone Continue anyway is a slide, never a hold.
+  if(k === "alert" && slidePhone()) rows = rows.map(r => r[0] === "Hold to continue anyway" ? ["Continue anyway", "Slide to the end. The show starts late."] : r);
+  sheet(q[0], `<ul>${rows.map(r => `<li><b>${esc(r[0])}:</b> ${esc(r[1])}</li>`).join("")}</ul>`, [{label:"Close", cls:"blue"}]);
 }
 document.querySelectorAll("[data-q]").forEach(b => b.addEventListener("click", () => qOpen(b.dataset.q)));
 // The flames' "?" lives on the Arm all column's long press-free twin: the

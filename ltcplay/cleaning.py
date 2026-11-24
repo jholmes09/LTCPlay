@@ -1218,9 +1218,12 @@ def engine_blockers(remote, link, name, arming=None):
                         f"{str(getattr(a, 'text', '')).rstrip('.')}. "
                         f"Deal with it and Acknowledge it first.")
         with remote._arm_lock:
+            # Live as the engine itself counts it (remote.hold_live; it
+            # was a 0.25 s literal, the hold's whole life before the slow
+            # link change, round 2 of the cold review of #303, N1).
+            now = remote.clock()
             holds = [h for h in remote._holds.values()
-                     if h.get("group") != name and
-                     remote.clock() - h["beat"] <= 0.25]
+                     if h.get("group") != name and remote.hold_live(h, now)]
         if holds:
             return (f"{holds[0]['who'] or holds[0]['device']} is holding to "
                     f"arm {holds[0]['group']}. One flame group at a time.")
