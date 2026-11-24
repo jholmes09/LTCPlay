@@ -70613,6 +70613,11 @@ def test_screen_arm_on_a_slow_phone_link():
     from ltcplay import streamdeck as sd
     names = ["front row", "cat-walk", "wave flamer", "bridge"]
     phone = ("10.20.0.44", 50000)
+    page = screen_text()
+    check("const HOLD_BEAT_MS = 100, HOLD_BEATS_OUT = 4," in page and
+          RM.ARM_BEAT_PERIOD_S * 1000 == 100,
+          "the engine's beat period is the page's HOLD_BEAT_MS: a page that "
+          "beats faster would let a shorter touch prove 1 s")
     check(RM.ARM_BEAT_GAP_S == 1.5 and RM.ARM_BEAT_CREDIT_S == 0.25 and
           RM.ARM_PAGE_FRESH_S == 2.5 and RM.SCREEN_HOLD_S == 1.0 and
           sd.SCREEN_HOLD_S == 1.0 and sd.ARM_HOLD_S == 0.6,
@@ -70694,10 +70699,88 @@ def test_screen_arm_on_a_slow_phone_link():
             R.remote._deck_seen = R.mono[0]
             st, _h, out = _hold(R, "bridge", hold_id=hid, client=phone)
             held.append((st, out.get("held_s")))
+        hh = R.remote._holds[3]
         check([h[0] for h in held] == [200] * 5 and
-              abs(held[-1][1] - 0.8) < 1e-6,
+              abs(hh["held"] - 0.8) < 1e-6 and hh["beats"] == 5 and
+              abs(held[-1][1] - 0.5) < 1e-6,
               f"(d) gaps of 1.4 and 0.9 s carry the hold on, counted 0.25 s "
-              f"each: {held}")
+              f"each (0.8 s), and five beats prove 0.5 s: {held} {hh}")
+        R.ask("POST", "/api/remote/arm-release", {"group": "bridge"},
+              client=phone)
+        # The cold review of #303 (F1): beats from a SHORT touch, sent
+        # fast and delivered slowly by a link that queues, never arm. A
+        # 0.5 s touch: the press, five beats sent 0.05 to 0.45 s, the let
+        # go lost; the beats arrive 0.3 s apart.
+        def drip(group, n, every):
+            st, _h, out = _hold(R, group, client=phone)
+            hid, outs = out.get("hold_id"), []
+            for _ in range(n):
+                for _s in range(int(round(every / 0.05))):
+                    step(0.05)
+                st, _h, out = _hold(R, group, hold_id=hid, client=phone)
+                outs.append((st, out.get("held_s"), out.get("armed")))
+            for _ in range(40):
+                step(0.05)
+            return outs
+        step(sd.REARM_REFRACTORY_S + 0.1)
+        outs = drip("bridge", 5, 0.3)
+        check(arm.wanted[3] is False and
+              all(o[1] is None or o[1] <= 0.5 + 1e-6 for o in outs),
+              f"F1: a 0.5 s touch whose five beats arrive 0.3 s apart never "
+              f"arms (they prove 0.5 s): {outs}")
+        step(sd.REARM_REFRACTORY_S + 0.1)
+        outs = drip("bridge", 9, 0.2)
+        check(arm.wanted[3] is False and
+              all(o[1] is None or o[1] <= 0.9 + 1e-6 for o in outs),
+              f"F1: nine beats (sent in under 0.9 s) arriving 0.2 s apart "
+              f"never arm either: {outs}")
+        R.keep_deck = True               # engine only from here: the deck
+        # A hold record in an older shape (no counts) has proved nothing,
+        # and every reader takes it (the KeyError of CI on 1aa9857).
+        R.remote._holds[3] = {"token": "x", "who": "A", "device": "iPad",
+                              "group": "bridge", "start": R.mono[0],
+                              "beat": R.mono[0], "id": 99}
+        d = [h for h in R.remote.deck_input()["holds"] if h["group"] == 3]
+        st, _h, out = R.ask("GET", "/api/remote/status", client=phone)
+        check(d and d[0]["held_s"] == 0.0 and st == 200,
+              f"a record with no counts reads 0 s held, for the deck and "
+              f"the status: {d} {st}")
+        R.remote._holds.clear()
+        # Out of order: a beat answered with an earlier clock never moves
+        # the last beat back, so the next gap is not counted twice.
+        st, _h, out = _hold(R, "bridge", client=phone)
+        hid = out.get("hold_id")
+        R.mono[0] += 0.1
+        _hold(R, "bridge", hold_id=hid, client=phone)
+        t_beat = R.remote._holds[3]["beat"]
+        R.mono[0] -= 0.2
+        _hold(R, "bridge", hold_id=hid, client=phone)
+        check(R.remote._holds[3]["beat"] == t_beat,
+              f"F3: a late-read beat never moves the last beat back: "
+              f"{R.remote._holds[3]}")
+        R.mono[0] += 0.3
+        R.feed()
+        _hold(R, "bridge", hold_id=hid, client=phone)
+        check(abs(R.remote._holds[3]["held"] - 0.2) < 1e-6,
+              f"F3: and the next gap counts once: {R.remote._holds[3]}")
+        # F2: another device never takes over a live hold, even in a gap;
+        # the same device's new press in a gap replaces it, journaled.
+        other = ("10.20.0.45", 50001)
+        R.mono[0] += 1.0
+        R.feed()
+        st, _h, out = _hold(R, "bridge", client=other)
+        check(st == 409 and "already holding" in out.get("error", ""),
+              f"F2: a second device 1.0 s into the first's gap is refused: "
+              f"{st} {out}")
+        st, _h, out = _hold(R, "bridge", hold_id=hid, client=phone)
+        check(st == 200, f"F2: and the first carries on: {st} {out}")
+        R.mono[0] += 0.5
+        R.feed()
+        st, _h, out = _hold(R, "bridge", client=phone)
+        check(st == 200 and out["hold_id"] != hid and
+              any(r.get("outcome") == "replaced" for r in R.svc.journal),
+              f"F2: the same device's new press in a gap replaces its own "
+              f"hold, said in the journal: {st} {out}")
         R.ask("POST", "/api/remote/arm-release", {"group": "bridge"},
               client=phone)
         # The page's status: 2.4 s old starts a hold, 2.6 s old does not.

@@ -4423,5 +4423,9 @@
 "arm: a press sent before a Stop or a disarm starts a hold after it": "test_screen_arm_on_a_slow_phone_link",
 "arm: a Stop leaves no mark for a press that lands after it": "test_screen_arm_on_a_slow_phone_link",
 "arm: a group's Disarm leaves no mark for a press that lands after it": "test_screen_arm_on_a_slow_phone_link",
-"arm: the deck disarms a group when the screen hold that armed it goes": "test_screen_armed_group_survives_the_phone_going_away"
+"arm: the deck disarms a group when the screen hold that armed it goes": "test_screen_armed_group_survives_the_phone_going_away",
+"arm: a second tab on the same device restarts a live hold": "test_screen_arm_engine_rules",
+"arm: a second device takes over a live hold in a gap": "test_screen_arm_on_a_slow_phone_link",
+"arm: a short touch whose beats arrive slowly proves 1 s (arrival only)": "test_screen_arm_on_a_slow_phone_link",
+"arm: a beat read late moves the last beat back": "test_screen_arm_on_a_slow_phone_link"
 }

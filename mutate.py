@@ -1193,16 +1193,26 @@ MUTATIONS = [
   "        if g[\"armed\"] == \"armed\" or g[\"wanted\"]:", "        if False:"),
 
  ("arm: a second browser can hold the same group", "ltcplay/remote.py",
-  "            if h is not None and now - h[\"beat\"] <= ARM_BEAT_CREDIT_S:\n"
+  "            if h is not None and now - h[\"beat\"] <= ARM_BEAT_GAP_S and \\\n"
+  "                    (h[\"token\"] != token or\n"
+  "                     now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
   "                theirs = h[\"who\"]",
   "            if False:\n                theirs = h[\"who\"]"),
 
  ("arm: a second tab on the same device restarts a live hold",
   "ltcplay/remote.py",
-  "            if h is not None and now - h[\"beat\"] <= ARM_BEAT_CREDIT_S:\n"
+  "                    (h[\"token\"] != token or\n"
+  "                     now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
   "                theirs = h[\"who\"]",
-  "            if h is not None and h[\"token\"] != token and \\\n"
-  "                    now - h[\"beat\"] <= ARM_BEAT_CREDIT_S:\n"
+  "                    h[\"token\"] != token:\n"
+  "                theirs = h[\"who\"]"),
+
+ ("arm: a second device takes over a live hold in a gap",
+  "ltcplay/remote.py",
+  "                    (h[\"token\"] != token or\n"
+  "                     now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
+  "                theirs = h[\"who\"]",
+  "                    (now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
   "                theirs = h[\"who\"]"),
 
  ("countdown: a held show's time left keeps running", "ltcplay/remote.py",
@@ -1494,13 +1504,22 @@ MUTATIONS = [
  # -- arming from a phone on a slow link (Jeff, 2026-11-24) --
  ("arm: a long gap between beats counts in full toward the hold",
   "ltcplay/remote.py",
-  "                    h[\"held\"] += max(0.0, min(now - h[\"beat\"],\n"
-  "                                              ARM_BEAT_CREDIT_S))",
-  "                    h[\"held\"] += max(0.0, now - h[\"beat\"])"),
+  "                        0.0, min(now - h[\"beat\"], ARM_BEAT_CREDIT_S))",
+  "                        0.0, now - h[\"beat\"])"),
+
+ ("arm: a short touch whose beats arrive slowly proves 1 s (arrival only)",
+  "ltcplay/remote.py",
+  "        return max(0.0, min(credit, max(0, beats) * ARM_BEAT_PERIOD_S))",
+  "        return max(0.0, credit)"),
+
+ ("arm: a beat read late moves the last beat back",
+  "ltcplay/remote.py",
+  "                    h[\"beat\"] = max(h[\"beat\"], now)",
+  "                    h[\"beat\"] = now"),
 
  ("arm: the deck is told the time since the press, not the beats counted",
   "ltcplay/remote.py",
-  "                              \"held_s\": round(h[\"held\"], 3),\n"
+  "                              \"held_s\": round(self._hold_held(h), 3),\n"
   "                              \"fresh\": age <= ARM_BEAT_GAP_S,",
   "                              \"held_s\": round(h[\"beat\"] - h[\"start\"], 3),\n"
   "                              \"fresh\": age <= ARM_BEAT_GAP_S,"),
