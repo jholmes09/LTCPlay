@@ -65204,8 +65204,11 @@ def test_screen_arm_engine_rules():
     if S is None:
         return
     from ltcplay import remote as RM
-    check(RM.ARM_FRESH_S == 1.0 and RM.BEAT_STALE_S == 0.25 and
-          RM.SCREEN_HOLD_S == 1.0, "the arming numbers are what the PR says")
+    check(RM.ARM_FRESH_S == 1.0 and RM.SCREEN_HOLD_S == 1.0 and
+          RM.ARM_BEAT_GAP_S == 1.5 and RM.ARM_BEAT_CREDIT_S == 0.25 and
+          RM.ARM_PAGE_FRESH_S == 2.5 and not hasattr(RM, "BEAT_STALE_S"),
+          "the arming numbers are what the PRs say (the slow link ones: "
+          "Jeff, 2026-11-24)")
     R = _arm_rig(S)
     loop = ("127.0.0.1", 5000)
     try:
@@ -65244,9 +65247,9 @@ def test_screen_arm_engine_rules():
               f"and every hold is refused: {st} {out}")
         RM.save_settings(R.work, screen_arming=True)
         # A stale page.
-        st, _h, out = _hold(R, "front row", seen=R.seen() - 1200)
-        check(st == 409 and "1 s old" in out["error"],
-              f"a page status 1.2 s old cannot arm: {st} {out}")
+        st, _h, out = _hold(R, "front row", seen=R.seen() - 2600)
+        check(st == 409 and "2.5 s old" in out["error"],
+              f"a page status 2.6 s old cannot arm: {st} {out}")
         # A stale flamesafe.
         R.mono[0] += 1.1
         st, _h, out = _hold(R, "front row")
@@ -65278,11 +65281,11 @@ def test_screen_arm_engine_rules():
               abs(d["holds"][0]["held_s"] - 0.6) < 1e-6,
               f"the deck sees the hold and the surface it came from: {d}")
         # A gap: the hold is let go and never carries on.
-        R.mono[0] += 0.3
+        R.mono[0] += RM.ARM_BEAT_GAP_S + 0.05
         R.feed()
         d = R.remote.deck_input()
         check(not d["holds"][0]["fresh"],
-              "0.3 s with no heartbeat: the deck sees it let go")
+              "1.55 s with no heartbeat: the deck sees it let go")
         st, _h, out = _hold(R, "front row", hold_id=hid)
         check(st == 409 and "interrupted" in out["error"] and
               out.get("let_go"),
@@ -70356,6 +70359,440 @@ def test_screen_arm_deck_rules():
     print("  ok")
 
 
+def _deck_on_engine(R, names):
+    """A real Stream Deck controller (fake arm and status sockets, no
+    hardware) reading the rig's engine deck-input directly, on the rig's
+    clock, with flamesafe's mirror following what the deck asks for."""
+    from ltcplay import streamdeck as sd
+    R.groups = [{"name": n, "armed": "disarmed", "wanted": False,
+                 "reason": ""} for n in names]
+    R.feed()
+    arm = _FakeArmSocket(len(names))
+    events = []
+
+    def fetch(path):
+        q = path.split("?", 1)[1] if "?" in path else ""
+        return R.remote.deck_input(q)
+    keys = sd.ScreenKeys("http://127.0.0.1:9", fetcher=fetch,
+                         clock=lambda: R.mono[0])
+    c = sd.Controller(arm, _FakeStatusSocket(), names,
+                      operator_provider=lambda: "Andy",
+                      show_running_provider=lambda: False,
+                      journal=lambda t_, **kw: events.append((t_, kw)),
+                      clock=lambda: R.mono[0], screen=keys)
+
+    def mirror():
+        for i, w in enumerate(arm.wanted):
+            R.groups[i]["armed"] = "armed" if w else "disarmed"
+            R.groups[i]["wanted"] = bool(w)
+        R.feed()
+
+    def step(dt=0.1):
+        R.mono[0] += dt
+        R.wall[0] += dt
+        mirror()
+        keys.poll_once()
+        c.screen_pass()
+        c.tick()
+        mirror()
+    R.keep_deck = False
+    step(0.05)
+    return arm, events, c, step
+
+
+def _beats_until_armed(R, arm, step, group, i, client, most=40):
+    """Hold like a page on a good link: start, then a beat every 100 ms,
+    until the deck arms group i. The engine's answers."""
+    st, _h, out = _hold(R, group, client=client)
+    answers = [(st, out)]
+    hid = out.get("hold_id")
+    for _ in range(most):
+        step(0.1)
+        if arm.wanted[i]:
+            break
+        st, _h, out = _hold(R, group, hold_id=hid, client=client)
+        answers.append((st, out))
+        if st != 200:
+            break
+    return answers
+
+
+def test_screen_armed_group_survives_the_phone_going_away():
+    section("arming from a phone (Jeff, 2026-11-24): a group armed from a "
+            "phone, the Rack screen or the Stream Deck stays armed when the "
+            "phone stops sending or vanishes, and a running or scheduled "
+            "show is never held or halted for it")
+    S = _sched()
+    if S is None:
+        return
+    import datetime as _dt
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer", "bridge"]
+    phone = ("10.20.0.44", 50000)
+    loop = ("127.0.0.1", 5000)
+
+    def held(R):
+        st, _h, out = R.ask("GET", "/api/remote/status", client=loop)
+        return bool(((out or {}).get("schedule") or {}).get("held"))
+
+    # (a) Armed from the phone during a show; then the phone goes quiet.
+    R = _arm_rig(S)
+    try:
+        _live_show(R)
+        arm, events, c, step = _deck_on_engine(R, names)
+        R.ask("GET", "/api/remote/status", client=phone)
+        ans = _beats_until_armed(R, arm, step, "front row", 0, phone)
+        check(arm.wanted[0] is True,
+              f"setup: a phone's full hold arms front row: {ans[-3:]}")
+        n_ev = len(events)
+        for k in range(120):                 # 12 s with no word from it
+            step(0.1)
+            if k % 10 == 9:
+                R.now[0] += _dt.timedelta(seconds=1)
+                R.svc.tick()
+                R.settle()
+        check(arm.wanted == [True, False, False, False] and
+              R.groups[0]["armed"] == "armed",
+              f"(a) the phone vanished after arming: front row stays armed "
+              f"{arm.wanted}")
+        check(not [e for e in events[n_ev:] if "disarm" in e[0]],
+              f"(a) and nothing disarmed it: {events[n_ev:]}")
+        check(R.svc.machine.state == S.SHOW and not held(R),
+              f"(a) the running show carries on, not held: "
+              f"{R.svc.machine.state}")
+        check(R.remote.deck_input()["holds"] == [] or
+              not any(h["fresh"] for h in R.remote.deck_input()["holds"]),
+              "(a) and the phone's hold is over for the deck")
+    finally:
+        R.close()
+
+    # (b) Armed from the Rack screen and the Stream Deck before the show,
+    # with a phone connected and mid-hold on another group; the phone
+    # vanishes; the scheduled show then starts.
+    R = _arm_rig(S)
+    try:
+        arm, events, c, step = _deck_on_engine(R, names)
+        R.ask("GET", "/api/remote/status", client=phone)
+        ans = _beats_until_armed(R, arm, step, "cat-walk", 1, loop)
+        check(arm.wanted[1] is True,
+              f"setup: the Rack screen's hold arms cat-walk: {ans[-3:]}")
+        k = [False] * 6
+        k[sd.GROUP_KEYS[2]] = True
+        c.run_once(k)
+        step(sd.ARM_HOLD_S + 0.02)
+        c.run_once([False] * 6)
+        step(0.05)
+        check(arm.wanted[2] is True, "setup: the deck's key arms wave flamer")
+        R.ask("GET", "/api/remote/status", client=phone)
+        st, _h, out = _hold(R, "bridge", client=phone)
+        hid = out.get("hold_id")
+        for _ in range(4):
+            step(0.1)
+            _hold(R, "bridge", hold_id=hid, client=phone)
+        n_ev = len(events)
+        for _ in range(100):                 # the phone is gone: 10 s
+            step(0.1)
+        check(arm.wanted == [False, True, True, False],
+              f"(b) the phone vanished mid-hold: the groups the Rack screen "
+              f"and the deck armed stay armed, its own never arms: "
+              f"{arm.wanted}")
+        check(not [e for e in events[n_ev:] if "disarm" in e[0]],
+              f"(b) and nothing disarmed: {events[n_ev:]}")
+        _live_show(R)
+        for _ in range(30):
+            step(0.1)
+        check(R.svc.machine.state == S.SHOW and not held(R) and
+              arm.wanted == [False, True, True, False],
+              f"(b) the scheduled show starts and runs, not held, with both "
+              f"groups still armed: {R.svc.machine.state} {arm.wanted}")
+    finally:
+        R.close()
+    print("  ok")
+
+
+def _phone_link(rtt, jitter, stalls, hold_for, seed, start_at=0.6):
+    """What a phone's page puts on a slow link while a finger holds one
+    group's Hold to arm for `hold_for` s, as remote2.html's armBeat does:
+    the first press alone, its answer awaited; then a beat at once and one
+    every 100 ms, at most HOLD_BEATS_OUT (4) unanswered, a tick with no
+    room owed to the next answer. Its status is read as startPolling does
+    (the next read 250 ms after an answer), and every press carries the
+    served_at of the newest status it has. One way takes rtt / 2 plus up
+    to `jitter`; a packet that would arrive inside a stall (s0, s1)
+    arrives at its end. Times are seconds from the page's start.
+    [(arrival at the engine, seen (served at), is the first press)]."""
+    import heapq
+    import random as _r
+    rnd = _r.Random(seed)
+
+    def leg(t):
+        a = t + rtt / 2 + rnd.uniform(0, jitter)
+        for s0, s1 in stalls:
+            if s0 <= a < s1 or s0 <= t < s1:
+                a = max(a, s1 + rnd.uniform(0, jitter))
+        return a
+    status, t = [], 0.0                      # (reaches the page, served at)
+    while t < start_at + hold_for + 5:
+        served = leg(t) + 0.03
+        back = leg(served)
+        status.append((back, served))
+        t = back + 0.25
+
+    def seen_at(t):
+        got = [s for b, s in status if b <= t]
+        return max(got) if got else None
+    out = []
+    t0 = start_at
+    a0 = leg(t0)
+    out.append((a0, seen_at(t0), True))
+    first = leg(a0)
+    end = t0 + hold_for
+    if first >= end:
+        return out
+    answers = []                             # answer times still out
+    owed = False
+
+    def send(t):
+        a = leg(t)
+        out.append((a, seen_at(t), False))
+        heapq.heappush(answers, leg(a))
+    send(first)
+    tick = first + 0.1
+    while tick < end:
+        while answers and answers[0] <= tick:
+            got = heapq.heappop(answers)
+            if owed and len(answers) < 4:
+                send(got)
+                owed = False
+        if len(answers) < 4:
+            send(tick)
+        else:
+            owed = True
+        tick += 0.1
+    return sorted(out)
+
+
+def _drive_phone(R, arm, step, group, i, sent, client=("10.20.0.44", 50000)):
+    """Plays `sent` (from _phone_link) into the rig's engine at its arrival
+    times, the deck reading at 20 Hz in between, until the deck arms group
+    i or the engine refuses. (answers, the longest gap between arrivals,
+    the rig time of the last arrival)."""
+    m0, w0 = R.mono[0], R.wall[0]
+    hid, answers, last, gap = None, [], None, 0.0
+    for at, seen, is_start in sent:
+        while R.mono[0] - m0 < at - 1e-9:
+            step(min(0.05, at - (R.mono[0] - m0)))
+        if arm.wanted[i]:
+            break
+        if last is not None:
+            gap = max(gap, at - last)
+        last = at
+        body = {"seen": int((w0 + seen) * 1000)} if seen is not None else {}
+        if is_start:
+            st, _h, out = _hold(R, group, client=client, **body)
+            hid = out.get("hold_id")
+        else:
+            st, _h, out = _hold(R, group, hold_id=hid, client=client, **body)
+        answers.append((round(at, 2), st, out.get("held_s"),
+                        out.get("error")))
+        if st != 200 or out.get("armed"):
+            break
+    return answers, gap, R.mono[0]
+
+
+def test_screen_arm_on_a_slow_phone_link():
+    section("arming from a phone on a slow link (Jeff, 2026-11-24): round "
+            "trips up to 0.4 s with jitter and a 1.0 s stall still arm, a "
+            "stall counts at most 0.25 s toward the 1 s hold, a gap over "
+            "1.5 s or beats that stop arm nothing, a press older than a Stop "
+            "never starts a hold, and the page says what the engine allows")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    from ltcplay import streamdeck as sd
+    names = ["front row", "cat-walk", "wave flamer", "bridge"]
+    phone = ("10.20.0.44", 50000)
+    check(RM.ARM_BEAT_GAP_S == 1.5 and RM.ARM_BEAT_CREDIT_S == 0.25 and
+          RM.ARM_PAGE_FRESH_S == 2.5 and RM.SCREEN_HOLD_S == 1.0 and
+          sd.SCREEN_HOLD_S == 1.0 and sd.ARM_HOLD_S == 0.6,
+          "the slow link numbers, and the hold itself unchanged")
+    R = _arm_rig(S)
+    try:
+        arm, events, c, step = _deck_on_engine(R, names)
+        # (d) The field: 0.25 s round trips (the rig reproduction).
+        sent = _phone_link(0.25, 0.08, [], 3.0, seed=1)
+        ans, gap, _t = _drive_phone(R, arm, step, "front row", 0, sent)
+        check(arm.wanted[0] is True and gap > 0.25,
+              f"(d) 0.25 s round trips: armed (the longest gap between "
+              f"beats {gap:.2f} s, which the old 0.25 s cut): {ans[-4:]}")
+        # 0.4 s round trips, jitter, and a 1.0 s stall mid-hold.
+        sent = _phone_link(0.4, 0.15, [(1.6, 2.6)], 5.0, seed=2)
+        ans, gap, _t = _drive_phone(R, arm, step, "cat-walk", 1, sent)
+        check(arm.wanted[1] is True and gap >= 0.9,
+              f"(d) 0.4 s round trips with a 1.0 s stall (longest gap "
+              f"{gap:.2f} s): armed: {ans[-4:]}")
+        check(all(st == 200 for _a, st, _h, _e in ans[:-1]),
+              f"(d) and no beat before the arm was refused: {ans}")
+        # (c) The finger comes up at 0.8 s and its let go is lost (or the
+        # phone dies): nothing arms, and the deck lets go within the gap.
+        sent = _phone_link(0.4, 0.15, [], 0.8, seed=3)
+        ans, _gap, t_last = _drive_phone(R, arm, step, "wave flamer", 2,
+                                         sent)
+        fresh_until = None
+        for _ in range(60):
+            step(0.05)
+            d = R.remote.deck_input()
+            if any(h["group"] == 2 and h["fresh"] for h in d["holds"]):
+                fresh_until = R.mono[0]
+        check(arm.wanted[2] is False,
+              f"(c) a finger lifted at 0.8 s, its let go lost: never armed: "
+              f"{ans[-3:]}")
+        check(fresh_until is not None and
+              fresh_until - t_last <= RM.ARM_BEAT_GAP_S + 0.06 and
+              c._arm_holds[2]._down_at is None,
+              f"(c) and the hold ended within {RM.ARM_BEAT_GAP_S:g} s of "
+              f"its last beat, for the deck too: fresh until "
+              f"{fresh_until and round(fresh_until - t_last, 2)} s")
+        # (c) A stall longer than the bound, before 1 s was proved: cut,
+        # the next beat refused, nothing armed after it.
+        step(sd.REARM_REFRACTORY_S + 0.1)
+        sent = _phone_link(0.2, 0.05, [(1.0, 2.8)], 5.0, seed=4)
+        ans, gap, _t = _drive_phone(R, arm, step, "bridge", 3, sent)
+        for _ in range(40):
+            step(0.05)
+        check(arm.wanted[3] is False and gap > RM.ARM_BEAT_GAP_S and
+              ans[-1][1] == 409 and "interrupted" in str(ans[-1][3]),
+              f"(c) a {gap:.2f} s gap: the hold was cut, the next beat "
+              f"refused, nothing armed: {ans[-3:]}")
+        # A late burst never stands in for time: a start, 1.2 s of
+        # nothing, then eight beats at once.
+        st, _h, out = _hold(R, "bridge", client=phone)
+        hid = out.get("hold_id")
+        for _ in range(24):
+            step(0.05)
+        for _ in range(8):
+            R.mono[0] += 0.005
+            st, _h, out = _hold(R, "bridge", hold_id=hid, client=phone)
+        check(st == 200 and out["held_s"] <= RM.ARM_BEAT_CREDIT_S + 0.04,
+              f"a 1.2 s stall then a burst counts 0.25 s, not 1.2: {out}")
+        d = [h for h in R.remote.deck_input()["holds"] if h["group"] == 3]
+        check(d and d[0]["held_s"] == out["held_s"],
+              f"and the deck is told the same: {d}")
+        for _ in range(40):
+            step(0.05)
+        check(arm.wanted[3] is False, "and nothing arms from it")
+        # A gap shorter than the bound does not cut a hold, and each counts
+        # 0.25 s at most.
+        st, _h, out = _hold(R, "bridge", client=phone)
+        hid = out.get("hold_id")
+        held = []
+        for gap_s in (0.1, 1.4, 0.1, 0.9, 0.1):
+            R.mono[0] += gap_s
+            R.wall[0] += gap_s
+            R.feed()
+            R.remote._deck_seen = R.mono[0]
+            st, _h, out = _hold(R, "bridge", hold_id=hid, client=phone)
+            held.append((st, out.get("held_s")))
+        check([h[0] for h in held] == [200] * 5 and
+              abs(held[-1][1] - 0.8) < 1e-6,
+              f"(d) gaps of 1.4 and 0.9 s carry the hold on, counted 0.25 s "
+              f"each: {held}")
+        R.ask("POST", "/api/remote/arm-release", {"group": "bridge"},
+              client=phone)
+        # The page's status: 2.4 s old starts a hold, 2.6 s old does not.
+        st, _h, out = _hold(R, "bridge", client=phone, seen=R.seen() - 2400)
+        check(st == 200, f"a page status 2.4 s old starts a hold: {out}")
+        R.ask("POST", "/api/remote/arm-release", {"group": "bridge"},
+              client=phone)
+        st, _h, out = _hold(R, "bridge", client=phone, seen=R.seen() - 2600)
+        check(st == 409 and out.get("let_go") and "2.5 s old" in
+              out.get("error", ""), f"2.6 s old does not: {st} {out}")
+        # A press sent before a Stop and landing after it never starts a
+        # hold, though its status is young enough.
+        before = R.seen() - 300
+        R.mono[0] += 0.3
+        R.wall[0] += 0.3
+        R.feed()
+        R.ask("POST", "/api/remote/disarm-all", {},
+              client=("127.0.0.1", 5000))
+        st, _h, out = _hold(R, "bridge", client=phone, seen=before)
+        check(st == 409 and out.get("let_go") and
+              out.get("error") == RM.ARM_CUT,
+              f"a press older than a Disarm all is refused: {st} {out}")
+        for _ in range(4):
+            step(0.05)
+        check(arm.wanted == [False] * 4,
+              f"setup: Disarm all went: {arm.wanted}")
+        R.mono[0] += 0.05
+        R.wall[0] += 0.05
+        R.feed()
+        st, _h, out = _hold(R, "bridge", client=phone)
+        check(st == 200, f"one from after it starts: {st} {out}")
+        R.ask("POST", "/api/remote/arm-release", {"group": "bridge"},
+              client=phone)
+        # The same for one group's Disarm (that group only), and a Stop.
+        before = R.seen() - 200
+        R.mono[0] += 0.2
+        R.wall[0] += 0.2
+        R.feed()
+        R.ask("POST", "/api/remote/group-disarm", {"group": "wave flamer"},
+              client=("127.0.0.1", 5000))
+        st, _h, out = _hold(R, "wave flamer", client=phone, seen=before)
+        check(st == 409 and out.get("error") == RM.ARM_CUT,
+              f"a press older than that group's Disarm is refused: {st} "
+              f"{out}")
+        st, _h, out = _hold(R, "bridge", client=phone, seen=before)
+        check(st == 200, f"another group's is not: {st} {out}")
+        R.ask("POST", "/api/remote/arm-release", {"group": "bridge"},
+              client=phone)
+        before = R.seen() - 200
+        R.mono[0] += 0.2
+        R.wall[0] += 0.2
+        R.feed()
+        R.ask("POST", "/api/remote/stop", {}, client=("127.0.0.1", 5000))
+        R.settle()
+        st, _h, out = _hold(R, "bridge", client=phone, seen=before)
+        check(st == 409 and out.get("error") == RM.ARM_CUT,
+              f"a press older than a Stop is refused: {st} {out}")
+        # (e) The page is told the engine's number and says it.
+        st, _h, out = R.ask("GET", "/api/remote/status", client=phone)
+        check(out["arming"]["fresh_s"] == RM.ARM_PAGE_FRESH_S and
+              out["arming"]["needs_s"] == RM.SCREEN_HOLD_S,
+              f"the page is told {RM.ARM_PAGE_FRESH_S:g} s: "
+              f"{out['arming']}")
+    finally:
+        R.close()
+    import shutil
+    node = shutil.which("node")
+    if not node:
+        check(not IN_CI, "node is missing on this CI runner")
+        return
+    js = rules_text() + r"""
+const out = [];
+const t = (c, m) => { if(!c) out.push(m); };
+const st = {arming:{enabled:true, fresh_s:2.5},
+  flames:{connected:true, stale:false, age_ms:100,
+          groups:[{name:"a", armed:"disarmed", wanted:false}]}};
+t(armState(st, 10000, 7600, 0).ok, "2.4 s since the engine: may hold");
+const no = armState(st, 10000, 7400, 0);
+t(!no.ok && no.why === "Not live: no contact with the engine in the last 2.5 s.",
+  "2.6 s: not live, said with the engine's number: " + no.why);
+t(!/[\u2013\u2014]/.test(no.why), "no dash");
+t(!armState(Object.assign({}, st, {flames:Object.assign({}, st.flames, {age_ms:1100})}), 10000, 9900, 0).ok,
+  "flamesafe's status 1.1 s old still may not");
+console.log(JSON.stringify(out));
+"""
+    r = _node_js(node, js, capture_output=True, text=True, timeout=60)
+    try:
+        bad = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        bad = [f"node failed: {r.stderr[-500:]}"]
+    for m in bad:
+        check(False, f"(e) the page's arm state: {m}")
+    print("  ok")
+
+
 def test_engine_stall_probe_memory_is_bounded():
     section("bench stall probe: reading the engine's memory 3000 times "
             "allocates nothing that stays (show PC soak of c8179eb: +271 "
@@ -70598,7 +71035,7 @@ def test_screen_arm_end_to_end_probes():
         last answered, with the latest status's served_at. As on the page,
         the status is polled on its own, never between two heartbeats (a
         status round trip in the heartbeat loop let a slow macOS runner's
-        holds lapse: the engine lets go after 0.25 s with no beat)."""
+        holds lapse: the engine let go after 0.25 s with no beat then)."""
         hid, end = None, time.perf_counter() + seconds
         started = time.perf_counter()
         why = whys.setdefault(group, [])
@@ -70748,8 +71185,8 @@ def test_screen_arm_end_to_end_probes():
         hold("cat-walk", andy, 2.0, drop_at=0.7)
         check(never_armed(1, 3.0), "P2: a dropped connection mid-hold "
                                    "never arms")
-        # P3: a stale page (its status 1.2 s old).
-        ans = hold("cat-walk", andy, 1.5, seen_lag=1.2)
+        # P3: a stale page (its status 2.7 s old; 2.5 s since 2026-11-24).
+        ans = hold("cat-walk", andy, 1.5, seen_lag=2.7)
         check(ans and ans[0] == 409 and never_armed(1, 2.0),
               f"P3: a stale page cannot even start a hold: {ans}")
         # P4: a Stop during the hold (Jeff, from his phone; it was an
@@ -136692,6 +137129,8 @@ if __name__ == "__main__":
         test_screen_arming_is_off_unless_switched_on,
         test_screen_arm_engine_rules,
         test_screen_arm_deck_rules,
+        test_screen_armed_group_survives_the_phone_going_away,
+        test_screen_arm_on_a_slow_phone_link,
         test_stream_deck_fourth_group_is_screen_only,
         test_stream_deck_key_order_and_labels_come_from_config,
         test_stream_deck_review_of_120,

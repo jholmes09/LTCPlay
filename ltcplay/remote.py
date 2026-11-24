@@ -44,13 +44,15 @@ press of that group's key. The deck owns flamesafe's arm link and runs its
 own rules (the hold, the refractory window) and flamesafe runs all of its
 own (consent, dwell, the window after a disarm_all, the
 round-4 veto, the second-copy guard) exactly as for a finger on the deck.
-It needs a listed address (above), a page status and a
-flamesafe status no older than ARM_FRESH_S, heartbeats the engine actually
-received for SCREEN_HOLD_S, and screen_arming on in ltcplay_remote.json
+It needs a listed address (above), a page status no older than
+ARM_PAGE_FRESH_S and a flamesafe status no older than ARM_FRESH_S,
+heartbeats the engine actually received for SCREEN_HOLD_S (each gap counted
+for ARM_BEAT_CREDIT_S at most), and screen_arming on in ltcplay_remote.json
 (OFF unless the file says true; the Programming screen on the show machine
-itself turns it on and off, route screen-arming). A gap in the heartbeats,
-a Stop, a disarm or a sign out lets the hold go; an interrupted hold
-never carries on.
+itself turns it on and off, route screen-arming). A gap in the heartbeats
+longer than ARM_BEAT_GAP_S, a Stop, a disarm or a sign out lets the hold
+go; an interrupted hold never carries on. A group once armed is never
+disarmed by a page going quiet (Jeff, 2026-11-24).
 
 Every refusal is said on the page in a sentence that names the reason
 (2026-10-22, Jeff: "I'm supposed to be able to enable flames via the
@@ -228,8 +230,37 @@ GROUP_DISARM_STEP_S = 0.02
 PURGE_START_CONFIRM_S = 1.5
 PURGE_STILL_ARMED = ("A purge group is still armed: press Clear, then try "
                      "again.")
-BEAT_STALE_S = 0.25    # a hold with no heartbeat for this long is let go
 SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
+# Arming from a phone on a slow link (Jeff, 2026-11-24: "I don't think you
+# should drop the arm at all if a phone loses signal"). Over Tailscale and
+# 5G, round trips of 250 ms or more cut every hold when a gap of 0.25 s
+# between beats let it go. The proof that a finger is down is now split in
+# two, so a slow link costs time and never adds it:
+#   ARM_BEAT_GAP_S: a hold with no beat for this long is let go (was
+#     0.25 s). It covers the page's first beat, which waits for the
+#     start's answer (one round trip, up to 0.4 s plus jitter), and a 1.0 s
+#     stall of the link plus the 0.1 s beat period, with 0.4 s to spare
+#     for a lost packet's resend. It is also the bound on a dead phone or
+#     a lifted finger whose let-go never arrives: the hold ends, and the
+#     Stream Deck lets go of it, within this of the last beat.
+#   ARM_BEAT_CREDIT_S: the most of any one gap that counts toward
+#     SCREEN_HOLD_S (the old 0.25 s, the most a gap could ever count
+#     before). A late or bunched burst of beats can never stand in for
+#     time the finger was not proved down: a 1.0 s stall counts 0.25 s.
+#   ARM_PAGE_FRESH_S: how old the page's status (the `seen` it sends) may
+#     be at a press or beat of a hold (was ARM_FRESH_S, 1 s). The page
+#     reads the status every 0.25 s after the last answer, so on a 0.4 s
+#     link its status is up to two round trips, a poll gap and the
+#     engine's time old when a beat lands (about 1.2 s), and a 1.0 s stall
+#     adds to that: 2.5 s. A hold may never start from a status older than
+#     a Stop or a disarm that cut holds (ARM_CUT), whatever its age.
+# flamesafe's own status stays at ARM_FRESH_S: that is the engine's link
+# to flamesafe on the show PC, not the phone's.
+ARM_BEAT_GAP_S = 1.5
+ARM_BEAT_CREDIT_S = 0.25
+ARM_PAGE_FRESH_S = 2.5
+ARM_CUT = ("A Stop or a disarm came after the status this screen is "
+           "showing. Lift your finger and hold again.")
 # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py, MORNING.md).
 # None of these touches the arm link: the purge selection is published on
 # deck-input for the Stream Deck process to act on, the fire heartbeat sets
@@ -2256,6 +2287,11 @@ class Remote:
         self._arm_lock = threading.Lock()
         self._holds = {}
         self._hold_ids = 0
+        # When holds were last cut (engine wall seconds), for every group
+        # ("all") and per group: a hold never starts from a page status
+        # served before that (ARM_CUT), however young ARM_PAGE_FRESH_S
+        # would call it.
+        self._arm_cut = {}
         self._disarms = collections.deque(maxlen=64)
         # Disarm ids start from the wall clock in milliseconds (review of
         # PR #97, P2-3): the Stream Deck's ScreenKeys keeps the highest id
@@ -5739,6 +5775,19 @@ class Remote:
                         f"arm it. Unlock one there first.")
         return ""
 
+    def _arm_cut_since(self, i, seen_s):
+        """True when every hold, or group i's, was cut (a Stop, a Hold, a
+        disarm, arming off) after the status `seen_s` was served, inside
+        ARM_PAGE_FRESH_S of now: a press sent before the cut and landing
+        after it, on a slow link, never starts a hold."""
+        now = self.wall()
+        with self._arm_lock:
+            cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
+        # served_at is whole milliseconds: one served in the cut's own
+        # millisecond is not before it.
+        return any(c is not None and seen_s + 0.001 < c and
+                   0 <= now - c <= ARM_PAGE_FRESH_S for c in cuts)
+
     def _drop_hold(self, i, token=None):
         with self._arm_lock:
             h = self._holds.get(i)
@@ -5754,6 +5803,7 @@ class Remote:
         with self._arm_lock:
             if device is None:
                 gone, self._holds = self._holds, {}
+                self._arm_cut["all"] = self.wall()
             else:
                 gone = {i: h for i, h in self._holds.items()
                         if h["token"] == device}
@@ -5799,9 +5849,13 @@ class Remote:
             seen = float(body.get("seen"))
         except (TypeError, ValueError):
             seen = None
-        if seen is None or abs(self.wall() - seen / 1000.0) > ARM_FRESH_S:
-            return refuse(409, "The page's status is more than 1 s old. "
-                               "Wait for it to be live, then hold again.")
+        if seen is None or \
+                abs(self.wall() - seen / 1000.0) > ARM_PAGE_FRESH_S:
+            return refuse(409, f"The page's status is more than "
+                               f"{ARM_PAGE_FRESH_S:g} s old. Wait for it "
+                               f"to be live, then hold again.")
+        if self._arm_cut_since(i, seen / 1000.0):
+            return refuse(409, ARM_CUT)
         fl = self.flame_status.view() if self.flame_status else None
         if not fl or fl["stale"] or fl["age_ms"] is None or \
                 fl["age_ms"] > ARM_FRESH_S * 1000:
@@ -5837,7 +5891,7 @@ class Remote:
                         self._deck_refused.pop(h["id"], None)
                 if mine and wait:
                     return 200, {"ok": True, "hold_id": h["id"],
-                                 "held_s": round(h["beat"] - h["start"], 3),
+                                 "held_s": round(h["held"], 3),
                                  "needs_s": SCREEN_HOLD_S}
                 if mine:
                     if took:
@@ -5846,7 +5900,7 @@ class Remote:
                                 f"when it is armed.")
                         what = (f"{who}'s hold to arm {gname} on the "
                                 f"{device} was taken by the Stream Deck "
-                                f"after {h['beat'] - h['start']:.1f} s.")
+                                f"after {h['held']:.1f} s.")
                     else:
                         text = (f"{gname} is asked for. flamesafe's lamp "
                                 f"shows when it is armed.")
@@ -5858,7 +5912,7 @@ class Remote:
                                   "taken" if took else "ended", what)
                     return 200, {"ok": True, "armed": True, "taken": took,
                                  "hold_id": h["id"], "text": text,
-                                 "held_s": round(h["beat"] - h["start"], 3),
+                                 "held_s": round(h["held"], 3),
                                  "needs_s": SCREEN_HOLD_S}
             return refuse(409, f"{gname} is already armed or asked for.")
         why = self.arm_refusal(gname, ctx.device)
@@ -5876,20 +5930,23 @@ class Remote:
                 b["code"] = code
                 return c, b
             # A heartbeat for a hold already under way. If that hold is not
-            # the live one any more (a gap longer than BEAT_STALE_S, an
+            # the live one any more (a gap longer than ARM_BEAT_GAP_S, an
             # Abort, a disarm, a restart), it is over: a hold that was
             # interrupted never carries on, the finger has to come up and
-            # go down again.
+            # go down again. A live one is credited with the gap since its
+            # last beat, never more than ARM_BEAT_CREDIT_S of it.
             with self._arm_lock:
                 h = self._holds.get(i)
                 live = (h is not None and h["token"] == token and
                         h["id"] == body.get("hold_id") and
-                        now - h["beat"] <= BEAT_STALE_S and
+                        now - h["beat"] <= ARM_BEAT_GAP_S and
                         "wanted_at" not in h)
                 if live:
+                    h["held"] += max(0.0, min(now - h["beat"],
+                                              ARM_BEAT_CREDIT_S))
                     h["beat"] = now
                     return 200, {"ok": True, "hold_id": h["id"],
-                                 "held_s": round(now - h["start"], 3),
+                                 "held_s": round(h["held"], 3),
                                  "needs_s": SCREEN_HOLD_S}
             if h is not None and h["token"] == token and \
                     h["id"] == body.get("hold_id") and "wanted_at" in h:
@@ -5903,15 +5960,19 @@ class Remote:
             # A live hold is nobody else's to take over or restart: not
             # another device's, and with no sign-in not another tab's on
             # the same device either (Jeff, 2026-10-07). Only one hold at a
-            # time, and a new one starts only once it has gone.
-            if h is not None and now - h["beat"] <= BEAT_STALE_S:
+            # time, and a new one starts only once it has gone. Busy means
+            # beating now (within ARM_BEAT_CREDIT_S, as before 2026-11-24):
+            # a hold in a gap is not kept from a fresh press, whose let-go
+            # of it can arrive after the press on a slow link. The new hold
+            # starts from nothing, with a new id the deck starts again on.
+            if h is not None and now - h["beat"] <= ARM_BEAT_CREDIT_S:
                 theirs = h["who"]
                 h = "busy"
             else:
                 self._hold_ids += 1
                 h = {"token": token, "who": who, "device": device,
                      "group": gname, "start": now, "beat": now,
-                     "id": self._hold_ids}
+                     "held": 0.0, "id": self._hold_ids}
                 self._holds[i] = h
         if h == "busy":
             why = (f"{theirs} is already holding {gname}. Only one hold at "
@@ -5934,7 +5995,7 @@ class Remote:
             return 200, {"ok": True}
         h = self._drop_hold(i, ctx.device)
         if h is not None:
-            held = h["beat"] - h["start"]
+            held = h["held"]
             self._journal(h["who"], h["device"], "arm hold", "let go",
                           f"{h['who']} let go of {gname} on the "
                           f"{h['device']} after {held:.1f} s.")
@@ -5992,6 +6053,7 @@ class Remote:
                              f"on the {device}", who, device, group=gname)
         self._drop_hold(i)
         with self._arm_lock:
+            self._arm_cut[i] = self.wall()
             self._disarm_ids += 1
             self._disarms.append({"id": self._disarm_ids, "group": i,
                                   "name": gname, "who": who,
@@ -6161,12 +6223,12 @@ class Remote:
         with self._arm_lock:
             for i, h in list(self._holds.items()):
                 age = now - h["beat"]
-                if age > 10 * BEAT_STALE_S:
+                if age > 2 * ARM_BEAT_GAP_S:
                     del self._holds[i]          # long gone; tidy up
                     continue
                 holds.append({"group": i, "id": h["id"],
-                              "held_s": round(h["beat"] - h["start"], 3),
-                              "fresh": age <= BEAT_STALE_S,
+                              "held_s": round(h["held"], 3),
+                              "fresh": age <= ARM_BEAT_GAP_S,
                               "who": h["who"], "device": h["device"]})
             # What the deck would not take, kept for the hold's next
             # heartbeat to say (only for holds still here).
@@ -9320,6 +9382,7 @@ class Remote:
     def _drop_holds_all(self):
         with self._arm_lock:
             self._holds.clear()
+            self._arm_cut["all"] = self.wall()
 
     @staticmethod
     def _timer(seconds, fn):
@@ -11404,12 +11467,13 @@ class Remote:
         tok = ctx.device
         with self._arm_lock:
             holds = [{"group": i, "who": h["who"], "device": h["device"],
-                      "held_s": round(h["beat"] - h["start"], 2),
+                      "held_s": round(h["held"], 2),
                       "mine": h["token"] == tok}
                      for i, h in self._holds.items()
-                     if now - h["beat"] <= BEAT_STALE_S]
+                     if now - h["beat"] <= ARM_BEAT_GAP_S]
         out["arming"] = {"enabled": self.arming_enabled(),
-                         "needs_s": SCREEN_HOLD_S, "fresh_s": ARM_FRESH_S,
+                         "needs_s": SCREEN_HOLD_S,
+                         "fresh_s": ARM_PAGE_FRESH_S,
                          "holds": holds}
         self.artnet_alert()
         out["artnet_note"] = self.artnet_note()
