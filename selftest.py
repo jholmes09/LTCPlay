@@ -122305,7 +122305,8 @@ def test_ui2_continue_anyway_slide_on_a_phone():
                                ("phone4", "stale_cut", 90000),
                                ("phone5", "again", 150000),
                                ("phone6", "inflight_blind_stop", 150000),
-                               ("phone7", "hang", 90000)):
+                               ("phone7", "hang", 120000),
+                               ("phone8", "late_land_hold", 150000)):
             x = _ui2_drive_framed(chrome, page, st,
                                   _UI2_PR_SLIDE_STEPS.replace("__PART__",
                                                               part),
@@ -122525,13 +122526,16 @@ def test_ui2_continue_anyway_slide_on_a_phone():
             check(pre and all(m != "go" and kd == "none" for m, _l, kd, _c
                               in pre) and x["second"] is None and
                   x["posts"].count("begin") == 1 and
-                  x["posts"].count("done") == 1 and x["starts"] == 1,
+                  x["posts"].count("done") == 1 and x["starts"] == 1 and
+                  x["msg"] == "Show started. Continued anyway.",
                   f"{where}: {k}: pressed while the done press is in "
                   f"flight: no handle and no second slide until it settles "
                   f"or the engine shows the show: "
                   f"{dict(x, seen=sorted(set(tuple(d) for d in x['seen'])))}"[:1500])
         x = r["hang"]
-        early = [d for d in x["seen"] if d[0] < 19.5]
+        # The engine takes a done press until 30 s after its begin
+        # (preroll.hold_done): the handle only after that, with a margin.
+        early = [d for d in x["seen"] if d[0] < 37.5]
         told = [d for d in x["seen"] if d[4] == "No answer yet. Check the tile."]
         check(x["posts"] == ["begin", "done"] and early and
               all(d[1] != "go" and d[3] == "none" for d in early) and
@@ -122539,10 +122543,26 @@ def test_ui2_continue_anyway_slide_on_a_phone():
               all("Not continued" not in d[2] and "Not continued" not in d[4]
                   for d in x["seen"]) and
               any(d[1] == "go" for d in x["seen"]) and not x["inflight"],
-              f"{where}: a done press that never settles: no handle for "
-              f"20 s, then no answer yet (never not continued), then the "
-              f"engine read gives the handle back: "
-              f"{sorted(set(tuple(d[1:]) for d in x['seen']))}"[:1500])
+              f"{where}: a done press that never settles: no handle while "
+              f"the engine could still take it (30 s and a margin), no "
+              f"answer yet at 20 s (never not continued), then the engine "
+              f"read gives the handle back: "
+              f"{sorted(set((d[1], d[2], d[4]) for d in x['seen']))}"[:1500])
+        for k, said in (("late_land", "Continued anyway."),
+                        ("late_land_hold", "Show started. Continued anyway.")):
+            x = r[k]
+            pre = [d for d in x["seen"] if not d[5]]
+            check(pre and all(d[1] != "go" and d[3] == "none" for d in pre)
+                  and x["second"] is None and x["starts"] == 1 and
+                  x["posts"].count("begin") == 1 and "land" in x["posts"] and
+                  all("Not continued" not in d[2] and "Not continued" not
+                      in d[4] for d in x["seen"]) and
+                  x["msg"] == said and x["line"] in
+                  (said, "", "Continued anyway. Show started late."),
+                  f"{where}: {k}: the first done press taken late by the "
+                  f"engine inside its window: never the handle or a second "
+                  f"slide before it, never not continued: "
+                  f"{dict(x, seen=sorted(set((d[1], d[2], d[4]) for d in x['seen'])))}"[:1500])
         x = r["disarm_finger"]
         check(x["posts"] == ["begin"] and x["disarms"] == 1 and
               x["starts"] == 0,
@@ -122941,7 +122961,7 @@ if(PART === "desk"){
     for(let i = 0; i < 52; i++){ await nap(250); seen.push([sb().dataset.mode, q("pr-sl").textContent, kd(), TE.cont ? 1 : 0]);
       if(!second && !TE.cont){ const k2 = sb().querySelector(".knob"); if(getComputedStyle(k2).display !== "none"){ const b0 = TE.posts.length;
         await slide([[1, 0, 1500]], null, true); second = TE.posts.slice(b0).map(p => p.route); } } }
-    out["inflight_" + how] = {seen:seen, second:second, posts:TE.posts.slice(p0).map(p => p.route), starts:TE.starts};
+    out["inflight_" + how] = {seen:seen, second:second, posts:TE.posts.slice(p0).map(p => p.route), starts:TE.starts, msg:msg()};
     await nap(500); TE.starts = 0; TE.resumed = 0; await settle();
   }
   } else if(PART === "phone7"){
@@ -122955,9 +122975,36 @@ if(PART === "desk"){
   const p0 = TE.posts.length, t0 = Date.now();
   await slide([[1, 0, 0], [async c => { await waitFor(() => TE.posts.slice(c.p0).some(p => p.route === "done"), 3000); }]]);
   const seen = [];
-  for(let i = 0; i < 64; i++){ await nap(500); seen.push([Math.round((Date.now() - t0) / 100) / 10, sb().dataset.mode, q("pr-sl").textContent, kd(), msg()]); }
+  for(let i = 0; i < 96; i++){ await nap(500); seen.push([Math.round((Date.now() - t0) / 100) / 10, sb().dataset.mode, q("pr-sl").textContent, kd(), msg()]); }
   window.fetch = f2;
   out.hang = {seen:seen, posts:TE.posts.slice(p0).map(p => p.route), inflight:!!PRS_INFLIGHT};
+  } else if(PART === "phone8"){
+  // Review 3 of #301, M1: the first done press never answers the page,
+  // but the engine takes it late, inside its 30 s window: at 27 s alone,
+  // and at 22 s after a Hold pressed 1.5 s after it. Never a second slide
+  // while it could still be taken; after the Hold, once the show is live,
+  // the page says so in place of the Hold's words (M2).
+  for(const [k, landMs, hold] of [["late_land", 27000, false], ["late_land_hold", 22000, true]]){
+    const land = tok => { const t1 = TE.toks[tok]; delete TE.toks[tok];
+      if(!t1 || Date.now() - t1 > 30000){ TE.posts.push({route:"land-refused-old"}); return; }
+      if(!TE.offer || TE.cont || TE.state === "SHOW"){ TE.posts.push({route:"land-refused"}); return; }
+      TE.posts.push({route:"land"}); startShow(); };
+    let first = true;
+    const f3 = window.fetch;
+    window.fetch = (u, o) => { if(first && o && o.method === "POST" && /preroll-continue$/.test(String(u)) && JSON.parse(o.body).phase === "done"){
+      first = false; const tok = JSON.parse(o.body).token; TE.posts.push({route:"done"}); setTimeout(() => land(tok), landMs);
+      return new Promise((ok, no) => { if(o.signal) o.signal.addEventListener("abort", () => no(new DOMException("aborted", "AbortError"))); }); }
+      return f3(u, o); };
+    const q0 = TE.posts.length, t1 = Date.now();
+    await slide([[1, 0, 0], [async c => { await waitFor(() => TE.posts.slice(c.p0).some(p => p.route === "done"), 3000); }]]);
+    if(hold){ await nap(1500); q("b-hold").dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:0})); }
+    const seen2 = []; let second = null;
+    for(let i = 0; i < 128; i++){ await nap(250); seen2.push([Math.round((Date.now() - t1) / 100) / 10, sb().dataset.mode, q("pr-sl").textContent, kd(), msg(), TE.cont ? 1 : 0]);
+      if(!second && !TE.cont && kd() !== "none"){ const b0 = TE.posts.length; await slide([[1, 0, 1500]], null, true); second = TE.posts.slice(b0).map(p => p.route); } }
+    window.fetch = f3;
+    out[k] = {seen:seen2, second:second, posts:TE.posts.slice(q0).map(p => p.route), starts:TE.starts, resumed:TE.resumed, msg:msg(), line:q("pr-sl").textContent};
+    TE.starts = 0; TE.resumed = 0; await settle();
+  }
   } else {
   // A pinned Stop for every live mode appears above the slide while the
   // finger holds it at the end: the slide moves, the finger does not; the

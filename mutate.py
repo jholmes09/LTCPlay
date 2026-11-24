@@ -4008,6 +4008,29 @@ MUTATIONS = [
   "      no(e);\n",
   "      if(false) no(e);\n"),
 
+ # Review 3 of #301: a done press the engine never answered blocks the
+ # handle for the engine's whole window (preroll.hold_done, 30 s, and a
+ # margin); a show started after a Stop or a Hold is said.
+ ("ui 2.0 continue slide: a done press the engine never answered is taken as over: the handle back inside the engine's window",
+  'ltcplay/web/remote2.html',
+  "  if(!real){ prsWindow(h); return; }\n",
+  ""),
+
+ ("ui 2.0 continue slide: the engine's window for a done press is not waited for",
+  'ltcplay/web/remote2.html',
+  "  PRS_VALID_MS = 30000 + 8000,\n",
+  "  PRS_VALID_MS = 0,\n"),
+
+ ("ui 2.0 continue slide: a show started after a Stop or a Hold is never said, the Stop's or Hold's words stay",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT && !isLive(prsNow())) prsWatchLive(PRS_INFLIGHT);\n",
+  ""),
+
+ ("ui 2.0 continue slide: a Stop of a live show that did not arrive is covered by show started",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT && !isLive(prsNow())) prsWatchLive(PRS_INFLIGHT);\n",
+  "  if(PRS_INFLIGHT) prsWatchLive(PRS_INFLIGHT);\n"),
+
 
 
 
