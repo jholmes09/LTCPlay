@@ -4458,5 +4458,19 @@
 "ui 2.0 phone: the top line is capped, cutting its pinned Stops and the alert hold line": "test_ui2_phone_layout_whole_on_a_touch_phone",
 "ui 2.0 phone: the footer keeps its desktop height on a phone": "test_ui2_phone_layout_whole_on_a_touch_phone",
 "ui 2.0 phone: two live modes hide the top line's words": "test_ui2_phone_layout_whole_on_a_touch_phone",
-"ui 2.0 phone: the Systems chip cuts a fault's words": "test_ui2_phone_layout_whole_on_a_touch_phone"
+"ui 2.0 phone: the Systems chip cuts a fault's words": "test_ui2_phone_layout_whole_on_a_touch_phone",
+"arm: a long gap between beats counts in full toward the hold": "test_screen_arm_on_a_slow_phone_link",
+"arm: the deck is told the time since the press, not the beats counted": "test_screen_arm_on_a_slow_phone_link",
+"arm: a press sent before a Stop or a disarm starts a hold after it": "test_screen_arm_on_a_slow_phone_link",
+"arm: a Stop leaves no mark for a press that lands after it": "test_screen_arm_on_a_slow_phone_link",
+"arm: a group's Disarm leaves no mark for a press that lands after it": "test_screen_arm_on_a_slow_phone_link",
+"arm: the deck disarms a group when the screen hold that armed it goes": "test_screen_armed_group_survives_the_phone_going_away",
+"arm: a second tab on the same device restarts a live hold": "test_screen_arm_engine_rules",
+"arm: a second device takes over a live hold in a gap": "test_screen_arm_on_a_slow_phone_link",
+"arm: a short touch whose beats arrive slowly proves 1 s (arrival only)": "test_screen_arm_on_a_slow_phone_link",
+"arm: a beat read late moves the last beat back": "test_screen_arm_on_a_slow_phone_link",
+"cleaning: a phone's hold to arm another group, in a gap, does not block it": "test_cleaning_at_the_engine",
+"arm: the press to its first beat gets only the 1.5 s of a later gap": "test_screen_arm_on_a_slow_phone_link",
+"arm: every gap gets the first beat's 2.0 s": "test_screen_arm_on_a_slow_phone_link",
+"arm: a wall clock stepped back turns the Stop mark off": "test_screen_arm_on_a_slow_phone_link"
 }

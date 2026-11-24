@@ -48,7 +48,7 @@ function armState(st, nowMs, lastOkMs, i){
   const g = (fl.groups || [])[i];
   if(!mayRow(st, "arm")) return {ok:false, signin:true, why:SIGN_IN_WORDS};
   if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};
-  if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return {ok:false, why:"Not live: no contact with the engine in the last second."};
+  if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return {ok:false, why:"Not live: no contact with the engine in the last " + (a.fresh_s || 1.0) + " s."};
   if(!fl.connected || fl.stale || fl.age_ms === null || fl.age_ms === undefined || fl.age_ms > 1000)
     return {ok:false, why:"flamesafe's real state is not known."};
   if(!g) return {ok:false, why:"No such group."};
