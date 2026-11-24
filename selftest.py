@@ -120038,226 +120038,6 @@ def test_ui2_phone_layout_whole_on_a_touch_phone():
     print("  ok")
 
 
-# Flame slide to arm on a touch phone (step 5 of the phone build), against
-# the arm-hold stand-in of _UI2_BEAT_STEPS (the engine's 0.25 s limit, its
-# 1.0 s of beats plus the deck's 0.6 s, a refusal for every beat after its
-# armed answer). Each slide puts the finger on the handle's middle, then
-# walks it in 16 px steps.
-_UI2_SLIDE_STEPS = _UI2_BEAT_STEPS[:_UI2_BEAT_STEPS.find("async function hold(")] + r"""
-const W = innerWidth, H = innerHeight;
-const knob = el => el.querySelector(".knob");
-const kr = el => { const k = knob(el).getBoundingClientRect(); return [Math.round(k.left), Math.round(k.top), Math.round(k.right), Math.round(k.bottom)]; };
-// From the layout: a spring back's transition does not run in Chrome's
-// virtual time.
-const travelOf = el => el.clientWidth - knob(el).offsetWidth - 2 * knob(el).offsetLeft;
-const said = el => (el.innerText + " " + getComputedStyle(el, "::after").content).trim();
-let PID = 40;
-const pt = (el, type, x, y, id, kind, prim) => el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, composed:true,
-  pointerId:id, pointerType:kind, isPrimary:prim, clientX:x, clientY:y, buttons:type === "pointerup" ? 0 : 1}));
-// One slide of `el`: each [at ms, fraction of the travel, dy] move walked
-// to, held until `ms`, then lifted; or ended by `cut` at `cutAt` ms.
-async function slide(el, moves, ms, cut, cutAt){
-  el.scrollIntoView({block:"center"}); await nap(80);
-  const id = ++PID, kn = knob(el), travel = travelOf(el), r = el.getBoundingClientRect();
-  const x0 = r.left + el.clientLeft + kn.offsetLeft + kn.offsetWidth / 2, y0 = r.top + el.clientTop + kn.offsetTop + kn.offsetHeight / 2;
-  let x = x0, y = y0;
-  const s0 = SENT.length, r0 = REL.length, a0 = ARMED.length;
-  const t0 = performance.now();
-  let early = false, maxKnob = null, cutDone = false;
-  q("msg-t").textContent = "";
-  pe(kn, "pointerdown", x, y, id);
-  const res = {slid:!!SLIDE, travel:Math.round(travel)};
-  const watch = () => {
-    // The page never shows armed before the engine armed it.
-    if((el.dataset.mode === "disarm" || /Armed/.test(msg())) && ARMED.length === a0) early = true;
-  };
-  const walk = async (tx, ty) => {
-    while(Math.abs(tx - x) > 0.5 || Math.abs(ty - y) > 0.5){
-      const dx = tx - x, dy = ty - y, d = Math.hypot(dx, dy), f = Math.min(1, 16 / d);
-      x += dx * f; y += dy * f; pe(kn, "pointermove", x, y, id); watch(); await nap(8);
-    }
-  };
-  res.ctx = {x:x, y:y, walk:walk, id:id, kn:kn};
-  for(const [at, f, dy] of moves){
-    while(performance.now() - t0 < at){ watch(); await nap(10); }
-    // A function: something that happens with the finger still down.
-    if(typeof f === "function"){ f(el, kn, x, y, id); continue; }
-    await walk(x0 + f * travel, y0 + (dy || 0));
-    if(f >= 1) maxKnob = kr(el);
-    res.ctx.x = x; res.ctx.y = y;
-  }
-  while(performance.now() - t0 < (cut ? cutAt : ms)){ watch(); await nap(10); }
-  res.msg_held = msg();
-  res.held_slide = !!SLIDE;
-  const sentCut = SENT.length;
-  if(cut){ res.ctx.x = x; res.ctx.y = y; await cut(el, res.ctx); }
-  else pe(kn, "pointerup", x, y, id);
-  // The slide gone (a cut that waits for a poll: up to 1.5 s).
-  const tc = performance.now();
-  while(SLIDE && performance.now() - tc < 1500) await nap(10);
-  res.ended_ms = Math.round(performance.now() - tc);
-  const sentEnd = SENT.length;
-  res.knob_end = kn.style.transform;
-  res.live_end = LIVE.size;
-  pe(kn, "pointerup", x, y, id);
-  // Long enough for the engine to have armed a hold left running.
-  await nap(1000);
-  watch();
-  Object.assign(res, {armed:ARMED.length - a0, released:REL.length - r0, starts:SENT.slice(s0).filter(b => b.id == null).length,
-    beats_late:SENT.slice(s0).filter(b => b.t - t0 > 900).length, after:SENT.length - sentEnd, at_cut:sentEnd - sentCut,
-    live_after:LIVE.size, slide_after:!!SLIDE, hold_after:HOLD !== null, early:early, msg:msg(), full:MSG_FULL,
-    knob_after:kn.style.transform, at_end:maxKnob, back_left:!!(history.state && history.state.ltcSlide), ended:cutDone});
-  delete res.ctx;
-  reset(); await nap(300);
-  return res;
-}
-const body = document.body;
-document.querySelector('.tab[data-tab="show"]').click();
-await h.sleep(1500);
-out.vw = W; out.vh = H; out.coarse = matchMedia("(pointer:coarse)").matches;
-// Each draw is slow, so the slides are shared out between a few drives
-// (each its own browser): __PART__.
-const PART = "__PART__";
-const fr = window.frameElement;
-const cuts = {
-  up:(el, c) => pe(c.kn, "pointerup", c.x, c.y, c.id),
-  pointercancel:(el, c) => pe(c.kn, "pointercancel", c.x, c.y, c.id),
-  second_finger:(el, c) => { pe(body, "pointerdown", 30, 30, 90, false); pe(body, "pointerup", 30, 30, 90, false); },
-  second_mouse:(el, c) => { pt(body, "pointerdown", 30, 30, 1, "mouse", true); pt(body, "pointerup", 30, 30, 1, "mouse", true); },
-  second_pen:(el, c) => { pt(body, "pointerdown", 30, 30, 91, "pen", true); pt(body, "pointerup", 30, 30, 91, "pen", true); },
-  jump:(el, c) => pe(c.kn, "pointermove", c.x - 150, c.y, c.id),
-  band:async (el, c) => { await c.walk(c.x, c.y + 90); },
-  blur:(el, c) => window.dispatchEvent(new Event("blur")),
-  hidden:(el, c) => { Object.defineProperty(document, "hidden", {configurable:true, get:() => true});
-    document.dispatchEvent(new Event("visibilitychange")); delete document.hidden; },
-  pagehide:(el, c) => window.dispatchEvent(new Event("pagehide")),
-  resize:async (el, c) => { fr.style.height = (H + 40) + "px"; await nap(300); fr.style.height = H + "px"; await nap(300); },
-  rotate:async (el, c) => { fr.style.width = H + "px"; fr.style.height = W + "px"; await nap(300); fr.style.width = W + "px"; fr.style.height = H + "px"; await nap(500); },
-  modeflip:(el, c) => SLIDE_MQ.dispatchEvent(new Event("change")),
-  rerender:async (el, c) => { LAMP_KEY = ""; await nap(700); },
-  popstate:async (el, c) => { history.back(); await nap(200); },
-  disarm:(el, c) => q("b-disall").click(),
-  signout:(el, c) => q("u-out").click(),
-  arming_off:(el, c) => q("sa-off").click(),
-};
-// Every cancel, the handle at 95 percent, 800 ms in: the hold let go, the
-// handle back, no beat after, never armed.
-const cutAll = async ks => {
-  out.cuts = {};
-  for(const k of ks){
-    out.cuts[k] = await slide(g0(), [[200, 0.95]], 0, cuts[k], 800);
-    pe(body, "pointerup", 30, 30, 90, false);
-    await nap(300);
-  }
-};
-if(PART === "main"){
-  // The controls as drawn: full width, the handle 40 px or more from both
-  // edges, 56 px, the words, the track scrolls and the handle does not.
-  const look = el => { const r = el.getBoundingClientRect(), c = getComputedStyle(el), kc = getComputedStyle(knob(el));
-    return {r:[Math.round(r.left), Math.round(r.right), Math.round(r.height)], knob:kr(el), kshown:kc.display !== "none",
-      said:said(el), role:el.getAttribute("role") || el.tagName.toLowerCase(), aria:knob(el).getAttribute("aria-hidden"),
-      touch:[c.touchAction, kc.touchAction], tiles:[...document.querySelectorAll(".tile[data-lamp]")].map(t => Math.round(t.getBoundingClientRect().width))}; };
-  g0().scrollIntoView({block:"center"}); await nap(100);
-  out.look_g = look(g0());
-  out.look_all = look(q("b-armall"));
-  out.armb = [...document.querySelectorAll("[data-arm]"), q("b-armall")].map(el => [el.dataset.mode || "", said(el)]);
-  // The top line's arm step, the rig check left out of the status.
-  { const st2 = JSON.parse(JSON.stringify(ST)); delete st2.preroll; out.next = nextStep(st2, false, true, []).text; }
-  // At the end of its travel the handle is still 40 px from the edge.
-  out.ends = {};
-  for(const [k, el] of [["g", g0()], ["all", q("b-armall")]])
-    await slide(el, [[200, 1]], 400, async (e, c) => { out.ends[k] = kr(e); pe(c.kn, "pointerup", c.x, c.y, c.id); }, 400);
-  // The whole slide, held: the engine arms it (its armed answer, and its
-  // status shows it asked for), never before.
-  ENG.asked = true; patchFor(4); await nap(700);
-  out.full = await slide(g0(), [[300, 1]], 2300);
-  reset(); await nap(800);
-  // The engine's answers 300 ms late: still arms, still never before.
-  ENG.down = b => b.hold_id == null ? 0 : 300;
-  out.late = await slide(g0(), [[300, 1]], 3000);
-  // Under 90 percent, held: never arms; the beats stop at the gate.
-  out.u50 = await slide(g0(), [[200, 0.5]], 2400);
-  out.u88 = await slide(g0(), [[300, 0.88]], 2400);
-  // Back under 90 percent after reaching it: let go there.
-  out.back_under = await slide(g0(), [[200, 0.95], [800, 0.6]], 2400);
-  // Slow to 90 percent: the hold let go at the gate, a new one at 90.
-  out.slow = await slide(g0(), [[200, 0.5], [1200, 0.95]], 3300);
-  // Released at the end before armed: never arms.
-  out.early_lift = await slide(g0(), [[200, 1]], 1100);
-  // A scroll that starts on the track, off the handle: nothing starts.
-  const el = g0(); el.scrollIntoView({block:"center"}); await nap(80);
-  const r = el.getBoundingClientRect(), s0 = SENT.length, a0 = ARMED.length;
-  const x = r.right - 40, y = r.top + r.height / 2;
-  pe(el, "pointerdown", x, y, 77);
-  for(let i = 1; i <= 8; i++){ pe(el, "pointermove", x - i * 10, y - i * 12, 77); await nap(30); }
-  await nap(1800);
-  pe(el, "pointerup", x - 80, y - 96, 77);
-  await nap(300);
-  out.offhandle = {slide:!!SLIDE, sent:SENT.length - s0, armed:ARMED.length - a0};
-  // A scroll that starts on the handle (straight up) leaves the band.
-  out.scroll_on_handle = await slide(el, [[200, 0.1, -120]], 2400);
-  // Cold review of #299, for the flames: live flame programming turned on
-  // at the show PC during the hold. Every screen's status carries it
-  // (live_flame), and its pinned Live flame off is drawn above the tiles,
-  // moving the slide down: the slide holds on, the engine arms it.
-  { ENG.asked = true; patchFor(4); const base = window.__patch; let pinOn = false, top0 = 0, seen = {};
-    window.__patch = st => { st = base(st); if(pinOn) st.live_flame = {on:true, who:"Jeff"}; return st; };
-    await nap(700);
-    const s = await slide(g0(), [[300, 1], [350, el => { top0 = el.getBoundingClientRect().top; pinOn = true; }],
-      [1300, el => { seen = {pin:!!document.querySelector('#pins [data-pin="lf"]'), moved:Math.round(el.getBoundingClientRect().top - top0), slide:!!SLIDE}; }]], 2300);
-    out.pin_shift = Object.assign(s, seen);
-    reset(); await nap(800); }
-} else if(PART === "races"){
-  // Cold review of #295: the group shows asked for (the tile turns to
-  // Disarm under the finger) before the engine's armed answer, 300 or 800
-  // ms late: the slide waits for it, never lets go, never says stopped.
-  // 300: every answer 300 ms late. 800: only the armed answer late (the
-  // beats after it answered at once, refused as asked for).
-  for(const d of [300, 800]){
-    ENG.asked = true; patchFor(4);
-    ENG.down = d === 300 ? (b => b.hold_id == null ? 0 : 300) : ((b, a) => a && a[1] && a[1].armed ? 800 : 0);
-    await nap(700);
-    out["late_asked_" + d] = await slide(g0(), [[300, 1]], 3500);
-    reset(); await nap(800);
-  }
-  // The same, 800 ms, and in that window the button gets a pointerleave
-  // and a lost capture with the finger still down (the handle hidden):
-  // still waits for the armed answer, lets go of nothing.
-  ENG.asked = true; patchFor(4); ENG.down = (b, a) => a && a[1] && a[1].armed ? 800 : 0; await nap(700);
-  out.late_asked_leave = await slide(g0(), [[300, 1], [2000, (el, kn, x, y, id) => {
-    out.leave_hidden = !kn.getClientRects().length;
-    pe(el, "pointerleave", x, y, id); pe(kn, "lostpointercapture", x, y, id); }]], 3500);
-  reset(); await nap(800);
-  // Drifting under 90 percent at the moment the engine arms, then the lift:
-  // the engine's state is read before anything is said.
-  for(const [at, up] of [[1650, 1800], [1700, 2100], [1800, 2000]]){
-    ENG.asked = true; patchFor(4); ENG.down = b => b.hold_id == null ? 0 : 300; await nap(700);
-    out["drift_" + at + "_" + up] = await slide(g0(), [[200, 1], [at, 0.85]], up);
-    reset(); await nap(800);
-  }
-} else if(PART === "cuts1"){
-  await cutAll(["up", "pointercancel", "second_finger", "second_mouse", "second_pen", "jump", "band", "blur", "hidden", "pagehide"]);
-} else {
-  await cutAll(PART === "cuts2" ? ["resize", "rotate", "modeflip", "rerender", "popstate", "disarm", "signout", "arming_off"] :
-    ["up", "pointercancel", "second_finger", "jump", "band", "rotate", "rerender", "popstate"]);
-  // Arm all: slid and held, under 90 percent, a second finger, Back.
-  ENG.down = b => b.hold_id == null ? 0 : 60;
-  out.all_full = await slide(q("b-armall"), [[300, 1]], 2600);
-  if(PART === "cuts2"){
-    out.all_u50 = await slide(q("b-armall"), [[200, 0.5]], 2400);
-    out.all_second = await slide(q("b-armall"), [[200, 0.95]], 0, cuts.second_finger, 800);
-    pe(body, "pointerup", 30, 30, 90, false); await nap(300);
-    out.all_popstate = await slide(q("b-armall"), [[200, 0.95]], 0, cuts.popstate, 800);
-  }
-  // Stop, last (it locks the big button a moment); then a slide arms again.
-  out.cuts.stop = await slide(g0(), [[200, 0.95]], 0, (el, c) => { pressStop("stop"); }, 800);
-  await nap(500);
-  out.after_all = await slide(g0(), [[200, 1]], 2300);
-}
-out.hist = history.state;
-out.live_end = LIVE.size;
-"""
-
 # Off a phone the arm is the hold, exactly as before: no handle, the words,
 # a press anywhere on the button arms after the engine's whole hold.
 _UI2_SLIDE_DESK_STEPS = _UI2_BEAT_STEPS[:_UI2_BEAT_STEPS.find("async function hold(")] + r"""
@@ -120283,228 +120063,6 @@ out.all = await one(q("b-armall"));
 { const st2 = JSON.parse(JSON.stringify(ST)); delete st2.preroll; out.next = nextStep(st2, false, true, []).text; }
 """
 
-
-def test_ui2_flame_slide_to_arm_on_a_phone():
-    section("flame slide to arm on a touch phone (step 5 of the phone "
-            "build, AUDIT P0 1 and 5, P1 7 to 9): each group's arm and Arm "
-            "all a full width slide, its 56 px handle 40 px from both "
-            "edges; the same hold and engine, its beats from the handle's "
-            "touch; armed only at 90 percent or more and on the engine's "
-            "armed answer with the finger down; every cancel lets go and "
-            "springs back; off a phone, the hold as before")
-    page = _ui2_page_inline()
-    two = _ui2_pages()[1]
-    css = page[page.find("/* PHONE LAYOUT BEGIN"):
-               page.find("/* PHONE LAYOUT END")]
-    check('.armb.hold:not(:disabled)::after{content:"Arm"}' in css and
-          '#b-armall:not(:disabled)::after{content:"Arm all flames"}' in css,
-          "on a phone a group's arm says Arm, Arm all says Arm all flames")
-    words = re.findall(r'content:"([^"]*)"', css)
-    check(words == ["Arm", "Arm all flames"],
-          f"the phone's arm controls say nothing about holding or sliding: "
-          f"{words}")
-    _no_dashes(css, "the phone's arm controls")
-    check('role="slider"' not in two and "role=\"slider\"" not in two,
-          "no arm control is a slider to a screen reader")
-    check(re.search(r"const SLIDE_ARM = 0\.9, SLIDE_GATE_MS = 500, "
-                    r"SLIDE_GATE_HELD_S = 0\.7,", two),
-          "the slide arms at 90 percent only, and its beats stop at 0.5 s "
-          "under it (the engine arms at 1.0 s plus the deck's 0.6 s)")
-    chrome = _find_chromium()
-    if not chrome:
-        check(not (IN_CI and sys.platform.startswith("linux")),
-              "no Chromium or Chrome on this CI runner: 2.0 could not be "
-              "drawn")
-        print("  note: no Chromium here, so 2.0 was not drawn")
-        print("  ok")
-        return
-    morning = {"/api/remote/morning": _morning_view_pico()}
-    # Every cancel at 384x800, the main ones at 412x600; each drive its
-    # own browser (a draw that runs long is cut off).
-    for size, parts in (((384, 800), ("main", "races", "cuts1", "cuts2")),
-                        ((412, 600), ("main", "cuts_small"))):
-        where = f"2.0 on a touch phone, {size[0]}x{size[1]}, the slide"
-        r = {"cuts": {}}
-        for part in parts:
-            got = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
-                                    _UI2_SLIDE_STEPS.replace("__PART__",
-                                                             part),
-                                    size, routes=morning, budget_ms=90000)
-            if not check(isinstance(got, dict) and "live_end" in got and
-                         not got.get("problems"),
-                         f"{where}, {part}: driven: {got!r}"[:1500]):
-                # The other drives are still checked.
-                continue
-            r["cuts"].update(got.pop("cuts", {}))
-            check(got["live_end"] == 0 and
-                  not (got["hist"] or {}).get("ltcSlide"),
-                  f"{where}, {part}: no timer left running and no Back "
-                  f"guard left behind: {got['live_end']} {got['hist']}")
-            r.update(got)
-        W = size[0]
-
-        def gone(x):
-            return (not x["slide_after"] and not x["hold_after"] and
-                    x["live_after"] == 0 and x["after"] == 0 and
-                    x["knob_end"] == "" and not x["back_left"])
-        if "look_g" in r:
-            check(r["coarse"] and [r["vw"], r["vh"]] == list(size),
-                  f"{where}: drawn as a touch screen of that size: {r['vw']}x"
-                  f"{r['vh']}")
-            for k in ("look_g", "look_all"):
-                lk = r[k]
-                kl, kt, kr_, kb = lk["knob"]
-                check(lk["kshown"] and kr_ - kl == 56 and kb - kt == 56 and
-                      kl >= 40 and lk["r"][1] <= W - 40 and
-                      lk["r"][1] - lk["r"][0] >= W - 100,
-                      f"{where}, {k}: full width, its 56 px handle 40 px or more "
-                      f"from the left edge: {lk}")
-                check(lk["role"] == "button" and lk["aria"] == "true",
-                      f"{where}, {k}: a button, never a slider: {lk}")
-                check(lk["touch"] == ["pan-y", "none"],
-                      f"{where}, {k}: the track scrolls the page, the handle "
-                      f"does not: {lk}")
-            check(all(w >= W - 40 for w in r["look_g"]["tiles"]),
-                  f"{where}: one group a row: {r['look_g']['tiles']}")
-            for k, e in r["ends"].items():
-                check(e[2] <= W - 40,
-                      f"{where}, {k}: at the end of its travel the handle is 40 "
-                      f"px or more from the right edge: {e}")
-            check(r["look_g"]["said"] == '"Arm"' and
-                  r["look_all"]["said"] == '"Arm all flames"',
-                  f"{where}: the words: {r['look_g']['said']!r} "
-                  f"{r['look_all']['said']!r}")
-            check(not any(re.search(r"hold|slide", s, re.I) for _m, s in
-                          r["armb"]) and
-                  not any(d in s for _m, s in r["armb"] for d in _DASHES),
-                  f"{where}: no phone arm control says Hold or explains the "
-                  f"slide: {r['armb']}")
-            check(r["next"].endswith(". Arm flames.") and "Hold" not in r["next"],
-                  f"{where}: the top line's arm step says Arm flames, not Hold: "
-                  f"{r['next']!r}")
-
-            f = r["full"]
-            check(f["armed"] == 1 and f["starts"] == 1 and not f["early"] and
-                  f["released"] == 0 and gone(f),
-                  f"{where}: the whole slide, held: the engine arms it, the page "
-                  f"never shows armed before, the handle back after: {f}")
-            la = r["late"]
-            check(la["armed"] == 1 and not la["early"] and gone(la),
-                  f"{where}: every answer 300 ms late: still arms, never shown "
-                  f"armed before the engine armed it: {la}")
-            for k in ("u50", "u88", "back_under"):
-                x = r[k]
-                check(x["armed"] == 0 and x["starts"] == 1 and
-                      x["beats_late"] == 0 and x["released"] >= 1 and gone(x),
-                      f"{where}: {k}: under 90 percent never arms, the beats "
-                      f"stop and the hold is let go: {x}")
-            s = r["slow"]
-            check(s["armed"] == 1 and s["starts"] == 2 and gone(s),
-                  f"{where}: slow to 90 percent: the first hold let go under "
-                  f"it, a new one at 90 percent arms: {s}")
-            e = r["early_lift"]
-            check(e["armed"] == 0 and e["released"] >= 1 and
-                  e["msg"] == "Let go: not armed." and gone(e),
-                  f"{where}: lifted at the end before the engine armed it: "
-                  f"never arms: {e}")
-            o = r["offhandle"]
-            check(o == {"slide": False, "sent": 0, "armed": 0},
-                  f"{where}: a scroll that starts on the track, off the "
-                  f"handle, starts nothing: {o}")
-            sc = r["scroll_on_handle"]
-            check(sc["armed"] == 0 and sc["released"] >= 1 and gone(sc),
-                  f"{where}: a scroll that starts on the handle leaves the "
-                  f"band: let go, never armed: {sc}")
-            ps = r["pin_shift"]
-            check(ps["pin"] and ps["moved"] > 24 and ps["slide"] and
-                  ps["armed"] == 1 and ps["released"] == 0 and
-                  not ps["early"] and gone(ps),
-                  f"{where}: the pinned Live flame off drawn above the tiles "
-                  f"during the hold moves the slide past its band: the slide "
-                  f"holds on, the engine arms it: {ps}")
-        for k, c in r["cuts"].items():
-            check(c["armed"] == 0 and c["held_slide"] and
-                  c["released"] >= 1 and gone(c) and c["ended_ms"] <= 800,
-                  f"{where}: a slide at 95 percent ended by {k}: let go, "
-                  f"the handle back, no beat after, never armed: {c}")
-        # Cold review of #295: an armed answer late behind asked for, and a
-        # drift under 90 percent at the arm moment: never said as not
-        # armed or stopped, never let go, for a group the engine armed.
-        for k in [k for k in r if k.startswith(("late_asked_", "drift_"))]:
-            x = r[k]
-            if k in ("late_asked_300", "late_asked_800", "late_asked_leave"):
-                check(x["armed"] == 1 and x["released"] == 0 and
-                      x["msg"] == "Armed.",
-                      f"{where}: {k}: the tile turned to Disarm before the "
-                      f"armed answer: the slide waited for that answer, "
-                      f"let go of nothing: {x}")
-            if k == "drift_1800_2000":
-                check(x["armed"] == 1 and x["released"] == 0 and
-                      "is asked for" in x["full"] + x["msg"],
-                      f"{where}: {k}: under 90 percent just after the "
-                      f"engine armed it: read, said asked for, not let go: "
-                      f"{x}")
-            check(x["armed"] != 1 or (
-                  x["released"] == 0 and
-                  not x["msg"].startswith(("Let go", "Hold stopped")) and
-                  "not armed" not in (x["msg"] + x["full"]).lower()),
-                  f"{where}: {k}: the engine armed it: never said not armed "
-                  f"or stopped, never let go: {x}")
-        if "leave_hidden" in r:
-            check(r["leave_hidden"],
-                  f"{where}: the handle was hidden (the group asked for) "
-                  f"when the leave and the lost capture came")
-        check(all(k in r for k in ("late_asked_300", "late_asked_800",
-                                   "late_asked_leave",
-                                   "drift_1650_1800", "drift_1700_2100",
-                                   "drift_1800_2000"))
-              or size != (384, 800),
-              f"{where}: the races were driven: {sorted(r)}")
-        for k, said in (("jump", "Hold stopped: the touch jumped"),
-                        ("popstate", "Hold stopped: Back was pressed")):
-            if k in r["cuts"]:
-                check(r["cuts"][k]["full"] == said,
-                      f"{where}: {k} said: {r['cuts'][k]['full']!r}")
-        if "all_full" in r:
-            a = r["all_full"]
-            check(a["armed"] >= 1 and not a["early"] and gone(a),
-                  f"{where}: Arm all slid and held: armed by the engine: "
-                  f"{a}")
-        for k in ("all_u50", "all_second", "all_popstate"):
-            if k not in r:
-                continue
-            x = r[k]
-            check(x["armed"] == 0 and x["released"] >= 1 and gone(x),
-                  f"{where}: Arm all {k}: never arms, let go: {x}")
-        check(r.get("after_all", {}).get("armed") == 1,
-              f"{where}: after the cancels and a Stop a slide arms again: "
-              f"{r.get('after_all')}")
-        check(len(r["cuts"]) == (19 if size == (384, 800) else 9),
-              f"{where}: every cancel was tried: {sorted(r['cuts'])}")
-    # Off a phone: the hold, exactly as before.
-    desk = _UI2_SLIDE_DESK_STEPS
-    for size, coarse in (((1280, 800), False), ((768, 1024), True)):
-        r = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(), desk,
-                              size, coarse=coarse, routes=morning,
-                              budget_ms=30000)
-        where = (f"2.0 at {size[0]}x{size[1]}, "
-                 f"{'touch' if coarse else 'a mouse'}, the arm")
-        if not check(isinstance(r, dict) and "all" in r and
-                     not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
-            continue
-        check(r["coarse"] == coarse and [r["vw"], r["vh"]] == list(size),
-              f"{where}: drawn at that size: {r}"[:400])
-        g, a = r["g"], r["all"]
-        check(g["armed"] == 1 and g["knob"] == "none" and
-              g["said"] == "Hold to arm" and not g["slide"],
-              f"{where}: a group's Hold to arm, pressed anywhere on it, "
-              f"arms after the whole hold; no handle: {g}")
-        check(a["armed"] >= 1 and a["knob"] == "none" and
-              "Hold: arm flames" in a["said"] and not a["slide"],
-              f"{where}: Hold: arm flames as before, no handle: {a}")
-        check(r["next"].endswith(". Hold to arm flames."),
-              f"{where}: the top line's arm step as before: {r['next']!r}")
-    print("  ok")
 
 
 # Arm flames and an Arm all outcome true to the engine (Andy and Jeff on a
@@ -120617,6 +120175,279 @@ for(const st of ["all", "asked", "some", "none", "unknown"]) for(const one of [t
         check(sn[0] == "None armed. Tap Details." and
               sa[0] == "All flames armed.",
               f"{where}: the line follows each later read: {sn} {sa}")
+    print("  ok")
+
+
+# Flame arm on a touch phone (Andy and Jeff, 2026-11-23: "Slider ARM
+# function is shit. Make it like the laser arm function with a pop-up box
+# instead."): a tap and a pop-up, no slide. Against the arm-hold stand-in
+# of _UI2_BEAT_STEPS (the engine's 0.25 s limit, its 1.0 s of beats plus
+# the deck's 0.6 s). ENG.lamp: a group the engine armed reads armed in the
+# status (else asked for). OLD: every status read served long ago.
+_UI2_FLAME_POP_STEPS = _UI2_BEAT_STEPS[:_UI2_BEAT_STEPS.find("async function hold(")] + r"""
+const sheetOpen = () => !q("sheet").hidden;
+const sheetBtn = label => [...q("sh-row").querySelectorAll("button")].find(b => b.textContent.trim() === label);
+let PID = 60;
+const tap = el => { const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2, id = ++PID;
+  pe(el, "pointerdown", x, y, id); pe(el, "pointerup", x, y, id);
+  el.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:id, pointerType:"touch", isPrimary:true, detail:1, clientX:x, clientY:y})); };
+const said = el => (el.innerText + " " + getComputedStyle(el, "::after").content).trim();
+let OLD = false, MIX = null, FLST = false;
+const statusPatch = n => { window.__patch = st => {
+  st.flames.groups = st.flames.groups.slice(0, n).map((g, i) => {
+    if(MIX) return Object.assign({}, g, {armed:MIX[i] ? "armed" : "disarmed"});
+    return ENG.wanted[i] ? Object.assign({}, g, ENG.lamp ? {armed:"armed"} : {wanted:true}) : g; });
+  if(FLST) st.flames = Object.assign({}, st.flames, {stale:true});
+  if(OLD) st.served_at = 1;
+  return st; }; };
+const lineHas = () => msg() + " " + MSG_FULL;
+// One pop-up arm of `el`: the tap, then `mid` with the pop-up open, then
+// Arm (unless `cancel`), then `during` while it runs; what was sent and
+// what the page said, watched every 10 ms.
+async function popArm(el, opt){
+  opt = opt || {};
+  el.scrollIntoView({block:"center"}); await nap(100);
+  const s0 = SENT.length, r0 = REL.length, a0 = ARMED.length, d0 = DELIVERED.length, p0 = window.__posts.length;
+  q("msg-t").textContent = ""; MSG_FULL = "";
+  tap(el); await nap(250);
+  const res = {sheet:sheetOpen(), q:q("sh-h").textContent, body:q("sh-body").textContent,
+    btns:[...q("sh-row").querySelectorAll("button")].map(b => b.textContent.trim()), sent_at_sheet:SENT.length - s0};
+  if(opt.mid) await opt.mid(res);
+  await nap(400);
+  res.sent_before_arm = SENT.length - s0;
+  if(opt.cancel){ if(sheetBtn("Cancel")) tap(sheetBtn("Cancel")); }
+  else if(sheetBtn("Arm")) tap(sheetBtn("Arm"));
+  const t0 = performance.now();
+  let early = false, checking = false, hold = false, raw = false;
+  const seen = [];
+  while(performance.now() - t0 < (opt.ms || 3500)){
+    const m = msg();
+    if(!seen.length || seen[seen.length - 1] !== m) seen.push(m);
+    if(/armed\./i.test(m) && !/not armed|none armed|some armed/i.test(m) && FA && !FA.done) early = true;
+    if(/^Armed\.|^All flames armed\./.test(m) && DELIVERED.length === d0) early = true;
+    if(/hold/i.test(lineHas()) || /[;–—]/.test(m)) hold = true;
+    if(/Lift your finger|interrupted|Stream Deck/.test(m)) raw = true;
+    if(el.innerText.indexOf("Checking") >= 0 || q("armall-why").textContent === "Checking") checking = true;
+    if(opt.during && performance.now() - t0 >= (opt.at || 600) && !res.did){ res.did = true; await opt.during(res, el); }
+    await nap(10);
+  }
+  Object.assign(res, {starts:SENT.slice(s0).filter(b => b.id == null).length, beats:SENT.length - s0, armed:ARMED.length - a0,
+    released:REL.length - r0, early:early, checking:checking, hold_word:hold, raw:raw, seen:seen, msg:msg(), full:MSG_FULL,
+    sheet_end:sheetOpen(), live:LIVE.size, hold_after:HOLD !== null, busy:faBusy(), mode:el.dataset.mode || "",
+    posts:window.__posts.slice(p0).map(p => p.route), words:msg().split(/\s+/).filter(Boolean).length});
+  return res;
+}
+const again = async () => { reset(); MIX = null; OLD = false; FLST = false; ENG.lamp = false; await nap(900); };
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1500);
+out.vw = innerWidth; out.vh = innerHeight; out.coarse = matchMedia("(pointer:coarse)").matches;
+const PART = "__PART__";
+if(PART === "a"){
+  const look = el => { const r = el.getBoundingClientRect(), c = getComputedStyle(el);
+    return {r:[Math.round(r.left), Math.round(r.right)], knob:getComputedStyle(el.querySelector(".knob")).display, said:said(el), touch:c.touchAction}; };
+  g0().scrollIntoView({block:"center"}); await nap(100);
+  out.look_g = look(g0()); out.look_all = look(q("b-armall"));
+  out.armb = [...document.querySelectorAll("[data-arm]"), q("b-armall")].map(el => said(el));
+  // Cancel on the pop-up: nothing sent.
+  out.cancel = await popArm(g0(), {cancel:true, ms:1500}); await again();
+  // Arm: one start, the engine arms it; the status reads it armed.
+  ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
+  out.arm = await popArm(g0(), {ms:3500}); await again();
+  // Asked for only (the lamp not armed yet): never "Armed." without it.
+  ENG.asked = true; statusPatch(4); await nap(700);
+  out.asked = await popArm(g0(), {ms:3500}); await again();
+  // A second Arm while it runs (a second pop-up's Arm, and a tap on the
+  // tile): refused, never a second start.
+  ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
+  out.second = await popArm(g0(), {ms:3500, at:500, during:async (res, el) => {
+    res.dis = el.disabled; faGo(0); faAsk(0); await nap(50); res.sheet2 = sheetOpen(); tap(el); await nap(50); res.sheet3 = sheetOpen(); }});
+  await again();
+  // The engine's state unreadable after the arm: Not known, never armed or
+  // not armed.
+  ENG.asked = true; ENG.lamp = true; ENG.blind = true; statusPatch(4); await nap(700);
+  out.blind = await popArm(g0(), {ms:3000}); await again();
+  // A read older than one already shown is never used.
+  ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
+  out.older = await popArm(g0(), {ms:3500, at:300, during:async () => { OLD = true; FA_SEEN = 2; }});
+  await again();
+  // After an armed read, an older status says nothing over it.
+  ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
+  out.keep = await popArm(g0(), {ms:3000});
+  MIX = [false, false, false, false]; OLD = true; await nap(1200);
+  out.keep.after = msg();
+  await again();
+} else if(PART === "b"){
+  // Disarm flames and Stop while it is being checked: sent at once, the arm
+  // ends, nothing armed.
+  ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
+  out.disarm = await popArm(g0(), {ms:3000, at:500, during:async () => { tap(q("b-disall")); }}); await again();
+  ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
+  out.stop = await popArm(g0(), {ms:3000, at:500, during:async () => { await pressStop("stop"); }}); await again();
+  await nap(2500);
+  // Arm all flames: the pop-up names them; Cancel sends nothing; Arm arms
+  // them all.
+  out.all_cancel = await popArm(q("b-armall"), {cancel:true, ms:1500}); await again();
+  ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
+  out.all = await popArm(q("b-armall"), {ms:4000}); await again();
+  // A slow link (a 300 ms round trip): the engine's 0.25 s limit cuts the
+  // hold; said in a phone's words from a read, never "hold".
+  ENG.asked = true; ENG.lamp = true; statusPatch(4); ENG.up = 150; ENG.down = 150; await nap(700);
+  out.slow = await popArm(g0(), {ms:4000}); await again();
+}
+out.live_end = LIVE.size;
+"""
+
+
+def test_ui2_flame_arm_popup_on_a_phone():
+    section("flame arm on a touch phone is a tap and a pop-up (Andy and "
+            "Jeff, 2026-11-23): Arm and Arm all flames open a pop-up naming "
+            "what arms; Cancel sends nothing; Arm starts one hold; a second "
+            "Arm while it is checked is refused; the line says only what an "
+            "engine read after it shows (never armed without one, Not known "
+            "when it cannot be read, never an older read over a newer); "
+            "Disarm and Stop go at once; no phone line says hold; Arm "
+            "flames says All armed only when every group is; off a phone, "
+            "the hold as before")
+    page = _ui2_page_inline()
+    two = _ui2_pages()[1]
+    css = page[page.find("/* PHONE LAYOUT BEGIN"):
+               page.find("/* PHONE LAYOUT END")]
+    check('.armb.hold:not(:disabled)::after{content:"Arm"}' in css and
+          '#b-armall:not(:disabled)::after{content:"Arm all flames"}' in css
+          and ".armb.hold:not(:disabled) > .knob" not in css and
+          "#b-armall:not(:disabled) > .knob" not in css,
+          "on a phone a group's arm says Arm, Arm all says Arm all flames, "
+          "and neither has a handle")
+    check("slideDown(e, b, i)" not in two and
+          'slideDown(e, ARMALL, "all")' not in two,
+          "no flame arm starts a slide")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    morning = {"/api/remote/morning": _morning_view_pico()}
+    size = (384, 800)
+    where = "2.0 on a touch phone, 384x800, the flame arm pop-up"
+    r = {}
+    for part in ("a", "b"):
+        got = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                                _UI2_FLAME_POP_STEPS.replace("__PART__", part),
+                                size, routes=morning, budget_ms=90000)
+        if check(isinstance(got, dict) and "live_end" in got and
+                 not got.get("problems"),
+                 f"{where}, {part}: driven: {got!r}"[:1500]):
+            check(got["live_end"] == 0,
+                  f"{where}, {part}: no hold timer left running")
+            r.update(got)
+    if "look_g" in r:
+        check(r["coarse"] and [r["vw"], r["vh"]] == list(size),
+              f"{where}: drawn as a touch screen of that size: {r}"[:300])
+        W = size[0]
+        for k in ("look_g", "look_all"):
+            lk = r[k]
+            check(lk["knob"] == "none" and lk["r"][0] >= 24 and
+                  lk["r"][1] <= W - 24 and lk["touch"] == "manipulation",
+                  f"{where}, {k}: a full width button, no handle: {lk}")
+        check(r["armb"][0] == 'Arm "Arm"' or r["armb"][0].endswith('"Arm"'),
+              f"{where}: a group's button says Arm: {r['armb']}")
+        check(not any(re.search(r"hold|slide", s, re.I) for s in r["armb"]),
+              f"{where}: no phone arm control says hold or slide: "
+              f"{r['armb']}")
+
+        def clean(x, k):
+            check(not x["hold_word"] and not x["raw"] and x["words"] <= 8,
+                  f"{where}, {k}: the line never says hold, never the "
+                  f"engine's own words, 8 words or fewer: {x}")
+        c = r["cancel"]
+        check(c["sheet"] and c["q"] == "Arm front row?" and
+              c["btns"] == ["Cancel", "Arm"] and "front row" in c["body"] and
+              c["sent_at_sheet"] == 0 and c["beats"] == 0 and
+              c["armed"] == 0 and not c["sheet_end"] and not c["busy"],
+              f"{where}: a tap opens the pop-up; Cancel sends nothing: {c}")
+        a = r["arm"]
+        check(a["sent_before_arm"] == 0 and a["starts"] == 1 and
+              a["armed"] == 1 and not a["early"] and a["checking"] and
+              a["msg"] == "Armed." and "Checking..." in a["seen"] and
+              not a["busy"] and not a["hold_after"],
+              f"{where}: Arm on the pop-up: one start, Checking while it "
+              f"runs, Armed only from the read after the engine armed it: "
+              f"{a}")
+        clean(a, "arm")
+        k = r["asked"]
+        check(k["armed"] == 1 and k["msg"] == "Arming. Watch the tile." and
+              not k["early"],
+              f"{where}: asked for, the lamp not yet armed: never Armed: {k}")
+        s = r["second"]
+        check(s["starts"] == 1 and s["armed"] == 1 and s["dis"] and
+              not s["sheet2"] and not s["sheet3"],
+              f"{where}: a second Arm while it is checked is refused, never "
+              f"a second start: {s}")
+        b = r["blind"]
+        check(b["armed"] == 1 and b["msg"] == "Not known. Check the tile."
+              and not b["early"],
+              f"{where}: the engine's state unreadable after the arm: Not "
+              f"known, never armed or not armed: {b}")
+        clean(b, "blind")
+        o = r["older"]
+        check(o["msg"] == "Not known. Check the tile.",
+              f"{where}: a read older than one already shown is never "
+              f"used: {o}")
+        kp = r["keep"]
+        check(kp["msg"] == "Armed." and kp["after"] == "Armed.",
+              f"{where}: an older status after the armed read says nothing "
+              f"over it: {kp}")
+    if "disarm" in r:
+        for k, route in (("disarm", "disarm-all"), ("stop", "stop")):
+            x = r[k]
+            check(route in x["posts"] and x["armed"] == 0 and
+                  x["released"] >= 1 and not x["hold_after"] and
+                  not x["early"] and not x["busy"] and x["msg"] and
+                  x["msg"] == x["seen"][-1] and x["msg"] not in (
+                      "Checking...", "Not armed. Tap Details.",
+                      "Not known. Check the tile."),
+                  f"{where}: {k} while it is checked: sent at once, the arm "
+                  f"ends, nothing armed, and the {k}'s own words are never "
+                  f"written over: {x}")
+        ac = r["all_cancel"]
+        check(ac["sheet"] and ac["q"] == "Arm all flames?" and
+              all(n in ac["body"] for n in ("front row", "cat-walk",
+                                            "wave flamer", "fireball")) and
+              ac["beats"] == 0 and ac["armed"] == 0,
+              f"{where}: Arm all flames opens its pop-up naming every group; "
+              f"Cancel sends nothing: {ac}")
+        al = r["all"]
+        check(al["starts"] == 4 and al["armed"] == 4 and
+              al["msg"] == "All flames armed." and not al["early"] and
+              al["checking"],
+              f"{where}: Arm on Arm all's pop-up arms every group, said "
+              f"from a read: {al}")
+        clean(al, "all")
+        sl = r["slow"]
+        check(sl["armed"] == 0 and sl["msg"] == "Not armed. Tap Details."
+              and "Why: the arm was cut off, try again." in sl["full"],
+              f"{where}: a 300 ms round trip: the engine cuts the hold; "
+              f"said from a read in a phone's words: {sl}")
+        clean(sl, "slow")
+    # Off a phone: the press and hold, exactly as before.
+    for dsize, coarse in (((1280, 800), False), ((768, 1024), True)):
+        d = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                              _UI2_SLIDE_DESK_STEPS, dsize, coarse=coarse,
+                              routes=morning, budget_ms=30000)
+        dw = (f"2.0 at {dsize[0]}x{dsize[1]}, "
+              f"{'touch' if coarse else 'a mouse'}, the arm")
+        if not check(isinstance(d, dict) and "all" in d and
+                     not d.get("problems"), f"{dw}: driven: {d!r}"[:1500]):
+            continue
+        g, a = d["g"], d["all"]
+        check(g["armed"] == 1 and g["said"] == "Hold to arm" and
+              not g["slide"],
+              f"{dw}: a group's Hold to arm arms after the whole hold: {g}")
+        check(a["armed"] >= 1 and "Hold: arm flames" in a["said"],
+              f"{dw}: Hold: arm flames as before: {a}")
     print("  ok")
 
 
@@ -137063,8 +136894,8 @@ if __name__ == "__main__":
         test_ui2_touch_holds_lock_scrolling_and_end_off_the_button,
         test_ui2_arm_beats_on_a_fixed_timer,
         test_ui2_phone_layout_whole_on_a_touch_phone,
-        test_ui2_flame_slide_to_arm_on_a_phone,
         test_ui2_flame_arm_words_true_to_the_engine,
+        test_ui2_flame_arm_popup_on_a_phone,
         test_ui2_laser_slide_on_a_phone,
         test_ui2_timed_purge_slide_on_a_phone,
         test_ui2_cleaning_slide_on_a_phone,

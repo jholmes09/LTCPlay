@@ -3518,9 +3518,32 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "  h.stop.abort();\n  const doubt = [];\n",
   "  const doubt = [];\n"),
- # Arm flames says All armed only when every group is, and an Arm all
- # outcome never says nothing was armed while a group is (Andy and Jeff
- # on a phone, 2026-11-23).
+ # Flame arm on a touch phone (Andy and Jeff, 2026-11-23): a tap and a
+ # pop-up, not a slide. Nothing is sent before the pop-up's Arm; a second
+ # Arm while it is checked never starts a second hold; the line says only
+ # what an engine read after it shows; an older read never stands over a
+ # newer one. Arm flames says All armed only when every group is, and an
+ # Arm all outcome never says nothing was armed while a group is.
+ ('ui 2.0 flame pop-up: Cancel on the pop-up still arms',
+  'ltcplay/web/remote2.html',
+  "  } finally { FA_ASKING = false; }\n  if(!yes) return;\n",
+  "  } finally { FA_ASKING = false; }\n"),
+
+ ('ui 2.0 flame pop-up: a second Arm while it is checked starts a second hold',
+  'ltcplay/web/remote2.html',
+  "  if(faBusy() || HOLD){ say(\"Checking. Wait.\"",
+  "  if(false){ say(\"Checking. Wait.\""),
+
+ ("ui 2.0 flame pop-up: the engine's state unreadable after the arm is said from the page's last status",
+  'ltcplay/web/remote2.html',
+  "  const r = s ? flamesRead(s.flames, false, fa.groups) : flamesRead(null, true, fa.groups);\n",
+  "  const r = flamesRead((s || ST || {}).flames, false, fa.groups);\n"),
+
+ ('ui 2.0 flame pop-up: a read older than one already shown is used',
+  'ltcplay/web/remote2.html',
+  "  if(s && faServed(s) < FA_SEEN) s = null;\n",
+  ""),
+
  ('ui 2.0 flame read: Arm flames says All armed with any group armed',
   'ltcplay/web/remote_rules.js',
   "  r.state = r.armed.length === pick.length ? \"all\" :",
@@ -3530,49 +3553,6 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "      full = armTextNow(t, r, groupNames());\n      if(!/Not known:/.test(t)) short = flamesReadLine(r.state, false);\n",
   "      if(!/Not known:/.test(t) && r.state === \"all\") short = flamesReadLine(r.state, false);\n"),
-
- # Step 5 of the phone build (AUDIT P0 1, P1 7 to 9): on a touch phone a
- # flame arm is a slide. The engine arms on its own once beats have lasted
- # 1.0 s plus the deck's 0.6 s, so the beats must stop under 90 percent;
- # every cancel lets go; the hold stays on until the engine's armed answer
- # or the finger's lift; off a phone the arm is the hold as before.
- ('ui 2.0 slide: a slide held under 90 percent beats on until the engine arms',
-  'ltcplay/web/remote2.html',
-  "    if(s.frac < SLIDE_ARM && (Date.now() - s.t0 >= SLIDE_GATE_MS || slideHeld(s.h) >= SLIDE_GATE_HELD_S)){\n",
-  "    if(false){\n"),
-
- ("ui 2.0 slide: a slide at 90 percent ends without waiting for the engine's armed answer, its hold left running",
-  'ltcplay/web/remote2.html',
-  "  if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }\n",
-  "  if(!s.paused && (HOLD !== s.h || s.frac >= SLIDE_ARM)){ slideEnd(s); return; }\n"),
-
- ('ui 2.0 slide: a cancelled slide springs back but does not let go of its hold',
-  'ltcplay/web/remote2.html',
-  "  if(s.h && HOLD === s.h) slideStop(s, why);\n",
-  "  if(false) slideStop(s, why);\n"),
-
- # Cold review of #295: the group asked for before the engine's armed
- # answer, or a drift under 90 percent at the arm moment, must never be
- # said as not armed or let go without the engine's state read (#293).
- ('ui 2.0 slide: a slide whose tile turns to Disarm under the finger lets go before the armed answer',
-  'ltcplay/web/remote2.html',
-  "  if(!s.knob.getClientRects().length && !slidePending(s)){",
-  "  if(!s.knob.getClientRects().length){"),
-
- ('ui 2.0 slide: a slide stopped under 90 percent lets go without reading the engine state',
-  'ltcplay/web/remote2.html',
-  "  s.h.parts.forEach(p => { if(!p.end && !p.err) p.err = new Error(why || \"the slide ended\"); });\n",
-  ""),
-
- ('ui 2.0 slide: a pointerleave or lost capture during a slide lets go with no state read',
-  'ltcplay/web/remote2.html',
-  "  if(SLIDE && e.pointerId === SLIDE.id) e.stopPropagation();\n",
-  ""),
-
- ("ui 2.0 slide: a paused slide's lift says not armed without a read",
-  'ltcplay/web/remote2.html',
-  "  else if(s.paused && why) slideSaid(s.groups, why);\n",
-  "  else if(s.paused && why) armSay(\"Hold stopped: \" + why, why === \"let go\" ? 0 : 2);\n"),
 
  ('ui 2.0 slide: every screen is a phone, so a desktop press and hold never arms',
   'ltcplay/web/remote2.html',
@@ -3759,10 +3739,6 @@ MUTATIONS = [
  # back after a Stop waits for the Stop's answer; the pinned Stop purge
  # drawn above the slide never ends it; the pinned Stop purge ends a held
  # slide.
- ("ui 2.0 slide: a pinned Stop drawn above the tiles moves the flame slide out of its band and lets go of the arm",
-  'ltcplay/web/remote2.html',
-  "  const r = s.b0;\n  // The band is where the slide was when the finger went down (slideDown):\n  // a pinned Stop drawn above the tiles during the hold",
-  "  const r = s.el.getBoundingClientRect();\n  // The band is where the slide was when the finger went down (slideDown):\n  // a pinned Stop drawn above the tiles during the hold"),
 
  ("ui 2.0 laser slide: a pinned Stop drawn above the tiles moves the slide out of its band and ends it",
   'ltcplay/web/remote2.html',
@@ -21890,7 +21866,7 @@ def build():
   '  if(false){\n    if(t) clearTimeout(t.timer);\n    STOP_TAPS2[id]'),
 
  ("ui2 page: lifting the finger does not let go of a hold to arm", "ltcplay/web/remote2.html",
-  '        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));',
+  '        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all && !faBusy()) armStop("let go"); }));',
   '        b.addEventListener(ev, () => {}));'),
 
  ("ui2 page: the copied hold beats faster than 1.0's", "ltcplay/web/remote2.html",
