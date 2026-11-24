@@ -115170,7 +115170,7 @@ def test_ui2_time_elapsed_and_left():
           "the state strip shows Elapsed | Left, and - | - when not known")
     # A phone (390x844 CI, Stop show was pushed under the footer): the top
     # line leaves its times out there; the state strip just below has both.
-    ph = two[two.find("@media (max-width:600px), (max-height:560px){\n  /* A phone: the logo"):]
+    ph = two[two.find("@media (max-width:600px), (max-height:599px){\n  /* A phone: the logo"):]
     ph = ph[:ph.find("\n}\n")]
     check("#next-t .tm{display:none}" in ph and
           'sp.className = "tm"; sp.textContent = " " + ns.times;' in two,
