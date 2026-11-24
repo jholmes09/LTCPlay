@@ -120038,6 +120038,259 @@ def test_ui2_phone_layout_whole_on_a_touch_phone():
     print("  ok")
 
 
+# Any phone, any display size (Jeff's Android phone, 2026-11-24, at a large
+# display size): the top line jumped between one and two lines as a
+# countdown ticked, moving Hold, Disarm and the tiles 90 px under a finger,
+# DAY's step panel was a 24 px strip under its rows, and Startup and
+# Shutdown ran off the right edge. A page zoomed by the phone's display
+# size or text size (1.15, 1.3, 1.5) is a narrower and shorter page in CSS
+# px, so a scale is drawn as the size it makes. Each size is one frame of
+# that size, resized in one browser (a touch one and a mouse one); an
+# iPhone's island and home bar are its safe-area insets, set on the page's
+# own --safe-* tokens (headless Chromium has no notch). Not Safari: WebKit
+# is not in the test browsers.
+_UI2_SWEEP_STEPS = r"""
+const q = id => document.getElementById(id);
+const PH = __PHASES__, SIZES = __SIZES__, FULL = __FULL__;
+let phase = "countdown";
+window.__patch = st => { const s = JSON.parse(JSON.stringify(PH[phase])); s.served_at = st.served_at; return s; };
+const fr = window.frameElement, root = document.documentElement, main = document.querySelector("main");
+const R = el => el.getBoundingClientRect();
+const shown = el => !!el && !el.hidden && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden" && R(el).width > 0;
+const tab = async t => { document.querySelector('.tab[data-tab="' + t + '"]').click(); await h.sleep(500); main.scrollTop = 0; await h.sleep(50); };
+// The pinned controls (never scrolled): the header's, the top line's and,
+// off SHOW, the safety strip's.
+const pinned = () => [...document.querySelectorAll("header .tab, header .hb, #next > button, #next #pins .b, main > #mini .b")].filter(shown);
+// The controls of the pane's top rows (as drawn before any scroll).
+const paneTop = () => [...document.querySelectorAll("#t-show .tr .b, #t-show .tr .q, .dhead .b, .dhead .q")].filter(shown);
+function look(t){
+  const vw = innerWidth, vh = innerHeight, m = R(main), bad = [];
+  if(root.scrollWidth > root.clientWidth + 1) bad.push("the page scrolls sideways: " + root.scrollWidth + " > " + root.clientWidth);
+  if(main.scrollWidth > main.clientWidth + 1) bad.push("the pane is wider than the screen: " + main.scrollWidth + " > " + main.clientWidth);
+  for(const el of [...pinned(), ...paneTop(), ...document.querySelectorAll("header, #next, footer, #wx")].filter(shown)){
+    const r = R(el);
+    if(r.left < -1 || r.right > vw + 1) bad.push((el.id || el.className || el.tagName) + " past the edge: " + Math.round(r.left) + ".." + Math.round(r.right) + " of " + vw);
+  }
+  // A header tab is as tall, and as wide as its word and icon (Day: 36
+  // px on a 360 px phone, the row has no more room).
+  const small = [...pinned(), ...paneTop()].filter(el => { const r = R(el); return (el.matches(".tab") ? Math.min(r.width + 8, r.height) : Math.min(r.width, r.height)) < 44 - 0.5; })
+    .map(el => (el.id || el.textContent.trim().slice(0, 14)) + " " + Math.round(R(el).width) + "x" + Math.round(R(el).height));
+  if(small.length) bad.push("a tap under 44 px: " + small.join(", "));
+  const ps = pinned(), over = [];
+  for(let i = 0; i < ps.length; i++) for(let j = i + 1; j < ps.length; j++){
+    const a = R(ps[i]), b = R(ps[j]);
+    if(a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) over.push((ps[i].id || ps[i].textContent.trim().slice(0, 12)) + "/" + (ps[j].id || ps[j].textContent.trim().slice(0, 12)));
+  }
+  if(over.length) bad.push("controls overlap: " + over.join(", "));
+  // The words on the pinned and top-row controls are never cut.
+  const cut = [...pinned(), ...paneTop()].filter(el => el.scrollWidth > el.clientWidth + 1).map(el => el.id || el.textContent.trim().slice(0, 14));
+  if(cut.length) bad.push("a control's words cut: " + cut.join(", "));
+  // Off SHOW on a touch phone the safety strip is pinned at the pane's
+  // top (elsewhere it scrolls with the pane, or is in the footer).
+  const mini = t === "day" && main.contains(q("mini")) && getComputedStyle(q("mini")).position === "sticky" ? q("mini") : null;
+  const below = mini && shown(mini) ? R(mini).bottom : m.top;
+  const sa = parseFloat(root.style.getPropertyValue("--safe-t")) || 0, sb = parseFloat(root.style.getPropertyValue("--safe-b")) || 0;
+  if(R(document.querySelector("header")).top < sa - 1) bad.push("the header is under the island: " + Math.round(R(document.querySelector("header")).top));
+  if(R(document.querySelector("footer")).bottom > vh - sb + 1) bad.push("the footer is under the home bar: " + Math.round(R(document.querySelector("footer")).bottom) + " of " + vh + " less " + sb);
+  const res = {content:Math.round(m.bottom - below), pct:Math.round(100 * (m.bottom - below) / vh), bad:bad};
+  if(t === "day"){ const p = q("d-panel"); res.panel = [p.clientHeight, p.scrollHeight];
+    if(p.scrollHeight > p.clientHeight + 1) bad.push("DAY's step panel squeezed: " + p.clientHeight + " px of its " + p.scrollHeight); }
+  return res;
+}
+// The countdown, second by second: the top line's height, the pane's top
+// and the first control under it never move.
+function sweep(t, kind, vals){
+  const first = t === "show" ? () => document.querySelector("#t-show .state") : () => document.querySelector(".dhead");
+  const hs = new Set(), ys = new Set(), fs = new Set(), qs = new Set();
+  for(const s of vals){
+    CD = {kind:kind, label:"x", running:false, s:s};
+    renderStale();
+    const n = R(q("next"));
+    hs.add(Math.round(n.height)); ys.add(Math.round(R(main).top)); fs.add(Math.round(R(first()).top));
+    qs.add(Math.round(R(q("next").querySelector(".q")).top - n.top));
+  }
+  return {n:vals.length, h:[...hs], main:[...ys], first:[...fs], q:[...qs], text:q("next-t").textContent};
+}
+const range = (a, b, st) => { const o = []; for(let i = a; st > 0 ? i <= b : i >= b; i += st) o.push(i); return o; };
+// The sample: every digit in every place at least once, each change of
+// length (9:59 to 10:00, 59:59 to 1:00:00), and the minute before a show
+// second by second; the whole hour with LTC_LAYOUT_MATRIX=full.
+const NEXT = FULL ? range(0, 779, 1).concat(range(3599, 0, -7)) : range(0, 779, 17).concat(range(255, 275, 1), [599, 600, 3599, 3600]);
+const ARM = FULL ? range(0, 300, 1) : range(0, 300, 7).concat(range(255, 275, 1));
+const LEFT = FULL ? range(0, 3599, 1) : range(0, 779, 29).concat([599, 600, 3599]);
+out.sizes = [];
+for(const z of SIZES){
+  const [w, hh, ins] = z;
+  fr.style.width = w + "px"; fr.style.height = hh + "px";
+  for(const [k, v] of Object.entries({"--safe-t":ins[0], "--safe-r":ins[1], "--safe-b":ins[2], "--safe-l":ins[3]})) root.style.setProperty(k, v + "px");
+  window.dispatchEvent(new Event("resize"));
+  await h.sleep(300);
+  const r = {size:[innerWidth, innerHeight], ins:ins, states:{}, sweeps:{}};
+  // The top line is the same on every tab; a phone's is swept on SHOW
+  // and DAY, a wider screen's on SHOW.
+  const swept = t => t === "show" || innerWidth <= 600;
+  for(const st of ["countdown", "arm", "running", "hold", "alerts"]){
+    phase = st; await h.sleep(600);
+    for(const t of ["show", "day"]){
+      await tab(t);
+      r.states[st + "/" + t] = look(t);
+      if(!swept(t)) continue;
+      if(st === "countdown" || st === "arm") r.sweeps[st + "/" + t] = sweep(t, "next", st === "arm" ? ARM : NEXT);
+      if(st === "running") r.sweeps[st + "/" + t] = sweep(t, "left", LEFT);
+    }
+  }
+  out.sizes.push(r);
+}
+"""
+
+
+def _ui2_status_sweep():
+    """The states the sweep draws: a countdown to show 5 with the flames
+    armed (its words "Show 5 starts in M:SS."), the same with them not
+    armed and arming on (inside 5 minutes, "Arm flames."), a show running,
+    a show held, and five alerts holding the show."""
+    import copy
+    ph = _ui2_status_phone()
+    cd = copy.deepcopy(ph["idle"])
+    cd["schedule"]["next"] = {"show": 5, "start": "19:50", "in_s": 261}
+    cd["countdown"] = {"kind": "next", "label": "Next show", "s": 261,
+                       "running": False}
+    arm = copy.deepcopy(cd)
+    cd["flames"]["groups"] = [dict(g, armed="armed")
+                              for g in cd["flames"]["groups"]]
+    run = _ui2_status_running()
+    run["me"] = copy.deepcopy(ph["idle"]["me"])
+    hold = copy.deepcopy(run)
+    hold["schedule"].update({"state": "PAUSED", "held": True})
+    hold["countdown"]["running"] = False
+    return {"countdown": cd, "arm": arm, "running": run, "hold": hold,
+            "alerts": ph["five"]}
+
+
+# The device matrix: (CSS width, CSS height, scale, insets top, right,
+# bottom, left), a scale drawn as the size it makes. The sample runs on
+# every selftest; LTC_LAYOUT_MATRIX=full runs every width, height and scale
+# both ways up (a few minutes).
+_UI2_SWEEP_TOUCH = (
+    (412, 915, 1), (412, 915, 1.3), (412, 915, 1.5), (384, 800, 1.15),
+    (360, 740, 1.3), (360, 640, 1), (320, 568, 1), (300, 640, 1),
+    (270, 585, 1), (393, 852, 1, 59, 0, 34, 0), (402, 874, 1, 62, 0, 34, 0),
+    (440, 956, 1, 62, 0, 34, 0), (852, 393, 1, 0, 59, 21, 59),
+    (915, 412, 1), (768, 1024, 1), (1024, 768, 1), (820, 1180, 1))
+_UI2_SWEEP_MOUSE = ((360, 700, 1), (320, 640, 1), (540, 900, 1),
+                    (600, 1000, 1))
+
+
+def _ui2_sweep_sizes(full, touch):
+    if not full:
+        rows = _UI2_SWEEP_TOUCH if touch else _UI2_SWEEP_MOUSE
+    else:
+        rows = []
+        for w in (270, 300, 320, 360, 384, 412, 430, 600, 768, 1024):
+            for h in (560, 640, 740, 850, 1000):
+                for z in (1, 1.15, 1.3, 1.5):
+                    rows += [(w, h, z), (h, w, z)]
+        rows += [r for r in _UI2_SWEEP_TOUCH if len(r) > 3]
+    out, seen = [], set()
+    for r in rows:
+        w, h, z = round(r[0] / r[2]), round(r[1] / r[2]), r[2]
+        ins = list(r[3:7]) if len(r) > 3 else [0, 0, 0, 0]
+        if (w, h, tuple(ins)) in seen or w < 240 or h < 360:
+            continue
+        seen.add((w, h, tuple(ins)))
+        out.append([w, h, ins, z])
+    return out
+
+
+def test_ui2_layout_sweep_any_phone_size_and_scale():
+    section("2.0 on any phone size and display scale (Jeff's phone, "
+            "2026-11-24): drawn over a device matrix (phones 270 to 440 px "
+            "wide at 1.0 to 1.5 scale, an iPhone's island and home bar, "
+            "phones on their side, tablets, narrow mouse windows), SHOW "
+            "and DAY in a countdown, a show running, a hold and five "
+            "alerts: no sideways scroll, nothing past an edge, every pinned "
+            "tap 44 px, no two overlap, no control's words cut, the pane "
+            "40 percent of an upright screen, DAY's panel never squeezed, "
+            "and the top line, the pane and the first row under it never "
+            "move as a countdown ticks")
+    page = _ui2_page_inline()
+    check("font-variant-numeric:tabular-nums}" in
+          page[page.find("#next .t{"):page.find("#next .t{") + 200],
+          "the top line's digits are all one width")
+    check("width=device-width, initial-scale=1, viewport-fit=cover" in page
+          and "env(safe-area-inset-bottom, 0px)" in page and
+          "padding:var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l)"
+          in page and "-webkit-text-size-adjust:100%" in page,
+          "the page fills the screen (viewport-fit=cover) and keeps clear "
+          "of its island and home bar; no text enlarged by itself")
+    check("100dvh" in page[page.find("#app{"):page.find("#app{") + 300],
+          "the frame is the screen's dynamic height (100dvh), 100vh only "
+          "where dvh is not known")
+    _no_dashes(page[page.find("<style>"):page.find("</style>")],
+               "the page's style notes")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    full = os.environ.get("LTC_LAYOUT_MATRIX") == "full"
+    ph = _ui2_status_sweep()
+    morning = {"/api/remote/morning": _morning_view_pico()}
+    for touch in (True, False):
+        sizes = _ui2_sweep_sizes(full, touch)
+        # Six sizes a browser, so no draw runs long.
+        for i in range(0, len(sizes), 6):
+            part = sizes[i:i + 6]
+            steps = (_UI2_SWEEP_STEPS.replace("__PHASES__", json.dumps(ph))
+                     .replace("__SIZES__", json.dumps(part))
+                     .replace("__FULL__", "true" if full else "false"))
+            r = _ui2_drive_framed(chrome, page, ph["countdown"], steps,
+                                  (1200, 1200), coarse=touch,
+                                  routes=morning, budget_ms=120000)
+            kind = "touch" if touch else "mouse"
+            if not check(isinstance(r, dict) and len(r.get("sizes", [])) ==
+                         len(part) and not r.get("problems"),
+                         f"the layout sweep ({kind}, {part}): driven: "
+                         f"{r!r}"[:1500]):
+                continue
+            for want, got in zip(part, r["sizes"]):
+                w, h, ins, z = want
+                where = (f"2.0 at {w}x{h} ({kind}"
+                         f"{', scale ' + str(z) if z != 1 else ''}"
+                         f"{', insets ' + str(ins) if any(ins) else ''})")
+                if not check(got["size"] == [w, h],
+                             f"{where}: drawn at that size: {got['size']}"):
+                    continue
+                for k, s in got["states"].items():
+                    check(not s["bad"], f"{where}, {k}: {s['bad']}"[:1500])
+                    # Upright: the pane under the pinned rows keeps 40
+                    # percent of the screen (five alerts holding the show
+                    # keep their line and its Go to alert whole, never
+                    # cut, so they may take more: 20 percent is left).
+                    if h > w and not k.startswith("alerts"):
+                        check(s["pct"] >= 40,
+                              f"{where}, {k}: the pane under the pinned "
+                              f"rows is {s['content']} px, {s['pct']} "
+                              f"percent of the screen, under 40")
+                    if h > w and k.startswith("alerts"):
+                        check(s["pct"] >= 20,
+                              f"{where}, {k}: the pane under the pinned "
+                              f"rows is {s['content']} px, {s['pct']} "
+                              f"percent of the screen, under 20")
+                for k, s in got["sweeps"].items():
+                    check(len(s["h"]) == 1 and len(s["main"]) == 1 and
+                          len(s["first"]) == 1 and len(s["q"]) == 1,
+                          f"{where}, {k}: the top line moved as the "
+                          f"countdown ticked over {s['n']} values: heights "
+                          f"{s['h']}, pane top {s['main']}, first row "
+                          f"{s['first']}, help button {s['q']} "
+                          f"(\"{s['text']}\")")
+    print("  ok")
+
+
 # Flame slide to arm on a touch phone (step 5 of the phone build), against
 # the arm-hold stand-in of _UI2_BEAT_STEPS (the engine's 0.25 s limit, its
 # 1.0 s of beats plus the deck's 0.6 s, a refusal for every beat after its
@@ -136950,6 +137203,7 @@ if __name__ == "__main__":
         test_ui2_touch_holds_lock_scrolling_and_end_off_the_button,
         test_ui2_arm_beats_on_a_fixed_timer,
         test_ui2_phone_layout_whole_on_a_touch_phone,
+        test_ui2_layout_sweep_any_phone_size_and_scale,
         test_ui2_flame_slide_to_arm_on_a_phone,
         test_ui2_laser_slide_on_a_phone,
         test_ui2_timed_purge_slide_on_a_phone,

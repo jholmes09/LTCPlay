@@ -271,6 +271,38 @@ green one) until it is green, which closes its issue.
   no browser it says so and skips; on the ubuntu CI runner a missing
   browser is a failure.
 
+## Layout rules (2026-11-24)
+
+From Jeff's phone at a large display size: the top line jumped as a
+countdown ticked and moved Hold and Disarm under a finger, and DAY's
+panel was a strip. Every screen of remote2.html follows these, and
+`test_ui2_layout_sweep_any_phone_size_and_scale` checks them over a
+device matrix (a sample on every run; `LTC_LAYOUT_MATRIX=full` for every
+width, height and scale both ways up):
+
+- A display size or text size is a narrower, shorter page in CSS px.
+  Design for 270 px wide and 560 px tall, not only for the phone in hand.
+- Nothing scrolls sideways: no row wider than the screen, no control past
+  an edge. A row that can be too wide wraps or shares its width
+  (`flex:1 1 0; min-width:0`, grid `minmax(0,1fr)`).
+- Words that change (a countdown, a status line, "Some armed") get
+  reserved room: `tabular-nums` on digits, one line or a fixed number of
+  lines with an ellipsis. Nothing under them moves when they change.
+- A safety control (Hold, Stop, Disarm, Arm) never shares a row that can
+  reflow because some words changed; only a resize may move it.
+- Pinned rows (header, the top line, the safety strip) leave the pane at
+  least 40 percent of an upright screen. What is not pinned scrolls with
+  the pane, never squeezed to a strip.
+- Taps 44 px or more (48 where there is room), never overlapping, their
+  words never cut.
+- The frame is `100dvh` (with a `100vh` fallback) and keeps clear of the
+  screen's own edges through `--safe-t/r/b/l` (`env(safe-area-inset-*)`);
+  `viewport-fit=cover` stays in the viewport meta.
+- Phone rules are in media queries on width and height. The touch phone
+  block (`max-width:500px and pointer:coarse`) only tightens; a narrow
+  mouse window, 500 to 600 px, a tablet and a phone on its side must work
+  without it.
+
 While mutate.py runs, the working tree is deliberately broken (a
 `.mutating` file marks it). Do not build, soak or run a show from that
 tree until it says "tree restored byte for byte".

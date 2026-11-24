@@ -66,8 +66,15 @@
    corner for the Abort sign (removed, Jeff, 2026-10-30), so nothing
    above it moved. */
 :root{--foot-h:112px}
+/* The screen's own edges (an iPhone's island and home bar, a phone on its
+   side): viewport-fit=cover draws the page under them, so the frame keeps
+   clear of each. Zero on a screen with none. */
+:root{--safe-t:env(safe-area-inset-top, 0px); --safe-r:env(safe-area-inset-right, 0px);
+  --safe-b:env(safe-area-inset-bottom, 0px); --safe-l:env(safe-area-inset-left, 0px)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);height:100%}
+/* A phone on its side never enlarges the text by itself (iOS). */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* No pull to refresh, no overscroll bounce: a finger dragged down the
    page never reloads it mid show (Andy's phone, 2026-11-22). */
 html,body{overscroll-behavior:none}
@@ -79,7 +86,7 @@ svg.i{width:1.15em;height:1.15em;flex:0 0 auto;fill:currentColor}
 
 /* ---- the frame: header, the tab, the footer ---- */
 #app{height:calc(100vh - var(--pad-bottom, 0px) - var(--broken-h, 0px));height:calc(100dvh - var(--pad-bottom, 0px) - var(--broken-h, 0px));
-  margin-top:var(--broken-h, 0px);
+  margin-top:var(--broken-h, 0px);padding:var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l);
   display:grid;grid-template-rows:auto calc(var(--next-h) + var(--gap)) minmax(0,1fr) auto;grid-template-columns:minmax(0,1fr)}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);padding:var(--gap) var(--pad);
   border-bottom:1px solid var(--line)}
@@ -810,6 +817,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #next-go{order:9;flex:1 1 100%}
   #next-t .tm{display:none}
   #mini .b{flex:1 1 40%}
+  /* In the pane: as many to a row as fit whole, two at least, so the
+     strip is never three rows tall. */
+  main > #mini{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(96px,40%),1fr))}
+  main > #mini .b{font-size:17px} main > #mini .lbl{white-space:normal} main > #mini .b small{font-size:14px}
   #pins{flex:1 1 100%;flex-wrap:wrap}
   #pins .b{flex:1 1 40%;min-height:56px}
   .state{grid-template-columns:1fr}
@@ -824,6 +835,21 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #ann-stop{flex:1 1 100%;min-height:56px}
   .tile{grid-template-rows:auto auto var(--tile-btn)}
   .hzrow{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* The footer keeps no desktop height on a phone, and clears its home
+     bar (the frame's padding). */
+  footer{min-height:0}
+  /* DAY: the step's panel is never squeezed under its rows (Jeff's phone,
+     2026-11-24: a 24 px strip of it under Startup, Next step and the
+     steps). It takes its own height and the pane scrolls, those rows
+     scrolling away above it; Startup and Shutdown share their row at any
+     width, and the help button keeps Next step's row. */
+  .dhead .seg{flex:1 1 100%;min-width:0}
+  .dhead .seg .b{flex:1 1 0;min-width:0;padding:0 8px}
+  #d-next{flex:1 1 auto;margin-left:0}
+}
+/* DAY's panel at its own height on a phone, upright or on its side. */
+@media (max-width:600px), (max-height:500px){
+  .day{height:auto;min-height:100%;grid-template-rows:auto auto 1fr}
 }
 /* PHONE LAYOUT BEGIN. A phone held upright, touch only (Andy's phone,
    2026-11-22: 443 of 915 px was fixed chrome, 48 percent). A narrow
@@ -870,9 +896,13 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #t-show .state small{font-size:14px}
   #pill{font-size:15px;line-height:1.05;gap:4px !important;padding:2px 6px !important}
   #pill svg{width:18px;height:18px}
-  #st-tc,#cd-v{font-size:20px}
+  /* The timecode and the times fit their cell at their longest
+     ("59:59 | 59:59"), sized by the cell: never past the screen's edge. */
+  #t-show .state > div{container-type:inline-size}
+  #st-tc{font-size:min(20px, 14cqi)}
+  #cd-v{font-size:min(20px, 12.5cqi)}
   #t-show .tr{position:sticky;top:0;z-index:5;background:var(--bg);padding:6px 0;margin:-6px 0;grid-template-columns:1fr 1fr 44px}
-  #t-show .tr .b{min-height:56px}
+  #t-show .tr .b{min-height:56px;padding:0 8px;gap:6px}
   #b-go{min-height:60px}
   #t-show .tr .q{width:44px;height:44px;min-width:44px}
   /* The alert slot: its words one line each (a tap opens Details), then
@@ -885,8 +915,16 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #alert > .q{width:44px;height:44px;min-width:44px;margin-left:auto}
   /* Off SHOW: the safety strip on one row, stuck to the top of the pane. */
   main > #mini{position:sticky;top:0;z-index:5;background:var(--bg);flex-wrap:nowrap;padding:4px 6px}
-  main > #mini .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 3px;gap:2px;font-size:15px}
-  main > #mini .b svg.i{width:18px;height:18px}
+  main > #mini .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 3px;gap:2px;font-size:14px}
+  /* Their words whole, never cut ("Stop sho", "Disar flame" at a large
+     display size): no icon (each button's colour says it), the words
+     wrap, and narrower than five whole buttons they take a second row.
+     The columns are the screen's, and Stop show keeps its place while
+     hidden, so a press never moves under a finger. */
+  main > #mini{display:grid;grid-template-columns:repeat(auto-fit,minmax(58px,1fr));gap:4px}
+  main > #mini .lbl{white-space:normal}
+  main > #mini .b small{font-size:13px;line-height:1.05}
+  main > #mini .b svg.i{display:none}
   /* The footer: no reserved desktop height. No fade over the pane: a
      faded control reads as disabled. */
   footer{min-height:0;padding:4px 6px}
@@ -951,6 +989,19 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #wc-sl:empty{display:none}
 }
 /* PHONE LAYOUT END */
+/* Narrower than about 380 px (a phone at a large display size or text
+   size, a narrow window): the words of Startup, Shutdown and SHOW's
+   transport keep their room, without their icons. */
+@media (max-width:380px){
+  .dhead .seg .b > svg.i, #t-show .tr .b > svg.i{display:none}
+  #t-show .tr .b{padding:0 6px} #t-show .tr .lbl{white-space:normal}
+  /* SHOW's state strip a row each (it scrolls with the pane): the state,
+     the timecode and the times at their size, never shrunk to fit. */
+  #t-show .state{grid-template-columns:minmax(0,1fr)}
+  /* The pinned rows a little shorter, every tap still 44 px or more. */
+  .tab,.hb{min-height:44px}
+  main > #mini .b{min-height:48px;padding:0 2px}
+}
 </style>
 </head>
 <body>
@@ -1862,10 +1913,17 @@ function stale(){ return isStale(Date.now(), LAST_OK, FRESH_S); }
 // The room under the page (1.0's bottomPad): a window that reaches
 // under the taskbar keeps its bottom edge above it.
 const PAD_MIN = Number(new URLSearchParams(location.search).get("pad_bottom")) || 0;
+// A phone's or a tablet's browser never reaches under a taskbar: its own
+// bars are outside the page (100dvh), and its screen figures (a large
+// display size, the page zoomed) are not a window's, so the guess kept up
+// to 160 px empty under the footer (Jeff's phone, 2026-11-24).
+const NO_TASKBAR = (() => { try{ const ua = navigator.userAgent || "";
+  return !!((navigator.userAgentData && navigator.userAgentData.mobile) || /Android|iPhone|iPad|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)); }catch(e){ return false; } })();
 let PAD_NOW = -1;
 function applyBottomPad(){
   let p = 0;
-  try{ p = bottomPad(window.screen, window, PAD_MIN); }catch(e){ p = PAD_MIN; }
+  try{ p = NO_TASKBAR ? PAD_MIN : bottomPad(window.screen, window, PAD_MIN); }catch(e){ p = PAD_MIN; }
   if(p !== PAD_NOW){ PAD_NOW = p; document.documentElement.style.setProperty("--pad-bottom", p + "px"); }
 }
 applyBottomPad();
