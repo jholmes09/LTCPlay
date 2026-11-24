@@ -271,6 +271,16 @@ SCREEN_HOLD_S = 1.0    # beat-evidenced hold before the deck may fire
 ARM_BEAT_GAP_S = 1.5
 ARM_BEAT_CREDIT_S = 0.25
 ARM_BEAT_PERIOD_S = 0.1
+# The press to its first beat (round 2 of the cold review of #303, N2):
+# the page beats only once the press's answer is back, so that gap holds
+# one whole round trip (0.4 s) more than any other, and a 1.0 s stall
+# right after the press made it 1.54 to 1.57 s. It may be ARM_BEAT_GAP_S
+# plus that round trip, with the same slack: 2.0 s. The press proves
+# nothing by itself (no beat, nothing counted), so only the bound on a
+# phone that vanishes straight after its press moves, to 2.0 s; after any
+# beat it is ARM_BEAT_GAP_S again. Every check of whether a hold is live
+# goes through Remote.hold_live.
+ARM_FIRST_GAP_S = 2.0
 ARM_PAGE_FRESH_S = 2.5
 ARM_CUT = ("A Stop or a disarm came after the status this screen is "
            "showing. Lift your finger and hold again.")
@@ -5788,6 +5798,22 @@ class Remote:
                         f"arm it. Unlock one there first.")
         return ""
 
+    def hold_live(self, h, now=None):
+        """True while screen arm hold `h` is live: its last beat within
+        ARM_BEAT_GAP_S, or ARM_FIRST_GAP_S while it has had no beat since
+        its press. The one answer to "is someone holding to arm" for the
+        engine, the Stream Deck's fresh, the status and the cleaning."""
+        if not isinstance(h, dict):
+            return False
+        if now is None:
+            now = self.clock()
+        try:
+            bound = ARM_FIRST_GAP_S if not int(h.get("beats") or 0) \
+                else ARM_BEAT_GAP_S
+            return now - float(h["beat"]) <= bound
+        except (KeyError, TypeError, ValueError):
+            return False
+
     @staticmethod
     def _hold_held(h):
         """What a hold has proved toward SCREEN_HOLD_S: the gaps between
@@ -5806,14 +5832,18 @@ class Remote:
         """True when every hold, or group i's, was cut (a Stop, a Hold, a
         disarm, arming off) after the status `seen_s` was served, inside
         ARM_PAGE_FRESH_S of now: a press sent before the cut and landing
-        after it, on a slow link, never starts a hold."""
-        now = self.wall()
+        after it, on a slow link, never starts a hold. How long ago is
+        the monotonic clock's (round 2 of the cold review of #303, N4: a
+        wall clock stepped back never turns the mark off); before or after
+        is the wall clock's, as served_at is, so a step back inside the
+        window refuses a press it need not (fails closed, 2.5 s at most)."""
+        mono = self.clock()
         with self._arm_lock:
             cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
         # served_at is whole milliseconds: one served in the cut's own
         # millisecond is not before it.
-        return any(c is not None and seen_s + 0.001 < c and
-                   0 <= now - c <= ARM_PAGE_FRESH_S for c in cuts)
+        return any(c is not None and 0 <= mono - c[0] <= ARM_PAGE_FRESH_S
+                   and seen_s + 0.001 < c[1] for c in cuts)
 
     def _drop_hold(self, i, token=None):
         with self._arm_lock:
@@ -5830,7 +5860,7 @@ class Remote:
         with self._arm_lock:
             if device is None:
                 gone, self._holds = self._holds, {}
-                self._arm_cut["all"] = self.wall()
+                self._arm_cut["all"] = (self.clock(), self.wall())
             else:
                 gone = {i: h for i, h in self._holds.items()
                         if h["token"] == device}
@@ -5966,7 +5996,7 @@ class Remote:
                 h = self._holds.get(i)
                 live = (h is not None and h["token"] == token and
                         h["id"] == body.get("hold_id") and
-                        now - h["beat"] <= ARM_BEAT_GAP_S and
+                        self.hold_live(h, now) and
                         "wanted_at" not in h)
                 if live:
                     # `now` was read before the lock: a beat answered out
@@ -5998,13 +6028,13 @@ class Remote:
             # hold in its gap (said in the journal); the new one starts
             # from nothing, with a new id the deck starts again on.
             replaced = None
-            if h is not None and now - h["beat"] <= ARM_BEAT_GAP_S and \
+            if self.hold_live(h, now) and \
                     (h["token"] != token or
                      now - h["beat"] <= ARM_BEAT_CREDIT_S):
                 theirs = h["who"]
                 h = "busy"
             else:
-                if h is not None and now - h["beat"] <= ARM_BEAT_GAP_S:
+                if self.hold_live(h, now):
                     replaced = h
                 self._hold_ids += 1
                 h = {"token": token, "who": who, "device": device,
@@ -6096,7 +6126,7 @@ class Remote:
                              f"on the {device}", who, device, group=gname)
         self._drop_hold(i)
         with self._arm_lock:
-            self._arm_cut[i] = self.wall()
+            self._arm_cut[i] = (self.clock(), self.wall())
             self._disarm_ids += 1
             self._disarms.append({"id": self._disarm_ids, "group": i,
                                   "name": gname, "who": who,
@@ -6271,7 +6301,7 @@ class Remote:
                     continue
                 holds.append({"group": i, "id": h["id"],
                               "held_s": round(self._hold_held(h), 3),
-                              "fresh": age <= ARM_BEAT_GAP_S,
+                              "fresh": self.hold_live(h, now),
                               "who": h["who"], "device": h["device"]})
             # What the deck would not take, kept for the hold's next
             # heartbeat to say (only for holds still here).
@@ -9425,7 +9455,7 @@ class Remote:
     def _drop_holds_all(self):
         with self._arm_lock:
             self._holds.clear()
-            self._arm_cut["all"] = self.wall()
+            self._arm_cut["all"] = (self.clock(), self.wall())
 
     @staticmethod
     def _timer(seconds, fn):
@@ -11513,7 +11543,7 @@ class Remote:
                       "held_s": round(self._hold_held(h), 2),
                       "mine": h["token"] == tok}
                      for i, h in self._holds.items()
-                     if now - h["beat"] <= ARM_BEAT_GAP_S]
+                     if self.hold_live(h, now)]
         out["arming"] = {"enabled": self.arming_enabled(),
                          "needs_s": SCREEN_HOLD_S,
                          "fresh_s": ARM_PAGE_FRESH_S,

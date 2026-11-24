@@ -4427,5 +4427,9 @@
 "arm: a second tab on the same device restarts a live hold": "test_screen_arm_engine_rules",
 "arm: a second device takes over a live hold in a gap": "test_screen_arm_on_a_slow_phone_link",
 "arm: a short touch whose beats arrive slowly proves 1 s (arrival only)": "test_screen_arm_on_a_slow_phone_link",
-"arm: a beat read late moves the last beat back": "test_screen_arm_on_a_slow_phone_link"
+"arm: a beat read late moves the last beat back": "test_screen_arm_on_a_slow_phone_link",
+"cleaning: a phone's hold to arm another group, in a gap, does not block it": "test_cleaning_at_the_engine",
+"arm: the press to its first beat gets only the 1.5 s of a later gap": "test_screen_arm_on_a_slow_phone_link",
+"arm: every gap gets the first beat's 2.0 s": "test_screen_arm_on_a_slow_phone_link",
+"arm: a wall clock stepped back turns the Stop mark off": "test_screen_arm_on_a_slow_phone_link"
 }

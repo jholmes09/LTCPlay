@@ -1193,7 +1193,7 @@ MUTATIONS = [
   "        if g[\"armed\"] == \"armed\" or g[\"wanted\"]:", "        if False:"),
 
  ("arm: a second browser can hold the same group", "ltcplay/remote.py",
-  "            if h is not None and now - h[\"beat\"] <= ARM_BEAT_GAP_S and \\\n"
+  "            if self.hold_live(h, now) and \\\n"
   "                    (h[\"token\"] != token or\n"
   "                     now - h[\"beat\"] <= ARM_BEAT_CREDIT_S):\n"
   "                theirs = h[\"who\"]",
@@ -1491,14 +1491,14 @@ MUTATIONS = [
   "BEYOND_BLANK_DEFAULT = \"timecode\""),
 
  ("arm: an interrupted hold carries on", "ltcplay/remote.py",
-  "                        now - h[\"beat\"] <= ARM_BEAT_GAP_S and\n"
+  "                        self.hold_live(h, now) and\n"
   "                        \"wanted_at\" not in h)\n"
   "                if live:",
   "                        True and\n"
   "                        \"wanted_at\" not in h)\n                if live:"),
 
  ("arm: the deck is told a quiet hold is still fresh", "ltcplay/remote.py",
-  "                              \"fresh\": age <= ARM_BEAT_GAP_S,",
+  "                              \"fresh\": self.hold_live(h, now),",
   "                              \"fresh\": True,"),
 
  # -- arming from a phone on a slow link (Jeff, 2026-11-24) --
@@ -1520,9 +1520,9 @@ MUTATIONS = [
  ("arm: the deck is told the time since the press, not the beats counted",
   "ltcplay/remote.py",
   "                              \"held_s\": round(self._hold_held(h), 3),\n"
-  "                              \"fresh\": age <= ARM_BEAT_GAP_S,",
+  "                              \"fresh\": self.hold_live(h, now),",
   "                              \"held_s\": round(h[\"beat\"] - h[\"start\"], 3),\n"
-  "                              \"fresh\": age <= ARM_BEAT_GAP_S,"),
+  "                              \"fresh\": self.hold_live(h, now),"),
 
  ("arm: a press sent before a Stop or a disarm starts a hold after it",
   "ltcplay/remote.py",
@@ -1533,12 +1533,12 @@ MUTATIONS = [
  ("arm: a Stop leaves no mark for a press that lands after it",
   "ltcplay/remote.py",
   "                gone, self._holds = self._holds, {}\n"
-  "                self._arm_cut[\"all\"] = self.wall()",
+  "                self._arm_cut[\"all\"] = (self.clock(), self.wall())",
   "                gone, self._holds = self._holds, {}"),
 
  ("arm: a group's Disarm leaves no mark for a press that lands after it",
   "ltcplay/remote.py",
-  "            self._arm_cut[i] = self.wall()\n"
+  "            self._arm_cut[i] = (self.clock(), self.wall())\n"
   "            self._disarm_ids += 1",
   "            self._disarm_ids += 1"),
 
@@ -1551,6 +1551,31 @@ MUTATIONS = [
   "            self._do_disarm(i, who=\"the screen went\")\n"
   "        self._vholds.pop(i, None)"),
 
+ # round 2 of the cold review of #303 (2026-11-24)
+ ("cleaning: a phone's hold to arm another group, in a gap, does not block it",
+  "ltcplay/cleaning.py",
+  "                     if h.get(\"group\") != name and remote.hold_live(h, now)]",
+  "                     if h.get(\"group\") != name and\n"
+  "                     now - h[\"beat\"] <= 0.25]"),
+
+ ("arm: the press to its first beat gets only the 1.5 s of a later gap",
+  "ltcplay/remote.py",
+  "            bound = ARM_FIRST_GAP_S if not int(h.get(\"beats\") or 0) \\\n"
+  "                else ARM_BEAT_GAP_S",
+  "            bound = ARM_BEAT_GAP_S"),
+
+ ("arm: every gap gets the first beat's 2.0 s",
+  "ltcplay/remote.py",
+  "            bound = ARM_FIRST_GAP_S if not int(h.get(\"beats\") or 0) \\\n"
+  "                else ARM_BEAT_GAP_S",
+  "            bound = ARM_FIRST_GAP_S"),
+
+ ("arm: a wall clock stepped back turns the Stop mark off",
+  "ltcplay/remote.py",
+  "        return any(c is not None and 0 <= mono - c[0] <= ARM_PAGE_FRESH_S",
+  "        return any(c is not None and\n"
+  "                   0 <= self.wall() - c[1] <= ARM_PAGE_FRESH_S"),
+
  ('arm: Disarm all leaves screen holds running', 'ltcplay/remote.py',
   '        if name == "disarm-all":\n'
   '            # No screen hold survives a disarm',
@@ -1559,8 +1584,9 @@ MUTATIONS = [
 
  ("arm: a group disarm leaves its hold running", "ltcplay/remote.py",
   "        self._drop_hold(i)\n        with self._arm_lock:\n"
-  "            self._arm_cut[i] = self.wall()",
-  "        with self._arm_lock:\n            self._arm_cut[i] = self.wall()"),
+  "            self._arm_cut[i] = (self.clock(), self.wall())",
+  "        with self._arm_lock:\n"
+  "            self._arm_cut[i] = (self.clock(), self.wall())"),
 
  ("arm: deck-input is served to the network", "ltcplay/remote.py",
   "            if not ctx.local:\n                return 403, {\"error\": "
@@ -15864,9 +15890,9 @@ def build():
 
  ('screen arm: a hold asked for then disarmed carries on',
   'ltcplay/remote.py',
-  '                        now - h["beat"] <= ARM_BEAT_GAP_S and\n'
+  '                        self.hold_live(h, now) and\n'
   '                        "wanted_at" not in h)',
-  '                        now - h["beat"] <= ARM_BEAT_GAP_S)'),
+  '                        self.hold_live(h, now))'),
 
  ('screen arm: Arrange mode unreadable lets the hold go on',
   'ltcplay/remote.py',

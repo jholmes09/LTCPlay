@@ -70510,12 +70510,14 @@ def test_screen_armed_group_survives_the_phone_going_away():
     print("  ok")
 
 
-def _phone_link(rtt, jitter, stalls, hold_for, seed, start_at=0.6):
+def _phone_link(rtt, jitter, stalls, hold_for, seed, start_at=0.6,
+                in_flight=4):
     """What a phone's page puts on a slow link while a finger holds one
     group's Hold to arm for `hold_for` s, as remote2.html's armBeat does:
     the first press alone, its answer awaited; then a beat at once and one
     every 100 ms, at most HOLD_BEATS_OUT (4) unanswered, a tick with no
-    room owed to the next answer. Its status is read as startPolling does
+    room owed to the next answer (`in_flight` 1: Arm all of four groups,
+    beatRoom's share of the 4 each). Its status is read as startPolling does
     (the next read 250 ms after an answer), and every press carries the
     served_at of the newest status it has. One way takes rtt / 2 plus up
     to `jitter`; a packet that would arrive inside a stall (s0, s1)
@@ -70561,15 +70563,45 @@ def _phone_link(rtt, jitter, stalls, hold_for, seed, start_at=0.6):
     while tick < end:
         while answers and answers[0] <= tick:
             got = heapq.heappop(answers)
-            if owed and len(answers) < 4:
+            if owed and len(answers) < in_flight:
                 send(got)
                 owed = False
-        if len(answers) < 4:
+        if len(answers) < in_flight:
             send(tick)
         else:
             owed = True
         tick += 0.1
     return sorted(out)
+
+
+def _drive_many(R, arm, step, links, client=("10.20.0.44", 50000)):
+    """Several holds at once from one page (Arm all), each [(group name,
+    index, sent)] as _phone_link gives it, played into the engine at their
+    arrival times. {index: the engine's answers}, the rig time it ended."""
+    m0, w0 = R.mono[0], R.wall[0]
+    ev = sorted((at, seen, st, name, i) for name, i, sent in links
+                for at, seen, st in sent)
+    hid, answers, done = {}, {i: [] for _n, i, _s in links}, set()
+    for at, seen, is_start, name, i in ev:
+        while R.mono[0] - m0 < at - 1e-9:
+            step(min(0.05, at - (R.mono[0] - m0)))
+        if i in done or arm.wanted[i]:
+            done.add(i)
+            continue
+        body = {"seen": int((w0 + seen) * 1000)} if seen is not None else {}
+        if is_start:
+            st, _h, out = _hold(R, name, client=client, **body)
+            hid[i] = out.get("hold_id")
+        else:
+            st, _h, out = _hold(R, name, hold_id=hid.get(i), client=client,
+                                **body)
+        answers[i].append((round(at, 2), st, out.get("held_s"),
+                           out.get("error")))
+        if st != 200 or out.get("armed"):
+            done.add(i)
+    for _ in range(10):
+        step(0.05)
+    return answers, R.mono[0]
 
 
 def _drive_phone(R, arm, step, group, i, sent, client=("10.20.0.44", 50000)):
@@ -70639,6 +70671,76 @@ def test_screen_arm_on_a_slow_phone_link():
               f"{gap:.2f} s): armed: {ans[-4:]}")
         check(all(st == 200 for _a, st, _h, _e in ans[:-1]),
               f"(d) and no beat before the arm was refused: {ans}")
+        # Round 2 of the cold review (N2): a 1.0 s stall right after the
+        # press. The press's answer waits it out, so the press to the first
+        # beat is a round trip plus the stall plus jitter: 1.6 s here. It
+        # carries on (ARM_FIRST_GAP_S), and arms; after the first beat the
+        # bound is ARM_BEAT_GAP_S again; a phone gone after its press is
+        # let go at ARM_FIRST_GAP_S.
+        def first_gap(first, then, group, i):
+            c._disarm_all_groups("test: the next hold")
+            step(sd.REARM_REFRACTORY_S + 0.1)
+            check(not arm.wanted[i], "setup: disarmed")
+            st, _h, out = _hold(R, group, client=phone)
+            hid, outs = out.get("hold_id"), []
+            for k, gap_s in enumerate([first] + then):
+                for _s in range(int(round(gap_s / 0.05))):
+                    step(0.05)
+                if arm.wanted[i]:
+                    break
+                st, _h, out = _hold(R, group, hold_id=hid, client=phone)
+                outs.append((st, out.get("held_s"), out.get("error")))
+                if st != 200 or out.get("armed"):
+                    break
+            for _ in range(4):
+                step(0.05)
+            return outs
+        outs = first_gap(1.6, [0.1] * 14, "front row", 0)
+        check(arm.wanted[0] is True and outs and outs[0][0] == 200,
+              f"N2: a 1.6 s press to first beat (a stall right after the "
+              f"press) carries on and arms: {outs}")
+        c._disarm_all_groups("test: N2")
+        outs = first_gap(0.1, [0.1, 1.6, 0.1], "front row", 0)
+        check(arm.wanted[0] is False and outs[-1][0] == 409 and
+              "interrupted" in str(outs[-1][2]),
+              f"N2: after a beat a 1.6 s gap still cuts the hold: {outs}")
+        outs = first_gap(RM.ARM_FIRST_GAP_S + 0.1, [0.1] * 12, "front row", 0)
+        check(arm.wanted[0] is False and outs and outs[0][0] == 409,
+              f"N2: a press with no beat for {RM.ARM_FIRST_GAP_S + 0.1:g} s is "
+              f"let go: {outs}")
+        # N3: a hold of about 1.6 s on a 0.3 s round trip link arms, on
+        # every seed.
+        fails = []
+        for seed in range(1, 9):
+            step(sd.REARM_REFRACTORY_S + 0.1)
+            sent = _phone_link(0.3, 0.1, [], 1.6, seed=seed)
+            ans, _gap, _t = _drive_phone(R, arm, step, "front row", 0, sent)
+            for _ in range(10):
+                step(0.05)
+            if not arm.wanted[0]:
+                fails.append((seed, ans[-2:]))
+            c._disarm_all_groups("test: next seed")
+            for _ in range(3):
+                step(0.05)
+        check(not fails, f"N3: a 1.6 s hold on 0.3 s round trips arms on "
+                         f"every seed: {fails}")
+        # Arm all of four groups on 0.4 s round trips: one beat a group a
+        # round trip (beatRoom's share), so about 5.4 s; every group arms.
+        step(sd.REARM_REFRACTORY_S + 0.1)
+        links = [(n, k, _phone_link(0.4, 0.1, [], 6.0, seed=20 + k,
+                                     in_flight=1))
+                 for k, n in enumerate(names)]
+        t0 = R.mono[0]
+        ans, t_end = _drive_many(R, arm, step, links)
+        armed_at = {k: a[-1][0] for k, a in ans.items() if a}
+        check(arm.wanted == [True] * 4 and max(armed_at.values()) <= 7.0,
+              f"Arm all of four groups on 0.4 s round trips: all armed, the "
+              f"last at {max(armed_at.values()):.1f} s: {armed_at} "
+              f"{ {k: a[-2:] for k, a in ans.items()} }")
+        c._disarm_all_groups("test: after Arm all")
+        for _ in range(3):
+            step(0.05)
+        step(sd.REARM_REFRACTORY_S + 0.1)
         # (c) The finger comes up at 0.8 s and its let go is lost (or the
         # phone dies): nothing arms, and the deck lets go within the gap.
         sent = _phone_link(0.4, 0.15, [], 0.8, seed=3)
@@ -70838,6 +70940,14 @@ def test_screen_arm_on_a_slow_phone_link():
         st, _h, out = _hold(R, "bridge", client=phone, seen=before)
         check(st == 409 and out.get("error") == RM.ARM_CUT,
               f"a press older than a Stop is refused: {st} {out}")
+        # N4: the PC's wall clock stepped back 1 s after the Stop: the mark
+        # still stands (its age is the monotonic clock's).
+        R.wall[0] -= 1.0
+        st, _h, out = _hold(R, "bridge", client=phone, seen=before)
+        check(st == 409 and out.get("error") == RM.ARM_CUT,
+              f"N4: with the wall clock stepped back, a press older than "
+              f"the Stop is still refused: {st} {out}")
+        R.wall[0] += 1.0
         # (e) The page is told the engine's number and says it.
         st, _h, out = R.ask("GET", "/api/remote/status", client=phone)
         check(out["arming"]["fresh_s"] == RM.ARM_PAGE_FRESH_S and
@@ -106766,6 +106876,25 @@ def test_cleaning_at_the_engine():
         check(code == 409 and "Vic is holding to arm front row" in
               out["error"], f"another group being held: refused: {out}")
         R.remote._drop_hold(0)
+        # The same hold 0.5 s and 1.4 s into a gap between its beats, as
+        # on a slow link: still live for the engine and the Stream Deck,
+        # so still refused (round 2 of the cold review of #303, N1).
+        for back, run in ((0.5, "e8"), (1.4, "e9")):
+            with R.remote._arm_lock:
+                R.remote._holds[0] = {
+                    "token": "iPad at 10.20.0.44", "who": "Vic",
+                    "device": "iPad at 10.20.0.44", "group": "front row",
+                    "start": R.mono[0] - back - 0.5,
+                    "beat": R.mono[0] - back, "held": 0.5, "beats": 5,
+                    "id": 98}
+            fresh = [h["fresh"] for h in R.remote.deck_input()["holds"]
+                     if h["group"] == 0]
+            code, out = beat(run=run)
+            check(fresh == [True] and code == 409 and
+                  "Vic is holding to arm front row" in out.get("error", ""),
+                  f"another group's hold {back} s into a gap (fresh for the "
+                  f"deck: {fresh}): refused: {code} {out}")
+            R.remote._drop_hold(0)
         step()
         R.remote.fireball = types.SimpleNamespace(active=lambda: True)
         code, out = beat(run="e5")

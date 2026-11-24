@@ -1045,7 +1045,9 @@ every heartbeat; any failure lets the hold go and is journaled):
   Abort or Disarm every flame group cancels every hold.
 
 **Connection loss never completes an arm.** The engine lets a hold go 1.5
-s after its last heartbeat (0.25 s until 2026-11-24), and a heartbeat for
+s after its last heartbeat (0.25 s until 2026-11-24; 2.0 s from the press
+while it has had no heartbeat yet, since the page's first heartbeat waits
+a whole round trip for the press's answer), and a heartbeat for
 a hold that was let go is refused ("lift your finger and hold again"): an
 interrupted hold never carries on. The deck lets a screen hold go the
 moment the engine stops reporting it fresh, or the moment it has not heard
@@ -1073,8 +1075,22 @@ it in the engine (`ltcplay/remote.py`): a gap of up to 1.5 s carries a
 hold on (a 0.4 s round trip, a 1.0 s stall and 0.4 s for a resend), each
 gap counts 0.25 s at most toward the 1 s, and the page's status may be 2.5
 s old. A lifted finger whose let go never arrives, or a dead phone, still
-ends the hold within 1.5 s of its last heartbeat, and nothing is armed
-unless 1 s of heartbeats arrived. Nothing in flamesafe or the deck
+ends the hold within 1.5 s of its last heartbeat (2.0 s after a press
+with none), and nothing is armed unless 1 s of heartbeats arrived. Every
+check of whether a screen hold is live (the engine, the Stream Deck's
+fresh, the status, the wave flamer cleaning's "one flame group at a
+time") asks the engine's one rule, `Remote.hold_live`.
+
+How long a finger has to stay down, measured on the page's own beat
+timing (8 runs each, the shortest hold that armed on every one): 1.1 s on
+a 0.05 s round trip, 1.3 s at 0.25 s with 0.1 s of jitter, 1.5 s at 0.3 s,
+1.4 s at 0.4 s with no jitter, 2.0 s at 0.4 s with 0.15 s of jitter (the
+page keeps at most 4 heartbeats in flight, so past about 0.4 s it beats
+fewer than 10 a second), and 3.0 s at 0.4 s with jitter and a 1.0 s stall.
+Arm all of four groups shares those 4: about one heartbeat a group a round
+trip, so about 3.8 s at 0.25 s and 5.4 s at 0.4 s (0.1 s of jitter). On the phone the pop-up runs the hold by
+itself once confirmed, so this is a wait; on a desktop press and hold it
+is a longer press. Nothing in flamesafe or the deck
 changed. Accepted: a Disarm done on the deck itself (its key) or by
 flamesafe leaves no mark in the engine, so a press sent before it can land
 up to 2.5 s after it (was 1 s). The deck's own re-arm wait (2 s after its
