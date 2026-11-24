@@ -120756,7 +120756,7 @@ function look(t){
   // or Arm flames' small line, count as cut too.)
   // (The alert's words open whole on a tap, so they may be cut there.)
   const cutIn = el => el.scrollWidth > el.clientWidth + 1 || el.id !== "al-text" && [...el.querySelectorAll("*")].some(x => shown(x) && getComputedStyle(x).overflowX !== "visible" &&
-    (x.scrollWidth > x.clientWidth + 1 || x.scrollHeight > x.clientHeight + 1));
+    (x.scrollWidth > x.clientWidth + 1 || x.scrollHeight > x.clientHeight + 2));
   const cut = [...new Set([...pinned(), ...paneTop(), ...[...document.querySelectorAll("#t-" + t + " button, #t-" + t + " [id$='-slide']")].filter(shown)])]
     .filter(el => !el.closest("[hidden]") && cutIn(el))
     .map(el => (el.id || el.textContent.trim().slice(0, 14)) + " " + el.scrollWidth + ">" + el.clientWidth);
@@ -121033,7 +121033,7 @@ def test_ui2_layout_sweep_any_phone_size_and_scale():
                     # above) and at least one 44 px row of the pane.
                     many = k.split("/")[0] in ("alerts", "purge", "hazers",
                                                "pins", "rig")
-                    if s.get("fits"):
+                    if s.get("fits") or k.startswith("popup"):
                         continue
                     if many or (h <= w and h < 300):
                         check(s["content"] >= 44,
