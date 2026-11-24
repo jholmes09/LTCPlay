@@ -3410,7 +3410,7 @@ MUTATIONS = [
 
  ('ui 2.0 touch: Hold to continue anyway is not tracked off the button',
   'ltcplay/web/remote2.html',
-  "  holdTrack(ev, $(\"al-act\"), () => {",
+  "  if(ev) holdTrack(ev, $(\"al-act\"), () => {",
   "  if(false) holdTrack(ev, $(\"al-act\"), () => {"),
 
  ('ui 2.0 touch: a second finger on a hold button leaves the first hold running',
@@ -3590,10 +3590,15 @@ MUTATIONS = [
  # slide's own release never lands on it; its band is where it was at the
  # touch. The pop-up's line waits for a read after the hold (N1); a Stop,
  # a Disarm or a change of groups while it is open sends nothing (N2, N3).
+ ('ui 2.0 flame slide: a pointercancel at 90 percent opens the pop-up',
+  'ltcplay/web/remote2.html',
+  "  const lifted = s.up === true && why === \"let go\";\n",
+  "  const lifted = why === \"let go\";\n"),
+
  ('ui 2.0 flame slide: a lift under 90 percent opens the pop-up',
   'ltcplay/web/remote2.html',
-  "  if(lift && s.frac >= SLIDE_ARM && s.target !== undefined){ faAsk(s.target); return; }\n",
-  "  if(lift && s.target !== undefined){ faAsk(s.target); return; }\n"),
+  "  if(lifted && s.frac >= SLIDE_ARM && s.target !== undefined){ faAsk(s.target); return; }\n",
+  "  if(lifted && s.target !== undefined){ faAsk(s.target); return; }\n"),
 
  ("ui 2.0 flame slide: the slide's own release and click land on the pop-up",
   'ltcplay/web/remote2.html',
@@ -3971,6 +3976,164 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "    if(n < c.last && c.newest) return c.newest;\n",
   "    if(n < c.last && c.newest && m[1] !== \"cleaning\") return c.newest;\n"),
+
+ # Step 7c of the phone build: on a touch phone Continue anyway is a slide
+ # in the alert slot in front of today's hold. Nothing is sent before 90
+ # percent; every end before the done press is read against the engine
+ # before anything is said; an unclear answer is read, and read again while
+ # the engine could still be starting the show; unreadable is not known;
+ # continued only from the engine's status; no handle while a read or an
+ # answer is pending, after the engine's yes or after a Hold; a pinned Stop
+ # drawn above never ends the slide; a Hold or Disarm ends a held slide; the
+ # slide's own release lands on nothing, a new tap and a plain click do.
+ ("ui 2.0 continue slide: Continue anyway's hold starts before 90 percent",
+  'ltcplay/web/remote2.html',
+  "  if(s.frac < SLIDE_ARM) return;\n  if(PR_HOLD || PRS_DOUBT",
+  "  if(PR_HOLD || PRS_DOUBT"),
+
+ ("ui 2.0 continue slide: a slide stopped before the done press says not continued without reading the engine",
+  'ltcplay/web/remote2.html',
+  "  else if(!PRS_STOP_WHY.includes(why)) prsRead(why, false, h.answer && h.answer.err);\n",
+  "  else if(!PRS_STOP_WHY.includes(why)) prsSay(\"Not continued.\", \"Nothing was sent.\", \"\");\n"),
+
+ ("ui 2.0 continue slide: a lost, 5xx or 409 answer to the done press is said as not continued without reading the engine",
+  'ltcplay/web/remote2.html',
+  "  prsRead(\"\", true, a ? a.err : null);\n",
+  "  { prsSay(\"Not continued.\", \"\", \"\"); prsLine(\"Not continued. Nothing started.\"); }\n"),
+
+ ("ui 2.0 continue slide: an unclear answer is said as not continued while the engine may still be starting the show",
+  'ltcplay/web/remote2.html',
+  "      if(!over && prsOffer(v) && !prsDone(v) && !isLive(v) && Date.now() - t0 < PRS_SETTLE_MS){ await prsNap(300); continue; }\n",
+  ""),
+
+ ("ui 2.0 continue slide: a 409 with no code is taken as the engine's finished refusal",
+  'ltcplay/web/remote2.html',
+  " && !(err.status === 409 && !err.code));\n",
+  ");\n"),
+
+ ("ui 2.0 continue slide: an engine that cannot be read stops checking and is not said as not known",
+  'ltcplay/web/remote2.html',
+  "      told = true; PRS_DOUBT = true;\n      prsSay(",
+  "      told = true; PRS_CHECK = false;\n      prsSay("),
+
+ ("ui 2.0 continue slide: while the engine is read or the answer is pending, the slide shows its handle",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_CHECK || PRS_WAIT || prsGone()) return {mode:\"unknown\", word:\"Checking\"};\n",
+  ""),
+
+ ("ui 2.0 continue slide: the engine continued but its status is not read: an older status brings the handle back",
+  'ltcplay/web/remote2.html',
+  "  return b && (!a || (Number(b.served_at) || 0) > (Number(a.served_at) || 0)) ? b : a;\n",
+  "  return a;\n"),
+
+ ("ui 2.0 continue slide: a status read sent before the newest one delivered replaces it",
+  'ltcplay/web/remote2.html',
+  "/^\\/api\\/remote\\/(morning|cleaning|status)(\\?|$)/",
+  "/^\\/api\\/remote\\/(morning|cleaning)(\\?|$)/"),
+
+ ("ui 2.0 continue slide: the engine's status saying it continued is not believed",
+  'ltcplay/web/remote2.html',
+  "  if(prsDone(v)){\n",
+  "  if(false){\n"),
+
+ ("ui 2.0 continue slide: a pinned Stop drawn above the slide moves it out of its band and ends it",
+  'ltcplay/web/remote2.html',
+  "  const b0 = s.b0;\n",
+  "  const b0 = s.el.getBoundingClientRect();\n"),
+
+ ("ui 2.0 continue slide: a Hold or Disarm leaves a held slide to send its done press",
+  'ltcplay/web/remote2.html',
+  "  if(SLIDE && SLIDE.i === \"pr\") slideCancel(hold ? \"Hold was pressed\" : \"a safety press was made\");\n",
+  ""),
+
+ ("ui 2.0 continue slide: the read after a Hold is sent before the Hold's answer",
+  'ltcplay/web/remote2.html',
+  "    while((PRS_STOP_OUT > 0 || HALT_BUSY) && Date.now() - t0 < PRS_STOP_WAIT_MS){\n",
+  "    while(false){\n"),
+
+ ("ui 2.0 continue slide: a read pending when Hold is pressed still speaks after it",
+  'ltcplay/web/remote2.html',
+  "  const use = prsInUse();\n  PRS_READING++;\n",
+  "  const use = prsInUse();\n"),
+
+ ("ui 2.0 continue slide: the slide's own release and click land on Hold, Disarm and Details",
+  'ltcplay/web/remote2.html',
+  "  if(e.pointerId === qz.id){ e.stopImmediatePropagation(); e.preventDefault(); }\n",
+  ""),
+
+ ("ui 2.0 continue slide: a Stop tap that reuses the slide's pointerId is held back",
+  'ltcplay/web/remote2.html',
+  "  if(!qz || qz.fresh || SLIDE) return;\n",
+  "  if(!qz || SLIDE) return;\n"),
+
+ ("ui 2.0 continue slide: a Stop click with no pointerId is held back after a slide",
+  'ltcplay/web/remote2.html',
+  "  if(e.pointerId === qz.id){ e.stopImmediatePropagation(); e.preventDefault(); }\n",
+  "  if(e.pointerId === qz.id || (t === \"click\" && !(e.pointerId > 0) && e.detail > 0)){ e.stopImmediatePropagation(); e.preventDefault(); }\n"),
+
+ ("ui 2.0 continue slide: after the engine's yes the handle comes back before a read shows the engine",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_STARTED) return {mode:\"run\", word:\"Continuing\", started:true};\n",
+  ""),
+
+ # Review 1 of #301: the late yes never speaks after a Stop or a Hold; a
+ # done press in flight is never given up on; the slide's words never
+ # cover a NOT; the pinned Stop for Programming flames is a Hold.
+ ("ui 2.0 continue slide: the engine's late yes is said over a Stop or a Hold pressed after the done press",
+  'ltcplay/web/remote2.html',
+  "mine.answer = {ok:j}; if(ev) say(",
+  "mine.answer = {ok:j}; say("),
+
+ ("ui 2.0 continue slide: a done press still unanswered is given up on: the handle and not continued while the engine may still start the show",
+  'ltcplay/web/remote2.html',
+  "  while(!h.answer){\n",
+  "  while(!h.answer && Date.now() - t0 < PRS_ANSWER_MS){\n"),
+
+ ("ui 2.0 continue slide: the slide's own words cover a failed safety press's NOT",
+  'ltcplay/web/remote2.html',
+  "  else prsSay(\"Keep your finger at the end.\",",
+  "  else say(\"Keep your finger at the end.\","),
+
+ ("ui 2.0 continue slide: the pinned Stop for Programming flames is not taken as a Hold",
+  'ltcplay/web/remote2.html',
+  " || b.dataset.pin === \"pf\";\n",
+  ";\n"),
+
+ # Review 2 of #301: a done press in flight is remembered across a Stop, a
+ # Hold and lost contact; one that never settles is given up on after
+ # PRS_DONE_MS, said as no answer yet, never as not continued.
+ ("ui 2.0 continue slide: a Hold, a Stop or lost contact while the done press is in flight brings the handle back",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT || PRS_AFTER) return {mode:\"unknown\", word:\"Checking\"};\n",
+  ""),
+
+ ("ui 2.0 continue slide: a done press that never settles is never given up on",
+  'ltcplay/web/remote2.html',
+  "      no(e);\n",
+  "      if(false) no(e);\n"),
+
+ # Review 3 of #301: a done press the engine never answered blocks the
+ # handle for the engine's whole window (preroll.hold_done, 30 s, and a
+ # margin); a show started after a Stop or a Hold is said.
+ ("ui 2.0 continue slide: a done press the engine never answered is taken as over: the handle back inside the engine's window",
+  'ltcplay/web/remote2.html',
+  "  if(!real){ prsWindow(h); return; }\n",
+  ""),
+
+ ("ui 2.0 continue slide: the engine's window for a done press is not waited for",
+  'ltcplay/web/remote2.html',
+  "  PRS_VALID_MS = 30000 + 8000,\n",
+  "  PRS_VALID_MS = 0,\n"),
+
+ ("ui 2.0 continue slide: a show started after a Stop or a Hold is never said, the Stop's or Hold's words stay",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT && !isLive(prsNow())) prsWatchLive(PRS_INFLIGHT);\n",
+  ""),
+
+ ("ui 2.0 continue slide: a Stop of a live show that did not arrive is covered by show started",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT && !isLive(prsNow())) prsWatchLive(PRS_INFLIGHT);\n",
+  "  if(PRS_INFLIGHT) prsWatchLive(PRS_INFLIGHT);\n"),
 
 
 
