@@ -121134,6 +121134,7 @@ def test_ui2_flame_arm_words_true_to_the_engine():
             "not armed, while the engine reads it armed, and follows each "
             "later read; on a phone no word hold")
     page = _ui2_page_inline()
+    fa = page[page.find("function faRefused("):page.find("async function faAsk(")]
     # The rules, in node.
     bad = _page_logic_in_node(page, r"""
 const G = a => ({connected:true, stale:false, age_ms:100, groups:a.map((s, i) => typeof s === "string" ? {name:"g" + i, armed:s} : Object.assign({name:"g" + i}, s))});
@@ -121166,11 +121167,34 @@ for(const [why, want] of [[ARMING_OFF, "Arming from screens is off. Nothing sent
   const l = faRefusedLine(why);
   t(l === want && l.split(/\s+/).length <= 8 && !/hold/i.test(l), "a refusal's line: " + l);
 }
+// A decimal is never a sentence end (integration of #302 and #303).
+for(const [txt, want] of [
+    ["Not armed: Not live: no contact with the engine in the last 2.5 s. Nothing was sent.", "Not armed: Not live: no contact with the engine in the last 2.5 s. Nothing was sent."],
+    ["The page's status is more than 2.5 s old. Hold again. Nothing was sent.", "The page's status is more than 2.5 s old. Nothing was sent."],
+    [rearmText(1500) + ". Nothing was sent.", "Re-arm in 1.5 s. Nothing was sent."],
+    ["Wait 0.25 s. Then 10.5 more.", "Wait 0.25 s. Then 10.5 more."],
+    ["It armed in 5. Next sentence holds. Done.", "It armed in 5. Done."]]){
+  const got = phoneArmText(txt);
+  t(got === want, "a phone's words keep decimals: " + got);
+}
+t(rearmText(1500) === "Re-arm in 1.5 s" && phoneArmText(rearmText(1500)) === "Re-arm in 1.5 s", "re-arm on a phone: " + phoneArmText(rearmText(1500)));
+let SAID = null;
+const say = (s, f) => { SAID = [s, f]; };
+__FA_REFUSED__
+for(const [why, line, full] of [
+    ["Not live: no contact with the engine in the last 2.5 s.", "No contact. Nothing sent.", "Not armed: Not live: no contact with the engine in the last 2.5 s. Nothing was sent."],
+    ["The page's status is more than 2.5 s old. Hold again.", "Not armed. Nothing sent.", "Not armed: The page's status is more than 2.5 s old. Nothing was sent."],
+    [rearmText(1500), "Re-arm wait. Nothing sent.", "Not armed: Re-arm in 1.5 s. Nothing was sent."],
+    ["Wait 0.25 s or 10.5 s", "Not armed. Nothing sent.", "Not armed: Wait 0.25 s or 10.5 s. Nothing was sent."],
+    ["It armed in 5. Next, hold it", "Not armed. Nothing sent.", "Not armed: It armed in 5. Nothing was sent."]]){
+  faRefused(why);
+  t(SAID[0] === line && SAID[1] === full, "the pop-up's refusal keeps decimals: " + JSON.stringify(SAID));
+}
 for(const st of ["all", "asked", "some", "none", "unknown"]) for(const one of [true, false]){
   const l = flamesReadLine(st, one);
   t(l.split(/\s+/).length <= 8 && !/hold|;|\u2013|\u2014/i.test(l), "the line for " + st + ": " + l);
 }
-""")
+""".replace("__FA_REFUSED__", fa))
     if bad is not None:
         check(not bad, f"the flame read rules in node: {bad}")
     chrome = _find_chromium()
