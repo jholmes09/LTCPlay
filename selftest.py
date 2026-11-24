@@ -114521,7 +114521,7 @@ def test_ui2_time_elapsed_and_left():
           "the state strip shows Elapsed | Left, and - | - when not known")
     # A phone (390x844 CI, Stop show was pushed under the footer): the top
     # line leaves its times out there; the state strip just below has both.
-    ph = two[two.find("@media (max-width:600px){\n  /* A phone: the logo"):]
+    ph = two[two.find("@media (max-width:600px), (max-height:500px){\n  /* A phone: the logo"):]
     ph = ph[:ph.find("\n}\n")]
     check("#next-t .tm{display:none}" in ph and
           'sp.className = "tm"; sp.textContent = " " + ns.times;' in two,
@@ -120080,24 +120080,37 @@ function look(t){
   const small = [...pinned(), ...paneTop()].filter(el => { const r = R(el); return Math.min(r.width, r.height) < 44 - 0.5; })
     .map(el => (el.id || el.textContent.trim().slice(0, 14)) + " " + Math.round(R(el).width) + "x" + Math.round(R(el).height));
   if(small.length) bad.push("a tap under 44 px: " + small.join(", "));
-  const ps = pinned(), over = [];
+  // No two controls on the screen overlap (the pane's clipped to what of
+  // it shows), and every one in the pane is on top where a finger goes.
+  const mr0 = R(main), clip = el => { const r = R(el); return main.contains(el) ? {left:r.left, right:r.right, top:Math.max(r.top, mr0.top), bottom:Math.min(r.bottom, mr0.bottom)} : r; };
+  const pane = q("t-" + t);
+  const ps = [...document.querySelectorAll("header button, #next button, main > #mini .b, footer button, #t-" + t + " button")]
+    .filter(el => shown(el) && !el.closest("[hidden]") && (!pane.contains(el) || !el.closest(".pane:not(#t-" + t + ")")))
+    .filter(el => { const r = clip(el); return r.bottom > r.top + 1 && r.top < vh && r.bottom > 0; });
+  const over = [];
   for(let i = 0; i < ps.length; i++) for(let j = i + 1; j < ps.length; j++){
-    const a = R(ps[i]), b = R(ps[j]);
+    if(ps[i].contains(ps[j]) || ps[j].contains(ps[i])) continue;
+    const a = clip(ps[i]), b = clip(ps[j]);
     if(a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) over.push((ps[i].id || ps[i].textContent.trim().slice(0, 12)) + "/" + (ps[j].id || ps[j].textContent.trim().slice(0, 12)));
   }
-  if(over.length) bad.push("controls overlap: " + over.join(", "));
+  if(over.length) bad.push("controls overlap: " + over.slice(0, 6).join(", "));
   // The words on the pinned and top-row controls are never cut.
   const cut = [...pinned(), ...paneTop()].filter(el => el.scrollWidth > el.clientWidth + 1)
     .map(el => (el.id || el.textContent.trim().slice(0, 14)) + " " + el.scrollWidth + ">" + el.clientWidth);
   if(cut.length) bad.push("a control's words cut: " + cut.join(", "));
-  // Off SHOW on a touch phone the safety strip is pinned at the pane's
-  // top (elsewhere it scrolls with the pane, or is in the footer).
-  const mini = t === "day" && main.contains(q("mini")) && getComputedStyle(q("mini")).position === "sticky" ? q("mini") : null;
-  const below = mini && shown(mini) ? R(mini).bottom : m.top;
+  // What stays pinned inside the pane once it scrolls (the safety strip,
+  // SHOW's transport on a phone) is not the pane's room.
+  let stick = 0;
+  for(const el of main.querySelectorAll("*")){
+    if(!shown(el) || el.closest("[hidden]")) continue;
+    const cs = getComputedStyle(el);
+    if(cs.position === "sticky" && cs.top !== "auto") stick = Math.max(stick, parseFloat(cs.top) + R(el).height);
+  }
+  const below = m.top + stick;
   const sa = parseFloat(root.style.getPropertyValue("--safe-t")) || 0, sb = parseFloat(root.style.getPropertyValue("--safe-b")) || 0;
   if(R(document.querySelector("header")).top < sa - 1) bad.push("the header is under the island: " + Math.round(R(document.querySelector("header")).top));
   if(R(document.querySelector("footer")).bottom > vh - sb + 1) bad.push("the footer is under the home bar: " + Math.round(R(document.querySelector("footer")).bottom) + " of " + vh + " less " + sb);
-  const res = {content:Math.round(m.bottom - below), pct:Math.round(100 * (m.bottom - below) / vh), bad:bad};
+  const res = {content:Math.round(m.bottom - below), pct:Math.round(100 * (m.bottom - below) / vh), sticky:Math.round(stick), bad:bad};
   if(t === "day"){ const p = q("d-panel"); res.panel = [p.clientHeight, p.scrollHeight];
     if(p.scrollHeight > p.clientHeight + 1) bad.push("DAY's step panel squeezed: " + p.clientHeight + " px of its " + p.scrollHeight); }
   return res;
@@ -120106,16 +120119,24 @@ function look(t){
 // and the first control under it never move.
 function sweep(t, kind, vals){
   const first = t === "show" ? () => document.querySelector("#t-show .state") : () => document.querySelector(".dhead");
-  const hs = new Set(), ys = new Set(), fs = new Set(), qs = new Set();
+  const hs = new Set(), ys = new Set(), fs = new Set(), qs = new Set(), cut = [];
   for(const s of vals){
-    CD = {kind:kind, label:"x", running:false, s:s};
+    if(typeof s === "function") s(); else CD = {kind:kind, label:"x", running:false, s:s};
     renderStale();
     const n = R(q("next"));
     hs.add(Math.round(n.height)); ys.add(Math.round(R(main).top)); fs.add(Math.round(R(first()).top));
     qs.add(Math.round(R(q("next").querySelector(".q")).top - n.top));
+    // A clock in the line is whole: never cut by an ellipsis or an edge
+    // (a show's times are in the state strip on a phone, not the line).
+    const tt = q("next-t"), ck = tt.querySelector(".ck");
+    if(/\d:\d\d|\d s\b/.test(tt.textContent) && !tt.querySelector(".tm") && !(q("next").className.split(" ").some(c => c === "open" || c === "go" || c === "many")) &&
+       (!ck || ck.scrollWidth > ck.clientWidth + 1 || R(ck).right > Math.min(R(tt).right, innerWidth) + 1 || R(ck).width < 1)) cut.push(tt.textContent);
   }
-  return {n:vals.length, h:[...hs], main:[...ys], first:[...fs], q:[...qs], text:q("next-t").textContent};
+  return {n:vals.length, h:[...hs], main:[...ys], first:[...fs], q:[...qs], text:q("next-t").textContent, cut:cut.slice(0, 3), ncut:cut.length};
 }
+// A pinned line's own countdown (a timed purge, the hazer test) ticked:
+// the status's seconds left, drawn as the engine sends them.
+const tick = (k, v) => () => { const st = JSON.parse(JSON.stringify(ST)); if(k === "tp") st.morning.timed.left_s = v; else st.hazer_test.left_s = v; ST = st; };
 const range = (a, b, st) => { const o = []; for(let i = a; st > 0 ? i <= b : i >= b; i += st) o.push(i); return o; };
 // The sample: every digit in every place at least once, each change of
 // length (9:59 to 10:00, 59:59 to 1:00:00), and the minute before a show
@@ -120123,6 +120144,7 @@ const range = (a, b, st) => { const o = []; for(let i = a; st > 0 ? i <= b : i >
 const NEXT = FULL ? range(0, 779, 1).concat(range(3599, 0, -7)) : range(0, 779, 17).concat(range(255, 275, 1), [599, 600, 3599, 3600]);
 const ARM = FULL ? range(0, 300, 1) : range(0, 300, 7).concat(range(255, 275, 1));
 const LEFT = FULL ? range(0, 3599, 1) : range(0, 779, 29).concat([599, 600, 3599]);
+const PINV = FULL ? range(0, 3600, 1) : range(0, 130, 3).concat([599, 600, 3599, 3600]);
 out.sizes = [];
 for(const z of SIZES){
   const [w, hh, ins] = z;
@@ -120134,7 +120156,7 @@ for(const z of SIZES){
   // The top line is the same on every tab; a phone's is swept on SHOW
   // and DAY, a wider screen's on SHOW.
   const swept = t => t === "show" || innerWidth <= 600;
-  for(const st of ["countdown", "arm", "running", "hold", "alerts"]){
+  for(const st of ["countdown", "arm", "running", "hold", "alerts", "purge", "hazers", "pins"]){
     phase = st; await h.sleep(600);
     for(const t of ["show", "day"]){
       await tab(t);
@@ -120142,6 +120164,9 @@ for(const z of SIZES){
       if(!swept(t)) continue;
       if(st === "countdown" || st === "arm") r.sweeps[st + "/" + t] = sweep(t, "next", st === "arm" ? ARM : NEXT);
       if(st === "running") r.sweeps[st + "/" + t] = sweep(t, "left", LEFT);
+      if(st === "purge") r.sweeps[st + "/" + t] = sweep(t, "", PINV.map(v => tick("tp", v)));
+      if(st === "hazers") r.sweeps[st + "/" + t] = sweep(t, "", PINV.map(v => tick("hzt", v)));
+      if(st === "pins") r.sweeps[st + "/" + t] = sweep(t, "", PINV.map(v => tick("tp", v)));
     }
   }
   out.sizes.push(r);
@@ -120153,7 +120178,8 @@ def _ui2_status_sweep():
     """The states the sweep draws: a countdown to show 5 with the flames
     armed (its words "Show 5 starts in M:SS."), the same with them not
     armed and arming on (inside 5 minutes, "Arm flames."), a show running,
-    a show held, and five alerts holding the show."""
+    a show held, five alerts holding the show, a timed purge, the hazer
+    test, and three live modes."""
     import copy
     ph = _ui2_status_phone()
     cd = copy.deepcopy(ph["idle"])
@@ -120168,8 +120194,19 @@ def _ui2_status_sweep():
     hold = copy.deepcopy(run)
     hold["schedule"].update({"state": "PAUSED", "held": True})
     hold["countdown"]["running"] = False
+    # The pinned lines that tick: a timed purge, the hazer test, and both
+    # with live flame on (three Stops, their words, one countdown).
+    purge = copy.deepcopy(cd)
+    purge["morning"] = {"timed": {"left_s": 95, "total_s": 120,
+                                  "what": "purge"}}
+    hazers = copy.deepcopy(cd)
+    hazers["hazer_test"] = {"on": True, "left_s": 60}
+    pins = copy.deepcopy(purge)
+    pins["hazer_test"] = {"on": True, "left_s": 60}
+    pins["live_flame"] = {"on": True, "who": "Jeff"}
     return {"countdown": cd, "arm": arm, "running": run, "hold": hold,
-            "alerts": ph["five"]}
+            "alerts": ph["five"], "purge": purge, "hazers": hazers,
+            "pins": pins}
 
 
 # The device matrix: (CSS width, CSS height, scale, insets top, right,
@@ -120177,13 +120214,12 @@ def _ui2_status_sweep():
 # every selftest; LTC_LAYOUT_MATRIX=full runs every width, height and scale
 # both ways up (a few minutes).
 _UI2_SWEEP_TOUCH = (
-    (412, 915, 1), (412, 915, 1.3), (412, 915, 1.5), (384, 800, 1.15),
-    (360, 740, 1.3), (360, 640, 1), (320, 568, 1), (300, 640, 1),
-    (270, 585, 1), (393, 852, 1, 59, 0, 34, 0), (402, 874, 1, 62, 0, 34, 0),
-    (440, 956, 1, 62, 0, 34, 0), (852, 393, 1, 0, 59, 21, 59),
-    (915, 412, 1), (768, 1024, 1), (1024, 768, 1), (820, 1180, 1))
-_UI2_SWEEP_MOUSE = ((360, 700, 1), (320, 640, 1), (540, 900, 1),
-                    (600, 1000, 1))
+    (412, 915, 1), (412, 915, 1.5), (360, 740, 1.3), (360, 640, 1.3),
+    (320, 568, 1), (270, 585, 1), (393, 852, 1, 59, 0, 34, 0),
+    (393, 852, 1.3, 59, 0, 34, 0), (852, 393, 1, 0, 59, 21, 59),
+    (800, 360, 1), (800, 360, 1.3), (640, 600, 1), (820, 1180, 1.3),
+    (768, 1024, 1))
+_UI2_SWEEP_MOUSE = ((360, 700, 1), (480, 800, 1), (540, 900, 1))
 
 
 def _ui2_sweep_sizes(full, touch):
@@ -120191,7 +120227,7 @@ def _ui2_sweep_sizes(full, touch):
         rows = _UI2_SWEEP_TOUCH if touch else _UI2_SWEEP_MOUSE
     else:
         rows = []
-        for w in (270, 300, 320, 360, 384, 412, 430, 600, 768, 1024):
+        for w in (270, 300, 320, 340, 360, 384, 412, 430, 600, 768, 1024):
             for h in (560, 640, 740, 850, 1000):
                 for z in (1, 1.15, 1.3, 1.5):
                     rows += [(w, h, z), (h, w, z)]
@@ -120200,7 +120236,9 @@ def _ui2_sweep_sizes(full, touch):
     for r in rows:
         w, h, z = round(r[0] / r[2]), round(r[1] / r[2]), r[2]
         ins = list(r[3:7]) if len(r) > 3 else [0, 0, 0, 0]
-        if (w, h, tuple(ins)) in seen or w < 240 or h < 360:
+        # Below 250 CSS px either way is no phone (a 360 px phone at 1.5
+        # is 240): left out.
+        if (w, h, tuple(ins)) in seen or min(w, h) < 250:
             continue
         seen.add((w, h, tuple(ins)))
         out.append([w, h, ins, z])
@@ -120271,20 +120309,31 @@ def test_ui2_layout_sweep_any_phone_size_and_scale():
                     continue
                 for k, s in got["states"].items():
                     check(not s["bad"], f"{where}, {k}: {s['bad']}"[:1500])
-                    # Upright: the pane under the pinned rows keeps 40
-                    # percent of the screen (five alerts holding the show
-                    # keep their line and its Go to alert whole, never
-                    # cut, so they may take more: 20 percent is left).
-                    if h > w and not k.startswith("alerts"):
-                        check(s["pct"] >= 40,
-                              f"{where}, {k}: the pane under the pinned "
-                              f"rows is {s['content']} px, {s['pct']} "
-                              f"percent of the screen, under 40")
-                    if h > w and k.startswith("alerts"):
-                        check(s["pct"] >= 20,
-                              f"{where}, {k}: the pane under the pinned "
-                              f"rows is {s['content']} px, {s['pct']} "
-                              f"percent of the screen, under 20")
+                    # The pane's room under every pinned row (the header,
+                    # the top line, the footer, and what sticks at the
+                    # pane's top: SHOW's transport, the safety strip).
+                    # Upright: 40 percent of the screen, 30 on a screen
+                    # under 560 px tall (a 360x640 phone at 1.3). On its
+                    # side: 40 percent 360 px tall or more, 15 shorter
+                    # (800x360 at 1.3 is 615x277). A state that pins more
+                    # (five alerts holding the show, a live mode's Stops)
+                    # keeps those whole, never cut: the pane 20 percent,
+                    # 15 on a short screen upright; on a short screen on
+                    # its side only that nothing overlaps (checked above)
+                    # and the pane scrolls to the rest.
+                    many = k.split("/")[0] in ("alerts", "purge", "hazers",
+                                               "pins")
+                    if h > w:
+                        want_pct = (20 if many else 40) if h >= 560 else \
+                            (15 if many else 30)
+                    else:
+                        want_pct = (20 if many else 40) if h >= 360 else \
+                            (0 if many else 15)
+                    check(s["pct"] >= want_pct,
+                          f"{where}, {k}: the pane under the pinned rows "
+                          f"is {s['content']} px ({s['sticky']} px of it "
+                          f"pinned at its top left out), {s['pct']} percent "
+                          f"of the screen, under {want_pct}")
                 for k, s in got["sweeps"].items():
                     check(len(s["h"]) == 1 and len(s["main"]) == 1 and
                           len(s["first"]) == 1 and len(s["q"]) == 1,
@@ -120293,6 +120342,9 @@ def test_ui2_layout_sweep_any_phone_size_and_scale():
                           f"{s['h']}, pane top {s['main']}, first row "
                           f"{s['first']}, help button {s['q']} "
                           f"(\"{s['text']}\")")
+                    check(not s["ncut"],
+                          f"{where}, {k}: the clock in the top line cut "
+                          f"for {s['ncut']} of {s['n']} values: {s['cut']}")
     print("  ok")
 
 

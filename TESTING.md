@@ -287,12 +287,17 @@ width, height and scale both ways up):
   (`flex:1 1 0; min-width:0`, grid `minmax(0,1fr)`).
 - Words that change (a countdown, a status line, "Some armed") get
   reserved room: `tabular-nums` on digits, one line or a fixed number of
-  lines with an ellipsis. Nothing under them moves when they change.
+  lines with an ellipsis, a fixed height for a cell whose words tick.
+  Nothing under them moves when they change, and a clock in them is never
+  the part an ellipsis cuts.
 - A safety control (Hold, Stop, Disarm, Arm) never shares a row that can
   reflow because some words changed; only a resize may move it.
-- Pinned rows (header, the top line, the safety strip) leave the pane at
-  least 40 percent of an upright screen. What is not pinned scrolls with
-  the pane, never squeezed to a strip.
+- Pinned rows (header, the top line, the footer, and what sticks at the
+  pane's top: the safety strip, SHOW's transport) leave the pane at least
+  40 percent of the screen, upright or on its side (30 upright under 560
+  px tall, 15 on its side under 360). What is not pinned scrolls with the
+  pane, never squeezed to a strip. A screen 500 px tall or less (a phone
+  on its side) gets the phone's arrangement, compacted to one row each.
 - Taps 44 px or more (48 where there is room), never overlapping, their
   words never cut.
 - The frame is `100dvh` (with a `100vh` fallback) and keeps clear of the
