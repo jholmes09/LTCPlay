@@ -4935,14 +4935,17 @@ function armShortPhone(text){
   return /hold/i.test(s) || /[;\u2013\u2014]/.test(s) ? "Not armed. Tap Details." : s;
 }
 // An Arm all outcome said is kept (ARM_SAID) and made true to every
-// status read while it is on the line (armSaidNow): never "nothing was
-// armed" or "Not armed: <group>" while the engine reads that group armed
-// or asked for, and never "Nothing armed" without a read.
+// status read that arrives after it, while it is on the line
+// (armSaidNow): never "nothing was armed" or "Not armed: <group>" while
+// the engine reads that group armed or asked for, and "Not known" rather
+// than "Nothing armed" while the state cannot be read. A status that came
+// before the words were said is never used (it may be older than the
+// hold's own answers).
 let ARM_SAID = null;
-function armWords(text, level){
+function armWords(text, level, at){
   const ph = slidePhone(), t = String(text || "");
   let short = ph ? armShortPhone(t) : armShort(t), full = t, cls = level >= 2 ? "bad" : (level === 1 ? "ok" : "");
-  if(/^Arm all: /.test(t)){
+  if(/^Arm all: /.test(t) && at !== null && (stale() || (LAST_OK !== null && LAST_OK > at))){
     const r = flamesRead(ST && ST.flames, stale(), null);
     if(r.state === "unknown") short = /Not known:/.test(t) ? "Some groups not known. Tap Details." : "Not known. Check the tile.";
     else {
@@ -4955,8 +4958,8 @@ function armWords(text, level){
   return {short:short, full:full, cls:cls};
 }
 function armSay(text, level){
-  const w = armWords(text, level);
-  ARM_SAID = /^Arm all: /.test(String(text || "")) ? {w:w, make:() => armWords(text, level)} : null;
+  const at = Date.now(), w = armWords(text, level, null);
+  ARM_SAID = /^Arm all: /.test(String(text || "")) ? {w:w, make:() => armWords(text, level, at)} : null;
   say(w.short, w.full, w.cls);
 }
 function armSaidNow(){
