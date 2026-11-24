@@ -3894,8 +3894,8 @@ MUTATIONS = [
 
  ("ui 2.0 continue slide: a lost, 5xx or 409 answer to the done press is said as not continued without reading the engine",
   'ltcplay/web/remote2.html',
-  "  else prsRead(\"\", true, a ? a.err : null);\n",
-  "  else { prsSay(\"Not continued.\", \"\", \"\"); prsLine(\"Not continued. Nothing started.\"); }\n"),
+  "  prsRead(\"\", true, a ? a.err : null);\n",
+  "  { prsSay(\"Not continued.\", \"\", \"\"); prsLine(\"Not continued. Nothing started.\"); }\n"),
 
  ("ui 2.0 continue slide: an unclear answer is said as not continued while the engine may still be starting the show",
   'ltcplay/web/remote2.html',
@@ -3994,6 +3994,19 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   " || b.dataset.pin === \"pf\";\n",
   ";\n"),
+
+ # Review 2 of #301: a done press in flight is remembered across a Stop, a
+ # Hold and lost contact; one that never settles is given up on after
+ # PRS_DONE_MS, said as no answer yet, never as not continued.
+ ("ui 2.0 continue slide: a Hold, a Stop or lost contact while the done press is in flight brings the handle back",
+  'ltcplay/web/remote2.html',
+  "  if(PRS_INFLIGHT || PRS_AFTER) return {mode:\"unknown\", word:\"Checking\"};\n",
+  ""),
+
+ ("ui 2.0 continue slide: a done press that never settles is never given up on",
+  'ltcplay/web/remote2.html',
+  "      no(e);\n",
+  "      if(false) no(e);\n"),
 
 
 

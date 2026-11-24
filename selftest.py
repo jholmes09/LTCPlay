@@ -122303,7 +122303,9 @@ def test_ui2_continue_anyway_slide_on_a_phone():
                                ("phone2", "cuts", 120000),
                                ("phone3", "blind", 150000),
                                ("phone4", "stale_cut", 90000),
-                               ("phone5", "again", 150000)):
+                               ("phone5", "again", 150000),
+                               ("phone6", "inflight_blind_stop", 150000),
+                               ("phone7", "hang", 90000)):
             x = _ui2_drive_framed(chrome, page, st,
                                   _UI2_PR_SLIDE_STEPS.replace("__PART__",
                                                               part),
@@ -122517,6 +122519,30 @@ def test_ui2_continue_anyway_slide_on_a_phone():
               f"{where}: the pinned Stop for Programming flames is a Hold: "
               f"no done press, no handle until a read after its answer: "
               f"{dict(x, during=sorted(set(tuple(d[:2]) for d in x['during'])))}")
+        for k in ("inflight_b-hold", "inflight_pf", "inflight_blind_stop"):
+            x = r[k]
+            pre = [d for d in x["seen"] if not d[3]]
+            check(pre and all(m != "go" and kd == "none" for m, _l, kd, _c
+                              in pre) and x["second"] is None and
+                  x["posts"].count("begin") == 1 and
+                  x["posts"].count("done") == 1 and x["starts"] == 1,
+                  f"{where}: {k}: pressed while the done press is in "
+                  f"flight: no handle and no second slide until it settles "
+                  f"or the engine shows the show: "
+                  f"{dict(x, seen=sorted(set(tuple(d) for d in x['seen'])))}"[:1500])
+        x = r["hang"]
+        early = [d for d in x["seen"] if d[0] < 19.5]
+        told = [d for d in x["seen"] if d[4] == "No answer yet. Check the tile."]
+        check(x["posts"] == ["begin", "done"] and early and
+              all(d[1] != "go" and d[3] == "none" for d in early) and
+              told and told[0][0] >= 19.5 and
+              all("Not continued" not in d[2] and "Not continued" not in d[4]
+                  for d in x["seen"]) and
+              any(d[1] == "go" for d in x["seen"]) and not x["inflight"],
+              f"{where}: a done press that never settles: no handle for "
+              f"20 s, then no answer yet (never not continued), then the "
+              f"engine read gives the handle back: "
+              f"{sorted(set(tuple(d[1:]) for d in x['seen']))}"[:1500])
         x = r["disarm_finger"]
         check(x["posts"] == ["begin"] and x["disarms"] == 1 and
               x["starts"] == 0,
@@ -122665,6 +122691,7 @@ const settle = async () => { TE.offer = true; TE.cont = null; TE.state = "STANDB
   TE.slowCont = 0; TE.statusLate = 0; TE.statusHold = 0; TE.blind = false; TE.blindAfter = false; TE.getFail = 0; TE.pins = false;
   TE.stopLate = 0; TE.stopLose = false; TE.holdLate = 0; TE.viewOnly = false;
   PRS_READING++; PRS_STOPPING = 0; PRS_DOUBT = false; PRS_CHECK = false; PRS_STARTED = 0; PRS_WAIT = null; PRS_LINE = null; PRS_SEEN = null;
+  PRS_INFLIGHT = null; PRS_AFTER = 0; PRS_AFTER_N++;
   await nap(1500);
   // The slot drawn again a moment ago ignores a press for 1 s (alLocked).
   for(let i = 0; i < 100 && (alLocked() || stale()); i++) await nap(50); };
@@ -122891,6 +122918,46 @@ if(PART === "desk"){
     s.during = s_flip; TE.statusLate = 0;
     out[k] = await fin(s, 2500);
   }
+  } else if(PART === "phone6"){
+  // Review 2 of #301, N1: a Hold, the pinned Stop for Programming flames,
+  // or a Stop with no contact, pressed while the done press is in flight
+  // (answered 14 s late, the engine continuing at 13 s): no handle and no
+  // second slide until the done press settles or a read shows the show.
+  for(const how of ["b-hold", "pf", "blind_stop"]){
+    if(how === "pf"){ TE.pins = true; await waitFor(() => !!document.querySelector('#pins [data-pin="pf"]'), 3000); await nap(1200);
+      for(let i = 0; i < 100 && (alLocked() || stale()); i++) await nap(50); }
+    TE.late = 14000; TE.slowCont = 13000;
+    const p0 = TE.posts.length;
+    await slide([[1, 0, 0], [async c => { await waitFor(() => TE.posts.slice(c.p0).some(p => p.route === "done"), 3000); }]]);
+    if(how === "blind_stop"){
+      TE.blind = true; await waitFor(() => stale(), 8000); await nap(300);
+      tap(q("b-stop"), ++PID); await nap(150); tap(q("b-stop"), ++PID); await nap(500); TE.blind = false;
+    } else {
+      await nap(1500);
+      const b = how === "pf" ? document.querySelector('#pins [data-pin="pf"]') : q("b-hold");
+      b.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:0}));
+    }
+    const seen = []; let second = null;
+    for(let i = 0; i < 52; i++){ await nap(250); seen.push([sb().dataset.mode, q("pr-sl").textContent, kd(), TE.cont ? 1 : 0]);
+      if(!second && !TE.cont){ const k2 = sb().querySelector(".knob"); if(getComputedStyle(k2).display !== "none"){ const b0 = TE.posts.length;
+        await slide([[1, 0, 1500]], null, true); second = TE.posts.slice(b0).map(p => p.route); } } }
+    out["inflight_" + how] = {seen:seen, second:second, posts:TE.posts.slice(p0).map(p => p.route), starts:TE.starts};
+    await nap(500); TE.starts = 0; TE.resumed = 0; await settle();
+  }
+  } else if(PART === "phone7"){
+  // Review 2 of #301, N2: the done press never settles (a fetch that never
+  // ends, abort or not): after PRS_DONE_MS it is given up on, "No answer
+  // yet. Check the tile.", never not continued, no handle until then; the
+  // engine read then shows the failed check with no show: the handle back.
+  const f2 = window.fetch;
+  window.fetch = (u, o) => { if(o && o.method === "POST" && /preroll-continue$/.test(String(u)) && JSON.parse(o.body).phase === "done"){
+    TE.posts.push({route:"done"}); return new Promise(() => {}); } return f2(u, o); };
+  const p0 = TE.posts.length, t0 = Date.now();
+  await slide([[1, 0, 0], [async c => { await waitFor(() => TE.posts.slice(c.p0).some(p => p.route === "done"), 3000); }]]);
+  const seen = [];
+  for(let i = 0; i < 64; i++){ await nap(500); seen.push([Math.round((Date.now() - t0) / 100) / 10, sb().dataset.mode, q("pr-sl").textContent, kd(), msg()]); }
+  window.fetch = f2;
+  out.hang = {seen:seen, posts:TE.posts.slice(p0).map(p => p.route), inflight:!!PRS_INFLIGHT};
   } else {
   // A pinned Stop for every live mode appears above the slide while the
   // finger holds it at the end: the slide moves, the finger does not; the
