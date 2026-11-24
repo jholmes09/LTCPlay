@@ -120777,7 +120777,9 @@ function look(t){
     .filter(shown).map(R).filter(r => r.bottom > 1 && r.top < foot - 1);
   const topEdge = Math.max(0, ...pins.map(r => r.bottom));
   const ctl = t === "show" ? document.querySelector("#t-show .tr") : (main.contains(q("mini")) ? q("mini") : null);
-  if(ctl && shown(ctl) && !fits){ const c = R(ctl);
+  // (Only where it is pinned: in a narrow mouse window it scrolls with
+  // the pane, reached by scrolling like the rest.)
+  if(ctl && shown(ctl) && !fits && getComputedStyle(ctl).position === "sticky"){ const c = R(ctl);
     if(c.top < -1 || c.bottom > foot + 1 || c.height < 44) bad.push((t === "show" ? "SHOW's transport" : "the safety strip") + " not whole on the screen with the pane scrolled: " + [c.top, c.bottom].map(Math.round) + ", the footer at " + Math.round(foot)); }
   sc.scrollTop = keep;
   const room = fits ? vh : foot - topEdge;

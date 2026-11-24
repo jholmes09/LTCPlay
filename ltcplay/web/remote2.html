@@ -1007,7 +1007,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #tp-slide[data-mode="run"],#tp-slide[data-mode="na"],#tp-slide[data-mode="unknown"]{padding:0 8px}
   #tp-slide[data-mode="na"]{opacity:.45}
   #tp-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
-  #tp-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;line-height:1.1;text-align:center;font-size:min(var(--fs), 6.4vw)}
+  #tp-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:normal;line-height:1.05;text-align:center;font-size:min(var(--fs), 5.6vw)}
   #tp-slide[data-mode="go"] > .knob,#tp-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
     position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:var(--green-ink);
     touch-action:none;z-index:1}
@@ -1023,7 +1023,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #wc-slide[data-mode="run"],#wc-slide[data-mode="na"],#wc-slide[data-mode="unknown"]{padding:0 8px}
   #wc-slide[data-mode="na"]{opacity:.45}
   #wc-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
-  #wc-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;line-height:1.1;text-align:center;font-size:min(var(--fs), 6.4vw)}
+  #wc-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:normal;line-height:1.05;text-align:center;font-size:min(var(--fs), 5.6vw)}
   #wc-slide[data-mode="go"] > .knob,#wc-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
     position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:var(--green-ink);
     touch-action:none;z-index:1}
@@ -1039,7 +1039,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #pr-slide[data-mode="run"],#pr-slide[data-mode="na"],#pr-slide[data-mode="unknown"]{padding:0 8px}
   #pr-slide[data-mode="na"]{opacity:.45}
   #pr-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
-  #pr-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;white-space:normal;line-height:1.1;text-align:center;font-size:min(var(--fs), 6.4vw)}
+  #pr-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:normal;line-height:1.05;text-align:center;font-size:min(var(--fs), 5.6vw)}
   #pr-slide[data-mode="go"] > .knob,#pr-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
     position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:#4a3200;
     touch-action:none;z-index:1}
@@ -1074,6 +1074,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   .tab,.hb{min-height:44px}
   main > #mini .b{min-height:48px;padding:0 1px}
   main > #mini{gap:2px;padding-left:2px;padding-right:2px}
+  /* The top line's subject keeps its first words; the clock the rest. */
+  #next-t.split > .ld{min-width:min(3em, 30%)}
   /* The announcements' note wraps beside its heading, and their names
      ("Cancellation") shrink with the screen, without their icons: never
      past the edge. */
@@ -1109,7 +1111,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #next > .q{width:44px;height:44px;min-width:44px}
   footer{padding-top:2px;padding-bottom:2px}
   #wx,#msg-more{min-height:44px}
-  main > #mini{position:sticky;top:0;z-index:5;background:var(--bg);padding:4px var(--pad)}
+  main > #mini{position:sticky;top:0;z-index:5;background:var(--bg);padding:4px clamp(2px, 2vw - 3px, var(--pad))}
   main > #mini .b{min-height:48px}
 }
 /* On its side: SHOW's transport one row (the next step, Hold, Stop show,
