@@ -838,6 +838,9 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #ann-note{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere}
   #b-armall{min-width:0} #b-armall .lbl{white-space:normal;min-width:0}
   #armall-l,#armall-why{font-size:min(var(--fs), 4.6vw)}
+  /* Its state 18 px at most: "Some armed" whole beside its icon in a
+     window 480 to 500 px wide (cut by 4 px at 487). */
+  #armall-why{font-size:min(var(--fs), 4.6vw, 18px)}
   #b-armall{padding:0 6px;gap:4px}
   /* The help button stays on the words' row; the pinned Stops take the
      next (a ticking "Purging: 95 s" never pushes it onto a row alone). */
@@ -1146,7 +1149,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #pins{flex:0 1 auto;order:0;flex-wrap:nowrap;min-width:0}
   #pins .b{flex:1 1 auto;min-width:min-content;min-height:44px;padding:0 6px;white-space:normal;line-height:1.05}
   #pins .b > svg.i{display:none}
-  #next-t.split > .ld{min-width:min(3em, 30%)}
+  /* The subject's first letters at a fixed width, so the line's least
+     width holds them and the clock (a Stop beside it took the rest:
+     "Hazers on: 1000 s" at 373x240). */
+  #next-t.split > .ld{min-width:2em}
   #next-go{flex:0 0 auto;order:0;min-height:44px}
   /* The state strip one height whatever a timer says. */
   #t-show .state > div{height:56px;min-height:0}
