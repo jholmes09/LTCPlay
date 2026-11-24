@@ -1035,7 +1035,13 @@ every heartbeat; any failure lets the hold go and is journaled):
   copy) no older than 1 s, so the page is showing flamesafe's real state,
   not a cached one; and never a press sent from a status served before a
   Stop, a Hold, a Disarm every flame group or that group's Disarm that came
-  in the last 2.5 s;
+  in the last 2.5 s (how long ago is the engine's monotonic clock, before
+  or after is the wall clock's, as the status's `served_at` is: a wall
+  clock stepped back after the Stop only refuses more; one stepped back
+  between the status and the Stop lets a press from before the Stop start
+  a hold, as the 1 s age rule before 2026-11-24 did for a 0.5 s step.
+  Accepted: that hold still needs 10 more heartbeats with the finger
+  down);
 - the group not already armed or wanted;
 - one hold per group at a time: a second browser holding the same group is
   refused while the first hold is live (up to 1.5 s after its last
@@ -1075,8 +1081,17 @@ it in the engine (`ltcplay/remote.py`): a gap of up to 1.5 s carries a
 hold on (a 0.4 s round trip, a 1.0 s stall and 0.4 s for a resend), each
 gap counts 0.25 s at most toward the 1 s, and the page's status may be 2.5
 s old. A lifted finger whose let go never arrives, or a dead phone, still
-ends the hold within 1.5 s of its last heartbeat (2.0 s after a press
-with none), and nothing is armed unless 1 s of heartbeats arrived. Every
+ends the hold within 1.5 s of its last heartbeat's ARRIVAL (2.0 s after
+a press with none), and nothing is armed unless 1 s of heartbeats
+arrived. That bound is on arrival, not on the lift: with the let go lost,
+up to 4 heartbeats still in flight when the finger came up may each take
+up to 1.5 s to arrive on a very slow, queued link, so an arm a finger
+earned can land up to about 6 s after the lift (cold review, round 3: 10
+heartbeats arriving 1.45 s apart armed 15.0 s after the press). It is
+still bounded, and still needs 10 heartbeats the page sent while the
+finger was down. On the phone the page sends the heartbeats itself once
+the pop-up is confirmed, so this matters mostly for a desktop press and
+hold. Every
 check of whether a screen hold is live (the engine, the Stream Deck's
 fresh, the status, the wave flamer cleaning's "one flame group at a
 time") asks the engine's one rule, `Remote.hold_live`.

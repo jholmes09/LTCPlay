@@ -5834,9 +5834,15 @@ class Remote:
         ARM_PAGE_FRESH_S of now: a press sent before the cut and landing
         after it, on a slow link, never starts a hold. How long ago is
         the monotonic clock's (round 2 of the cold review of #303, N4: a
-        wall clock stepped back never turns the mark off); before or after
-        is the wall clock's, as served_at is, so a step back inside the
-        window refuses a press it need not (fails closed, 2.5 s at most)."""
+        wall clock stepped back after the cut never turns the mark off);
+        before or after is the wall clock's, as served_at is. So a step
+        back AFTER the cut refuses a press it need not (2.5 s at most),
+        but a step back BETWEEN the status being served and the cut
+        stamps the cut earlier than that status, and a press from before
+        the Stop can then start a hold (round 3 of the cold review). Not a
+        regression (the 1 s age rule before 2026-11-24 let the same press
+        through for a 0.5 s step), accepted: a hold started so still needs
+        10 more beats with the finger down before anything arms."""
         mono = self.clock()
         with self._arm_lock:
             cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
