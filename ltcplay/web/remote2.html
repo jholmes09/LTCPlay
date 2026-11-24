@@ -1070,16 +1070,20 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 @media (max-height:500px) and (orientation:landscape){
   #t-show .tr{position:sticky;top:0;z-index:5;background:var(--bg);padding:4px 0;margin:-4px 0;
     grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) 44px}
-  #b-go{grid-column:auto;min-height:48px} #t-show .tr .b{min-height:48px}
+  #b-go{grid-column:auto;min-height:48px} #t-show .tr .b{min-height:48px;padding:0 6px}
   #t-show .tr .q{width:44px;height:44px;min-width:44px;align-self:center}
+  /* Their words, not their icons, and in two lines where needed. */
+  #t-show .tr .b > svg.i{display:none} #t-show .tr .lbl{white-space:normal}
   /* The state strip one row of three, as on a wide screen, and the header
      one row: the brand's logo and name are left out. */
   #t-show .state{grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr) minmax(0,1fr)}
   .hright #brand{display:none}
-  /* The top line one row where it fits: its words, then a live mode's
-     Stops or Go to alert, then help (more Stops than fit take a row). */
-  #pins{flex:0 1 auto;order:0;flex-wrap:wrap;max-width:100%;min-width:0}
-  #pins .b{flex:0 1 auto;min-width:0;min-height:44px;padding:0 8px}
+  /* The top line one row: its words, then a live mode's Stops or Go to
+     alert, then help, never a second row (the words give way, and more
+     Stops share the row, their words in two lines). */
+  #next{flex-wrap:nowrap}
+  #pins{flex:0 1 auto;order:0;flex-wrap:nowrap;min-width:0}
+  #pins .b{flex:1 1 auto;min-width:0;min-height:44px;padding:0 6px;white-space:normal;line-height:1.05}
   #next-go{flex:0 0 auto;order:0;min-height:44px}
   /* The state strip one height whatever a timer says. */
   #t-show .state > div{height:56px;min-height:0}
