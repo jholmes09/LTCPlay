@@ -120945,8 +120945,10 @@ def _ui2_sweep_sizes(full, touch):
         w, h, z = round(r[0] / r[2]), round(r[1] / r[2]), r[2]
         ins = list(r[3:7]) if len(r) > 3 else [0, 0, 0, 0]
         # Below 240 CSS px either way is no phone (a 360 px phone at 1.5
-        # is 240): left out.
-        if (w, h, tuple(ins)) in seen or min(w, h) < 240:
+        # is 240): left out. A mouse window is never under 320 px wide (a
+        # desktop window zoomed to 400 percent) and has no island.
+        if (w, h, tuple(ins)) in seen or min(w, h) < 240 or \
+                (not touch and (w < 320 or any(ins))):
             continue
         seen.add((w, h, tuple(ins)))
         out.append([w, h, ins, z])

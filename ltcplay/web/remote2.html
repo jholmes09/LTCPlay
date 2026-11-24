@@ -784,8 +784,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   .tab{padding:0 8px;gap:6px} .hb{padding:0 8px;gap:6px} #tabs{gap:2px} .hright{gap:4px}
   header{row-gap:4px}
   #alert .more .w{display:none}
-  /* Arm all's words whole in its column ("Some armed" was 2 px short). */
+  /* Arm all's words whole in its column ("Some armed" was 2 to 6 px
+     short on a tablet). */
   #b-armall{padding:0 10px;gap:6px}
+  #armall-why{font-size:max(15px, calc(var(--fs) - 4px))}
 }
 @media (max-width:900px){
   :root{--next-h:60px; --next-fs:22px; --state-h:68px; --tc-fs:30px; --al-h:76px; --hdr-btn:44px}
@@ -1077,8 +1079,11 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   .tab,.hb{min-height:44px}
   main > #mini .b{min-height:48px;padding:0 1px}
   main > #mini{gap:2px;padding-left:2px;padding-right:2px}
-  /* The top line's subject keeps its first words; the clock the rest. */
-  #next-t.split > .ld{min-width:min(3em, 30%)}
+  /* The top line's subject keeps its first words; the clock the rest.
+     Its help button 44 px here with a mouse too. */
+  #next-t.split > .ld{min-width:min(2.5em, 25%)}
+  #next > .q{width:44px;height:44px;min-width:44px}
+  #fb-alloff{padding:0 8px;gap:6px}
   /* The announcements' note wraps beside its heading, and their names
      ("Cancellation") shrink with the screen, without their icons: never
      past the edge. */
