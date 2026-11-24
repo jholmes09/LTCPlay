@@ -475,6 +475,20 @@ function armTextNow(text, r, names){
   if(r.off.length) now += " Not armed now: " + nm(r.off) + ".";
   return t + now;
 }
+// Why a pop-up arm sent nothing, on the line: 8 words or fewer, no
+// "hold", and that nothing was sent (cold review of #302, F3). Pure.
+function faRefusedLine(why){
+  const w = String(why || "");
+  if(w.indexOf(SIGN_IN_WORDS) >= 0) return "Sign in first. Nothing sent.";
+  if(w.indexOf(ARMING_OFF) >= 0) return "Arming from screens is off. Nothing sent.";
+  if(w === ONE_GROUP_WORDS) return "One group at a time. Nothing sent.";
+  if(w === LF_UNKNOWN_WORDS) return "Live flame state unknown. Nothing sent.";
+  if(/no contact|Not live/i.test(w)) return "No contact. Nothing sent.";
+  if(/real state is not known/.test(w)) return "Flame state unknown. Nothing sent.";
+  if(/Already armed/.test(w)) return "Already armed. Nothing sent.";
+  if(/^Re-arm in|re-arm wait/i.test(w)) return "Re-arm wait. Nothing sent.";
+  return "Not armed. Nothing sent.";
+}
 // A sentence for a touch phone: no word "hold", no semicolons and no
 // dashes. A reason that names holding is said in a phone's words. Pure.
 function phoneArmWhy(w){

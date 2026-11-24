@@ -3544,6 +3544,46 @@ MUTATIONS = [
   "  if(s && faServed(s) < FA_SEEN) s = null;\n",
   ""),
 
+ # Cold review of #302: the pop-up arms only what it named (F1); an Arm
+ # all outcome is never read from a status built before the hold's
+ # answers (F2); a refusal at the Arm tap is said with its reason (F3); a
+ # busy group's Arm is Checking and takes no tap (F5); contact lost after
+ # an armed read is Not known (F6); an arm never stays Checking (F7).
+ ('ui 2.0 flame pop-up: Arm arms what the plan is at the tap, not what the pop-up named',
+  'ltcplay/web/remote2.html',
+  "  if(!plan || now.go.join(\",\") !== plan.go.join(\",\")){ faRefused(",
+  "  if(false){ faRefused("),
+
+ ('ui 2.0 flame read: an Arm all outcome is read from a status built before the words',
+  'ltcplay/web/remote2.html',
+  "    if(!ST || faServed(ST) < a.base) return null;\n",
+  "    if(!ST) return null;\n"),
+
+ ('ui 2.0 flame pop-up: a refusal at the Arm tap is not said',
+  'ltcplay/web/remote2.html',
+  "  if(!now.go.length){ faRefused(now.why); return; }\n",
+  "  if(!now.go.length) return;\n"),
+
+ ("ui 2.0 flame pop-up: a busy group's Arm is not shown Checking",
+  'ltcplay/web/remote2.html',
+  "    if(faBusy() && FA.groups.indexOf(i) >= 0){ ab.disabled = true; setText(ab.querySelector(\".act\"), \"Checking\"); }\n",
+  ""),
+
+ ("ui 2.0 flame pop-up: a busy group's Arm takes a tap between statuses",
+  'ltcplay/web/remote2.html',
+  "    if(faBusy() && FA.groups.indexOf(i) >= 0) el.disabled = true;\n",
+  ""),
+
+ ('ui 2.0 flame pop-up: contact lost after an armed read still says Armed',
+  'ltcplay/web/remote2.html',
+  "    if(stale()) return faWords(fa, flamesRead(null, true, fa.groups));\n",
+  ""),
+
+ ('ui 2.0 flame pop-up: a throw inside the arm leaves every Arm on Checking',
+  'ltcplay/web/remote2.html',
+  "    if(!fa.done) fa.done = Date.now();\n    try{ renderStale(); }catch(_e){}\n  }\n}\n",
+  "    try{ renderStale(); }catch(_e){}\n  }\n}\n"),
+
  ('ui 2.0 flame read: Arm flames says All armed with any group armed',
   'ltcplay/web/remote_rules.js',
   "  r.state = r.armed.length === pick.length ? \"all\" :",

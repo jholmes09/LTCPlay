@@ -120097,6 +120097,33 @@ MIX = [true, true, true, true]; await nap(900);
 out.said_all = [msg(), MSG_FULL];
 """
 
+# Cold review of #302, F2: on a desktop, statuses the engine built before
+# the hold's answers arrive 600 ms late, after the Arm all words: never
+# read as the outcome.
+_UI2_FLAME_WORDS_LAG_STEPS = r"""
+const q = id => document.getElementById(id);
+const nap = ms => new Promise(r => setTimeout(r, ms));
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+let MIX = [false, false, false, false], LAG = 0;
+window.__patch = st => { st.flames.groups = st.flames.groups.slice(0, 4).map((g, i) => Object.assign({}, g, {armed:MIX[i] ? "armed" : "disarmed"})); return st; };
+const hf2 = window.fetch;
+window.fetch = async (url, opt) => {
+  const r = await hf2(url, opt);
+  if(/\/api\/remote\/status/.test(String(url)) && LAG){ const t = await r.text(); await nap(LAG);
+    return new Response(t, {status:r.status, headers:{"Content-Type":"application/json"}}); }
+  return r;
+};
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1500);
+out.coarse = matchMedia("(pointer:coarse)").matches;
+LAG = 600; await nap(1500);
+MIX = [true, true, true, true];
+armSay("Arm all: front row, cat-walk, wave flamer, fireball are asked for; the lamps show when armed.", 1);
+const seen = [], t0 = performance.now();
+while(performance.now() - t0 < 2500){ const m = msg(); if(!seen.length || seen[seen.length - 1] !== m) seen.push(m); await nap(10); }
+out.seen = seen;
+"""
+
 
 def test_ui2_flame_arm_words_true_to_the_engine():
     section("Arm flames and the arm's words true to the engine (Andy and "
@@ -120133,6 +120160,12 @@ t(none.indexOf("nothing was armed") === 0 || none.indexOf("Arm all: nothing was 
 t(armTextNow(raw, flamesRead(null, false, null), nm) === raw, "no read: the words as they were");
 const ph = phoneArmText(mixed);
 t(!/hold/i.test(ph) && !/[;\u2013\u2014]/.test(ph) && ph.indexOf("cut off") >= 0, "a phone's words: " + ph);
+for(const [why, want] of [[ARMING_OFF, "Arming from screens is off. Nothing sent."], [SIGN_IN_WORDS, "Sign in first. Nothing sent."],
+    [ONE_GROUP_WORDS, "One group at a time. Nothing sent."], ["Not live: no contact with the engine in the last second.", "No contact. Nothing sent."],
+    ["Already armed or asked for.", "Already armed. Nothing sent."], ["Re-arm in 1.2 s", "Re-arm wait. Nothing sent."], ["x", "Not armed. Nothing sent."]]){
+  const l = faRefusedLine(why);
+  t(l === want && l.split(/\s+/).length <= 8 && !/hold/i.test(l), "a refusal's line: " + l);
+}
 for(const st of ["all", "asked", "some", "none", "unknown"]) for(const one of [true, false]){
   const l = flamesReadLine(st, one);
   t(l.split(/\s+/).length <= 8 && !/hold|;|\u2013|\u2014/i.test(l), "the line for " + st + ": " + l);
@@ -120175,6 +120208,17 @@ for(const st of ["all", "asked", "some", "none", "unknown"]) for(const one of [t
         check(sn[0] == "None armed. Tap Details." and
               sa[0] == "All flames armed.",
               f"{where}: the line follows each later read: {sn} {sa}")
+    d = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                          _UI2_FLAME_WORDS_LAG_STEPS, (1280, 800), coarse=False,
+                          routes=morning, budget_ms=30000)
+    dw = "2.0 at 1280x800, a mouse, Arm all words with late statuses"
+    if check(isinstance(d, dict) and "seen" in d and not d.get("problems"),
+             f"{dw}: driven: {d!r}"[:1500]):
+        check(not d["coarse"] and d["seen"][-1] == "All flames armed." and
+              not any(m.startswith(("None armed", "Some armed",
+                                    "Nothing armed")) for m in d["seen"]),
+              f"{dw}: a status the engine built before the words, arriving "
+              f"after them, is never read as the outcome: {d['seen']}")
     print("  ok")
 
 
@@ -120218,7 +120262,7 @@ async function popArm(el, opt){
   if(opt.cancel){ if(sheetBtn("Cancel")) tap(sheetBtn("Cancel")); }
   else if(sheetBtn("Arm")) tap(sheetBtn("Arm"));
   const t0 = performance.now();
-  let early = false, checking = false, hold = false, raw = false;
+  let early = false, checking = false, hold = false, raw = false, gcheck = false, tapable = false;
   const seen = [];
   while(performance.now() - t0 < (opt.ms || 3500)){
     const m = msg();
@@ -120228,11 +120272,13 @@ async function popArm(el, opt){
     if(/hold/i.test(lineHas()) || /[;\u2013\u2014]/.test(m)) hold = true;
     if(/Lift your finger|interrupted|Stream Deck/.test(m)) raw = true;
     if(el.innerText.indexOf("Checking") >= 0 || q("armall-why").textContent === "Checking") checking = true;
+    if(el.innerText.indexOf("Checking") >= 0) gcheck = true;
+    if(faBusy() && el.dataset.mode === "hold" && !el.disabled) tapable = true;
     if(opt.during && performance.now() - t0 >= (opt.at || 600) && !res.did){ res.did = true; await opt.during(res, el); }
     await nap(10);
   }
   Object.assign(res, {starts:SENT.slice(s0).filter(b => b.id == null).length, beats:SENT.length - s0, armed:ARMED.length - a0,
-    released:REL.length - r0, early:early, checking:checking, hold_word:hold, raw:raw, seen:seen, msg:msg(), full:MSG_FULL,
+    released:REL.length - r0, early:early, checking:checking, gcheck:gcheck, tapable:tapable, hold_word:hold, raw:raw, seen:seen, msg:msg(), full:MSG_FULL,
     sheet_end:sheetOpen(), live:LIVE.size, hold_after:HOLD !== null, busy:faBusy(), mode:el.dataset.mode || "",
     posts:window.__posts.slice(p0).map(p => p.route), words:msg().split(/\s+/).filter(Boolean).length});
   return res;
@@ -120293,6 +120339,43 @@ if(PART === "a"){
   // hold; said in a phone's words from a read, never "hold".
   ENG.asked = true; ENG.lamp = true; statusPatch(4); ENG.up = 150; ENG.down = 150; await nap(700);
   out.slow = await popArm(g0(), {ms:4000}); await again();
+  // Cold review of #302. F1: fireball in its re-arm wait when the Arm all
+  // pop-up opens ("Stays off: fireball"), the wait over by the Arm tap:
+  // nothing is sent, and the line says it changed.
+  { ENG.asked = true; ENG.lamp = true; const RA = Date.now() + 1500;
+    window.__patch = st => { st.flames.groups = st.flames.groups.slice(0, 4).map((g, i) => {
+      const x = ENG.wanted[i] ? Object.assign({}, g, {armed:"armed"}) : Object.assign({}, g);
+      if(i === 3 && !ENG.wanted[i]) x.rearm_ms = Math.max(0, RA - Date.now());
+      return x; }); return st; };
+    await nap(700);
+    out.rearm = await popArm(q("b-armall"), {ms:2500, mid:async () => { await nap(2200); }});
+    await again(); }
+  // F3: live flame programming (one group at a time) turned on with the
+  // Arm all pop-up open; arming switched off with a group's pop-up open:
+  // nothing sent, the reason on the line.
+  { let LF = false; window.__patch = st => { st.flames.groups = st.flames.groups.slice(0, 4); if(LF) st.live_flame = {on:true, one_group_at_a_time:true}; return st; };
+    await nap(700);
+    out.lf = await popArm(q("b-armall"), {ms:1500, mid:async () => { LF = true; await nap(900); }});
+    await again(); }
+  { let OFF = false; window.__patch = st => { st.flames.groups = st.flames.groups.slice(0, 4); if(OFF) st.arming = Object.assign({}, st.arming, {enabled:false}); return st; };
+    await nap(700);
+    out.off = await popArm(g0(), {ms:1500, mid:async () => { OFF = true; await nap(900); }});
+    await again(); }
+  // F6: armed, then contact lost: Not known, never Armed.
+  { ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
+    out.lost = await popArm(g0(), {ms:3000});
+    window.__patch = st => { throw new Error("no contact"); };
+    await nap(4500);
+    out.lost.after = msg();
+    await again(); }
+  // F7: a throw inside the arm never leaves Checking behind.
+  { statusPatch(4); await nap(700);
+    const real = window.armStart; window.armStart = () => { throw new Error("boom"); };
+    try{ faGo(0, {go:[0], out:[], why:""}).catch(() => {}); }catch(_e){}
+    await nap(600);
+    window.armStart = real;
+    out.thrown = {busy:faBusy(), dis:g0().disabled, act:g0().innerText};
+    await again(); }
 }
 out.live_end = LIVE.size;
 """
@@ -120372,7 +120455,8 @@ def test_ui2_flame_arm_popup_on_a_phone():
         check(a["sent_before_arm"] == 0 and a["starts"] == 1 and
               a["armed"] == 1 and not a["early"] and a["checking"] and
               a["msg"] == "Armed." and "Checking..." in a["seen"] and
-              not a["busy"] and not a["hold_after"],
+              not a["busy"] and not a["hold_after"] and a["gcheck"] and
+              not a["tapable"],
               f"{where}: Arm on the pop-up: one start, Checking while it "
               f"runs, Armed only from the read after the engine armed it: "
               f"{a}")
@@ -120426,6 +120510,29 @@ def test_ui2_flame_arm_popup_on_a_phone():
               f"{where}: Arm on Arm all's pop-up arms every group, said "
               f"from a read: {al}")
         clean(al, "all")
+        rr = r["rearm"]
+        check("Stays off: fireball" in rr["body"] and rr["beats"] == 0 and
+              rr["armed"] == 0 and
+              rr["msg"] == "Changed. Nothing sent. Tap Arm again.",
+              f"{where}: what would arm changed while the pop-up was open: "
+              f"nothing sent, said so: {rr}")
+        lf, of = r["lf"], r["off"]
+        check(lf["beats"] == 0 and
+              lf["msg"] == "One group at a time. Nothing sent." and
+              of["beats"] == 0 and
+              of["msg"] == "Arming from screens is off. Nothing sent." and
+              "Why:" not in of["full"],
+              f"{where}: refused at the Arm tap: nothing sent, the reason on "
+              f"the line: {lf} {of}")
+        clean(lf, "lf")
+        clean(of, "off")
+        lo = r["lost"]
+        check(lo["msg"] == "Armed." and lo["after"] == "Not known. Check the tile.",
+              f"{where}: armed, then contact lost: Not known, never Armed: "
+              f"{lo}")
+        th = r["thrown"]
+        check(not th["busy"] and not th["dis"] and "Checking" not in th["act"],
+              f"{where}: a throw inside the arm never leaves Checking: {th}")
         sl = r["slow"]
         check(sl["armed"] == 0 and sl["msg"] == "Not armed. Tap Details."
               and "Why: the arm was cut off, try again." in sl["full"],

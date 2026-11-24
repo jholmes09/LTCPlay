@@ -4936,19 +4936,20 @@ function armShortPhone(text){
   if(s === "Hold stopped. Tap Details.") return "Stopped. Tap Details.";
   return /hold/i.test(s) || /[;\u2013\u2014]/.test(s) ? "Not armed. Tap Details." : s;
 }
-// An Arm all outcome said is kept (ARM_SAID) and made true to every
-// status read that arrives after it, while it is on the line
-// (armSaidNow): never "nothing was armed" or "Not armed: <group>" while
-// the engine reads that group armed or asked for, and "Not known" rather
-// than "Nothing armed" while the state cannot be read. A status that came
-// before the words were said is never used (it may be older than the
-// hold's own answers).
+// An Arm all outcome said is kept (ARM_SAID) and made true to the
+// engine while it is on the line (armSaidNow): never "nothing was armed"
+// or "Not armed: <group>" while the engine reads that group armed or
+// asked for, and "Not known" rather than "Nothing armed" while the state
+// cannot be read. Only a status the engine served no earlier than a read
+// the page asked for after the words (ARM_SAID.base, the engine's own
+// served_at) is used: a status built before the hold's answers and
+// arriving late is never read as the outcome (cold review of #302, F2).
 let ARM_SAID = null;
-function armWords(text, level, at){
+function armWords(text, level, src){
   const ph = slidePhone(), t = String(text || "");
   let short = ph ? armShortPhone(t) : armShort(t), full = t, cls = level >= 2 ? "bad" : (level === 1 ? "ok" : "");
-  if(/^Arm all: /.test(t) && at !== null && (stale() || (LAST_OK !== null && LAST_OK > at))){
-    const r = flamesRead(ST && ST.flames, stale(), null);
+  if(/^Arm all: /.test(t) && src){
+    const r = flamesRead(src.st && src.st.flames, src.stale, null);
     if(r.state === "unknown") short = /Not known:/.test(t) ? "Some groups not known. Tap Details." : "Not known. Check the tile.";
     else {
       full = armTextNow(t, r, groupNames());
@@ -4961,9 +4962,21 @@ function armWords(text, level, at){
 }
 function armSay(text, level){
   if(faQuiet(text)) return;
-  const at = Date.now(), w = armWords(text, level, null);
-  ARM_SAID = /^Arm all: /.test(String(text || "")) ? {w:w, make:() => armWords(text, level, at)} : null;
+  const w = armWords(text, level, null);
+  if(!/^Arm all: /.test(String(text || ""))){ ARM_SAID = null; say(w.short, w.full, w.cls); return; }
+  const a = ARM_SAID = {w:w, base:Infinity, make:() => {
+    if(stale()) return armWords(text, level, {st:null, stale:true});
+    if(!ST || faServed(ST) < a.base) return null;
+    return armWords(text, level, {st:ST, stale:false});
+  }};
   say(w.short, w.full, w.cls);
+  // The read asked for after the words: the engine served it after the
+  // hold's answers.
+  getJSON("/api/remote/status", 1500).then(s => {
+    if(ARM_SAID !== a || !s) return;
+    a.base = faServed(s);
+    armSaidShow(a, armWords(text, level, {st:s, stale:false}));
+  }).catch(() => {});
 }
 // ---- flame arm on a touch phone: a tap, then a pop-up (Andy and Jeff on
 // a phone, 2026-11-23: "Slider ARM function is shit. Make it like the
@@ -4997,48 +5010,78 @@ function faQuiet(text){
   return true;
 }
 function faNames(gs){ const n = groupNames(); return gs.map(i => n[i] || ("group " + (i + 1))).join(", "); }
-async function faAsk(i){
-  if(faBusy() || FA_ASKING){ say("Checking. Wait.", "An arm is being checked with the engine. Nothing more was sent.", ""); return; }
-  if(HOLD){ say("Not armed. Tap Details.", "Another arm is running. Nothing was sent.", "bad"); return; }
-  const all = i === "all";
-  let go = [], out = [];
-  if(all){
+// What a pop-up arm of `i` (a group, or "all") would arm right now:
+// {go, out, why}. The same rules armStart and armAllStart apply.
+function faPlan(i){
+  if(i === "all"){
     const waits = {};
     (((ST && ST.flames) || {}).groups || []).forEach((_g, k) => { waits[k] = rearmWaitFor(k); });
-    const plan = armAllPlan(ST, Date.now(), LAST_OK, waits);
-    if(!plan.go.length){ say("Not armed. Tap Details.", phoneArmText("Not armed: " + plan.why + ". Nothing was sent."), "bad"); return; }
-    go = plan.go; out = plan.out;
-  } else {
-    const as = armState(ST, Date.now(), LAST_OK, i);
-    if(!as.ok){ say(armShortPhone("Not armed: " + as.why), phoneArmText("Not armed: " + as.why + " Nothing was sent."), "bad"); return; }
-    go = [i];
+    const p = armAllPlan(ST, Date.now(), LAST_OK, waits);
+    return {go:p.go, out:p.out, why:p.go.length ? "" : (p.out.length ? p.out[0].why : p.why)};
   }
+  const as = armState(ST, Date.now(), LAST_OK, i);
+  const w = as.ok ? rearmWaitFor(i) : 0;
+  return {go:as.ok && !(w > 0) ? [i] : [], out:[], why:!as.ok ? as.why : w > 0 ? rearmText(w) : ""};
+}
+// Nothing was sent: the reason on the line (8 words or fewer), the whole
+// of it behind Details.
+function faRefused(why, changed){
+  const w = String(why || "");
+  say(changed ? "Changed. Nothing sent. Tap Arm again." : faRefusedLine(w),
+    phoneArmText((changed ? "What would arm changed while the pop-up was open: " + w : "Not armed: " + w).replace(/[.\s]+$/, "") + ". Nothing was sent."), "bad");
+}
+async function faAsk(i){
+  if(faBusy() || FA_ASKING){ say("Checking. Wait.", "An arm is being checked with the engine. Nothing more was sent.", ""); return; }
+  if(HOLD){ say("Not armed. Nothing sent.", "Another arm is running. Nothing was sent.", "bad"); return; }
+  const all = i === "all";
+  const plan = faPlan(i);
+  if(!plan.go.length){ faRefused(plan.why); return; }
   FA_ASKING = true;
   let yes = false;
   try{
-    yes = await confirmBox(all ? "Arm all flames?" : "Arm " + faNames(go) + "?",
-      "Arms: " + faNames(go) + "." + (out.length ? " Stays off: " + faNames(out.map(o => o.group)) + "." : ""), "Arm", "green");
+    yes = await confirmBox(all ? "Arm all flames?" : "Arm " + faNames(plan.go) + "?",
+      "Arms: " + faNames(plan.go) + "." + (plan.out.length ? " Stays off: " + faNames(plan.out.map(o => o.group)) + "." : ""), "Arm", "green");
   } finally { FA_ASKING = false; }
   if(!yes) return;
-  faGo(all ? "all" : i);
+  faGo(all ? "all" : i, plan);
 }
-// Arm on the pop-up: the one tap that sends.
-async function faGo(i){
+// Arm on the pop-up: the one tap that sends, and only what the pop-up
+// named (cold review of #302, F1): the plan is made again at the tap, and
+// if it is not the same (a re-arm wait over, arming switched off, live
+// flame programming, contact lost, a group armed or disarmed meanwhile)
+// nothing is sent and the line says so. The check and the start are in
+// the same tick, so the hold holds exactly the groups named.
+async function faGo(i, plan){
   if(faBusy() || HOLD){ say("Checking. Wait.", "An arm is being checked with the engine. Nothing more was sent.", ""); return; }
-  const fa = FA = {seq:++FA_SEQ, all:i === "all", groups:i === "all" ? [] : [i], said:[], done:0, h:null, at:Date.now()};
-  ARM_SAID = null;
-  if(fa.all) armAllStart(); else armStart(i);
-  fa.h = HOLD;
-  if(fa.h) fa.groups = fa.h.parts.map(p => p.group).concat((fa.h.out || []).map(o => o.group));
-  say("Checking...", "", "");
-  try{ renderStale(); }catch(_e){}
-  const t0 = Date.now();
-  while(fa.h && HOLD === fa.h){
-    if(Date.now() - t0 > FA_MAX_MS){ armStop("the engine did not answer in time"); break; }
-    await new Promise(r => setTimeout(r, 100));
+  const now = faPlan(i);
+  if(!now.go.length){ faRefused(now.why); return; }
+  if(!plan || now.go.join(",") !== plan.go.join(",")){ faRefused("now it would arm " + faNames(now.go), true); return; }
+  const gs = (((ST && ST.flames) || {}).groups || []).map((_g, k) => k);
+  const fa = FA = {seq:++FA_SEQ, all:i === "all", groups:i === "all" ? gs : [i], said:[], done:0, h:null, at:Date.now()};
+  // Never stuck on Checking: whatever happens, the arm is over at the end.
+  try{
+    ARM_SAID = null;
+    if(fa.all) armAllStart(); else armStart(i);
+    fa.h = HOLD;
+    if(fa.h && fa.h.parts.map(p => p.group).join(",") !== plan.go.join(",")){ armStop("what would arm changed"); fa.h = null; }
+    if(!fa.h){
+      fa.done = Date.now();
+      faRefused((fa.said.filter(t => !/^Keep holding/.test(t)).pop() || "refused").replace(/^Not armed: /, ""));
+      return;
+    }
+    say("Checking...", "", "");
+    try{ renderStale(); }catch(_e){}
+    const t0 = Date.now();
+    while(fa.h && HOLD === fa.h){
+      if(Date.now() - t0 > FA_MAX_MS){ armStop("the engine did not answer in time"); break; }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    if(FA !== fa) return;
+    await faRead(fa);
+  } finally {
+    if(!fa.done) fa.done = Date.now();
+    try{ renderStale(); }catch(_e){}
   }
-  if(FA !== fa) return;
-  await faRead(fa);
 }
 // The engine read after the arm, and what the line says.
 // Stop or a Disarm pressed while a pop-up arm runs: the hold ends at once,
@@ -5066,7 +5109,9 @@ async function faRead(fa){
   // Each newer status after it (a poll that arrived after the hold ended)
   // says it again; an older one never does.
   ARM_SAID = {w:w, make:() => {
-    if(stale() || !ST || LAST_OK === null || LAST_OK < ended || faServed(ST) <= FA_SEEN) return null;
+    // Contact lost: Not known, never the last read's Armed (F6).
+    if(stale()) return faWords(fa, flamesRead(null, true, fa.groups));
+    if(!ST || LAST_OK === null || LAST_OK < ended || faServed(ST) <= FA_SEEN) return null;
     FA_SEEN = faServed(ST);
     return faWords(fa, flamesRead(ST.flames, false, fa.groups));
   }};
@@ -5090,17 +5135,19 @@ function faWords(fa, r){
   }
   return {short:short, full:phoneArmText(full), cls:r.state === "all" ? "ok" : r.state === "unknown" || r.state === "none" || r.state === "some" ? "bad" : ""};
 }
-function armSaidNow(){
-  const a = ARM_SAID;
-  if(!a) return;
+function armSaidShow(a, w){
+  if(ARM_SAID !== a || !w) return;
   if($("msg-t").textContent !== a.w.short || MSG_FULL !== (a.w.full !== a.w.short ? a.w.full : "")){ ARM_SAID = null; return; }
-  const w = a.make();
-  if(!w || (w.short === a.w.short && w.full === a.w.full && w.cls === a.w.cls)) return;
+  if(w.short === a.w.short && w.full === a.w.full && w.cls === a.w.cls) return;
   a.w = w;
   setText($("msg-t"), w.short);
   $("msg").className = w.cls;
   MSG_FULL = w.full !== w.short ? w.full : "";
   $("msg-more").hidden = !MSG_FULL;
+}
+function armSaidNow(){
+  const a = ARM_SAID;
+  if(a) armSaidShow(a, a.make());
 }
 document.addEventListener("visibilitychange", () => { if(document.hidden){ slideCancel("the page was hidden"); armStop("the page was hidden"); } });
 window.addEventListener("pagehide", () => { slideCancel("the page closed"); armStop("the page closed"); });
