@@ -120529,6 +120529,9 @@ out.label_all = await lab([true, true, true, true]);
 FLST = true; out.label_unknown = await lab([true, true, false, false]); FLST = false;
 MIX = [false, true, false, true]; await nap(900);
 armSay("Arm all: nothing was armed. Not armed: front row, cat-walk, wave flamer, fireball (The hold was interrupted. Lift your finger and hold again).", 2);
+// As the hold said it, then true to each status that arrives after.
+out.said_at = [msg(), MSG_FULL];
+await nap(900);
 out.said_mix = [msg(), MSG_FULL];
 MIX = [false, false, false, false]; await nap(900);
 out.said_none = [msg(), MSG_FULL];
