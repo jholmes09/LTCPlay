@@ -295,7 +295,9 @@ width, height and scale both ways up):
 - Pinned rows never starve the pane. The pane's room is what shows
   between every row still pinned above it (the header unless it scrolled
   away, the top line, SHOW's transport or the safety strip) and the
-  footer, scrolled to its foot. Floors, and why:
+  footer, scrolled to its foot. Floors on a phone (a screen 500 px or
+  less on its short side; over that, a tablet's or desktop's layout, kept
+  as it was), and why:
   - 40 percent of the screen in the normal states.
   - 30 percent on a phone upright under 560 px tall: the header (44 px
     taps), the top line, the transport or the safety strip and the
@@ -307,7 +309,7 @@ width, height and scale both ways up):
     transport (or the safety strip) whole on the screen and at least one
     44 px row of the pane, the rest reached by scrolling. The top line,
     the transport and the footer alone are about 160 px there.
-  A screen under 600 px tall scrolls as a whole: the header
+  A screen 500 px tall or less scrolls as a whole: the header
   scrolls away, the top line, the transport (or strip) and the footer
   stay. What is not pinned scrolls with the pane, never squeezed to a
   strip.
@@ -320,6 +322,13 @@ width, height and scale both ways up):
   block (`max-width:500px and pointer:coarse`) only tightens; a narrow
   mouse window, 500 to 600 px, a tablet and a phone on its side must work
   without it.
+- A tablet or a desktop window (over 600 px wide and over 500 px tall)
+  keeps the layout it had before the phone work, control for control:
+  every phone rule sits inside `(max-width:600px), (max-height:500px)` or
+  a narrower query, and the script's `phoneArrangement()` is the same
+  query (the top line's clock spans, the taskbar guess). Widening the
+  phone's arrangement onto a tablet is a change to the tablet: it needs
+  its own PR.
 
 While mutate.py runs, the working tree is deliberately broken (a
 `.mutating` file marks it). Do not build, soak or run a show from that

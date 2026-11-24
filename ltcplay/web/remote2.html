@@ -73,8 +73,6 @@
   --safe-b:env(safe-area-inset-bottom, 0px); --safe-l:env(safe-area-inset-left, 0px)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);height:100%}
-/* A phone on its side never enlarges the text by itself (iOS). */
-html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* No pull to refresh, no overscroll bounce: a finger dragged down the
    page never reloads it mid show (Andy's phone, 2026-11-22). */
 html,body{overscroll-behavior:none}
@@ -200,9 +198,7 @@ body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mo
 #t-show > *{min-width:0;min-height:0}
 #next{display:flex;align-items:center;gap:12px;padding:0 12px;margin:var(--gap) var(--pad) 0;border-radius:12px;border:2px solid var(--line);
   background:var(--panel);font-size:var(--next-fs);font-weight:800;min-width:0;min-height:0}
-/* Words that tick (a countdown, a show's times) never change their
-   width or the line's height: every digit the same width. */
-#next .t{flex:1 1 auto;min-width:0;line-height:1.1;font-variant-numeric:tabular-nums}
+#next .t{flex:1 1 auto;min-width:0;line-height:1.1}
 #pins{display:flex;gap:var(--gap);flex:0 0 auto}
 #pins .b{min-height:56px;font-size:var(--fs)}
 #pins:empty{display:none}
@@ -224,17 +220,11 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 .state{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.2fr);gap:var(--gap)}
 .state > div{display:flex;flex-direction:column;justify-content:center;padding:0 12px;border-radius:12px;background:var(--panel);border:2px solid var(--line);min-width:0}
 .state small{color:var(--muted);font-size:var(--fs);line-height:1.1}
-#pill{flex-direction:row !important;align-items:center;justify-content:flex-start !important;gap:10px;font-weight:800;font-variant-numeric:tabular-nums}
+#pill{flex-direction:row !important;align-items:center;justify-content:flex-start !important;gap:10px;font-weight:800}
 #pill.ok{border-color:var(--green);color:#9BF5B7} #pill.warn{border-color:var(--amber);color:#FFD08A}
 #pill.bad{border-color:var(--red);color:#FFB3AB;background:#2a0a08} #pill.off{color:var(--grey)}
 #st-tc{font:800 var(--tc-fs)/1 var(--sans);font-variant-numeric:tabular-nums;white-space:nowrap}
-#cd-v{font-weight:800;font-size:calc(var(--fs) + 6px);white-space:nowrap;font-variant-numeric:tabular-nums}
-/* The timecode and the times fit their cell at their longest
-   ("59:59 | 59:59"), sized by the cell: never cut, never past an edge
-   (a browser without container units keeps the size before). */
-.state > div{container-type:inline-size}
-#st-tc{font-size:var(--tc-fs);font-size:min(var(--tc-fs), 14cqi)}
-#cd-v{font-size:calc(var(--fs) + 6px);font-size:min(calc(var(--fs) + 6px), 12.5cqi)}
+#cd-v{font-weight:800;font-size:calc(var(--fs) + 6px);white-space:nowrap}
 .tr{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr) auto;gap:var(--gap);align-items:stretch}
 .tr .b{min-height:0;height:100%;font-size:calc(var(--fs) + 2px)}
 #b-go{font-size:calc(var(--fs) + 6px)}
@@ -244,8 +234,7 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 #armall-why{white-space:nowrap}
 /* Stop show's two lines: "Stop show" over "tap twice" (the Windows
    stress test, 2026-11-09). */
-/* Their words wrap where a narrow screen has no room, never cut. */
-#b-stop .lbl,#m-stop .lbl,#b-runoff .lbl{display:flex;flex-direction:column;align-items:center;white-space:normal;text-align:center}
+#b-stop .lbl,#m-stop .lbl,#b-runoff .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
 #b-stop,#b-runoff{font-size:var(--fs);gap:6px;padding-left:8px;padding-right:8px}
 #b-stop .lbl small:empty,#m-stop .lbl small:empty{display:none}
 .tr .q{align-self:center}
@@ -784,10 +773,6 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   .tab{padding:0 8px;gap:6px} .hb{padding:0 8px;gap:6px} #tabs{gap:2px} .hright{gap:4px}
   header{row-gap:4px}
   #alert .more .w{display:none}
-  /* Arm all's words whole in its column ("Some armed" was 2 to 6 px
-     short on a tablet). */
-  #b-armall{padding:0 10px;gap:6px}
-  #armall-why{font-size:max(15px, calc(var(--fs) - 4px))}
 }
 @media (max-width:900px){
   :root{--next-h:60px; --next-fs:22px; --state-h:68px; --tc-fs:30px; --al-h:76px; --hdr-btn:44px}
@@ -805,14 +790,27 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   :root{--gap:4px; --pad:10px; --state-h:60px; --tr-h:56px; --al-h:60px; --ann-h:56px}
 }
 /* A phone: the SHOW pane scrolls between the header and the footer, so
-   nothing ever goes under the footer. A phone on its side (under 600 px tall) too: its pinned rows would otherwise leave the pane a strip. */
-@media (max-width:600px), (max-height:599px){
+   nothing ever goes under the footer. A phone on its side (500 px tall or less) too: its pinned rows would otherwise leave the pane a strip. */
+@media (max-width:600px), (max-height:500px){
   /* A phone: the logo alone, in the room left on the buttons' last line
      (placeBrand moves it there). */
   .hright #brand{margin-right:0;margin-left:-4px;justify-content:flex-end;height:44px}
   .hright #brand::after{display:none}
   .hright #brand::before{content:"";flex:0 0 4px}
   #brand-logo{height:30px}
+  /* A phone on its side never enlarges the text by itself (iOS). */
+  html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+  /* Words that tick (a countdown, a show's times) never change their
+     width or the line's height: every digit the same width. */
+  #next .t,#pill,#st-tc,#cd-v{font-variant-numeric:tabular-nums}
+  /* The timecode and the times fit their cell at their longest
+     ("59:59 | 59:59"), sized by the cell: never cut, never past an edge
+     (a browser without container units keeps the size before). */
+  .state > div{container-type:inline-size}
+  #st-tc{font-size:var(--tc-fs);font-size:min(var(--tc-fs), 14cqi)}
+  #cd-v{font-size:calc(var(--fs) + 6px);font-size:min(calc(var(--fs) + 6px), 12.5cqi)}
+  /* Stop's words wrap where a narrow screen has no room, never cut. */
+  #b-stop .lbl,#m-stop .lbl,#b-runoff .lbl{white-space:normal;text-align:center}
   .hb{padding:0 6px}
   :root{--fs:20px; --pad:8px; --gap:6px; --next-h:auto; --state-h:auto; --tr-h:auto; --al-h:auto; --tile-btn:60px; --tc-fs:30px}
   #tabs,.hright{flex-wrap:wrap;margin-left:0}
@@ -885,9 +883,8 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   .dhead .seg .b{flex:1 1 0;min-width:0;padding:0 8px}
   #d-next{flex:1 1 auto;margin-left:0}
 }
-/* DAY's panel at its own height on a phone, upright or on its side, and
-   on a small tablet or short window, where its rows took the room. */
-@media (max-width:600px), (max-height:599px), (max-width:900px) and (max-height:760px){
+/* DAY's panel at its own height on a phone, upright or on its side. */
+@media (max-width:600px), (max-height:500px){
   .day{height:auto;min-height:100%;grid-template-rows:auto auto 1fr}
 }
 /* PHONE LAYOUT BEGIN. A phone held upright, touch only (Andy's phone,
@@ -1091,10 +1088,10 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #ann-note{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere}
   #ann-btns .b{font-size:min(var(--fs), 5.4vw)} #ann-btns .b svg.i{display:none}
 }
-/* A phone on its side, or any screen under 600 px tall: the pinned rows
+/* A phone on its side, or any screen 500 px tall or less: the pinned rows
    compact (every tap still 44 px) so the pane keeps its room, and the
    safety strip stays pinned at the pane's top as on a phone upright. */
-@media (max-height:599px){
+@media (max-height:500px){
   /* The whole page scrolls, not the pane alone: the header scrolls away;
      the top line (a live mode's Stops, Go to alert), SHOW's transport or
      the safety strip, and the footer stay. So the pane keeps its room
@@ -1124,7 +1121,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
 }
 /* On its side: SHOW's transport one row (the next step, Hold, Stop show,
    help), pinned at the pane's top as on a phone upright. */
-@media (max-height:599px) and (orientation:landscape){
+@media (max-height:500px) and (orientation:landscape){
   #t-show .tr{position:sticky;z-index:5;background:var(--bg);padding:4px 0;margin:-4px 0;
     grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) 44px}
   #b-go{grid-column:auto;min-height:48px} #t-show .tr .b{min-height:48px;padding:0 6px}
@@ -2071,13 +2068,17 @@ const PAD_MIN = Number(new URLSearchParams(location.search).get("pad_bottom")) |
 // bars are outside the page (100dvh), and its screen figures (a large
 // display size, the page zoomed) are not a window's, so the guess kept up
 // to 160 px empty under the footer (Jeff's phone, 2026-11-24).
+// The phone's arrangement (the stylesheet's block of the same query): a
+// narrow screen, or one 500 px tall or less (a phone on its side). A
+// tablet's and a desktop's layout is never touched.
+function phoneArrangement(){ return innerWidth <= 600 || innerHeight <= 500; }
 const NO_TASKBAR = (() => { try{ const ua = navigator.userAgent || "";
   return !!((navigator.userAgentData && navigator.userAgentData.mobile) || /Android|iPhone|iPad|iPod/.test(ua) ||
     (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)); }catch(e){ return false; } })();
 let PAD_NOW = -1;
 function applyBottomPad(){
   let p = 0;
-  try{ p = NO_TASKBAR ? PAD_MIN : bottomPad(window.screen, window, PAD_MIN); }catch(e){ p = PAD_MIN; }
+  try{ p = NO_TASKBAR && phoneArrangement() ? PAD_MIN : bottomPad(window.screen, window, PAD_MIN); }catch(e){ p = PAD_MIN; }
   if(p !== PAD_NOW){ PAD_NOW = p; document.documentElement.style.setProperty("--pad-bottom", p + "px"); }
 }
 applyBottomPad();
@@ -2400,7 +2401,7 @@ const NEXT_CLOCK = /(\d+:\d\d(?::\d\d)?|\d+ s\b)\.?/;
 function drawNextText(ns){
   const nt = $("next-t");
   if(!ns.times){
-    const m = NEXT_CLOCK.exec(ns.text);
+    const m = phoneArrangement() ? NEXT_CLOCK.exec(ns.text) : null;
     if(!m){ nt.classList.remove("split"); if(nt.children.length || nt.textContent !== ns.text) nt.textContent = ns.text; return; }
     const parts = [["ld", ns.text.slice(0, m.index)], ["ck", m[0]], ["tl", ns.text.slice(m.index + m[0].length)]];
     if(nt.classList.contains("split") && nt.textContent === ns.text) return;
@@ -10385,20 +10386,17 @@ function fitNextBrand(){
   setText(nb, want); nb.hidden = false;
   // Nor when it would push the help button onto a row of its own.
   if(t.getBoundingClientRect().height > h0 + 1 || t.scrollWidth > t.clientWidth + 1 ||
-     nx.scrollWidth > nx.clientWidth + 1 || nx.getBoundingClientRect().height > n0 + 1 ||
-     [...t.children].some(c => c.scrollWidth > c.clientWidth + 1)) nb.hidden = true;
+     nx.scrollWidth > nx.clientWidth + 1 || (phoneArrangement() && (nx.getBoundingClientRect().height > n0 + 1 ||
+     [...t.children].some(c => c.scrollWidth > c.clientWidth + 1)))) nb.hidden = true;
 }
 // On a phone the brand sits in the buttons' group, whose last line has the
 // room; elsewhere first in the header, on the left.
 // The top line's height, for what sticks under it on a phone on its side
 // (the stylesheet's --next-px).
 try{ new ResizeObserver(() => document.documentElement.style.setProperty("--next-px", ($("next").offsetHeight + 4) + "px")).observe($("next")); }catch(e){}
-// The phone's arrangement (the stylesheet's block of the same query): a
-// narrow screen, or one under 600 px tall (a phone on its side).
-const phoneish = () => innerWidth <= 600 || innerHeight < 600;
 function placeBrand(){
   const hr = document.querySelector("header .hright"), br = $("brand");
-  if(phoneish()){ if(br.parentElement !== hr) hr.appendChild(br); }
+  if(phoneArrangement()){ if(br.parentElement !== hr) hr.appendChild(br); }
   else if(br.parentElement !== hr.parentElement || br.nextElementSibling !== $("tabs")) hr.parentElement.insertBefore(br, $("tabs"));
 }
 placeBrand();
@@ -10410,11 +10408,11 @@ loadBrand();
 // The announcements: in the footer, or on a phone in the SHOW pane
 // (which scrolls there), so the footer keeps its height.
 function placeAnn(){
-  const want = phoneish() ? $("t-show") : $("foot-l");
+  const want = phoneArrangement() ? $("t-show") : $("foot-l");
   if($("ann").parentElement !== want) want.insertBefore($("ann"), want === $("foot-l") ? want.firstChild : null);
   // Off the SHOW tab the safety strip takes the announcements' place in
   // the footer (on a phone, the top of the scrolling pane).
-  const m = $("mini"), mw = phoneish() ? document.querySelector("main") : $("foot-l");
+  const m = $("mini"), mw = phoneArrangement() ? document.querySelector("main") : $("foot-l");
   if(m.parentElement !== mw) mw.insertBefore(m, mw.firstChild);
 }
 placeAnn();
