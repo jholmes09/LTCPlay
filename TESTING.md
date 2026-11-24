@@ -292,12 +292,25 @@ width, height and scale both ways up):
   the part an ellipsis cuts.
 - A safety control (Hold, Stop, Disarm, Arm) never shares a row that can
   reflow because some words changed; only a resize may move it.
-- Pinned rows (header, the top line, the footer, and what sticks at the
-  pane's top: the safety strip, SHOW's transport) leave the pane at least
-  40 percent of the screen, upright or on its side (30 upright under 560
-  px tall, 15 on its side under 360). What is not pinned scrolls with the
-  pane, never squeezed to a strip. A screen 500 px tall or less (a phone
-  on its side) gets the phone's arrangement, compacted to one row each.
+- Pinned rows never starve the pane. The pane's room is what shows
+  between every row still pinned above it (the header unless it scrolled
+  away, the top line, SHOW's transport or the safety strip) and the
+  footer, scrolled to its foot. Floors, and why:
+  - 40 percent of the screen in the normal states.
+  - 30 percent on a phone upright under 560 px tall: the header (44 px
+    taps), the top line, the transport or the safety strip and the
+    footer are each one 44 px row at least, about 230 px before the pane
+    has any.
+  - On its side under 300 px tall (800x360 at 1.5 is 533x240), and while
+    more is pinned (five alerts holding the show, a failed rig check, a
+    live mode's Stops, whose words and Stops are never cut): the
+    transport (or the safety strip) whole on the screen and at least one
+    44 px row of the pane, the rest reached by scrolling. The top line,
+    the transport and the footer alone are about 160 px there.
+  A screen 500 px tall or less on its side scrolls as a whole: the header
+  scrolls away, the top line, the transport (or strip) and the footer
+  stay. What is not pinned scrolls with the pane, never squeezed to a
+  strip.
 - Taps 44 px or more (48 where there is room), never overlapping, their
   words never cut.
 - The frame is `100dvh` (with a `100vh` fallback) and keeps clear of the

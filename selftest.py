@@ -120734,7 +120734,11 @@ function look(t){
   if(small.length) bad.push("a tap under 44 px: " + small.join(", "));
   // No two controls on the screen overlap (the pane's clipped to what of
   // it shows), and every one in the pane is on top where a finger goes.
-  const mr0 = R(main), clip = el => { const r = R(el); return main.contains(el) ? {left:r.left, right:r.right, top:Math.max(r.top, mr0.top), bottom:Math.min(r.bottom, mr0.bottom)} : r; };
+  // (On a phone on its side the page scrolls and the footer stays over
+  // it: what is under the footer is scrolled to, not covered.)
+  const ft0 = document.querySelector("footer"), footSticky = getComputedStyle(ft0).position === "sticky";
+  const mr0 = R(main), mb0 = footSticky ? Math.min(mr0.bottom, R(ft0).top) : mr0.bottom;
+  const clip = el => { const r = R(el); return main.contains(el) ? {left:r.left, right:r.right, top:Math.max(r.top, mr0.top), bottom:Math.min(r.bottom, mb0)} : r; };
   const pane = q("t-" + t);
   const ps = [...document.querySelectorAll("header button, #next button, main > #mini .b, footer button, #t-" + t + " button")]
     .filter(el => shown(el) && !el.closest("[hidden]") && (!pane.contains(el) || !el.closest(".pane:not(#t-" + t + ")")))
@@ -120748,23 +120752,36 @@ function look(t){
   if(over.length) bad.push("controls overlap: " + over.slice(0, 6).join(", "));
   // The words on every control of the screen (the pinned rows, the
   // pane's tiles, slides and buttons) are never cut.
-  const cut = [...new Set([...pinned(), ...paneTop(), ...[...document.querySelectorAll("#t-" + t + " button")].filter(shown)])]
-    .filter(el => !el.closest("[hidden]") && el.scrollWidth > el.clientWidth + 1)
+  // (A button's own words in a box of their own that cuts them, a slide's
+  // or Arm flames' small line, count as cut too.)
+  // (The alert's words open whole on a tap, so they may be cut there.)
+  const cutIn = el => el.scrollWidth > el.clientWidth + 1 || el.id !== "al-text" && [...el.querySelectorAll("*")].some(x => shown(x) && getComputedStyle(x).overflowX !== "visible" &&
+    (x.scrollWidth > x.clientWidth + 1 || x.scrollHeight > x.clientHeight + 1));
+  const cut = [...new Set([...pinned(), ...paneTop(), ...[...document.querySelectorAll("#t-" + t + " button, #t-" + t + " [id$='-slide']")].filter(shown)])]
+    .filter(el => !el.closest("[hidden]") && cutIn(el))
     .map(el => (el.id || el.textContent.trim().slice(0, 14)) + " " + el.scrollWidth + ">" + el.clientWidth);
   if(cut.length) bad.push("a control's words cut: " + cut.join(", "));
-  // What stays pinned inside the pane once it scrolls (the safety strip,
-  // SHOW's transport on a phone) is not the pane's room.
-  let stick = 0;
-  for(const el of main.querySelectorAll("*")){
-    if(!shown(el) || el.closest("[hidden]")) continue;
-    const cs = getComputedStyle(el);
-    if(cs.position === "sticky" && cs.top !== "auto") stick = Math.max(stick, parseFloat(cs.top) + R(el).height);
-  }
-  const below = m.top + stick;
   const sa = parseFloat(root.style.getPropertyValue("--safe-t")) || 0, sb = parseFloat(root.style.getPropertyValue("--safe-b")) || 0;
   if(R(document.querySelector("header")).top < sa - 1) bad.push("the header is under the island: " + Math.round(R(document.querySelector("header")).top));
   if(R(document.querySelector("footer")).bottom > vh - sb + 1) bad.push("the footer is under the home bar: " + Math.round(R(document.querySelector("footer")).bottom) + " of " + vh + " less " + sb);
-  const res = {content:Math.round(m.bottom - below), pct:Math.round(100 * (m.bottom - below) / vh), sticky:Math.round(stick), bad:bad};
+  // The pane's room: scrolled to its foot (the pane, or on a phone on its
+  // side the whole page), what shows between every row still pinned above
+  // (the header unless it scrolled away, the top line, SHOW's transport or
+  // the safety strip stuck at the top) and the footer. The transport (or
+  // the strip) is on the screen whole there, 44 px or more.
+  const app = q("app"), sc = getComputedStyle(app).overflowY === "auto" && app.scrollHeight > app.clientHeight + 1 ? app : main;
+  const fits = sc.scrollHeight <= sc.clientHeight + 1, keep = sc.scrollTop;
+  sc.scrollTop = sc.scrollHeight;
+  const foot = R(document.querySelector("footer")).top;
+  const pins = [document.querySelector("header"), q("next"), ...[...main.querySelectorAll("*")].filter(el => shown(el) && !el.closest("[hidden]") && getComputedStyle(el).position === "sticky")]
+    .filter(shown).map(R).filter(r => r.bottom > 1 && r.top < foot - 1);
+  const topEdge = Math.max(0, ...pins.map(r => r.bottom));
+  const ctl = t === "show" ? document.querySelector("#t-show .tr") : (main.contains(q("mini")) ? q("mini") : null);
+  if(ctl && shown(ctl) && !fits){ const c = R(ctl);
+    if(c.top < -1 || c.bottom > foot + 1 || c.height < 44) bad.push((t === "show" ? "SHOW's transport" : "the safety strip") + " not whole on the screen with the pane scrolled: " + [c.top, c.bottom].map(Math.round) + ", the footer at " + Math.round(foot)); }
+  sc.scrollTop = keep;
+  const room = fits ? vh : foot - topEdge;
+  const res = {content:Math.round(room), pct:Math.round(100 * room / vh), sticky:Math.round(topEdge), fits:fits, bad:bad};
   if(t === "day"){ const p = q("d-panel"); res.panel = [p.clientHeight, p.scrollHeight];
     if(p.scrollHeight > p.clientHeight + 1) bad.push("DAY's step panel squeezed: " + p.clientHeight + " px of its " + p.scrollHeight); }
   return res;
@@ -120776,6 +120793,9 @@ function sweep(t, kind, vals){
   const hs = new Set(), ys = new Set(), fs = new Set(), qs = new Set(), cut = [];
   for(const s of vals){
     if(typeof s === "function") s(); else CD = {kind:kind, label:"x", running:false, s:s};
+    // (Contact is as fresh as the last answer: a long sweep is not lost
+    // contact.)
+    LAST_OK = Date.now();
     renderStale();
     const n = R(q("next"));
     hs.add(Math.round(n.height)); ys.add(Math.round(R(main).top)); fs.add(Math.round(R(first()).top));
@@ -120922,9 +120942,9 @@ def _ui2_sweep_sizes(full, touch):
     for r in rows:
         w, h, z = round(r[0] / r[2]), round(r[1] / r[2]), r[2]
         ins = list(r[3:7]) if len(r) > 3 else [0, 0, 0, 0]
-        # Below 250 CSS px either way is no phone (a 360 px phone at 1.5
+        # Below 240 CSS px either way is no phone (a 360 px phone at 1.5
         # is 240): left out.
-        if (w, h, tuple(ins)) in seen or min(w, h) < 250:
+        if (w, h, tuple(ins)) in seen or min(w, h) < 240:
             continue
         seen.add((w, h, tuple(ins)))
         out.append([w, h, ins, z])
@@ -120999,31 +121019,30 @@ def test_ui2_layout_sweep_any_phone_size_and_scale():
                     continue
                 for k, s in got["states"].items():
                     check(not s["bad"], f"{where}, {k}: {s['bad']}"[:1500])
-                    # The pane's room under every pinned row (the header,
-                    # the top line, the footer, and what sticks at the
-                    # pane's top: SHOW's transport, the safety strip).
-                    # Upright: 40 percent of the screen, 30 on a screen
-                    # under 560 px tall (a 360x640 phone at 1.3). On its
-                    # side: 40 percent 360 px tall or more, 15 shorter
-                    # (800x360 at 1.3 is 615x277). A state that pins more
-                    # (five alerts holding the show, a live mode's Stops)
-                    # keeps those whole, never cut: the pane 20 percent,
-                    # 12 on a short screen upright; on a short screen on
-                    # its side only that nothing overlaps (checked above)
-                    # and the pane scrolls to the rest.
+                    # The pane's room: what shows between every row still
+                    # pinned above it and the footer, scrolled to its foot
+                    # (TESTING.md, "Layout rules", says why each floor).
+                    # Normal states: 40 percent of the screen; 30 upright
+                    # under 560 px tall. On its side under 300 px tall,
+                    # and in a state that pins more (five alerts holding
+                    # the show, a rig check failed, a live mode's Stops,
+                    # whose words and Stops are never cut): the transport
+                    # (or the safety strip) whole on the screen (checked
+                    # above) and at least one 44 px row of the pane.
                     many = k.split("/")[0] in ("alerts", "purge", "hazers",
                                                "pins", "rig")
-                    if h > w:
-                        want_pct = (20 if many else 40) if h >= 560 else \
-                            (12 if many else 30)
-                    else:
-                        want_pct = (20 if many else 40) if h >= 360 else \
-                            (0 if many else 15)
+                    if s.get("fits"):
+                        continue
+                    if many or (h <= w and h < 300):
+                        check(s["content"] >= 44,
+                              f"{where}, {k}: the pane under the pinned rows "
+                              f"is {s['content']} px, under one 44 px row")
+                        continue
+                    want_pct = 30 if h > w and h < 560 else 40
                     check(s["pct"] >= want_pct,
                           f"{where}, {k}: the pane under the pinned rows "
-                          f"is {s['content']} px ({s['sticky']} px of it "
-                          f"pinned at its top left out), {s['pct']} percent "
-                          f"of the screen, under {want_pct}")
+                          f"is {s['content']} px, {s['pct']} percent of the "
+                          f"screen, under {want_pct}")
                 for k, s in got["sweeps"].items():
                     check(len(s["h"]) == 1 and len(s["main"]) == 1 and
                           len(s["first"]) == 1 and len(s["q"]) == 1,
