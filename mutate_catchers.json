@@ -1455,6 +1455,8 @@
 "ui 2.0 slide: a slide at 90 percent ends without waiting for the engine's armed answer, its hold left running": "test_ui2_flame_slide_to_arm_on_a_phone",
 "ui 2.0 slide: a cancelled slide springs back but does not let go of its hold": "test_ui2_flame_slide_to_arm_on_a_phone",
 "ui 2.0 slide: every screen is a phone, so a desktop press and hold never arms": "test_ui2_flame_slide_to_arm_on_a_phone",
+"ui 2.0 flame read: Arm flames says All armed with any group armed": "test_ui2_flame_arm_words_true_to_the_engine",
+"ui 2.0 flame read: an Arm all outcome says nothing was armed while the engine reads groups armed": "test_ui2_flame_arm_words_true_to_the_engine",
 "ui 2.0 slide: a second pointer off the arm buttons leaves the slide running": "test_ui2_flame_slide_to_arm_on_a_phone",
 "ui 2.0 slide: Back during a slide leaves it running": "test_ui2_flame_slide_to_arm_on_a_phone",
 "ui 2.0 slide: a pointerleave or lost capture during a slide lets go with no state read": "test_ui2_flame_slide_to_arm_on_a_phone",

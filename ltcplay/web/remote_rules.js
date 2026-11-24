@@ -417,6 +417,76 @@ function armAllWords(parts, out, names){
   by.forEach(b => { t += " Not armed: " + b.names.join(", ") + " (" + b.why + ")."; });
   return t;
 }
+// What the engine's flame groups read now (Andy and Jeff on a phone,
+// 2026-11-23: Arm flames said "All armed" and the line "Nothing armed"
+// with two groups armed and two not). `idx` the groups asked about (every
+// group when null). state: "all" only when every one reads armed; "asked"
+// when each is armed or asked for and one at least only asked for; "some"
+// when one at least is armed or asked for and one at least is not; "none"
+// when not one is; "unknown" when the state cannot be read (stale, no
+// flamesafe, a lamp not armed, held or disarmed). Pure.
+function flamesRead(fl, stale, idx){
+  const gs = (fl && fl.groups) || [];
+  const pick = idx === null || idx === undefined ? gs.map((_g, i) => i) : idx;
+  const r = {state:"unknown", armed:[], asked:[], off:[]};
+  if(stale || !fl || !fl.connected || fl.stale || !gs.length || !pick.length) return r;
+  for(const i of pick){
+    const g = gs[i];
+    if(!g || ["armed", "held", "disarmed"].indexOf(g.armed) < 0) return {state:"unknown", armed:[], asked:[], off:[]};
+    if(g.armed === "armed") r.armed.push(i);
+    else if(g.wanted) r.asked.push(i);
+    else r.off.push(i);
+  }
+  r.state = r.armed.length === pick.length ? "all" : !r.off.length ? "asked" : (r.armed.length || r.asked.length) ? "some" : "none";
+  return r;
+}
+// The Arm flames button's small line once Arm all is not offered: what
+// the groups read, never "All armed" unless every one does.
+const FLAMES_READ_WORD = {all:"All armed", asked:"Arming", some:"Some armed", none:"None armed", unknown:"Not known"};
+function flamesReadWord(fl, stale){ return FLAMES_READ_WORD[flamesRead(fl, stale, null).state]; }
+// The status line for an arm, from an engine read: 8 words or fewer, no
+// "hold". `one` for a single group.
+function flamesReadLine(state, one){
+  if(state === "all") return one ? "Armed." : "All flames armed.";
+  if(state === "asked") return one ? "Arming. Watch the tile." : "Arming. Watch the tiles.";
+  if(state === "some") return "Some armed. Check the tiles.";
+  if(state === "none") return one ? "Not armed. Tap Details." : "None armed. Tap Details.";
+  return "Not known. Check the tile.";
+}
+// An arm's whole sentence made true to an engine read (`r`, flamesRead's
+// for every group, `names` theirs): a group armed or asked for is never
+// listed as not armed, and "nothing was armed" is never said while one
+// is. The read is added at the end. Pure.
+function armTextNow(text, r, names){
+  let t = String(text || "");
+  if(!r || r.state === "unknown") return t;
+  const on = r.armed.concat(r.asked).map(i => names[i]);
+  if(on.length){
+    t = t.replace(/^Arm all: nothing was armed\.\s*/, "Arm all: ");
+    t = t.replace(/Not armed: ([^()]*?) \(([^()]*)\)\.\s*/g, (m, list, why) => {
+      const left = list.split(", ").filter(n => on.indexOf(n) < 0);
+      return left.length ? "Not armed: " + left.join(", ") + " (" + why + "). " : "";
+    }).trim();
+  }
+  const nm = a => a.map(i => names[i]).join(", ");
+  let now = " The engine now reads.";
+  if(r.armed.length) now += " Armed: " + nm(r.armed) + ".";
+  if(r.asked.length) now += " Asked for: " + nm(r.asked) + ".";
+  if(r.off.length) now += " Not armed now: " + nm(r.off) + ".";
+  return t + now;
+}
+// A sentence for a touch phone: no word "hold", no semicolons and no
+// dashes. A reason that names holding is said in a phone's words. Pure.
+function phoneArmWhy(w){
+  return /interrupted/i.test(w) ? "the arm was cut off, try again" :
+    /re-arm wait/i.test(w) ? "the re-arm wait was not over" :
+    /let go|stopped/i.test(w) ? "stopped before the engine armed it" : "refused";
+}
+function phoneArmText(text){
+  let t = String(text || "").replace(/\(([^()]*)\)/g, (m, w) => /hold/i.test(w) ? "(" + phoneArmWhy(w) + ")" : m);
+  t = (t.match(/[^.!?]+[.!?]*/g) || []).map(s => s.trim()).filter(s => s && !/hold/i.test(s)).join(" ");
+  return t.replace(/;/g, ",").replace(/[–—]/g, ",");
+}
 // Why an unlock of machine `m` ({name, group}) is refused on this page, or
 // "": its flame group armed or asked for, or flamesafe's state not known
 // (review of #122, P1-1). A lock is always allowed.

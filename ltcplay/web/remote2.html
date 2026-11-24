@@ -4925,7 +4925,52 @@ function armShort(text){
   if(/^Armed/i.test(t)) return "Armed.";
   return short8(t, "Tap Details.");
 }
-function armSay(text, level){ say(armShort(text), text, level >= 2 ? "bad" : (level === 1 ? "ok" : "")); }
+// On a touch phone the words never say "hold" (Andy and Jeff, 2026-11-23:
+// a phone has no hold to arm).
+function armShortPhone(text){
+  const t = String(text || ""), s = armShort(t);
+  if(s === "Keep holding...") return "Arming...";
+  if(s === "Wait, then hold again.") return "Re-arm wait. Try again soon.";
+  if(s === "Hold stopped. Tap Details.") return "Stopped. Tap Details.";
+  return /hold/i.test(s) || /[;\u2013\u2014]/.test(s) ? "Not armed. Tap Details." : s;
+}
+// An Arm all outcome said is kept (ARM_SAID) and made true to every
+// status read while it is on the line (armSaidNow): never "nothing was
+// armed" or "Not armed: <group>" while the engine reads that group armed
+// or asked for, and never "Nothing armed" without a read.
+let ARM_SAID = null;
+function armWords(text, level){
+  const ph = slidePhone(), t = String(text || "");
+  let short = ph ? armShortPhone(t) : armShort(t), full = t, cls = level >= 2 ? "bad" : (level === 1 ? "ok" : "");
+  if(/^Arm all: /.test(t)){
+    const r = flamesRead(ST && ST.flames, stale(), null);
+    if(r.state === "unknown") short = /Not known:/.test(t) ? "Some groups not known. Tap Details." : "Not known. Check the tile.";
+    else {
+      full = armTextNow(t, r, groupNames());
+      if(!/Not known:/.test(t)) short = flamesReadLine(r.state, false);
+      if(r.state === "all") cls = "ok";
+    }
+  }
+  if(ph) full = phoneArmText(full);
+  return {short:short, full:full, cls:cls};
+}
+function armSay(text, level){
+  const w = armWords(text, level);
+  ARM_SAID = /^Arm all: /.test(String(text || "")) ? {w:w, make:() => armWords(text, level)} : null;
+  say(w.short, w.full, w.cls);
+}
+function armSaidNow(){
+  const a = ARM_SAID;
+  if(!a) return;
+  if($("msg-t").textContent !== a.w.short || MSG_FULL !== (a.w.full !== a.w.short ? a.w.full : "")){ ARM_SAID = null; return; }
+  const w = a.make();
+  if(!w || (w.short === a.w.short && w.full === a.w.full && w.cls === a.w.cls)) return;
+  a.w = w;
+  setText($("msg-t"), w.short);
+  $("msg").className = w.cls;
+  MSG_FULL = w.full !== w.short ? w.full : "";
+  $("msg-more").hidden = !MSG_FULL;
+}
 document.addEventListener("visibilitychange", () => { if(document.hidden){ slideCancel("the page was hidden"); armStop("the page was hidden"); } });
 window.addEventListener("pagehide", () => { slideCancel("the page closed"); armStop("the page closed"); });
 window.addEventListener("blur", () => { slideCancel("the page lost focus"); armStop("the page lost focus"); });
@@ -6448,9 +6493,12 @@ function renderAllButtons(isSt){
   const ar = armAllRefusal(ST);
   // Off, it reads "Arm flames" over the reason: two lines, as tall as the
   // live label, so the SHOW tab never grows.
+  // Once Arm all is not offered, what the groups read: "All armed" only
+  // when every one reads armed (flamesReadWord).
   setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? signWhy(ST, "arm", true) :
-    ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : "All armed");
+    ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : flamesReadWord(ST && ST.flames, isSt));
   setText($("armall-l"), b.disabled ? "Arm flames" : "Hold: arm flames");
+  armSaidNow();
   b.title = b.disabled && ar ? ar : "";
   $("b-disall").disabled = false;
 }

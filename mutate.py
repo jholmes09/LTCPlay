@@ -3518,6 +3518,19 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "  h.stop.abort();\n  const doubt = [];\n",
   "  const doubt = [];\n"),
+ # Arm flames says All armed only when every group is, and an Arm all
+ # outcome never says nothing was armed while a group is (Andy and Jeff
+ # on a phone, 2026-11-23).
+ ('ui 2.0 flame read: Arm flames says All armed with any group armed',
+  'ltcplay/web/remote_rules.js',
+  "  r.state = r.armed.length === pick.length ? \"all\" :",
+  "  r.state = r.armed.length ? \"all\" :"),
+
+ ('ui 2.0 flame read: an Arm all outcome says nothing was armed while the engine reads groups armed',
+  'ltcplay/web/remote2.html',
+  "      full = armTextNow(t, r, groupNames());\n      if(!/Not known:/.test(t)) short = flamesReadLine(r.state, false);\n",
+  "      if(!/Not known:/.test(t) && r.state === \"all\") short = flamesReadLine(r.state, false);\n"),
+
  # Step 5 of the phone build (AUDIT P0 1, P1 7 to 9): on a touch phone a
  # flame arm is a slide. The engine arms on its own once beats have lasted
  # 1.0 s plus the deck's 0.6 s, so the beats must stop under 90 percent;

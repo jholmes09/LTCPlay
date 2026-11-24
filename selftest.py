@@ -120507,6 +120507,116 @@ def test_ui2_flame_slide_to_arm_on_a_phone():
     print("  ok")
 
 
+# Arm flames and an Arm all outcome true to the engine (Andy and Jeff on a
+# phone, 2026-11-23: two groups armed and two not read "All armed" and
+# "Nothing armed"). MIX: which groups the status reads armed; FLST:
+# flamesafe's state stale.
+_UI2_FLAME_WORDS_STEPS = r"""
+const q = id => document.getElementById(id);
+const nap = ms => new Promise(r => setTimeout(r, ms));
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+let MIX = null, FLST = false;
+window.__patch = st => {
+  if(MIX) st.flames.groups = st.flames.groups.slice(0, 4).map((g, i) => Object.assign({}, g, {armed:MIX[i] ? "armed" : "disarmed"}));
+  if(FLST) st.flames = Object.assign({}, st.flames, {stale:true});
+  return st; };
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1500);
+out.coarse = matchMedia("(pointer:coarse)").matches; out.vw = innerWidth;
+const lab = async m => { MIX = m; await nap(900); return [q("b-armall").disabled, q("armall-why").textContent, q("armall-l").textContent]; };
+out.label_mix = await lab([false, true, false, true]);
+out.label_all = await lab([true, true, true, true]);
+FLST = true; out.label_unknown = await lab([true, true, false, false]); FLST = false;
+MIX = [false, true, false, true]; await nap(900);
+armSay("Arm all: nothing was armed. Not armed: front row, cat-walk, wave flamer, fireball (The hold was interrupted. Lift your finger and hold again).", 2);
+out.said_mix = [msg(), MSG_FULL];
+MIX = [false, false, false, false]; await nap(900);
+out.said_none = [msg(), MSG_FULL];
+MIX = [true, true, true, true]; await nap(900);
+out.said_all = [msg(), MSG_FULL];
+"""
+
+
+def test_ui2_flame_arm_words_true_to_the_engine():
+    section("Arm flames and the arm's words true to the engine (Andy and "
+            "Jeff on a phone, 2026-11-23: two groups armed, two not, read "
+            "All armed and Nothing armed): All armed only when every group "
+            "reads armed, else Some armed, None armed or Not known; an Arm "
+            "all outcome never says nothing was armed, nor names a group "
+            "not armed, while the engine reads it armed, and follows each "
+            "later read; on a phone no word hold")
+    page = _ui2_page_inline()
+    # The rules, in node.
+    bad = _page_logic_in_node(page, r"""
+const G = a => ({connected:true, stale:false, age_ms:100, groups:a.map((s, i) => typeof s === "string" ? {name:"g" + i, armed:s} : Object.assign({name:"g" + i}, s))});
+t(flamesRead(G(["armed", "armed"]), false, null).state === "all", "every group armed: all");
+t(flamesRead(G(["disarmed", "armed", "disarmed", "armed"]), false, null).state === "some", "two of four armed: some");
+t(flamesRead(G(["disarmed", "disarmed"]), false, null).state === "none", "none armed: none");
+t(flamesRead(G(["armed", {armed:"disarmed", wanted:true}]), false, null).state === "asked", "armed and asked for: asked");
+t(flamesRead(G(["held", "disarmed"]), false, null).state === "none", "held is not armed");
+t(flamesRead(G(["armed", "armed"]), true, null).state === "unknown", "a stale page: not known");
+t(flamesRead(Object.assign(G(["armed"]), {stale:true}), false, null).state === "unknown", "flamesafe stale: not known");
+t(flamesRead(G(["armed", "unknown"]), false, null).state === "unknown", "a lamp not known: not known");
+t(flamesRead(G(["armed", "disarmed"]), false, [0]).state === "all", "only the groups asked about");
+t(flamesReadWord(G(["disarmed", "armed", "disarmed", "armed"]), false) === "Some armed", "the label for a mix");
+t(flamesReadWord(G(["armed", "armed"]), false) === "All armed", "the label for all armed");
+t(flamesReadWord(G(["disarmed"]), false) === "None armed", "the label for none");
+t(flamesReadWord(null, false) === "Not known", "the label with no flames");
+const nm = ["front row", "cat-walk", "wave flamer", "fireball"];
+const raw = "Arm all: nothing was armed. Not armed: front row, cat-walk, wave flamer, fireball (The hold was interrupted. Lift your finger and hold again).";
+const mixed = armTextNow(raw, flamesRead(G(["disarmed", "armed", "disarmed", "armed"]), false, null), nm);
+t(mixed.indexOf("nothing was armed") < 0 && mixed.indexOf("Not armed: front row, wave flamer (") >= 0 &&
+  !/Not armed: [^.(]*(cat-walk|fireball)/.test(mixed) && /Armed: cat-walk, fireball\./.test(mixed), "the field's words made true: " + mixed);
+const none = armTextNow(raw, flamesRead(G(["disarmed", "disarmed", "disarmed", "disarmed"]), false, null), nm);
+t(none.indexOf("nothing was armed") === 0 || none.indexOf("Arm all: nothing was armed") === 0, "nothing armed stays when it is true: " + none);
+t(armTextNow(raw, flamesRead(null, false, null), nm) === raw, "no read: the words as they were");
+const ph = phoneArmText(mixed);
+t(!/hold/i.test(ph) && !/[;–—]/.test(ph) && ph.indexOf("cut off") >= 0, "a phone's words: " + ph);
+for(const st of ["all", "asked", "some", "none", "unknown"]) for(const one of [true, false]){
+  const l = flamesReadLine(st, one);
+  t(l.split(/\s+/).length <= 8 && !/hold|;|–|—/i.test(l), "the line for " + st + ": " + l);
+}
+""")
+    if bad is not None:
+        check(not bad, f"the flame read rules in node: {bad}")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    morning = {"/api/remote/morning": _morning_view_pico()}
+    where = "2.0 on a touch phone, 384x800, Arm flames"
+    r = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                          _UI2_FLAME_WORDS_STEPS, (384, 800), routes=morning,
+                          budget_ms=30000)
+    if check(isinstance(r, dict) and "said_all" in r and
+             not r.get("problems"), f"{where}: driven: {r!r}"[:1500]):
+        check(r["coarse"] and r["vw"] == 384, f"{where}: a touch phone: {r}"[:300])
+        check(r["label_mix"] == [True, "Some armed", "Arm flames"],
+              f"{where}: two groups armed, two not: Arm flames says Some "
+              f"armed, never All armed: {r['label_mix']}")
+        check(r["label_all"] == [True, "All armed", "Arm flames"],
+              f"{where}: every group armed: All armed: {r['label_all']}")
+        check(r["label_unknown"][1] == "Not known",
+              f"{where}: flamesafe's state not known: Not known: "
+              f"{r['label_unknown']}")
+        sm, sn, sa = r["said_mix"], r["said_none"], r["said_all"]
+        check(sm[0] == "Some armed. Check the tiles." and
+              "nothing was armed" not in sm[1] and
+              "Armed: cat-walk, fireball." in sm[1] and
+              not re.search(r"hold", sm[0] + sm[1], re.I),
+              f"{where}: the field's Arm all words with two groups armed: "
+              f"the line and Details say so, never nothing armed, never "
+              f"hold: {sm}")
+        check(sn[0] == "None armed. Tap Details." and
+              sa[0] == "All flames armed.",
+              f"{where}: the line follows each later read: {sn} {sa}")
+    print("  ok")
+
+
 # The lasers' slide on a touch phone (step 6 of the phone build, AUDIT P0
 # 6): a purple slide BEFORE today's "Arm all N lasers?" confirm, which
 # still posts once with confirmed:true. A stand-in for the laser-arm route
@@ -136951,6 +137061,7 @@ if __name__ == "__main__":
         test_ui2_arm_beats_on_a_fixed_timer,
         test_ui2_phone_layout_whole_on_a_touch_phone,
         test_ui2_flame_slide_to_arm_on_a_phone,
+        test_ui2_flame_arm_words_true_to_the_engine,
         test_ui2_laser_slide_on_a_phone,
         test_ui2_timed_purge_slide_on_a_phone,
         test_ui2_cleaning_slide_on_a_phone,
