@@ -496,9 +496,11 @@ function phoneArmWhy(w){
     /re-arm wait/i.test(w) ? "the re-arm wait was not over" :
     /let go|stopped/i.test(w) ? "stopped before the engine armed it" : "refused";
 }
+// A sentence ends at . ! or ?, but never at the "." of a decimal such as
+// "2.5 s" (a digit on each side). No lookbehind (older Safari).
 function phoneArmText(text){
   let t = String(text || "").replace(/\(([^()]*)\)/g, (m, w) => /hold/i.test(w) ? "(" + phoneArmWhy(w) + ")" : m);
-  t = (t.match(/[^.!?]+[.!?]*/g) || []).map(s => s.trim()).filter(s => s && !/hold/i.test(s)).join(" ");
+  t = (t.match(/(?:\d\.(?=\d)|[^.!?])+[.!?]*/g) || []).map(s => s.trim()).filter(s => s && !/hold/i.test(s)).join(" ");
   return t.replace(/;/g, ",").replace(/[\u2013\u2014]/g, ",");
 }
 // Why an unlock of machine `m` ({name, group}) is refused on this page, or
