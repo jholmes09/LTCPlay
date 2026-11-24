@@ -120467,7 +120467,10 @@ const whole = el => {
 // The words: shown, and their lines (none when they are not drawn).
 const words = () => { const t = q("next-t"), cs = getComputedStyle(t), lh = parseFloat(cs.lineHeight) || 1.2 * parseFloat(cs.fontSize);
   const r = t.getBoundingClientRect(), rg = document.createRange(); rg.selectNodeContents(t);
-  const lines = new Set([...rg.getClientRects()].filter(x => x.width > 0).map(x => Math.round(x.top))).size;
+  // A line is its rects' tops within half a line of each other (the
+  // words and a clock in them are spans of their own, a subpixel apart).
+  const tops = [...rg.getClientRects()].filter(x => x.width > 0).map(x => x.top).sort((a, b) => a - b);
+  const lines = tops.filter((y, i) => i === 0 || y - tops[i - 1] > lh / 2).length;
   return {text:t.textContent, shown:cs.display !== "none" && cs.visibility !== "hidden" && r.width >= 60 && r.height >= lh - 1,
     lines:cs.display === "none" ? 0 : lines, tap:Math.round(r.height),
     cut:t.scrollWidth > t.clientWidth + 1 || t.scrollHeight > t.clientHeight + 1}; };
