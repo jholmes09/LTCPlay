@@ -1469,6 +1469,7 @@
 "ui 2.0 flame pop-up: a status built before the arm says the outcome while the read after it is lost": "test_ui2_flame_arm_popup_on_a_phone",
 "ui 2.0 flame pop-up: a Stop, a Disarm or a group change seen with the pop-up open still arms": "test_ui2_flame_arm_popup_on_a_phone",
 "ui 2.0 flame pop-up: this screen's Stop leaves the pop-up open": "test_ui2_flame_arm_popup_on_a_phone",
+"ui 2.0 flame pop-up: a Stop elsewhere that changes only stop_held still arms": "test_ui2_flame_arm_popup_on_a_phone",
 "ui 2.0 flame read: Arm flames says All armed with any group armed": "test_ui2_flame_arm_words_true_to_the_engine",
 "ui 2.0 flame read: an Arm all outcome says nothing was armed while the engine reads groups armed": "test_ui2_flame_arm_words_true_to_the_engine",
 "ui 2.0 slide: a second pointer off the arm buttons leaves the slide running": "test_ui2_laser_slide_on_a_phone",

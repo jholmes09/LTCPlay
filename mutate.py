@@ -3620,6 +3620,11 @@ MUTATIONS = [
   "  if(FA_ASKING && SHEET_DONE) SHEET_DONE(null);\n",
   ""),
 
+ ('ui 2.0 flame pop-up: a Stop elsewhere that changes only stop_held still arms',
+  'ltcplay/web/remote2.html',
+  "    sch.state || \"\", !!sch.attached, !!sch.held, !!sch.stop_held, !!(ST && ST.alert_hold && ST.alert_hold.held),\n",
+  "    sch.state || \"\", !!sch.attached,\n"),
+
  ('ui 2.0 flame read: Arm flames says All armed with any group armed',
   'ltcplay/web/remote_rules.js',
   "  r.state = r.armed.length === pick.length ? \"all\" :",

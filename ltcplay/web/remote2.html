@@ -5023,8 +5023,13 @@ function faNames(gs){ const n = groupNames(); return gs.map(i => n[i] || ("group
 let FA_EPOCH = 0;
 function faSig(){
   const fl = (ST && ST.flames) || {};
+  const sch = (ST && ST.schedule) || {};
+  // A Stop, Hold or alert hold from anywhere shows in the schedule's view
+  // even when its state does not change (already HOLD, nothing attached):
+  // stop_held, held, the alert hold (round 3, L1).
   return JSON.stringify([(fl.groups || []).map(g => [g.name, g.armed, !!g.wanted]), !!fl.stale,
-    ((ST && ST.schedule) || {}).state || "", !!(ST && ST.arming && ST.arming.enabled)]);
+    sch.state || "", !!sch.attached, !!sch.held, !!sch.stop_held, !!(ST && ST.alert_hold && ST.alert_hold.held),
+    !!(ST && ST.arming && ST.arming.enabled)]);
 }
 // What a pop-up arm of `i` (a group, or "all") would arm right now:
 // {go, out, why}. The same rules armStart and armAllStart apply.
@@ -5415,8 +5420,10 @@ function faSlideEnd(s, why){
   slideEnd(s);
   FA_QUIET = {id:s.id, at:Date.now()};
   if(lift && s.frac >= SLIDE_ARM && s.target !== undefined){ faAsk(s.target); return; }
-  if(!lift && !why) return;
-  say("Nothing sent.", "Flame slide stopped" + (lift ? " short of the end" : ": " + why) + ". Nothing was sent.", "");
+  // As the lasers' (lzSlideEnd): lifted short or a tap sends nothing and
+  // says nothing, so a line such as a Stop NOT sent is never covered.
+  if(lift || !why || why === "the tile changed") return;
+  say("Nothing sent.", "Flame slide stopped: " + why + ". Nothing was sent.", "");
 }
 window.addEventListener("pointerdown", () => { if(FA_QUIET && !SLIDE) FA_QUIET.fresh = true; }, true);
 ["pointerup", "click"].forEach(t => window.addEventListener(t, e => {

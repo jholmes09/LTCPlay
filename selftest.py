@@ -120337,6 +120337,11 @@ if(PART === "a"){
     out.ends[k] = {sheet:sheetOpen(), sent:SENT.length - s0, msg:msg(), slide:!!SLIDE};
     await again();
   }
+  // Round 3, L2: a tap on the flame handle (a lift at 0 percent) never
+  // covers a NOT line.
+  { say("Stop NOT sent. Tap Stop again.", "", "bad"); const s0 = SENT.length;
+    await slideTo(g0(), 0); await nap(700);
+    out.not_kept = {msg:msg(), sent:SENT.length - s0, sheet:sheetOpen()}; await again(); }
   // The slide's own release and click land on the pop-up's Arm: ignored.
   { const s0 = SENT.length;
     await slideTo(g0(), 1, c => { pe(c.kn, "pointerup", c.x, c.y, c.id); const a = sheetBtn("Arm");
@@ -120434,6 +120439,10 @@ if(PART === "a"){
   // screen's Stop: nothing sent.
   { statusPatch(4); await nap(700);
     out.remote_stop = await popArm(g0(), {ms:1500, mid:async () => { SCH = "HOLD"; await nap(900); }}); await again(); }
+  // Round 3, L1: a Stop elsewhere that changes only schedule.stop_held.
+  { statusPatch(4); await nap(700); const base = window.__patch; let SH = false;
+    window.__patch = st => { st = base(st); if(SH) st.schedule = Object.assign({}, st.schedule, {stop_held:true}); return st; };
+    out.stop_held = await popArm(g0(), {ms:1500, mid:async () => { SH = true; await nap(900); }}); await again(); }
   { statusPatch(4); await nap(700); const base = window.__patch; let SW = false;
     window.__patch = st => { st = base(st); if(SW){ const n0 = st.flames.groups[0].name; st.flames.groups[0].name = st.flames.groups[1].name; st.flames.groups[1].name = n0; } return st; };
     out.rename = await popArm(g0(), {ms:1500, mid:async () => { SW = true; await nap(900); }}); await again(); }
@@ -120537,10 +120546,16 @@ def test_ui2_flame_arm_popup_on_a_phone():
               f"{where}: a tap on the Arm or its handle opens nothing and "
               f"sends nothing: {r['tapped']}")
         for k, e in r["ends"].items():
-            check(not e["sheet"] and e["sent"] == 0 and
-                  e["msg"] == "Nothing sent." and not e["slide"],
-                  f"{where}: the slide {k}: no pop-up, nothing sent, said "
-                  f"so: {e}")
+            check(not e["sheet"] and e["sent"] == 0 and not e["slide"] and
+                  e["msg"] == ("" if k.startswith("short") else
+                               "Nothing sent."),
+                  f"{where}: the slide {k}: no pop-up, nothing sent; as the "
+                  f"lasers', a short lift says nothing, a cut says Nothing "
+                  f"sent: {e}")
+        check(r["not_kept"] == {"msg": "Stop NOT sent. Tap Stop again.",
+                                "sent": 0, "sheet": False},
+              f"{where}: a tap on the flame handle never covers a NOT line: "
+              f"{r['not_kept']}")
         check(r["own"] == {"sheet": True, "sent": 0},
               f"{where}: the slide's own release and click on the pop-up's "
               f"Arm are ignored: {r['own']}")
@@ -120646,7 +120661,7 @@ def test_ui2_flame_arm_popup_on_a_phone():
               f"the line: {lf} {of}")
         clean(lf, "lf")
         clean(of, "off")
-        for k in ("remote_stop", "rename"):
+        for k in ("remote_stop", "stop_held", "rename"):
             x = r[k]
             check(x["sheet"] and x["beats"] == 0 and x["armed"] == 0 and
                   x["msg"] == "Changed. Nothing sent. Tap Arm again.",
