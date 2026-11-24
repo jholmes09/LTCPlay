@@ -120132,10 +120132,10 @@ const none = armTextNow(raw, flamesRead(G(["disarmed", "disarmed", "disarmed", "
 t(none.indexOf("nothing was armed") === 0 || none.indexOf("Arm all: nothing was armed") === 0, "nothing armed stays when it is true: " + none);
 t(armTextNow(raw, flamesRead(null, false, null), nm) === raw, "no read: the words as they were");
 const ph = phoneArmText(mixed);
-t(!/hold/i.test(ph) && !/[;–—]/.test(ph) && ph.indexOf("cut off") >= 0, "a phone's words: " + ph);
+t(!/hold/i.test(ph) && !/[;\u2013\u2014]/.test(ph) && ph.indexOf("cut off") >= 0, "a phone's words: " + ph);
 for(const st of ["all", "asked", "some", "none", "unknown"]) for(const one of [true, false]){
   const l = flamesReadLine(st, one);
-  t(l.split(/\s+/).length <= 8 && !/hold|;|–|—/i.test(l), "the line for " + st + ": " + l);
+  t(l.split(/\s+/).length <= 8 && !/hold|;|\u2013|\u2014/i.test(l), "the line for " + st + ": " + l);
 }
 """)
     if bad is not None:
@@ -120225,7 +120225,7 @@ async function popArm(el, opt){
     if(!seen.length || seen[seen.length - 1] !== m) seen.push(m);
     if(/armed\./i.test(m) && !/not armed|none armed|some armed/i.test(m) && FA && !FA.done) early = true;
     if(/^Armed\.|^All flames armed\./.test(m) && DELIVERED.length === d0) early = true;
-    if(/hold/i.test(lineHas()) || /[;–—]/.test(m)) hold = true;
+    if(/hold/i.test(lineHas()) || /[;\u2013\u2014]/.test(m)) hold = true;
     if(/Lift your finger|interrupted|Stream Deck/.test(m)) raw = true;
     if(el.innerText.indexOf("Checking") >= 0 || q("armall-why").textContent === "Checking") checking = true;
     if(opt.during && performance.now() - t0 >= (opt.at || 600) && !res.did){ res.did = true; await opt.during(res, el); }

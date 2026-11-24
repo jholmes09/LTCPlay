@@ -485,7 +485,7 @@ function phoneArmWhy(w){
 function phoneArmText(text){
   let t = String(text || "").replace(/\(([^()]*)\)/g, (m, w) => /hold/i.test(w) ? "(" + phoneArmWhy(w) + ")" : m);
   t = (t.match(/[^.!?]+[.!?]*/g) || []).map(s => s.trim()).filter(s => s && !/hold/i.test(s)).join(" ");
-  return t.replace(/;/g, ",").replace(/[–—]/g, ",");
+  return t.replace(/;/g, ",").replace(/[\u2013\u2014]/g, ",");
 }
 // Why an unlock of machine `m` ({name, group}) is refused on this page, or
 // "": its flame group armed or asked for, or flamesafe's state not known
