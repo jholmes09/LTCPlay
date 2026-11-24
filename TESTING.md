@@ -307,7 +307,7 @@ width, height and scale both ways up):
     transport (or the safety strip) whole on the screen and at least one
     44 px row of the pane, the rest reached by scrolling. The top line,
     the transport and the footer alone are about 160 px there.
-  A screen 500 px tall or less on its side scrolls as a whole: the header
+  A screen 560 px tall or less scrolls as a whole: the header
   scrolls away, the top line, the transport (or strip) and the footer
   stay. What is not pinned scrolls with the pane, never squeezed to a
   strip.
