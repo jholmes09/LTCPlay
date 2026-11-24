@@ -191,7 +191,9 @@ body.noact #d-ctl .b:not(.red):not(.redline):not(.safe):not(.amber):not([data-mo
 #t-show > *{min-width:0;min-height:0}
 #next{display:flex;align-items:center;gap:12px;padding:0 12px;margin:var(--gap) var(--pad) 0;border-radius:12px;border:2px solid var(--line);
   background:var(--panel);font-size:var(--next-fs);font-weight:800;min-width:0;min-height:0}
-#next .t{flex:1 1 auto;min-width:0;line-height:1.1}
+/* Words that tick (a countdown, a show's times) never change their
+   width or the line's height: every digit the same width. */
+#next .t{flex:1 1 auto;min-width:0;line-height:1.1;font-variant-numeric:tabular-nums}
 #pins{display:flex;gap:var(--gap);flex:0 0 auto}
 #pins .b{min-height:56px;font-size:var(--fs)}
 #pins:empty{display:none}
@@ -217,7 +219,7 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 #pill.ok{border-color:var(--green);color:#9BF5B7} #pill.warn{border-color:var(--amber);color:#FFD08A}
 #pill.bad{border-color:var(--red);color:#FFB3AB;background:#2a0a08} #pill.off{color:var(--grey)}
 #st-tc{font:800 var(--tc-fs)/1 var(--sans);font-variant-numeric:tabular-nums;white-space:nowrap}
-#cd-v{font-weight:800;font-size:calc(var(--fs) + 6px);white-space:nowrap}
+#cd-v{font-weight:800;font-size:calc(var(--fs) + 6px);white-space:nowrap;font-variant-numeric:tabular-nums}
 .tr{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr) auto;gap:var(--gap);align-items:stretch}
 .tr .b{min-height:0;height:100%;font-size:calc(var(--fs) + 2px)}
 #b-go{font-size:calc(var(--fs) + 6px)}
@@ -799,6 +801,12 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      a third: 164 px of line on a 457 px page left the pane 64 px, under
      Resume's 72). The line's own button gets the next row. */
   #next .t{flex:1 1 0}
+  /* And never more than two lines, the rest cut with an ellipsis: the line
+     is one height whatever its words say, so nothing under it moves as a
+     countdown ticks (Jeff's phone, 2026-11-24: one line at 4:21, two at
+     4:25, the tiles below 90 px further down each time). A touch phone's
+     own block below keeps it one line, and opens it on a tap. */
+  #next:not(.many):not(.go):not(.open) .t{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
   #next-go{order:9;flex:1 1 100%}
   #next-t .tm{display:none}
   #mini .b{flex:1 1 40%}
@@ -9406,11 +9414,12 @@ function fitNextBrand(){
   NEXT_B_KEY = key;
   nb.hidden = true;
   if(!want) return;
-  const h0 = t.getBoundingClientRect().height;
-  setText(nb, want); nb.hidden = false;
   const nx = $("next");
+  const h0 = t.getBoundingClientRect().height, n0 = nx.getBoundingClientRect().height;
+  setText(nb, want); nb.hidden = false;
+  // Nor when it would push the help button onto a row of its own.
   if(t.getBoundingClientRect().height > h0 + 1 || t.scrollWidth > t.clientWidth + 1 ||
-     nx.scrollWidth > nx.clientWidth + 1) nb.hidden = true;
+     nx.scrollWidth > nx.clientWidth + 1 || nx.getBoundingClientRect().height > n0 + 1) nb.hidden = true;
 }
 // On a phone the brand sits in the buttons' group, whose last line has the
 // room; elsewhere first in the header, on the left.
