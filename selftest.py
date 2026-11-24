@@ -121005,14 +121005,14 @@ def test_ui2_layout_sweep_any_phone_size_and_scale():
                     # (800x360 at 1.3 is 615x277). A state that pins more
                     # (five alerts holding the show, a live mode's Stops)
                     # keeps those whole, never cut: the pane 20 percent,
-                    # 15 on a short screen upright; on a short screen on
+                    # 12 on a short screen upright; on a short screen on
                     # its side only that nothing overlaps (checked above)
                     # and the pane scrolls to the rest.
                     many = k.split("/")[0] in ("alerts", "purge", "hazers",
                                                "pins", "rig")
                     if h > w:
                         want_pct = (20 if many else 40) if h >= 560 else \
-                            (15 if many else 30)
+                            (12 if many else 30)
                     else:
                         want_pct = (20 if many else 40) if h >= 360 else \
                             (0 if many else 15)

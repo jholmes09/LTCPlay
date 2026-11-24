@@ -829,12 +829,16 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      own block below keeps it one line, and opens it on a tap. */
   #next:not(.many):not(.go):not(.open) .t{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
   #next-go{order:9;flex:1 1 100%}
+  /* The alert slot's buttons and Arm all's words wrap rather than run
+     past the edge ("Hold to continue anyway", "Some armed"). */
+  #al-next,#al-act{white-space:normal;flex:0 1 auto;min-width:0;max-width:100%}
+  #b-armall{min-width:0} #b-armall .lbl{white-space:normal;min-width:0}
   /* The help button stays on the words' row; the pinned Stops take the
      next (a ticking "Purging: 95 s" never pushes it onto a row alone). */
   #pins{order:5} #b-eon{order:6}
   /* A line with a clock (a countdown, a purge's time left): the clock
      whole, never cut; the words around it give way first. */
-  #next:not(.open):not(.go):not(.many) #next-t.split{display:flex;align-items:center;white-space:nowrap}
+  #next:not(.open):not(.go):not(.many) #next-t.split{display:flex;align-items:baseline;white-space:nowrap}
   #next-t.split > .ld,#next-t.split > .tl{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #next-t.split > .ld{flex-shrink:100}
   #next-t.split > .ck{flex:none;margin:0 .25em;white-space:nowrap}
@@ -948,7 +952,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      each, their size following the screen's width. Stop show keeps its
      place while hidden, so a press never moves under a finger. */
   main > #mini{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
-  main > #mini .b{font-size:clamp(10px, 4vw, 14px)}
+  main > #mini .b{font-size:clamp(10px, 3.8vw, 14px)}
   main > #mini .lbl{white-space:normal}
   main > #mini .b small{font-size:clamp(9px, 3.6vw, 13px);line-height:1.05}
   main > #mini .b svg.i{display:none}
@@ -1048,7 +1052,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      leave the pane its room. */
   #t-show .tr{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr) 44px}
   #b-go{grid-column:auto;min-height:56px;padding:0 4px} #t-show .tr .b{min-height:56px}
-  #t-show .tr #b-go{font-size:min(var(--fs), 5.6vw)}
+  #t-show .tr #b-go{font-size:min(var(--fs), 5.2vw)}
   #t-show .tr .q{width:44px;height:44px;min-width:44px;align-self:center}
   #b-go .lbl{white-space:normal}
   /* The pinned Stops two to a row, their words their size. */
@@ -1058,13 +1062,13 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #t-show .state{grid-template-columns:minmax(0,1fr)}
   /* The pinned rows a little shorter, every tap still 44 px or more. */
   .tab,.hb{min-height:44px}
-  main > #mini .b{min-height:48px;padding:0 2px}
+  main > #mini .b{min-height:48px;padding:0 1px}
   /* The announcements' note wraps beside its heading, and their names
      ("Cancellation") shrink with the screen, without their icons: never
      past the edge. */
   .ann .head{height:auto;min-height:var(--ann-h);flex-wrap:wrap;row-gap:0}
   #ann-note{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere}
-  #ann-btns .b{font-size:min(var(--fs), 6vw)} #ann-btns .b svg.i{display:none}
+  #ann-btns .b{font-size:min(var(--fs), 5.4vw)} #ann-btns .b svg.i{display:none}
 }
 /* A phone on its side, or any screen 500 px tall or less: the pinned rows
    compact (every tap still 44 px) so the pane keeps its room, and the
