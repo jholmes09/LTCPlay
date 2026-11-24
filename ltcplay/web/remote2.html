@@ -224,6 +224,9 @@ main > #mini{padding:var(--gap) var(--pad) 0}
 .tr .b{min-height:0;height:100%;font-size:calc(var(--fs) + 2px)}
 #b-go{font-size:calc(var(--fs) + 6px)}
 #b-go .lbl{display:flex;flex-direction:column;align-items:flex-start;text-align:left}
+/* Arm flames' small line on one line: a longer word (Some armed) never
+   makes the button taller, which moved the tiles under a held finger. */
+#armall-why{white-space:nowrap}
 /* Stop show's two lines: "Stop show" over "tap twice" (the Windows
    stress test, 2026-11-09). */
 #b-stop .lbl,#m-stop .lbl,#b-runoff .lbl{display:flex;flex-direction:column;align-items:center;white-space:nowrap}
@@ -887,11 +890,12 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #wx,#msg-more{min-height:44px;padding:0 10px}
   #wx{font-size:17px}
   #msg-t{font-size:16px}
-  /* Flame slide to arm (step 5): one tile a row, and each group's arm and
-     Arm all a full width slide, its 56 px handle 40 px or more from both
-     edges of the screen (a Samsung's Back swipe and Edge panel). Only the
-     handle starts it: the rest of the track scrolls the page. The words
-     say what it does, nothing about how. */
+  /* Flame arm (2026-11-24, the lasers' slide): one tile a row, and each
+     group's Arm and Arm all flames a full width slide, its 56 px handle
+     40 px or more from both edges of the screen (a Samsung's Back swipe
+     and Edge panel). Only the handle starts it: the rest of the track
+     scrolls the page. Its lift opens the pop-up that arms. The words say
+     what it does, nothing about how. */
   :root{--tile-btn:64px}
   .armb.hold:not(:disabled), #b-armall:not(:disabled){touch-action:pan-y;justify-content:center;padding:0 8px 0 64px}
   .armb.hold:not(:disabled){margin:0 24px;width:auto}
@@ -2582,7 +2586,7 @@ function renderMini(isSt){
 }
 $("m-hold").addEventListener("click", () => press("hold"));
 $("m-stop").addEventListener("click", e => stopTap2("m-stop", e));
-$("m-disf").addEventListener("click", () => { slideCancel("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
+$("m-disf").addEventListener("click", () => { slideCancel("Disarm all flame groups"); faCut("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
 $("m-disl").addEventListener("click", () => lzDisarmAll());
 $("m-snd").addEventListener("click", () => annPress("announce-stop"));
 
@@ -2824,6 +2828,7 @@ function renderStale(){
     if(el.dataset.mode === "disarm"){ el.disabled = false; return; }
     if(!holding(i)) el.disabled = !armState(ST, Date.now(), LAST_OK, i).ok;
     if(!holding(i) && rearmWaitFor(i) > 0) el.disabled = true;
+    if(faBusy() && FA.groups.indexOf(i) >= 0) el.disabled = true;
   });
   if(isSt) document.querySelectorAll(".tile[data-lamp]").forEach(t => {
     t.className = "tile unknown"; setIcon(t.querySelector(".ts svg"), "x");
@@ -3178,6 +3183,7 @@ $("tn-run").addEventListener("click", () => runShowHere());
 // same answer read the same way. No confirm: the double tap is its guard.
 async function pressStop(route){
   if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
+  if(typeof faCut === "function") faCut("Stop show was pressed");
   if(typeof tpStopSeen === "function") tpStopSeen();
   if(typeof wcsStopSeen === "function") wcsStopSeen();
   if(typeof prsStopSeen === "function") prsStopSeen();
@@ -4964,32 +4970,278 @@ function armShort(text){
   if(/^Armed/i.test(t)) return "Armed.";
   return short8(t, "Tap Details.");
 }
-function armSay(text, level){ say(armShort(text), text, level >= 2 ? "bad" : (level === 1 ? "ok" : "")); }
+// On a touch phone the words never say "hold" (Andy and Jeff, 2026-11-23:
+// a phone has no hold to arm).
+function armShortPhone(text){
+  const t = String(text || ""), s = armShort(t);
+  if(s === "Keep holding...") return "Arming...";
+  if(s === "Wait, then hold again.") return "Re-arm wait. Try again soon.";
+  if(s === "Hold stopped. Tap Details.") return "Stopped. Tap Details.";
+  return /hold/i.test(s) || /[;\u2013\u2014]/.test(s) ? "Not armed. Tap Details." : s;
+}
+// An Arm all outcome said is kept (ARM_SAID) and made true to the
+// engine while it is on the line (armSaidNow): never "nothing was armed"
+// or "Not armed: <group>" while the engine reads that group armed or
+// asked for, and "Not known" rather than "Nothing armed" while the state
+// cannot be read. Only a status the engine served no earlier than a read
+// the page asked for after the words (ARM_SAID.base, the engine's own
+// served_at) is used: a status built before the hold's answers and
+// arriving late is never read as the outcome (cold review of #302, F2).
+let ARM_SAID = null;
+function armWords(text, level, src){
+  const ph = slidePhone(), t = String(text || "");
+  let short = ph ? armShortPhone(t) : armShort(t), full = t, cls = level >= 2 ? "bad" : (level === 1 ? "ok" : "");
+  if(/^Arm all: /.test(t) && src){
+    const r = flamesRead(src.st && src.st.flames, src.stale, null);
+    if(r.state === "unknown") short = /Not known:/.test(t) ? "Some groups not known. Tap Details." : "Not known. Check the tile.";
+    else {
+      full = armTextNow(t, r, groupNames());
+      if(!/Not known:/.test(t)) short = flamesReadLine(r.state, false);
+      if(r.state === "all") cls = "ok";
+    }
+  }
+  if(ph) full = phoneArmText(full);
+  return {short:short, full:full, cls:cls};
+}
+function armSay(text, level){
+  if(faQuiet(text)) return;
+  const w = armWords(text, level, null);
+  if(!/^Arm all: /.test(String(text || ""))){ ARM_SAID = null; say(w.short, w.full, w.cls); return; }
+  const a = ARM_SAID = {w:w, base:Infinity, make:() => {
+    if(stale()) return armWords(text, level, {st:null, stale:true});
+    if(!ST || faServed(ST) < a.base) return null;
+    return armWords(text, level, {st:ST, stale:false});
+  }};
+  say(w.short, w.full, w.cls);
+  // The read asked for after the words: the engine served it after the
+  // hold's answers.
+  getJSON("/api/remote/status", 1500).then(s => {
+    if(ARM_SAID !== a || !s) return;
+    a.base = faServed(s);
+    armSaidShow(a, armWords(text, level, {st:s, stale:false}));
+  }).catch(() => {});
+}
+// ---- flame arm on a touch phone: a tap, then a pop-up (Andy and Jeff on
+// a phone, 2026-11-23: "Slider ARM function is shit. Make it like the
+// laser arm function with a pop-up box instead.") ----
+// On a touch phone ((max-width:500px) and (pointer:coarse)) a group's Arm
+// and Arm all flames are a tap that opens a pop-up naming what will be
+// armed, with Cancel and Arm. Nothing is sent before Arm on the pop-up.
+// The lasers' own arm is a slide, then its confirm; the flames' is the tap
+// and the pop-up alone, with no slide. Arm runs the same hold as
+// everywhere else (armStart or armAllStart: the same beats, the engine's
+// own 1.0 s plus the deck's 0.6 s, every rule of the engine and the deck),
+// with no finger on the glass: the page beats until the engine answers.
+// Every way a hold ends still ends it: Stop, every Disarm, blur, a hidden
+// or closed page, sign out, arming switched off, a stale page.
+// While it runs, and while the engine is read after it, the button says
+// Checking and takes no tap (a second Arm is refused, never sent). The
+// line then says only what an engine read after the hold shows
+// (flamesRead): never armed without a read, "Not known. Check the tile."
+// when it cannot be read. A read older than the newest one shown is never
+// used. Disarm stays one tap, never held back. Off a phone (a desktop, an
+// iPad, the rack screen) an arm is the press and hold, as before.
+const FA_QUIET_MS = 2600, FA_MAX_MS = 8000, FA_READ_TRIES = 6, FA_READ_GAP_MS = 500;
+let FA = null, FA_SEQ = 0, FA_SEEN = 0, FA_ASKING = false;
+function faBusy(){ return !!FA && !FA.done; }
+// The hold's own words while the pop-up's arm runs, and a moment after it
+// (a read the hold's end started that answers late): kept for Details,
+// never on the line.
+function faQuiet(text){
+  if(!FA || (FA.done && Date.now() - FA.done > FA_QUIET_MS)) return false;
+  FA.said.push(String(text || ""));
+  return true;
+}
+function faNames(gs){ const n = groupNames(); return gs.map(i => n[i] || ("group " + (i + 1))).join(", "); }
+// What the pop-up was opened on (cold review of #302, round 2, N2 and
+// N3): every group's name and state, the schedule's state and arming.
+// A Stop or a Disarm from anywhere (this screen, another one, the Deck)
+// changes it, and so does flamesafe's group order; FA_EPOCH counts this
+// screen's own Stops and Disarms. Either changed at the Arm tap: nothing
+// is sent.
+let FA_EPOCH = 0;
+function faSig(){
+  const fl = (ST && ST.flames) || {};
+  const sch = (ST && ST.schedule) || {};
+  // A Stop, Hold or alert hold from anywhere shows in the schedule's view
+  // even when its state does not change (already HOLD, nothing attached):
+  // stop_held, held, the alert hold (round 3, L1).
+  return JSON.stringify([(fl.groups || []).map(g => [g.name, g.armed, !!g.wanted]), !!fl.stale,
+    sch.state || "", !!sch.attached, !!sch.held, !!sch.stop_held, !!(ST && ST.alert_hold && ST.alert_hold.held),
+    !!(ST && ST.arming && ST.arming.enabled)]);
+}
+// What a pop-up arm of `i` (a group, or "all") would arm right now:
+// {go, out, why}. The same rules armStart and armAllStart apply.
+function faPlan(i){
+  if(i === "all"){
+    const waits = {};
+    (((ST && ST.flames) || {}).groups || []).forEach((_g, k) => { waits[k] = rearmWaitFor(k); });
+    const p = armAllPlan(ST, Date.now(), LAST_OK, waits);
+    return {go:p.go, out:p.out, why:p.go.length ? "" : (p.out.length ? p.out[0].why : p.why)};
+  }
+  const as = armState(ST, Date.now(), LAST_OK, i);
+  const w = as.ok ? rearmWaitFor(i) : 0;
+  return {go:as.ok && !(w > 0) ? [i] : [], out:[], why:!as.ok ? as.why : w > 0 ? rearmText(w) : ""};
+}
+// Nothing was sent: the reason on the line (8 words or fewer), the whole
+// of it behind Details.
+function faRefused(why, changed){
+  const w = String(why || "");
+  say(changed ? "Changed. Nothing sent. Tap Arm again." : faRefusedLine(w),
+    phoneArmText((changed ? "What would arm changed while the pop-up was open: " + w : "Not armed: " + w).replace(/[.\s]+$/, "") + ". Nothing was sent."), "bad");
+}
+async function faAsk(i){
+  if(faBusy() || FA_ASKING){ say("Checking. Wait.", "An arm is being checked with the engine. Nothing more was sent.", ""); return; }
+  if(HOLD){ say("Not armed. Nothing sent.", "Another arm is running. Nothing was sent.", "bad"); return; }
+  const all = i === "all";
+  const plan = faPlan(i);
+  if(!plan.go.length){ faRefused(plan.why); return; }
+  plan.sig = faSig(); plan.epoch = FA_EPOCH;
+  FA_ASKING = true;
+  let yes = false;
+  try{
+    yes = await confirmBox(all ? "Arm all flames?" : "Arm " + faNames(plan.go) + "?",
+      "Arms: " + faNames(plan.go) + "." + (plan.out.length ? " Stays off: " + faNames(plan.out.map(o => o.group)) + "." : ""), "Arm", "green");
+  } finally { FA_ASKING = false; }
+  if(!yes) return;
+  faGo(all ? "all" : i, plan);
+}
+// Arm on the pop-up: the one tap that sends, and only what the pop-up
+// named (cold review of #302, F1): the plan is made again at the tap, and
+// if it is not the same (a re-arm wait over, arming switched off, live
+// flame programming, contact lost, a group armed or disarmed meanwhile)
+// nothing is sent and the line says so. The check and the start are in
+// the same tick, so the hold holds exactly the groups named.
+async function faGo(i, plan){
+  if(faBusy() || HOLD){ say("Checking. Wait.", "An arm is being checked with the engine. Nothing more was sent.", ""); return; }
+  const now = faPlan(i);
+  if(!now.go.length){ faRefused(now.why); return; }
+  if(!plan || now.go.join(",") !== plan.go.join(",")){ faRefused("now it would arm " + faNames(now.go), true); return; }
+  if(plan.epoch !== FA_EPOCH || plan.sig !== faSig()){ faRefused("a Stop, a Disarm or a group's state came in", true); return; }
+  const gs = (((ST && ST.flames) || {}).groups || []).map((_g, k) => k);
+  const fa = FA = {seq:++FA_SEQ, all:i === "all", groups:i === "all" ? gs : [i], said:[], done:0, h:null, at:Date.now()};
+  // Never stuck on Checking: whatever happens, the arm is over at the end.
+  try{
+    ARM_SAID = null;
+    if(fa.all) armAllStart(); else armStart(i);
+    fa.h = HOLD;
+    if(fa.h && fa.h.parts.map(p => p.group).join(",") !== plan.go.join(",")){ armStop("what would arm changed"); fa.h = null; }
+    if(!fa.h){
+      fa.done = Date.now();
+      faRefused((fa.said.filter(t => !/^Keep holding/.test(t)).pop() || "refused").replace(/^Not armed: /, ""));
+      return;
+    }
+    say("Checking...", "", "");
+    try{ renderStale(); }catch(_e){}
+    const t0 = Date.now();
+    while(fa.h && HOLD === fa.h){
+      if(Date.now() - t0 > FA_MAX_MS){ armStop("the engine did not answer in time"); break; }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    if(FA !== fa) return;
+    await faRead(fa);
+  } finally {
+    if(!fa.done) fa.done = Date.now();
+    try{ renderStale(); }catch(_e){}
+  }
+}
+// The engine read after the arm, and what the line says.
+// Stop or a Disarm pressed while a pop-up arm runs: the hold ends at once,
+// and the line is left to the Stop's or the Disarm's own words (a failed
+// Stop or Disarm is never written over).
+function faCut(why){
+  FA_EPOCH++;
+  if(FA_ASKING && SHEET_DONE) SHEET_DONE(null);
+  if(!faBusy()) return;
+  FA.cut = true;
+  if(HOLD && HOLD === FA.h) armStop(why);
+}
+function faServed(x){ return (x && Number.isFinite(Number(x.served_at))) ? Number(x.served_at) : -Infinity; }
+async function faRead(fa){
+  // Only a read asked for after the hold ended says what came of it, and
+  // never one older than a read already shown (FA_SEEN). Until one
+  // arrives the line says Not known, and the read is asked for again
+  // (cold review of #302, round 2, N1: a lost read let a late status
+  // built before the arm say Not armed).
+  let s = null;
+  for(let n = 0; n < FA_READ_TRIES && !s && !fa.cut; n++){
+    if(n) await new Promise(r => setTimeout(r, FA_READ_GAP_MS));
+    if(FA !== fa) return;
+    try{ s = await getJSON("/api/remote/status", 1500); }catch(_e){ s = null; }
+    if(FA !== fa) return;
+    if(s && faServed(s) < FA_SEEN) s = null;
+    if(n === 0 && !s && !fa.cut){ fa.base = Infinity; faShow(fa, flamesRead(null, true, fa.groups)); }
+  }
+  fa.done = Date.now();
+  if(fa.cut){ try{ renderStale(); }catch(_e){} return; }
+  if(!s){ fa.base = Infinity; faShow(fa, flamesRead(null, true, fa.groups)); try{ renderStale(); }catch(_e){} return; }
+  FA_SEEN = faServed(s);
+  fa.base = FA_SEEN;
+  faShow(fa, flamesRead(s.flames, false, fa.groups));
+  try{ renderStale(); }catch(_e){}
+}
+// The line for a pop-up arm, and each newer status after it: only one the
+// engine served no earlier than the read after the hold (fa.base); contact
+// lost is Not known.
+function faShow(fa, r){
+  const w = faWords(fa, r);
+  const a = ARM_SAID = {w:w, make:() => {
+    if(stale()) return faWords(fa, flamesRead(null, true, fa.groups));
+    if(!ST || !(fa.base < Infinity) || faServed(ST) < fa.base || faServed(ST) <= FA_SEEN) return null;
+    FA_SEEN = faServed(ST);
+    return faWords(fa, flamesRead(ST.flames, false, fa.groups));
+  }};
+  say(w.short, w.full, w.cls);
+  return a;
+}
+// The line and Details for a pop-up arm, from an engine read: 8 words or
+// fewer, no "hold", no raw engine text on the line.
+function faWords(fa, r){
+  const one = !fa.all;
+  const short = flamesReadLine(r.state, one);
+  let full = "Read from the engine after the arm.";
+  if(r.state === "unknown") full = "Not known: the engine's state could not be read, so a group may be armed. Check the tiles.";
+  else {
+    const nm = a => faNames(a);
+    if(r.armed.length) full += " Armed: " + nm(r.armed) + ".";
+    if(r.asked.length) full += " Asked for: " + nm(r.asked) + ". The lamp shows when armed.";
+    if(r.off.length) full += " Not armed: " + nm(r.off) + ".";
+    const why = fa.said.filter(t => !/^Keep holding|^Armed|is asked for/i.test(t)).pop();
+    if(r.off.length && why) full += " Why: " + (/hold/i.test(why) ? phoneArmWhy(why) + "." : phoneArmText(why));
+  }
+  return {short:short, full:phoneArmText(full), cls:r.state === "all" ? "ok" : r.state === "unknown" || r.state === "none" || r.state === "some" ? "bad" : ""};
+}
+function armSaidShow(a, w){
+  if(ARM_SAID !== a || !w) return;
+  if($("msg-t").textContent !== a.w.short || MSG_FULL !== (a.w.full !== a.w.short ? a.w.full : "")){ ARM_SAID = null; return; }
+  if(w.short === a.w.short && w.full === a.w.full && w.cls === a.w.cls) return;
+  a.w = w;
+  setText($("msg-t"), w.short);
+  $("msg").className = w.cls;
+  MSG_FULL = w.full !== w.short ? w.full : "";
+  $("msg-more").hidden = !MSG_FULL;
+}
+function armSaidNow(){
+  const a = ARM_SAID;
+  if(a) armSaidShow(a, a.make());
+}
 document.addEventListener("visibilitychange", () => { if(document.hidden){ slideCancel("the page was hidden"); armStop("the page was hidden"); } });
 window.addEventListener("pagehide", () => { slideCancel("the page closed"); armStop("the page closed"); });
 window.addEventListener("blur", () => { slideCancel("the page lost focus"); armStop("the page lost focus"); });
 
-// ---- flame slide to arm, touch phones only (step 5 of the phone build) ----
+// ---- the slide, touch phones only (steps 6 to 8 of the phone build) ----
 // On a touch phone ((max-width:500px) and (pointer:coarse), read when the
-// finger goes down and fixed for that touch) each group's arm and Arm all
-// are a slide. It is the same hold as everywhere else: armStart or
-// armAllStart, the same beats, the same engine, started when the finger
-// touches the handle. The engine arms only once beats have lasted 1.0 s
-// plus the deck's 0.6 s, so the beats carry on past SLIDE_GATE_MS (or past
-// SLIDE_GATE_HELD_S of hold the engine has answered) only while the handle
-// is at SLIDE_ARM (90 percent) or more. Under it the hold is let go, and a
-// new hold starts once the handle is back at 90 percent (the engine then
-// needs its whole hold again). The slide never shows armed: the engine's
-// armed answer or its status says so, and the tile turns to Disarm.
-// Everything else ends the slide, lets go of its hold and springs the
-// handle back: the lift, pointercancel, a second pointer of any kind, a
-// jump (a wet screen), the finger leaving the band, blur, a hidden or
-// closed page, a resize or rotation, the phone test changing, the tiles
-// drawn again, Back, sign out, arming switched off, a Disarm, a Stop.
-// Off a phone (a desktop, an iPad, the rack screen) an arm is the hold,
-// exactly as before. A keyboard and a screen reader still cannot arm.
+// finger goes down and fixed for that touch) the lasers' Arm, the timed
+// purge and the cleaning are a slide (their own parts below). The flames'
+// arm was a slide too (step 5) until 2026-11-23: it is a tap and a pop-up
+// now (faAsk). Everything else ends a slide and springs the handle back:
+// the lift, pointercancel, a second pointer of any kind, a jump (a wet
+// screen), the finger leaving the band, blur, a hidden or closed page, a
+// resize or rotation, the phone test changing, the controls drawn again,
+// Back, sign out, arming switched off, a Disarm, a Stop. A slide's own
+// part says what each one does.
 const SLIDE_MQ = matchMedia("(max-width:500px) and (pointer:coarse)");
-const SLIDE_ARM = 0.9, SLIDE_GATE_MS = 500, SLIDE_GATE_HELD_S = 0.7, SLIDE_AGAIN_MS = 300,
+const SLIDE_ARM = 0.9,
   SLIDE_JUMP_PX = 64, SLIDE_BAND_PX = 24, SLIDE_TICK_MS = 50;
 let SLIDE = null, SLIDE_BACK = 0;
 function slidePhone(){ return SLIDE_MQ.matches; }
@@ -5012,7 +5264,7 @@ function slideDown(e, el, i){
   // (a pinned Stop, an alert) has moved it.
   const r0 = el.getBoundingClientRect();
   const s = SLIDE = {el:el, knob:knob, i:i, id:e.pointerId, x0:e.clientX, lx:e.clientX, ly:e.clientY,
-    travel:Math.max(1, el.clientWidth - knob.offsetWidth - 2 * knob.offsetLeft), frac:0, h:null, t0:0, paused:false, at:0,
+    travel:Math.max(1, el.clientWidth - knob.offsetWidth - 2 * knob.offsetLeft), frac:0,
     back:false, tick:0, vw:innerWidth, vh:innerHeight, b0:{top:r0.top, bottom:r0.bottom}};
   s.tick = setInterval(slideCheck, SLIDE_TICK_MS);
   // Back (or a Samsung's swipe from the edge) while the finger is down
@@ -5020,35 +5272,9 @@ function slideDown(e, el, i){
   try{ history.pushState({ltcSlide:true}, ""); s.back = true; }catch(_e){}
   // The lasers' slide sends nothing: its lift opens the confirm (lzSlideEnd).
   // The timed purge's, the cleaning's and Continue anyway's send nothing
-  // until 90 percent (tpSlideCheck, wcSlideCheck, prsSlideCheck).
-  if(i !== "lz" && i !== "tp" && i !== "wc" && i !== "pr") slideHold(s);
+  // until 90 percent (tpSlideCheck, wcSlideCheck, prsSlideCheck); the
+  // flames' send nothing at all (faSlideEnd opens the pop-up).
 }
-// The hold, the same as a press and hold: armStart or armAllStart.
-function slideHold(s){
-  s.t0 = Date.now(); s.paused = false;
-  if(s.i === "all") armAllStart(); else armStart(s.i);
-  s.h = HOLD;
-  if(s.h) s.groups = s.h.parts.map(p => p.group);
-  // Refused at once (armStart said why): nothing to slide.
-  if(!s.h) slideEnd(s);
-}
-// Every group of the slide's hold still holding shows armed or asked for
-// in the status: the engine's armed answer is on its way.
-function slidePending(s){
-  if(s.paused || !s.h || HOLD !== s.h) return false;
-  const gs = ((ST && ST.flames) || {}).groups || [];
-  const live = s.h.parts.filter(p => !p.end);
-  return live.length > 0 && live.every(p => { const g = gs[p.group]; return !!g && (g.armed === "armed" || !!g.wanted); });
-}
-// A slide's hold stopped: each part still holding goes through #293's
-// doubt path (armStop reads the engine's state before it says anything or
-// lets go), so an armed answer cut off here is never said as not armed.
-function slideStop(s, why){
-  if(!s.h || HOLD !== s.h) return;
-  s.h.parts.forEach(p => { if(!p.end && !p.err) p.err = new Error(why || "the slide ended"); });
-  armStop(why);
-}
-function slideHeld(h){ return Math.max(0, ...h.parts.map(p => p.held || 0)); }
 function slideCheck(){
   const s = SLIDE;
   if(!s) return;
@@ -5056,32 +5282,8 @@ function slideCheck(){
   if(s.i === "tp"){ tpSlideCheck(s); return; }
   if(s.i === "wc"){ wcSlideCheck(s); return; }
   if(s.i === "pr"){ prsSlideCheck(s); return; }
-  // The hold ended by itself (armed, refused, lapsed), and said so.
-  if(!s.paused && HOLD !== s.h){ slideEnd(s); return; }
-  if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
-  // The tile turned to Disarm under the finger: its group is asked for, so
-  // the engine's armed answer is on its way. The hold waits for it, as a
-  // press and hold does (holdLapsed); nothing is let go.
-  if(!s.knob.getClientRects().length && !slidePending(s)){ slideCancel("the controls were drawn again"); return; }
-  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
-  // Signed out (the sheet's Sign out, or the engine says view only).
-  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
-  // A resize or a turn that has not fired its event yet.
-  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
-  const r = s.b0;
-  // The band is where the slide was when the finger went down (slideDown):
-  // a pinned Stop drawn above the tiles during the hold (live flame
-  // programming, another screen's purge or cleaning) or an alert moves the
-  // slide, never the finger, and never lets go of the arm.
-  if(s.ly < r.top - SLIDE_BAND_PX || s.ly > r.bottom + SLIDE_BAND_PX){ slideCancel("let go"); return; }
-  if(!s.paused){
-    // Under 90 percent: never as far as the engine's whole hold. Let go
-    // through the doubt path: the engine may have armed it this instant.
-    if(s.frac < SLIDE_ARM && (Date.now() - s.t0 >= SLIDE_GATE_MS || slideHeld(s.h) >= SLIDE_GATE_HELD_S)){
-      slideStop(s, "");
-      s.h = null; s.paused = true; s.at = Date.now();
-    }
-  } else if(s.frac >= SLIDE_ARM && Date.now() - s.at >= SLIDE_AGAIN_MS) slideHold(s);
+  if(s.i === "fa"){ faSlideCheck(s); return; }
+  slideCancel("");
 }
 function slideMove(e){
   const s = SLIDE;
@@ -5105,27 +5307,8 @@ function slideCancel(why){
   if(s.i === "tp"){ tpSlideEnd(s, why); return; }
   if(s.i === "wc"){ wcSlideEnd(s, why); return; }
   if(s.i === "pr"){ prsSlideEnd(s, why); return; }
-  if(s.h && HOLD === s.h) slideStop(s, why);
-  else if(s.paused && why) slideSaid(s.groups, why);
+  if(s.i === "fa"){ faSlideEnd(s, why); return; }
   slideEnd(s);
-}
-// A slide that ended while paused under 90 percent (its hold already let
-// go): the engine's state is read before anything is said, never "not
-// armed" without it.
-async function slideSaid(groups, why){
-  const nows = await Promise.all(groups.map(i => groupNow(i)));
-  if(HOLD) return;
-  const on = nows.filter(n => n.armed), unk = nows.filter(n => !n.known);
-  if(groups.length === 1){
-    if(on.length) armSay(ASKED_WORDS(on[0].name), 1);
-    else if(unk.length) armSay(UNKNOWN_WORDS(unk[0].name), 2);
-    else armSay("Hold stopped: " + why, why === "let go" ? 0 : 2);
-    return;
-  }
-  if(!on.length && !unk.length){ armSay("Hold stopped: " + why, why === "let go" ? 0 : 2); return; }
-  // armAllText's words for a group not known.
-  armSay("Arm all:" + (on.length ? " " + on.map(n => n.name).join(", ") + " asked for." : "") +
-    (unk.length ? " Not known: " + unk.map(n => n.name).join(", ") + " (the engine's state could not be read; check the tiles before you hold again)." : ""), unk.length ? 2 : 1);
 }
 function slideEnd(s){
   if(SLIDE !== s) return;
@@ -5139,14 +5322,6 @@ function slideEnd(s){
   }
 }
 window.addEventListener("pointermove", slideMove, true);
-// The buttons' own pointerleave and lostpointercapture let go of a hold at
-// once, with no state read. During a slide they never reach them (the
-// handle hidden while its group is asked for may lose the capture, or the
-// finger past the track's end leave the button): the slide ends only
-// through its own path, which reads the engine's state first.
-["pointerleave", "lostpointercapture"].forEach(t => window.addEventListener(t, e => {
-  if(SLIDE && e.pointerId === SLIDE.id) e.stopPropagation();
-}, true));
 // Arming switched off and Sign out (their own handlers are 1.0's copied
 // code, which lets go of the hold first).
 $("sa-off").addEventListener("click", () => slideCancel("arming from a screen was switched off"));
@@ -5235,7 +5410,7 @@ async function lzLost(e){
   return null;
 }
 // The lasers' handle: only on a phone, only while the tile says Arm.
-window.addEventListener("pointerup", e => { const s = SLIDE; if(s && s.i === "lz" && e.pointerId === s.id) s.up = true; }, true);
+window.addEventListener("pointerup", e => { const s = SLIDE; if(s && (s.i === "lz" || s.i === "fa") && e.pointerId === s.id) s.up = true; }, true);
 // Any touch after the slide ended is a new press: a Disarm with it is
 // never held back.
 window.addEventListener("pointerdown", () => { if(LZ_QUIET && !SLIDE) LZ_QUIET.fresh = true; }, true);
@@ -5250,6 +5425,60 @@ window.addEventListener("pointerdown", () => { if(LZ_QUIET && !SLIDE) LZ_QUIET.f
     return;
   }
   if(age < LZ_QUIET_MS || (e.pointerId === qz.id && age < LZ_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }
+}, true));
+// ---- the flames' slide, touch phones only (Jeff, 2026-11-24: the
+// flame arm's front end the same as the lasers') ----
+// Each group's Arm and Arm all flames are a slide, the lasers' slide with
+// the same handle and the same rules, that sends NOTHING: the finger is
+// never held at the end. Lifted at SLIDE_ARM (90 percent) or more it opens
+// the flame pop-up (faAsk: what will be armed, Cancel and Arm), and only
+// the pop-up's Arm sends. Every other end (lifted short, pointercancel, a
+// second pointer, the band, a jump, Back, blur, a resize, the tile
+// changing) sends nothing and says so. The band is where the slide was
+// when the finger went down (slideDown's b0): a pinned Stop drawn above
+// the tiles moves the slide, never the finger. The slide's own release and
+// click never reach the pop-up drawn under the finger, nor a tile under
+// it (FA_QUIET, the lasers' LZ_QUIET rules); a new touch is a new press,
+// so a Disarm or a Stop is never held back. No slide starts while an arm
+// is asked for or being checked.
+let FA_QUIET = null;
+const FAS_QUIET_MS = LZ_QUIET_MS, FAS_QUIET_ID_MS = LZ_QUIET_ID_MS;
+function faSlideDown(e, el, target){
+  if(faBusy() || FA_ASKING) return;
+  slideDown(e, el, "fa");
+  if(SLIDE && SLIDE.el === el) SLIDE.target = target;
+}
+function faSlideCheck(s){
+  if(!s.el.isConnected){ slideCancel("the controls were drawn again"); return; }
+  if(!s.knob.getClientRects().length){ slideCancel("the tile changed"); return; }
+  if(!SLIDE_MQ.matches){ slideCancel("the screen changed"); return; }
+  if(ST && ST.me && ST.me.view_only){ slideCancel("Signed out"); return; }
+  if(innerWidth !== s.vw || innerHeight !== s.vh){ slideCancel("the screen turned or changed size"); return; }
+  const band = s.b0;
+  if(s.ly < band.top - SLIDE_BAND_PX || s.ly > band.bottom + SLIDE_BAND_PX) slideCancel("the finger left the slide");
+}
+function faSlideEnd(s, why){
+  const lifted = s.up === true && why === "let go";
+  slideEnd(s);
+  FA_QUIET = {id:s.id, at:Date.now()};
+  if(lifted && s.frac >= SLIDE_ARM && s.target !== undefined){ faAsk(s.target); return; }
+  // As the lasers' (lzSlideEnd): lifted short or a tap sends nothing and
+  // says nothing, so a line such as a Stop NOT sent is never covered.
+  if(lifted || !why || why === "the tile changed") return;
+  say("Nothing sent.", "Flame slide stopped: " + why + ". Nothing was sent.", "");
+}
+window.addEventListener("pointerdown", () => { if(FA_QUIET && !SLIDE) FA_QUIET.fresh = true; }, true);
+["pointerup", "click"].forEach(t => window.addEventListener(t, e => {
+  const qz = FA_QUIET;
+  if(SLIDE || !qz || !e.target || !e.target.closest || !e.target.closest("#sheet, [data-arm], #b-armall")) return;
+  const age = Date.now() - qz.at, tile = e.target.closest("[data-arm]");
+  // A group's tile that says Disarm: only the slide's own release is
+  // ignored (its pointer, no touch since). Any new press disarms.
+  if(tile && tile.dataset.mode !== "hold"){
+    if(!qz.fresh && e.pointerId === qz.id && age < FAS_QUIET_ID_MS){ e.preventDefault(); e.stopImmediatePropagation(); }
+    return;
+  }
+  if(age < FAS_QUIET_MS || (e.pointerId === qz.id && age < FAS_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }
 }, true));
 ["pointerup", "pointercancel"].forEach(t => window.addEventListener(t, e => { if(SLIDE && e.pointerId === SLIDE.id) slideCancel("let go"); }, true));
 // A second pointer of any kind, anywhere: the slide ends, and no hold
@@ -6399,7 +6628,7 @@ function armLabel(mode, c, leftMs, as){
   // Signed out: Sign in; signed in without the right: says so (review of
   // #175).
   if(as && as.signin) return {icon:"user", text:signWhy(typeof ST !== "undefined" ? ST : null, "arm", true), cls:""};
-  return {icon:"ring", text:"Hold to arm", cls:"green hold"};
+  return {icon:"ring", text:slidePhone() ? "Arm" : "Hold to arm", cls:"green hold"};
 }
 function setArmMode(el, mode, c){
   el.dataset.mode = mode;
@@ -6905,12 +7134,14 @@ function renderGroups(fl){
     // the release; Disarm goes on the click.
     box.querySelectorAll("[data-arm]").forEach(b => {
       const i = Number(b.dataset.arm);
-      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ if(slidePhone()){ slideDown(e, b, i); return; } if(holdSecond(e)) return; armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
+      b.addEventListener("pointerdown", e => { e.preventDefault(); b.dataset.down = b.dataset.mode; if(b.dataset.mode === "hold"){ if(slidePhone()){ faSlideDown(e, b, i); return; } if(holdSecond(e)) return; armStart(i); holdTrack(e, b, () => { if(holding(i) && !HOLD.all) armStop("let go"); }); } });
       ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
-        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all) armStop("let go"); }));
+        b.addEventListener(ev, () => { if(holding(i) && !HOLD.all && !faBusy()) armStop("let go"); }));
       b.addEventListener("click", e => {
         const down = b.dataset.down || ""; delete b.dataset.down;
-        if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ slideCancel("disarm"); armStop("disarm"); press("group-disarm", {group:i}); }
+        if(clickAction(down, b.dataset.mode, e.detail === 0) === "disarm"){ slideCancel("disarm"); faCut("disarm"); armStop("disarm"); press("group-disarm", {group:i}); }
+        // A phone: Arm is the slide only (faSlideEnd opens the pop-up).
+        else if(slidePhone()) return;
         else if(e.detail === 0 && b.dataset.mode === "hold") armSay(KEY_HOLD_WORDS, 2);
       });
       b.addEventListener("contextmenu", e => e.preventDefault());
@@ -6951,6 +7182,8 @@ function renderGroups(fl){
     setText(ab.querySelector(".act"), lab.text);
     if(!holding(i)) ab.disabled = !as.ok;
     if(on && c !== "armed" && c !== "unknown" && left > 0 && !holding(i)) ab.disabled = true;
+    // A pop-up arm under way: Checking, and no tap (faGo).
+    if(faBusy() && FA.groups.indexOf(i) >= 0){ ab.disabled = true; setText(ab.querySelector(".act"), "Checking"); }
     const ref = REARM_REFUSED_AT[i];
   });
 }
@@ -6964,25 +7197,30 @@ function renderAllButtons(isSt){
   // Lit only when 1.0 offers Arm all and its hold would not be refused at
   // once (live flame programming one group at a time).
   const can = (HOLD && HOLD.all) || (allButtonMode(ST, isSt) === "arm" && !armAllRefusal(ST));
-  if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
+  if(faBusy()) b.disabled = true;
+  else if(!(HOLD && HOLD.all)) b.disabled = !can || !mayRow(ST, "arm");
   // Why it is off, in a word or two (the cell is narrow; the SHOW tab must
   // not scroll); the engine's own refusal in full on the button's title.
   const ar = armAllRefusal(ST);
   // Off, it reads "Arm flames" over the reason: two lines, as tall as the
   // live label, so the SHOW tab never grows.
-  setText($("armall-why"), !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? signWhy(ST, "arm", true) :
-    ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : "All armed");
-  setText($("armall-l"), b.disabled ? "Arm flames" : "Hold: arm flames");
+  // Once Arm all is not offered, what the groups read: "All armed" only
+  // when every one reads armed (flamesReadWord).
+  setText($("armall-why"), faBusy() ? "Checking" : !b.disabled ? "" : isSt ? "No contact" : !mayRow(ST, "arm") ? signWhy(ST, "arm", true) :
+    ar ? "Not now" : allButtonMode(ST, isSt) === "arm" ? "Not now" : flamesReadWord(ST && ST.flames, isSt));
+  setText($("armall-l"), b.disabled || slidePhone() ? "Arm flames" : "Hold: arm flames");
+  armSaidNow();
   b.title = b.disabled && ar ? ar : "";
   $("b-disall").disabled = false;
 }
 const ARMALL = $("b-armall");
-ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ if(slidePhone()){ slideDown(e, ARMALL, "all"); return; } if(holdSecond(e)) return; armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
+ARMALL.addEventListener("pointerdown", e => { e.preventDefault(); if(!ARMALL.disabled){ if(slidePhone()){ faSlideDown(e, ARMALL, "all"); return; } if(holdSecond(e)) return; armAllStart(); holdTrack(e, ARMALL, () => { if(HOLD && HOLD.all) armStop("let go"); }); } });
 ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"].forEach(ev =>
-  ARMALL.addEventListener(ev, () => { if(HOLD && HOLD.all) armStop("let go"); }));
+  ARMALL.addEventListener(ev, () => { if(HOLD && HOLD.all && !faBusy()) armStop("let go"); }));
 ARMALL.addEventListener("contextmenu", e => e.preventDefault());
-ARMALL.addEventListener("click", e => { if(e.detail === 0) armSay(KEY_HOLD_WORDS, 2); });
-$("b-disall").addEventListener("click", () => { slideCancel("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
+// A phone: Arm all flames is the slide only (faSlideEnd opens the pop-up).
+ARMALL.addEventListener("click", e => { if(slidePhone()) return; if(e.detail === 0) armSay(KEY_HOLD_WORDS, 2); });
+$("b-disall").addEventListener("click", () => { slideCancel("Disarm all flame groups"); faCut("Disarm all flame groups"); armStop("Disarm all flame groups"); press("disarm-all"); });
 
 // ---- lasers: one tile. Disarm is one press and never held back; Arm is
 // 1.0's laser arm for every laser, with its confirm.
