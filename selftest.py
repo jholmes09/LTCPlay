@@ -120743,8 +120743,10 @@ function look(t){
     if(a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) over.push((ps[i].id || ps[i].textContent.trim().slice(0, 12)) + "/" + (ps[j].id || ps[j].textContent.trim().slice(0, 12)));
   }
   if(over.length) bad.push("controls overlap: " + over.slice(0, 6).join(", "));
-  // The words on the pinned and top-row controls are never cut.
-  const cut = [...pinned(), ...paneTop()].filter(el => el.scrollWidth > el.clientWidth + 1)
+  // The words on every control of the screen (the pinned rows, the
+  // pane's tiles, slides and buttons) are never cut.
+  const cut = [...new Set([...pinned(), ...paneTop(), ...[...document.querySelectorAll("#t-" + t + " button")].filter(shown)])]
+    .filter(el => !el.closest("[hidden]") && el.scrollWidth > el.clientWidth + 1)
     .map(el => (el.id || el.textContent.trim().slice(0, 14)) + " " + el.scrollWidth + ">" + el.clientWidth);
   if(cut.length) bad.push("a control's words cut: " + cut.join(", "));
   // What stays pinned inside the pane once it scrolls (the safety strip,
@@ -120783,6 +120785,28 @@ function sweep(t, kind, vals){
   }
   return {n:vals.length, h:[...hs], main:[...ys], first:[...fs], q:[...qs], text:q("next-t").textContent, cut:cut.slice(0, 3), ncut:cut.length};
 }
+// The flame pop-up (faAsk) open over the screen: its box inside the
+// screen and clear of the island and home bar, its buttons 44 px, whole,
+// apart. Cancel closes it; nothing is sent.
+async function popup(){
+  const bad = [];
+  faAsk(0); await h.sleep(400);
+  const sh = q("sheet"), box = sh && sh.querySelector(".box");
+  if(!sh || sh.hidden || !box){ return ["the pop-up did not open"]; }
+  const b = R(box), sa = parseFloat(root.style.getPropertyValue("--safe-t")) || 0, sb = parseFloat(root.style.getPropertyValue("--safe-b")) || 0;
+  if(b.left < -1 || b.right > innerWidth + 1 || b.top < sa - 1 || b.bottom > innerHeight - sb + 1) bad.push("the pop-up past the screen: " + [b.left, b.top, b.right, b.bottom].map(Math.round));
+  const bs = [...box.querySelectorAll("button")].filter(shown);
+  for(const x of bs){ const r = R(x);
+    if(Math.min(r.width, r.height) < 43.5) bad.push("pop-up tap under 44 px: " + x.textContent.trim() + " " + Math.round(r.width) + "x" + Math.round(r.height));
+    if(x.scrollWidth > x.clientWidth + 1) bad.push("pop-up words cut: " + x.textContent.trim()); }
+  for(let i = 0; i < bs.length; i++) for(let j = i + 1; j < bs.length; j++){ const a = R(bs[i]), c = R(bs[j]);
+    if(a.left < c.right - 1 && c.left < a.right - 1 && a.top < c.bottom - 1 && c.top < a.bottom - 1) bad.push("pop-up buttons overlap"); }
+  if(root.scrollWidth > root.clientWidth + 1) bad.push("the page scrolls sideways with the pop-up open");
+  const cancel = bs.find(x => /Cancel/.test(x.textContent));
+  if(cancel) cancel.click(); await h.sleep(300);
+  if(!sh.hidden) bad.push("Cancel did not close the pop-up");
+  return bad;
+}
 // A pinned line's own countdown (a timed purge, the hazer test) ticked:
 // the status's seconds left, drawn as the engine sends them.
 const tick = (k, v) => () => { const st = JSON.parse(JSON.stringify(ST)); if(k === "tp") st.morning.timed.left_s = v; else st.hazer_test.left_s = v; ST = st; };
@@ -120805,7 +120829,7 @@ for(const z of SIZES){
   // The top line is the same on every tab; a phone's is swept on SHOW
   // and DAY, a wider screen's on SHOW.
   const swept = t => t === "show" || innerWidth <= 600;
-  for(const st of ["countdown", "arm", "running", "hold", "alerts", "purge", "hazers", "pins"]){
+  for(const st of ["countdown", "arm", "some", "unknown", "running", "hold", "alerts", "rig", "purge", "hazers", "pins"]){
     phase = st; await h.sleep(600);
     for(const t of ["show", "day"]){
       await tab(t);
@@ -120816,6 +120840,7 @@ for(const z of SIZES){
       if(st === "purge") r.sweeps[st + "/" + t] = sweep(t, "", PINV.map(v => tick("tp", v)));
       if(st === "hazers") r.sweeps[st + "/" + t] = sweep(t, "", PINV.map(v => tick("hzt", v)));
       if(st === "pins") r.sweeps[st + "/" + t] = sweep(t, "", PINV.map(v => tick("tp", v)));
+      if(st === "arm" && t === "show" && matchMedia("(pointer:coarse)").matches) r.states["popup/show"] = {bad:await popup(), pct:100, content:0, sticky:0};
     }
   }
   out.sizes.push(r);
@@ -120828,7 +120853,9 @@ def _ui2_status_sweep():
     armed (its words "Show 5 starts in M:SS."), the same with them not
     armed and arming on (inside 5 minutes, "Arm flames."), a show running,
     a show held, five alerts holding the show, a timed purge, the hazer
-    test, and three live modes."""
+    test, and three live modes; the flames some armed and not known (Arm
+    flames' words), and a failed rig check (Continue anyway's slide in
+    the alert slot, the cleaning running)."""
     import copy
     ph = _ui2_status_phone()
     cd = copy.deepcopy(ph["idle"])
@@ -120850,12 +120877,19 @@ def _ui2_status_sweep():
                                   "what": "purge"}}
     hazers = copy.deepcopy(cd)
     hazers["hazer_test"] = {"on": True, "left_s": 60}
+    some = copy.deepcopy(arm)
+    some["flames"]["groups"] = [dict(g, armed="armed" if i % 2 else "disarmed")
+                                for i, g in enumerate(some["flames"]["groups"])]
+    unknown = copy.deepcopy(arm)
+    unknown["flames"]["stale"] = True
+    rig = _ui2_status_rigcheck()
+    rig["me"] = copy.deepcopy(ph["idle"]["me"])
     pins = copy.deepcopy(purge)
     pins["hazer_test"] = {"on": True, "left_s": 60}
     pins["live_flame"] = {"on": True, "who": "Jeff"}
-    return {"countdown": cd, "arm": arm, "running": run, "hold": hold,
-            "alerts": ph["five"], "purge": purge, "hazers": hazers,
-            "pins": pins}
+    return {"countdown": cd, "arm": arm, "some": some, "unknown": unknown,
+            "running": run, "hold": hold, "alerts": ph["five"], "rig": rig,
+            "purge": purge, "hazers": hazers, "pins": pins}
 
 
 # The device matrix: (CSS width, CSS height, scale, insets top, right,
@@ -120899,12 +120933,16 @@ def test_ui2_layout_sweep_any_phone_size_and_scale():
             "2026-11-24): drawn over a device matrix (phones 270 to 440 px "
             "wide at 1.0 to 1.5 scale, an iPhone's island and home bar, "
             "phones on their side, tablets, narrow mouse windows), SHOW "
-            "and DAY in a countdown, a show running, a hold and five "
-            "alerts: no sideways scroll, nothing past an edge, every pinned "
-            "tap 44 px, no two overlap, no control's words cut, the pane "
-            "40 percent of an upright screen, DAY's panel never squeezed, "
-            "and the top line, the pane and the first row under it never "
-            "move as a countdown ticks")
+            "and DAY in a countdown, Arm flames' words (none, some, not "
+            "known), a show running, a hold, five alerts, a failed rig "
+            "check (Continue anyway), a timed purge, the hazer test and "
+            "three live modes, and the flame pop-up open: no sideways "
+            "scroll, nothing past an edge, every tap 44 px, no two "
+            "overlap, no control's words cut, the pane its share of the "
+            "screen under every pinned row, DAY's panel never squeezed; "
+            "the top line, the pane and the first row under it never move "
+            "as a countdown or a pinned timer ticks, and its clock is "
+            "never cut")
     page = _ui2_page_inline()
     check("font-variant-numeric:tabular-nums}" in
           page[page.find("#next .t{"):page.find("#next .t{") + 200],
@@ -120971,7 +121009,7 @@ def test_ui2_layout_sweep_any_phone_size_and_scale():
                     # its side only that nothing overlaps (checked above)
                     # and the pane scrolls to the rest.
                     many = k.split("/")[0] in ("alerts", "purge", "hazers",
-                                               "pins")
+                                               "pins", "rig")
                     if h > w:
                         want_pct = (20 if many else 40) if h >= 560 else \
                             (15 if many else 30)
