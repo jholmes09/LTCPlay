@@ -66,6 +66,11 @@
    corner for the Abort sign (removed, Jeff, 2026-10-30), so nothing
    above it moved. */
 :root{--foot-h:112px}
+/* The screen's own edges (an iPhone's island and home bar, a phone on its
+   side): viewport-fit=cover draws the page under them, so the frame keeps
+   clear of each. Zero on a screen with none. */
+:root{--safe-t:env(safe-area-inset-top, 0px); --safe-r:env(safe-area-inset-right, 0px);
+  --safe-b:env(safe-area-inset-bottom, 0px); --safe-l:env(safe-area-inset-left, 0px)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);height:100%}
 /* No pull to refresh, no overscroll bounce: a finger dragged down the
@@ -79,7 +84,7 @@ svg.i{width:1.15em;height:1.15em;flex:0 0 auto;fill:currentColor}
 
 /* ---- the frame: header, the tab, the footer ---- */
 #app{height:calc(100vh - var(--pad-bottom, 0px) - var(--broken-h, 0px));height:calc(100dvh - var(--pad-bottom, 0px) - var(--broken-h, 0px));
-  margin-top:var(--broken-h, 0px);
+  margin-top:var(--broken-h, 0px);padding:var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l);
   display:grid;grid-template-rows:auto calc(var(--next-h) + var(--gap)) minmax(0,1fr) auto;grid-template-columns:minmax(0,1fr)}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:var(--gap);padding:var(--gap) var(--pad);
   border-bottom:1px solid var(--line)}
@@ -713,7 +718,8 @@ button.fb-pad.na{opacity:.45}
 #tp-hold.na{opacity:.45}
 /* ---- sheets (confirm, details, help, sign in) over everything but the footer ---- */
 #sheet{position:fixed;inset:0;z-index:60;background:rgba(7,6,5,.86);display:flex;align-items:flex-start;justify-content:center;
-  padding:max(12px,4vh) 12px calc(var(--foot-h) + 12px)}
+  padding:max(12px,4vh) 12px calc(var(--foot-h) + 12px);
+  padding:max(12px,4vh,var(--safe-t)) max(12px,var(--safe-r)) calc(var(--foot-h) + 12px + var(--safe-b)) max(12px,var(--safe-l))}
 #sheet .box{width:min(680px,100%);max-height:100%;overflow:auto;background:var(--panel);border:2px solid var(--gold);
   border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px}
 #sheet h2{margin:0;font-size:calc(var(--fs) + 6px);font-weight:800}
@@ -784,14 +790,27 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   :root{--gap:4px; --pad:10px; --state-h:60px; --tr-h:56px; --al-h:60px; --ann-h:56px}
 }
 /* A phone: the SHOW pane scrolls between the header and the footer, so
-   nothing ever goes under the footer. */
-@media (max-width:600px){
+   nothing ever goes under the footer. A phone on its side (500 px tall or less) too: its pinned rows would otherwise leave the pane a strip. */
+@media (max-width:600px), (max-height:500px){
   /* A phone: the logo alone, in the room left on the buttons' last line
      (placeBrand moves it there). */
   .hright #brand{margin-right:0;margin-left:-4px;justify-content:flex-end;height:44px}
   .hright #brand::after{display:none}
   .hright #brand::before{content:"";flex:0 0 4px}
   #brand-logo{height:30px}
+  /* A phone on its side never enlarges the text by itself (iOS). */
+  html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+  /* Words that tick (a countdown, a show's times) never change their
+     width or the line's height: every digit the same width. */
+  #next .t,#pill,#st-tc,#cd-v{font-variant-numeric:tabular-nums}
+  /* The timecode and the times fit their cell at their longest
+     ("59:59 | 59:59"), sized by the cell: never cut, never past an edge
+     (a browser without container units keeps the size before). */
+  .state > div{container-type:inline-size}
+  #st-tc{font-size:var(--tc-fs);font-size:min(var(--tc-fs), 14cqi)}
+  #cd-v{font-size:calc(var(--fs) + 6px);font-size:min(calc(var(--fs) + 6px), 12.5cqi)}
+  /* Stop's words wrap where a narrow screen has no room, never cut. */
+  #b-stop .lbl,#m-stop .lbl,#b-runoff .lbl{white-space:normal;text-align:center}
   .hb{padding:0 6px}
   :root{--fs:20px; --pad:8px; --gap:6px; --next-h:auto; --state-h:auto; --tr-h:auto; --al-h:auto; --tile-btn:60px; --tc-fs:30px}
   #tabs,.hright{flex-wrap:wrap;margin-left:0}
@@ -804,14 +823,45 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
      a third: 164 px of line on a 457 px page left the pane 64 px, under
      Resume's 72). The line's own button gets the next row. */
   #next .t{flex:1 1 0}
+  /* And never more than two lines, the rest cut with an ellipsis: the line
+     is one height whatever its words say, so nothing under it moves as a
+     countdown ticks (Jeff's phone, 2026-11-24: one line at 4:21, two at
+     4:25, the tiles below 90 px further down each time). A touch phone's
+     own block below keeps it one line, and opens it on a tap. */
+  #next:not(.many):not(.go):not(.open) .t{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
   #next-go{order:9;flex:1 1 100%}
+  /* The alert slot's buttons and Arm all's words wrap rather than run
+     past the edge ("Hold to continue anyway", "Some armed"). */
+  #al-next,#al-act{white-space:normal;flex:0 1 auto;min-width:0;max-width:100%}
+  /* The announcements' note wraps beside its heading, never cut. */
+  .ann{flex-wrap:wrap} .ann .head{flex-wrap:wrap;height:auto;min-height:var(--ann-h);row-gap:0;max-width:none;flex:1 1 100%}
+  #ann-note{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere}
+  #b-armall{min-width:0} #b-armall .lbl{white-space:normal;min-width:0}
+  #armall-l,#armall-why{font-size:min(var(--fs), 4.6vw)}
+  #b-armall{padding:0 6px;gap:4px}
+  /* The help button stays on the words' row; the pinned Stops take the
+     next (a ticking "Purging: 95 s" never pushes it onto a row alone). */
+  #pins{order:5} #b-eon{order:6}
+  /* A line with a clock (a countdown, a purge's time left): the clock
+     whole, never cut; the words around it give way first. */
+  #next:not(.open):not(.go):not(.many) #next-t.split{display:flex;align-items:baseline;white-space:nowrap;min-width:min-content}
+  #next-t.split > .ld,#next-t.split > .tl{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;contain:inline-size}
+  /* The words after the clock give way first; the subject before it
+     ("Show 5", "Purging:") keeps at least its first words. */
+  #next-t.split > .tl{flex-shrink:100}
+  #next-t.split > .ld{min-width:min(4.5em, 45%)}
+  #next-t.split > .ck{flex:none;margin:0 .25em;white-space:nowrap}
   #next-t .tm{display:none}
   #mini .b{flex:1 1 40%}
+  /* In the pane: as many to a row as fit whole, two at least, so the
+     strip is never three rows tall. */
+  main > #mini{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(96px,40%),1fr))}
+  main > #mini .b{font-size:17px} main > #mini .lbl{white-space:normal} main > #mini .b small{font-size:14px}
   #pins{flex:1 1 100%;flex-wrap:wrap}
   #pins .b{flex:1 1 40%;min-height:56px}
   .state{grid-template-columns:1fr}
   .state > div{min-height:60px;padding:6px 12px}
-  .tr{grid-template-columns:1fr 1fr 56px}
+  .tr{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 56px} .tr > .b{min-width:0}
   .tr .b{min-height:64px}
   #b-go{grid-column:1 / -1;min-height:72px}
   #alert{flex-wrap:wrap;padding:8px}
@@ -821,6 +871,21 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #ann-stop{flex:1 1 100%;min-height:56px}
   .tile{grid-template-rows:auto auto var(--tile-btn)}
   .hzrow{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* The footer keeps no desktop height on a phone, and clears its home
+     bar (the frame's padding). */
+  footer{min-height:0}
+  /* DAY: the step's panel is never squeezed under its rows (Jeff's phone,
+     2026-11-24: a 24 px strip of it under Startup, Next step and the
+     steps). It takes its own height and the pane scrolls, those rows
+     scrolling away above it; Startup and Shutdown share their row at any
+     width, and the help button keeps Next step's row. */
+  .dhead .seg{flex:1 1 100%;min-width:0}
+  .dhead .seg .b{flex:1 1 0;min-width:0;padding:0 8px}
+  #d-next{flex:1 1 auto;margin-left:0}
+}
+/* DAY's panel at its own height on a phone, upright or on its side. */
+@media (max-width:600px), (max-height:500px){
+  .day{height:auto;min-height:100%;grid-template-rows:auto auto 1fr}
 }
 /* PHONE LAYOUT BEGIN. A phone held upright, touch only (Andy's phone,
    2026-11-22: 443 of 915 px was fixed chrome, 48 percent). A narrow
@@ -834,9 +899,12 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #tabs{flex:1 1 auto;flex-wrap:nowrap;gap:2px}
   .tab{flex:1 1 auto;min-width:max-content;flex-direction:column;justify-content:center;gap:0;padding:2px 0;min-height:48px;font-size:14px;line-height:1.15}
   .tab svg.i,.hb svg.i{width:22px;height:22px}
+  /* Each tab 44 px wide or more, however short its word ("Day"): its
+     icon's box is 44 px wide. */
+  .tab svg.i{margin:0 11px}
   .hright{flex:0 0 auto;flex-wrap:nowrap;gap:4px;margin-left:auto}
   .hright #brand{display:none}
-  .hb{flex-direction:column;justify-content:center;gap:0;min-height:48px;min-width:48px;padding:2px 4px;font-size:13px;line-height:1.15}
+  .hb{flex-direction:column;justify-content:center;gap:0;min-height:48px;min-width:44px;padding:2px 2px;font-size:13px;line-height:1.15}
   #user > span{max-width:5.2em;overflow:hidden;text-overflow:ellipsis}
   #sys > span{white-space:normal;max-width:6.5em;text-align:center}
   #sys .chev{display:none}
@@ -860,30 +928,46 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #next.many .t{display:flex;align-items:center;padding:0;white-space:normal}
   #pins{order:5;flex:1 1 100%;flex-wrap:wrap;gap:6px;padding-bottom:4px}
   #pins .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 8px;font-size:17px;white-space:normal;line-height:1.05}
+  /* Four or five live modes: their Stops two to a row, their words whole. */
+  #pins .b:nth-last-child(n+4),#pins .b:nth-last-child(n+4) ~ .b{flex:1 1 40%}
   /* SHOW: the state strip on one row; the transport sticks to the top of
      the pane, so Hold and Stop never scroll away. */
   #t-show .state{grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr) minmax(0,1fr)}
-  #t-show .state > div{min-height:52px;padding:2px 8px}
+  /* One height whatever the state says ("HAZE ON 0 s" one line, "110 s"
+     two): nothing under it moves as a timer ticks. */
+  #t-show .state > div{min-height:52px;height:56px;padding:2px 8px}
   #t-show .state small{font-size:14px}
   #pill{font-size:15px;line-height:1.05;gap:4px !important;padding:2px 6px !important}
   #pill svg{width:18px;height:18px}
-  #st-tc,#cd-v{font-size:20px}
+  #st-tc{font-size:20px;font-size:min(20px, 14cqi)}
+  #cd-v{font-size:20px;font-size:min(20px, 12.5cqi)}
   #t-show .tr{position:sticky;top:0;z-index:5;background:var(--bg);padding:6px 0;margin:-6px 0;grid-template-columns:1fr 1fr 44px}
-  #t-show .tr .b{min-height:56px}
+  #t-show .tr .b{min-height:56px;padding:0 8px;gap:6px}
   #b-go{min-height:60px}
   #t-show .tr .q{width:44px;height:44px;min-width:44px}
   /* The alert slot: its words one line each (a tap opens Details), then
      its buttons. */
   #alert{padding:4px 8px;row-gap:4px}
   #alert > svg{width:24px;height:24px}
-  #alert .at{flex:1 1 calc(100% - 40px);min-height:44px}
+  /* Two lines' room always (its words, then what to do), so an alert
+     with both never moves the tiles under it. */
+  #alert .at{flex:1 1 calc(100% - 40px);min-height:48px}
   #alert .at .tt b,#alert .at .tt > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #al-next,#al-act{min-height:48px;padding:0 10px;gap:6px;font-size:18px}
   #alert > .q{width:44px;height:44px;min-width:44px;margin-left:auto}
   /* Off SHOW: the safety strip on one row, stuck to the top of the pane. */
   main > #mini{position:sticky;top:0;z-index:5;background:var(--bg);flex-wrap:nowrap;padding:4px 6px}
-  main > #mini .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 3px;gap:2px;font-size:15px}
-  main > #mini .b svg.i{width:18px;height:18px}
+  main > #mini .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 3px;gap:2px;font-size:14px}
+  /* Their words whole, never cut ("Stop sho", "Disar flame" at a large
+     display size), on one row whatever the width: five equal columns, no
+     icon (each button's colour says it), the words in up to two lines
+     each, their size following the screen's width. Stop show keeps its
+     place while hidden, so a press never moves under a finger. */
+  main > #mini{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;padding-left:4px;padding-right:4px}
+  main > #mini .b{font-size:clamp(10px, 3.8vw, 14px)}
+  main > #mini .lbl{white-space:normal}
+  main > #mini .b small{font-size:clamp(9px, 3.6vw, 13px);line-height:1.05}
+  main > #mini .b svg.i{display:none}
   /* The footer: no reserved desktop height. No fade over the pane: a
      faded control reads as disabled. */
   footer{min-height:0;padding:4px 6px}
@@ -925,7 +1009,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #tp-slide[data-mode="run"],#tp-slide[data-mode="na"],#tp-slide[data-mode="unknown"]{padding:0 8px}
   #tp-slide[data-mode="na"]{opacity:.45}
   #tp-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
-  #tp-sw{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  #tp-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:normal;line-height:1.15;text-align:center;font-size:min(var(--fs), 5.6vw)}
   #tp-slide[data-mode="go"] > .knob,#tp-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
     position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:var(--green-ink);
     touch-action:none;z-index:1}
@@ -941,7 +1025,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #wc-slide[data-mode="run"],#wc-slide[data-mode="na"],#wc-slide[data-mode="unknown"]{padding:0 8px}
   #wc-slide[data-mode="na"]{opacity:.45}
   #wc-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
-  #wc-sw{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  #wc-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:normal;line-height:1.15;text-align:center;font-size:min(var(--fs), 5.6vw)}
   #wc-slide[data-mode="go"] > .knob,#wc-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
     position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:var(--green-ink);
     touch-action:none;z-index:1}
@@ -957,7 +1041,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #pr-slide[data-mode="run"],#pr-slide[data-mode="na"],#pr-slide[data-mode="unknown"]{padding:0 8px}
   #pr-slide[data-mode="na"]{opacity:.45}
   #pr-slide[data-mode="unknown"]{background:#100d0a;border:2px dashed var(--amber);color:var(--cream)}
-  #pr-sw{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  #pr-sw{overflow:hidden;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:normal;line-height:1.15;text-align:center;font-size:min(var(--fs), 5.6vw)}
   #pr-slide[data-mode="go"] > .knob,#pr-slide[data-mode="starting"] > .knob{display:flex;align-items:center;justify-content:center;
     position:absolute;left:0;top:50%;width:56px;height:56px;margin-top:-28px;border-radius:9px;background:#fff;color:#4a3200;
     touch-action:none;z-index:1}
@@ -965,6 +1049,108 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #alert[data-prs] #pr-sl:empty{display:none}
 }
 /* PHONE LAYOUT END */
+/* Narrower than about 380 px (a phone at a large display size or text
+   size, a narrow window): the words of Startup, Shutdown and SHOW's
+   transport keep their room, without their icons. */
+@media (max-width:380px){
+  .dhead .seg .b > svg.i, #t-show .tr .b > svg.i{display:none}
+  /* Startup and Shutdown each half the row: their words shrink with the
+     screen rather than be cut (CI's fonts at 275 px: "Shutdow"). */
+  .dhead .seg .b{padding:0 4px;font-size:min(var(--fs), 6.5vw)}
+  #t-show .tr .b{padding:0 4px;font-size:min(var(--fs), 5vw)} #t-show .tr .lbl{white-space:normal}
+  #t-show .tr .b small{font-size:min(var(--fs), 4.6vw)}
+  /* SHOW's transport stays pinned on a phone: one row here (the next
+     step, Hold, Stop show, help), its words wrapping, so the pinned rows
+     leave the pane its room. */
+  #t-show .tr{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr) 44px}
+  #b-go{grid-column:auto;min-height:56px;padding:0 4px} #t-show .tr .b{min-height:56px}
+  #t-show .tr #b-go{font-size:min(var(--fs), 5.2vw)}
+  #t-show .tr .q{width:44px;height:44px;min-width:44px;align-self:center}
+  #b-go .lbl{white-space:normal}
+  /* The pinned Stops two to a row, their words their size. */
+  #pins .b{flex:1 1 40%;font-size:min(17px, 5vw)}
+  /* SHOW's state strip a row each (it scrolls with the pane): the state,
+     the timecode and the times at their size, never shrunk to fit. */
+  #t-show .state{grid-template-columns:minmax(0,1fr)}
+  /* The pinned rows a little shorter, every tap still 44 px or more. */
+  .tab,.hb{min-height:44px}
+  main > #mini .b{min-height:48px;padding:0 1px}
+  main > #mini{gap:2px;padding-left:2px;padding-right:2px}
+  /* The top line's subject keeps its first words; the clock the rest.
+     Its help button 44 px here with a mouse too. */
+  #next-t.split > .ld{min-width:min(2.5em, 25%)}
+  #next > .q{width:44px;height:44px;min-width:44px}
+  #fb-alloff{padding:0 8px;gap:6px}
+  /* The announcements' note wraps beside its heading, and their names
+     ("Cancellation") shrink with the screen, without their icons: never
+     past the edge. */
+  .ann .head{height:auto;min-height:var(--ann-h);flex-wrap:wrap;row-gap:0}
+  #ann-note{flex:1 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere}
+  #ann-btns .b{font-size:min(var(--fs), 5.4vw)} #ann-btns .b svg.i{display:none}
+}
+/* A phone on its side, or any screen 500 px tall or less: the pinned rows
+   compact (every tap still 44 px) so the pane keeps its room, and the
+   safety strip stays pinned at the pane's top as on a phone upright. */
+@media (max-height:500px){
+  /* The whole page scrolls, not the pane alone: the header scrolls away;
+     the top line (a live mode's Stops, Go to alert), SHOW's transport or
+     the safety strip, and the footer stay. So the pane keeps its room
+     however short the screen (800x360 at 1.5 is 533x240; 320x560 at 1.3,
+     upright, 246x431). */
+  #app{overflow-y:auto;overscroll-behavior:none;display:block}
+  main{overflow:clip} main > .pane,main > #t-day{flex:0 0 auto}
+  #next{position:sticky;top:0;z-index:7;outline:4px solid var(--bg)}
+  footer{position:sticky;bottom:0;z-index:7;background:var(--bg)}
+  main > #mini,#t-show .tr{top:var(--next-px, 52px)}
+  :root{--hdr-btn:44px}
+  header{padding-top:2px;padding-bottom:2px}
+  .tab,.hb{min-height:44px}
+  /* The header one row: each tab and button its icon over its word, as
+     on a phone upright. */
+  .tab{flex-direction:column;justify-content:center;gap:0;padding:2px 6px;font-size:14px;line-height:1.15}
+  .hb{flex-direction:column;justify-content:center;gap:0;padding:2px 6px;font-size:13px;line-height:1.15}
+  .tab svg.i,.hb svg.i{width:22px;height:22px}
+  .tab svg.i{margin:0 11px}
+  #sys .chev{display:none}
+  #next{min-height:48px;padding:2px 8px;margin-top:2px}
+  #next > .q{width:44px;height:44px;min-width:44px}
+  footer{padding-top:2px;padding-bottom:2px}
+  #wx,#msg-more{min-height:44px}
+  main > #mini{position:sticky;top:0;z-index:5;background:var(--bg);padding:4px clamp(2px, 2vw - 3px, var(--pad))}
+  main > #mini .b{min-height:48px}
+}
+/* On its side: SHOW's transport one row (the next step, Hold, Stop show,
+   help), pinned at the pane's top as on a phone upright. */
+@media (max-height:500px) and (orientation:landscape){
+  #t-show .tr{position:sticky;z-index:5;background:var(--bg);padding:4px 0;margin:-4px 0;
+    grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) 44px}
+  #b-go{grid-column:auto;min-height:48px} #t-show .tr .b{min-height:48px;padding:0 6px}
+  #t-show .tr .q{width:44px;height:44px;min-width:44px;align-self:center}
+  /* Their words, not their icons, and in two lines where needed. */
+  #t-show .tr .b > svg.i{display:none} #t-show .tr .lbl{white-space:normal}
+  #t-show .tr .b{font-size:min(var(--fs), 3.8vw)} #t-show .tr #b-go{font-size:min(var(--fs), 4.2vw)}
+  /* The state strip one row of three, as on a wide screen, and the header
+     one row: the brand's logo and name are left out. */
+  #t-show .state{grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr) minmax(0,1fr)}
+  .hright #brand{display:none}
+  /* The top line one row: its words, then a live mode's Stops or Go to
+     alert, then help, never a second row (the words give way, and more
+     Stops share the row, their words in two lines). */
+  #next{flex-wrap:nowrap}
+  /* Its words at most two lines, whatever the state, so the line never
+     takes the transport's room (three live modes at 569x277 wrapped a
+     word a line). */
+  #next .t,#next.go .t,#next.open .t{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;min-height:0;max-height:none;padding:0}
+  /* Two or more live modes: their Stops are the words, as on a tablet. */
+  #next.many .t{display:none}
+  #pins{flex:0 1 auto;order:0;flex-wrap:nowrap;min-width:0}
+  #pins .b{flex:1 1 auto;min-width:min-content;min-height:44px;padding:0 6px;white-space:normal;line-height:1.05}
+  #pins .b > svg.i{display:none}
+  #next-t.split > .ld{min-width:min(3em, 30%)}
+  #next-go{flex:0 0 auto;order:0;min-height:44px}
+  /* The state strip one height whatever a timer says. */
+  #t-show .state > div{height:56px;min-height:0}
+}
 </style>
 </head>
 <body>
@@ -1878,10 +2064,21 @@ function stale(){ return isStale(Date.now(), LAST_OK, FRESH_S); }
 // The room under the page (1.0's bottomPad): a window that reaches
 // under the taskbar keeps its bottom edge above it.
 const PAD_MIN = Number(new URLSearchParams(location.search).get("pad_bottom")) || 0;
+// A phone's or a tablet's browser never reaches under a taskbar: its own
+// bars are outside the page (100dvh), and its screen figures (a large
+// display size, the page zoomed) are not a window's, so the guess kept up
+// to 160 px empty under the footer (Jeff's phone, 2026-11-24).
+// The phone's arrangement (the stylesheet's block of the same query): a
+// narrow screen, or one 500 px tall or less (a phone on its side). A
+// tablet's and a desktop's layout is never touched.
+function phoneArrangement(){ return innerWidth <= 600 || innerHeight <= 500; }
+const NO_TASKBAR = (() => { try{ const ua = navigator.userAgent || "";
+  return !!((navigator.userAgentData && navigator.userAgentData.mobile) || /Android|iPhone|iPad|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)); }catch(e){ return false; } })();
 let PAD_NOW = -1;
 function applyBottomPad(){
   let p = 0;
-  try{ p = bottomPad(window.screen, window, PAD_MIN); }catch(e){ p = PAD_MIN; }
+  try{ p = NO_TASKBAR && phoneArrangement() ? PAD_MIN : bottomPad(window.screen, window, PAD_MIN); }catch(e){ p = PAD_MIN; }
   if(p !== PAD_NOW){ PAD_NOW = p; document.documentElement.style.setProperty("--pad-bottom", p + "px"); }
 }
 applyBottomPad();
@@ -2195,10 +2392,25 @@ function cdLength(st){
   const c = st && st.countdown;
   return c && c.kind === "left" ? c.length : null;
 }
-// The top line's words; a show's times in a span of their own (.tm).
+// The top line's words; a show's times in a span of their own (.tm). A
+// clock in the words (a countdown, a purge's time left) is a span of its
+// own too (.ck), between the words before it (.ld) and after it (.tl): a
+// narrow screen cuts those first and never the clock. The words read the
+// same either way.
+const NEXT_CLOCK = /(\d+:\d\d(?::\d\d)?|\d+ s\b)\.?/;
 function drawNextText(ns){
   const nt = $("next-t");
-  if(!ns.times){ if(nt.children.length || nt.textContent !== ns.text) nt.textContent = ns.text; return; }
+  if(!ns.times){
+    const m = phoneArrangement() ? NEXT_CLOCK.exec(ns.text) : null;
+    if(!m){ nt.classList.remove("split"); if(nt.children.length || nt.textContent !== ns.text) nt.textContent = ns.text; return; }
+    const parts = [["ld", ns.text.slice(0, m.index)], ["ck", m[0]], ["tl", ns.text.slice(m.index + m[0].length)]];
+    if(nt.classList.contains("split") && nt.textContent === ns.text) return;
+    nt.textContent = "";
+    nt.classList.add("split");
+    for(const [c, w] of parts){ if(!w) continue; const sp = document.createElement("span"); sp.className = c; sp.textContent = w; nt.appendChild(sp); }
+    return;
+  }
+  nt.classList.remove("split");
   if(nt.textContent === ns.text && nt.children.length) return;
   nt.textContent = ns.base;
   const sp = document.createElement("span");
@@ -10169,17 +10381,22 @@ function fitNextBrand(){
   NEXT_B_KEY = key;
   nb.hidden = true;
   if(!want) return;
-  const h0 = t.getBoundingClientRect().height;
-  setText(nb, want); nb.hidden = false;
   const nx = $("next");
+  const h0 = t.getBoundingClientRect().height, n0 = nx.getBoundingClientRect().height;
+  setText(nb, want); nb.hidden = false;
+  // Nor when it would push the help button onto a row of its own.
   if(t.getBoundingClientRect().height > h0 + 1 || t.scrollWidth > t.clientWidth + 1 ||
-     nx.scrollWidth > nx.clientWidth + 1) nb.hidden = true;
+     nx.scrollWidth > nx.clientWidth + 1 || (phoneArrangement() && (nx.getBoundingClientRect().height > n0 + 1 ||
+     [...t.children].some(c => c.scrollWidth > c.clientWidth + 1)))) nb.hidden = true;
 }
 // On a phone the brand sits in the buttons' group, whose last line has the
 // room; elsewhere first in the header, on the left.
+// The top line's height, for what sticks under it on a phone on its side
+// (the stylesheet's --next-px).
+try{ new ResizeObserver(() => document.documentElement.style.setProperty("--next-px", ($("next").offsetHeight + 4) + "px")).observe($("next")); }catch(e){}
 function placeBrand(){
   const hr = document.querySelector("header .hright"), br = $("brand");
-  if(innerWidth <= 600){ if(br.parentElement !== hr) hr.appendChild(br); }
+  if(phoneArrangement()){ if(br.parentElement !== hr) hr.appendChild(br); }
   else if(br.parentElement !== hr.parentElement || br.nextElementSibling !== $("tabs")) hr.parentElement.insertBefore(br, $("tabs"));
 }
 placeBrand();
@@ -10191,11 +10408,11 @@ loadBrand();
 // The announcements: in the footer, or on a phone in the SHOW pane
 // (which scrolls there), so the footer keeps its height.
 function placeAnn(){
-  const want = innerWidth <= 600 ? $("t-show") : $("foot-l");
+  const want = phoneArrangement() ? $("t-show") : $("foot-l");
   if($("ann").parentElement !== want) want.insertBefore($("ann"), want === $("foot-l") ? want.firstChild : null);
   // Off the SHOW tab the safety strip takes the announcements' place in
   // the footer (on a phone, the top of the scrolling pane).
-  const m = $("mini"), mw = innerWidth <= 600 ? document.querySelector("main") : $("foot-l");
+  const m = $("mini"), mw = phoneArrangement() ? document.querySelector("main") : $("foot-l");
   if(m.parentElement !== mw) mw.insertBefore(m, mw.firstChild);
 }
 placeAnn();
