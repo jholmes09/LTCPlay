@@ -120067,8 +120067,10 @@ function look(t){
   const vw = innerWidth, vh = innerHeight, m = R(main), bad = [];
   if(root.scrollWidth > root.clientWidth + 1) bad.push("the page scrolls sideways: " + root.scrollWidth + " > " + root.clientWidth);
   if(main.scrollWidth > main.clientWidth + 1){
-    const mr = R(main).right, past = [...main.querySelectorAll("*")].filter(e => e.getClientRects().length && R(e).width > 0 && R(e).right > mr + 1)
-      .slice(-3).map(e => (e.id || e.tagName) + " \"" + e.textContent.trim().slice(0, 20) + "\" to " + Math.round(R(e).right));
+    // A box past the edge, or words spilling out of theirs.
+    const mr = R(main).right, past = [...main.querySelectorAll("*")].filter(e => e.getClientRects().length && R(e).width > 0 &&
+      Math.max(R(e).right, R(e).left + e.scrollWidth) > mr + 1)
+      .slice(-3).map(e => (e.id || e.className || e.tagName) + " \"" + e.textContent.trim().slice(0, 20) + "\" to " + Math.round(Math.max(R(e).right, R(e).left + e.scrollWidth)));
     bad.push("the pane is wider than the screen: " + main.scrollWidth + " > " + main.clientWidth + " (" + past.join("; ") + ")");
   }
   for(const el of [...pinned(), ...paneTop(), ...document.querySelectorAll("header, #next, footer, #wx")].filter(shown)){
