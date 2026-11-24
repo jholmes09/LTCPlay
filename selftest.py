@@ -120236,12 +120236,33 @@ const tap = el => { const r = el.getBoundingClientRect(), x = r.left + r.width /
   pe(el, "pointerdown", x, y, id); pe(el, "pointerup", x, y, id);
   el.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:id, pointerType:"touch", isPrimary:true, detail:1, clientX:x, clientY:y})); };
 const said = el => (el.innerText + " " + getComputedStyle(el, "::after").content).trim();
-let OLD = false, MIX = null, FLST = false;
+// A slide of `el`'s handle to `frac` of its travel in 16 px steps, then
+// `end` (the lift by default: its pointerup and its click, the slide's own
+// release); `during` runs with the finger at the end.
+async function slideTo(el, frac, end, during){
+  el.scrollIntoView({block:"center"}); await nap(80);
+  const kn = el.querySelector(".knob"), r = el.getBoundingClientRect(), id = ++PID;
+  const travel = el.clientWidth - kn.offsetWidth - 2 * kn.offsetLeft;
+  const x0 = r.left + el.clientLeft + kn.offsetLeft + kn.offsetWidth / 2, y0 = r.top + el.clientTop + kn.offsetTop + kn.offsetHeight / 2;
+  let x = x0;
+  pe(kn, "pointerdown", x, y0, id);
+  const started = !!SLIDE;
+  while(x < x0 + frac * travel - 0.5){ x = Math.min(x0 + frac * travel, x + 16); pe(kn, "pointermove", x, y0, id); await nap(8); }
+  if(during) await during({el:el, kn:kn, x:x, y:y0, id:id});
+  if(end) await end({el:el, kn:kn, x:x, y:y0, id:id});
+  else { pe(kn, "pointerup", x, y0, id);
+    const at = document.elementFromPoint(x, y0) || document.body;
+    at.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:id, pointerType:"touch", isPrimary:true, detail:1, clientX:x, clientY:y0})); }
+  return {started:started, id:id};
+}
+let OLD = false, MIX = null, FLST = false, PIN = false, SCH = "";
 const statusPatch = n => { window.__patch = st => {
   st.flames.groups = st.flames.groups.slice(0, n).map((g, i) => {
     if(MIX) return Object.assign({}, g, {armed:MIX[i] ? "armed" : "disarmed"});
     return ENG.wanted[i] ? Object.assign({}, g, ENG.lamp ? {armed:"armed"} : {wanted:true}) : g; });
   if(FLST) st.flames = Object.assign({}, st.flames, {stale:true});
+  if(PIN) st.live_flame = {on:true, who:"Jeff"};
+  if(SCH) st.schedule = Object.assign({}, st.schedule, {state:SCH});
   if(OLD) st.served_at = 1;
   return st; }; };
 const lineHas = () => msg() + " " + MSG_FULL;
@@ -120253,8 +120274,9 @@ async function popArm(el, opt){
   el.scrollIntoView({block:"center"}); await nap(100);
   const s0 = SENT.length, r0 = REL.length, a0 = ARMED.length, d0 = DELIVERED.length, p0 = window.__posts.length;
   q("msg-t").textContent = ""; MSG_FULL = "";
-  tap(el); await nap(250);
-  const res = {sheet:sheetOpen(), q:q("sh-h").textContent, body:q("sh-body").textContent,
+  const sl = await slideTo(el, 1, null, opt.slid);
+  await nap(250);
+  const res = {slid:sl.started, sheet:sheetOpen(), q:q("sh-h").textContent, body:q("sh-body").textContent,
     btns:[...q("sh-row").querySelectorAll("button")].map(b => b.textContent.trim()), sent_at_sheet:SENT.length - s0};
   if(opt.mid) await opt.mid(res);
   await nap(400);
@@ -120283,17 +120305,63 @@ async function popArm(el, opt){
     posts:window.__posts.slice(p0).map(p => p.route), words:msg().split(/\s+/).filter(Boolean).length});
   return res;
 }
-const again = async () => { reset(); MIX = null; OLD = false; FLST = false; ENG.lamp = false; await nap(900); };
+const again = async () => { reset(); MIX = null; OLD = false; FLST = false; PIN = false; SCH = ""; ENG.lamp = false; if(SHEET_DONE) SHEET_DONE(null); await nap(900); };
 document.querySelector('.tab[data-tab="show"]').click();
 await h.sleep(1500);
 out.vw = innerWidth; out.vh = innerHeight; out.coarse = matchMedia("(pointer:coarse)").matches;
 const PART = "__PART__";
 if(PART === "a"){
   const look = el => { const r = el.getBoundingClientRect(), c = getComputedStyle(el);
-    return {r:[Math.round(r.left), Math.round(r.right)], knob:getComputedStyle(el.querySelector(".knob")).display, said:said(el), touch:c.touchAction}; };
+    return {r:[Math.round(r.left), Math.round(r.right)], knob:getComputedStyle(el.querySelector(".knob")).display, said:said(el), touch:[c.touchAction, getComputedStyle(el.querySelector(".knob")).touchAction]}; };
   g0().scrollIntoView({block:"center"}); await nap(100);
   out.look_g = look(g0()); out.look_all = look(q("b-armall"));
   out.armb = [...document.querySelectorAll("[data-arm]"), q("b-armall")].map(el => said(el));
+  // A tap on the Arm, the handle or the track: nothing opens, nothing sent.
+  { const s0 = SENT.length; tap(g0()); await nap(300); tap(g0().querySelector(".knob")); await nap(300);
+    out.tapped = {sheet:sheetOpen(), sent:SENT.length - s0}; await again(); }
+  // Lifted short (50 and 88 percent), and cut at 95 percent by
+  // pointercancel, a second finger, the band, a jump: no pop-up, nothing
+  // sent, "Nothing sent."
+  const ends = {
+    short50:null, short88:null,
+    cancel:c => pe(c.kn, "pointercancel", c.x, c.y, c.id),
+    second:c => { pe(document.body, "pointerdown", 30, 30, 90, false); pe(document.body, "pointerup", 30, 30, 90, false); pe(c.kn, "pointerup", c.x, c.y, c.id); },
+    band:async c => { for(let k = 1; k <= 6; k++){ pe(c.kn, "pointermove", c.x, c.y + k * 15, c.id); await nap(60); } pe(c.kn, "pointerup", c.x, c.y + 90, c.id); },
+    jump:c => { pe(c.kn, "pointermove", c.x - 150, c.y, c.id); pe(c.kn, "pointerup", c.x - 150, c.y, c.id); },
+  };
+  out.ends = {};
+  for(const k of Object.keys(ends)){
+    const s0 = SENT.length; q("msg-t").textContent = "";
+    await slideTo(g0(), k === "short50" ? 0.5 : k === "short88" ? 0.88 : 0.95, ends[k]);
+    await nap(700);
+    out.ends[k] = {sheet:sheetOpen(), sent:SENT.length - s0, msg:msg(), slide:!!SLIDE};
+    await again();
+  }
+  // The slide's own release and click land on the pop-up's Arm: ignored.
+  { const s0 = SENT.length;
+    await slideTo(g0(), 1, c => { pe(c.kn, "pointerup", c.x, c.y, c.id); const a = sheetBtn("Arm");
+      if(a){ const ar = a.getBoundingClientRect(); pe(a, "pointerup", ar.left + 5, ar.top + 5, c.id);
+        a.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:c.id, pointerType:"touch", isPrimary:true, detail:1})); } });
+    await nap(700);
+    out.own = {sheet:sheetOpen(), sent:SENT.length - s0};
+    await again(); }
+  // A pinned Live flame off drawn above the tiles in the middle of the
+  // slide moves it past its band: the slide holds on, its lift opens the
+  // pop-up.
+  { statusPatch(4); await nap(700); let top0 = 0, moved = 0, pin = false;
+    await slideTo(g0(), 1, null, async c => { top0 = c.el.getBoundingClientRect().top; PIN = true;
+      for(let k = 0; k < 150 && !document.querySelector('#pins [data-pin="lf"]'); k++) await nap(10); await nap(300);
+      pin = !!document.querySelector('#pins [data-pin="lf"]'); moved = Math.round(c.el.getBoundingClientRect().top - top0); });
+    await nap(300);
+    out.pin_shift = {pin:pin, moved:moved, sheet:sheetOpen(), q:q("sh-h").textContent};
+    await again(); }
+  // Just after a slide, a Disarm tap on an armed group's tile (a new
+  // finger) and Disarm flames are never held back.
+  { MIX = [false, true, false, false]; statusPatch(4); await nap(900); const p0 = window.__posts.length;
+    await slideTo(g0(), 0.5); await nap(120);
+    tap(document.querySelector('[data-arm="1"]')); await nap(80); tap(q("b-disall")); await nap(400);
+    out.dis_after = window.__posts.slice(p0).map(p => p.route);
+    await again(); }
   // Cancel on the pop-up: nothing sent.
   out.cancel = await popArm(g0(), {cancel:true, ms:1500}); await again();
   // Arm: one start, the engine arms it; the status reads it armed.
@@ -120311,7 +120379,7 @@ if(PART === "a"){
   // The engine's state unreadable after the arm: Not known, never armed or
   // not armed.
   ENG.asked = true; ENG.lamp = true; ENG.blind = true; statusPatch(4); await nap(700);
-  out.blind = await popArm(g0(), {ms:3000}); await again();
+  out.blind = await popArm(g0(), {ms:5500}); await again();
   // A read older than one already shown is never used.
   ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
   out.older = await popArm(g0(), {ms:3500, at:300, during:async () => { OLD = true; FA_SEEN = 2; }});
@@ -120361,6 +120429,29 @@ if(PART === "a"){
     await nap(700);
     out.off = await popArm(g0(), {ms:1500, mid:async () => { OFF = true; await nap(900); }});
     await again(); }
+  // Round 2, N2 and N3: with the pop-up open, another screen's Stop (the
+  // schedule on Hold), flamesafe's group order changing, or this
+  // screen's Stop: nothing sent.
+  { statusPatch(4); await nap(700);
+    out.remote_stop = await popArm(g0(), {ms:1500, mid:async () => { SCH = "HOLD"; await nap(900); }}); await again(); }
+  { statusPatch(4); await nap(700); const base = window.__patch; let SW = false;
+    window.__patch = st => { st = base(st); if(SW){ const n0 = st.flames.groups[0].name; st.flames.groups[0].name = st.flames.groups[1].name; st.flames.groups[1].name = n0; } return st; };
+    out.rename = await popArm(g0(), {ms:1500, mid:async () => { SW = true; await nap(900); }}); await again(); }
+  { statusPatch(4); await nap(700);
+    out.local_stop = await popArm(g0(), {ms:1500, mid:async res => { await pressStop("stop"); res.sheet_after_stop = sheetOpen(); }}); await again(); }
+  // N1: statuses 600 ms late and every read after the hold lost: Not
+  // known, never Not armed from a status built before the arm.
+  { ENG.asked = true; ENG.lamp = true; statusPatch(4);
+    let LAG = 0; const hf3 = window.fetch;
+    window.fetch = async (url, opt) => {
+      if(/\/api\/remote\/status/.test(String(url))){
+        if(FA && FA.h && HOLD === null && !FA.done) throw new TypeError("Failed to fetch");
+        if(LAG){ const r = await hf3(url, opt); const t = await r.text(); await nap(LAG); return new Response(t, {status:r.status, headers:{"Content-Type":"application/json"}}); }
+      }
+      return hf3(url, opt); };
+    LAG = 600; await nap(1500);
+    out.dropped = await popArm(g0(), {ms:6000});
+    window.fetch = hf3; await again(); }
   // F6: armed, then contact lost: Not known, never Armed.
   { ENG.asked = true; ENG.lamp = true; statusPatch(4); await nap(700);
     out.lost = await popArm(g0(), {ms:3000});
@@ -120371,7 +120462,7 @@ if(PART === "a"){
   // F7: a throw inside the arm never leaves Checking behind.
   { statusPatch(4); await nap(700);
     const real = window.armStart; window.armStart = () => { throw new Error("boom"); };
-    try{ faGo(0, {go:[0], out:[], why:""}).catch(() => {}); }catch(_e){}
+    try{ faGo(0, {go:[0], out:[], why:"", sig:faSig(), epoch:FA_EPOCH}).catch(() => {}); }catch(_e){}
     await nap(600);
     window.armStart = real;
     out.thrown = {busy:faBusy(), dis:g0().disabled, act:g0().innerText};
@@ -120382,9 +120473,14 @@ out.live_end = LIVE.size;
 
 
 def test_ui2_flame_arm_popup_on_a_phone():
-    section("flame arm on a touch phone is a tap and a pop-up (Andy and "
-            "Jeff, 2026-11-23): Arm and Arm all flames open a pop-up naming "
-            "what arms; Cancel sends nothing; Arm starts one hold; a second "
+    section("flame arm on a touch phone is the lasers' slide in front of a "
+            "pop-up (Andy and Jeff, 2026-11-23 and 24): the slide sends "
+            "nothing, a lift short or any other end says Nothing sent, its "
+            "own release never lands on the pop-up, a pinned Stop drawn "
+            "mid-slide never drops it, a Disarm just after is never held "
+            "back; the lift at the end opens a pop-up naming what arms; a "
+            "Stop, a Disarm or a group change while it is open sends "
+            "nothing; Cancel sends nothing; Arm starts one hold; a second "
             "Arm while it is checked is refused; the line says only what an "
             "engine read after it shows (never armed without one, Not known "
             "when it cannot be read, never an older read over a newer); "
@@ -120397,13 +120493,14 @@ def test_ui2_flame_arm_popup_on_a_phone():
                page.find("/* PHONE LAYOUT END")]
     check('.armb.hold:not(:disabled)::after{content:"Arm"}' in css and
           '#b-armall:not(:disabled)::after{content:"Arm all flames"}' in css
-          and ".armb.hold:not(:disabled) > .knob" not in css and
-          "#b-armall:not(:disabled) > .knob" not in css,
+          and ".armb.hold:not(:disabled) > .knob, #b-armall:not(:disabled) "
+          "> .knob{display:flex;" in css,
           "on a phone a group's arm says Arm, Arm all says Arm all flames, "
-          "and neither has a handle")
-    check("slideDown(e, b, i)" not in two and
-          'slideDown(e, ARMALL, "all")' not in two,
-          "no flame arm starts a slide")
+          "each with the lasers' handle")
+    check('faSlideDown(e, b, i)' in two and
+          'faSlideDown(e, ARMALL, "all")' in two and
+          "slideDown(e, b, i)" not in two,
+          "every flame arm on a phone is the slide in front of the pop-up")
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -120419,7 +120516,7 @@ def test_ui2_flame_arm_popup_on_a_phone():
     for part in ("a", "b"):
         got = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
                                 _UI2_FLAME_POP_STEPS.replace("__PART__", part),
-                                size, routes=morning, budget_ms=90000)
+                                size, routes=morning, budget_ms=180000)
         if check(isinstance(got, dict) and "live_end" in got and
                  not got.get("problems"),
                  f"{where}, {part}: driven: {got!r}"[:1500]):
@@ -120432,9 +120529,30 @@ def test_ui2_flame_arm_popup_on_a_phone():
         W = size[0]
         for k in ("look_g", "look_all"):
             lk = r[k]
-            check(lk["knob"] == "none" and lk["r"][0] >= 24 and
-                  lk["r"][1] <= W - 24 and lk["touch"] == "manipulation",
-                  f"{where}, {k}: a full width button, no handle: {lk}")
+            check(lk["knob"] == "flex" and lk["r"][0] >= 24 and
+                  lk["r"][1] <= W - 24 and lk["touch"] == ["pan-y", "none"],
+                  f"{where}, {k}: a full width slide with the lasers' "
+                  f"handle; the track scrolls, the handle does not: {lk}")
+        check(r["tapped"] == {"sheet": False, "sent": 0},
+              f"{where}: a tap on the Arm or its handle opens nothing and "
+              f"sends nothing: {r['tapped']}")
+        for k, e in r["ends"].items():
+            check(not e["sheet"] and e["sent"] == 0 and
+                  e["msg"] == "Nothing sent." and not e["slide"],
+                  f"{where}: the slide {k}: no pop-up, nothing sent, said "
+                  f"so: {e}")
+        check(r["own"] == {"sheet": True, "sent": 0},
+              f"{where}: the slide's own release and click on the pop-up's "
+              f"Arm are ignored: {r['own']}")
+        ps = r["pin_shift"]
+        check(ps["pin"] and ps["moved"] > 24 and ps["sheet"] and
+              ps["q"] == "Arm front row?",
+              f"{where}: a pinned Stop drawn above the tiles mid-slide never "
+              f"drops it: its lift opens the pop-up: {ps}")
+        check("group-disarm" in r["dis_after"] and
+              "disarm-all" in r["dis_after"],
+              f"{where}: just after a slide, a Disarm tap and Disarm flames "
+              f"are never held back: {r['dis_after']}")
         check(r["armb"][0] == 'Arm "Arm"' or r["armb"][0].endswith('"Arm"'),
               f"{where}: a group's button says Arm: {r['armb']}")
         check(not any(re.search(r"hold|slide", s, re.I) for s in r["armb"]),
@@ -120446,7 +120564,7 @@ def test_ui2_flame_arm_popup_on_a_phone():
                   f"{where}, {k}: the line never says hold, never the "
                   f"engine's own words, 8 words or fewer: {x}")
         c = r["cancel"]
-        check(c["sheet"] and c["q"] == "Arm front row?" and
+        check(c["slid"] and c["sheet"] and c["q"] == "Arm front row?" and
               c["btns"] == ["Cancel", "Arm"] and "front row" in c["body"] and
               c["sent_at_sheet"] == 0 and c["beats"] == 0 and
               c["armed"] == 0 and not c["sheet_end"] and not c["busy"],
@@ -120472,7 +120590,9 @@ def test_ui2_flame_arm_popup_on_a_phone():
               f"a second start: {s}")
         b = r["blind"]
         check(b["armed"] == 1 and b["msg"] == "Not known. Check the tile."
-              and not b["early"],
+              and not b["early"] and
+              not any(m.startswith(("Not armed", "None armed", "Some armed"))
+                      for m in b["seen"]),
               f"{where}: the engine's state unreadable after the arm: Not "
               f"known, never armed or not armed: {b}")
         clean(b, "blind")
@@ -120526,6 +120646,23 @@ def test_ui2_flame_arm_popup_on_a_phone():
               f"the line: {lf} {of}")
         clean(lf, "lf")
         clean(of, "off")
+        for k in ("remote_stop", "rename"):
+            x = r[k]
+            check(x["sheet"] and x["beats"] == 0 and x["armed"] == 0 and
+                  x["msg"] == "Changed. Nothing sent. Tap Arm again.",
+                  f"{where}: {k} with the pop-up open: nothing sent, said "
+                  f"so: {x}")
+        ls = r["local_stop"]
+        check(ls["sheet"] and not ls["sheet_after_stop"] and
+              ls["beats"] == 0 and ls["armed"] == 0,
+              f"{where}: this screen's Stop with the pop-up open closes it, "
+              f"nothing sent: {ls}")
+        dr = r["dropped"]
+        check(dr["armed"] == 1 and dr["msg"] == "Not known. Check the tile."
+              and not any(m.startswith(("Not armed", "None armed",
+                                        "Some armed")) for m in dr["seen"]),
+              f"{where}: every read after the hold lost, late statuses built "
+              f"before the arm: Not known, never Not armed: {dr}")
         lo = r["lost"]
         check(lo["msg"] == "Armed." and lo["after"] == "Not known. Check the tile.",
               f"{where}: armed, then contact lost: Not known, never Armed: "

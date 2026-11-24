@@ -3536,12 +3536,12 @@ MUTATIONS = [
 
  ("ui 2.0 flame pop-up: the engine's state unreadable after the arm is said from the page's last status",
   'ltcplay/web/remote2.html',
-  "  const r = s ? flamesRead(s.flames, false, fa.groups) : flamesRead(null, true, fa.groups);\n",
-  "  const r = flamesRead((s || ST || {}).flames, false, fa.groups);\n"),
+  "  if(!s){ fa.base = Infinity; faShow(fa, flamesRead(null, true, fa.groups)); try{ renderStale(); }catch(_e){} return; }\n",
+  "  if(!s){ fa.base = -Infinity; faShow(fa, flamesRead((ST || {}).flames, false, fa.groups)); try{ renderStale(); }catch(_e){} return; }\n"),
 
  ('ui 2.0 flame pop-up: a read older than one already shown is used',
   'ltcplay/web/remote2.html',
-  "  if(s && faServed(s) < FA_SEEN) s = null;\n",
+  "    if(s && faServed(s) < FA_SEEN) s = null;\n",
   ""),
 
  # Cold review of #302: the pop-up arms only what it named (F1); an Arm
@@ -3583,6 +3583,42 @@ MUTATIONS = [
   'ltcplay/web/remote2.html',
   "    if(!fa.done) fa.done = Date.now();\n    try{ renderStale(); }catch(_e){}\n  }\n}\n",
   "    try{ renderStale(); }catch(_e){}\n  }\n}\n"),
+
+ # Round 2 of the cold review of #302, and Jeff's change (2026-11-24): the
+ # flame arm on a phone is the lasers' slide in front of the pop-up. The
+ # slide sends nothing; only a lift at 90 percent opens the pop-up; the
+ # slide's own release never lands on it; its band is where it was at the
+ # touch. The pop-up's line waits for a read after the hold (N1); a Stop,
+ # a Disarm or a change of groups while it is open sends nothing (N2, N3).
+ ('ui 2.0 flame slide: a lift under 90 percent opens the pop-up',
+  'ltcplay/web/remote2.html',
+  "  if(lift && s.frac >= SLIDE_ARM && s.target !== undefined){ faAsk(s.target); return; }\n",
+  "  if(lift && s.target !== undefined){ faAsk(s.target); return; }\n"),
+
+ ("ui 2.0 flame slide: the slide's own release and click land on the pop-up",
+  'ltcplay/web/remote2.html',
+  "  if(age < FAS_QUIET_MS || (e.pointerId === qz.id && age < FAS_QUIET_ID_MS)){ e.preventDefault(); e.stopImmediatePropagation(); }\n",
+  ""),
+
+ ('ui 2.0 flame slide: a pinned Stop drawn above the tiles moves the slide out of its band and ends it',
+  'ltcplay/web/remote2.html',
+  "  const band = s.b0;\n",
+  "  const band = s.el.getBoundingClientRect();\n"),
+
+ ('ui 2.0 flame pop-up: a status built before the arm says the outcome while the read after it is lost',
+  'ltcplay/web/remote2.html',
+  "    if(!ST || !(fa.base < Infinity) || faServed(ST) < fa.base || faServed(ST) <= FA_SEEN) return null;\n",
+  "    if(!ST || faServed(ST) <= FA_SEEN) return null;\n"),
+
+ ("ui 2.0 flame pop-up: a Stop, a Disarm or a group change seen with the pop-up open still arms",
+  'ltcplay/web/remote2.html',
+  "  if(plan.epoch !== FA_EPOCH || plan.sig !== faSig()){",
+  "  if(plan.epoch !== FA_EPOCH){"),
+
+ ("ui 2.0 flame pop-up: this screen's Stop leaves the pop-up open",
+  'ltcplay/web/remote2.html',
+  "  if(FA_ASKING && SHEET_DONE) SHEET_DONE(null);\n",
+  ""),
 
  ('ui 2.0 flame read: Arm flames says All armed with any group armed',
   'ltcplay/web/remote_rules.js',
