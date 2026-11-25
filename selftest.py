@@ -123657,7 +123657,11 @@ if(PART === "layout"){
   CUT = true;
   const w = await watch(3200);
   out.lost_tops = w.tops; out.lost = rects(); out.lost_next = q("next").className;
-  out.fit = {sw:q("next-t").scrollWidth, cw:q("next-t").clientWidth, sh:q("next-t").scrollHeight, ch:q("next-t").clientHeight};
+  const fit = () => ({sw:q("next-t").scrollWidth, cw:q("next-t").clientWidth, sh:q("next-t").scrollHeight, ch:q("next-t").clientHeight});
+  out.fit = fit();
+  // A wider fallback font (a runner without the page's own): still whole.
+  q("next-t").style.fontFamily = '"DejaVu Sans", Verdana, sans-serif'; await nap(100);
+  out.fit_wide = fit(); q("next-t").style.fontFamily = ""; await nap(100);
   out.lost_body = document.body.classList.contains("stale");
   // The same lost screen with the line's words as they were before them
   // (the page's own stale reactions, the Stop and the alert slot, stay):
@@ -123910,10 +123914,10 @@ def test_ui2_phone_pending_no_answer_connection_lost():
         if not check(isinstance(g, dict) and "after" in g and
                      not g.get("problems"), f"{where}: driven: {g!r}"[:1500]):
             continue
-        check(g["fit"]["sw"] <= g["fit"]["cw"] and
-              g["fit"]["sh"] <= g["fit"]["ch"],
-              f"{where}: Connection lost. Use e-stop. fits the top line "
-              f"whole: {g['fit']}")
+        for fk in ("fit", "fit_wide"):
+            check(g[fk]["sw"] <= g[fk]["cw"] and g[fk]["sh"] <= g[fk]["ch"],
+                  f"{where}: Connection lost. Use e-stop. fits the top line "
+                  f"whole ({fk}): {g[fk]}")
         check(lost_w in g["lost_tops"] and g["lost_body"] and
               "bad" in g["lost_next"].split(),
               f"{where}: Connection lost on the top line: {g['lost_tops']}")

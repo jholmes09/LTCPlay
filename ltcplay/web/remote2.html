@@ -1052,6 +1052,9 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #alert[data-prs] #pr-sl:empty{display:none}
 }
 /* PHONE LAYOUT END */
+/* Connection lost on the narrowest touch phones: smaller, so its two
+   lines stay whole in a wider fallback font too. */
+@media (max-width:340px) and (pointer:coarse){ #next.lost:not(.many) .t{font-size:15px;line-height:1.15} }
 /* Narrower than about 380 px (a phone at a large display size or text
    size, a narrow window): the words of Startup, Shutdown and SHOW's
    transport keep their room, without their icons. */
