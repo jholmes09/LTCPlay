@@ -3506,7 +3506,7 @@ async function pressStop(route){
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
   // No answer in PEND_MS on a phone: said, with the e-stop (pendStart).
-  pendStart("stop", {said:true, word:"Stopping...", late:"No answer. Use the e-stop."});
+  if(typeof pendStart === "function") pendStart("stop", {said:true, word:"Stopping...", late:"No answer. Use the e-stop."});
   try{ drawTransport(false); }catch(e){}
   let r = null, j = {};
   try{
@@ -3526,7 +3526,7 @@ async function pressStop(route){
   }catch(e){
     say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or use the hardware e-stop.", "bad");
   }finally{
-    pendAnswered("stop");
+    if(typeof pendAnswered === "function") pendAnswered("stop");
     HALT_BUSY = false;
     FLIPPED.go = Date.now();
     try{ drawTransport(false); }catch(e){}
