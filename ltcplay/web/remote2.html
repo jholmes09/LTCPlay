@@ -928,10 +928,9 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   #next.many .t{display:flex;align-items:center;padding:0;white-space:normal}
   /* Connection lost (review of #306, H1): its words whole on two lines
      inside the same 44 px at 270 px wide, never cut. */
-  #next.lost:not(.many) .t{display:flex;align-items:center;padding:0;white-space:normal;line-height:1.2}
-  /* The narrowest: smaller, so the two lines stay whole in a wider
-     fallback font too. */
-  @media (max-width:340px){ #next.lost:not(.many) .t{font-size:15px;line-height:1.15} }
+  /* On the narrowest a little smaller (5.6vw, 15 px at 270), so the two
+     lines stay whole in a wider fallback font too. */
+  #next.lost:not(.many) .t{display:flex;align-items:center;padding:0;white-space:normal;line-height:1.15;font-size:min(18px,5.6vw)}
   #pins{order:5;flex:1 1 100%;flex-wrap:wrap;gap:6px;padding-bottom:4px}
   #pins .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 8px;font-size:17px;white-space:normal;line-height:1.05}
   /* Four or five live modes: their Stops two to a row, their words whole. */
