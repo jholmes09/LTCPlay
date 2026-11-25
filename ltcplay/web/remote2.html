@@ -2133,6 +2133,8 @@ $("msg-more").addEventListener("click", () => sheet("Details", opText(MSG_FULL),
 // changes anything.
 const PEND_MS = 4000;
 const PEND_WORDS = "Pending.", PEND_LATE_WORDS = "No answer. Check the tile.";
+// Hold and the pinned Stops have no tile: their No answer names the show PC.
+const PEND_LATE_SHOW_WORDS = "No answer. Check the show PC.", PEND_NO_TILE = ["hold", "ps", "cs", "lf", "hz"];
 const PEND_FULL = "Sent from this phone. The engine has not answered yet, so nothing is known yet: not armed, not disarmed, not started.";
 let PEND = null;
 // The holds whose first beat was sent: a later beat of one never says
@@ -2148,6 +2150,9 @@ function pendStart(kind, opt){
   if(PEND) clearTimeout(PEND.timer);
   const p = PEND = {kind:kind, at:Date.now(), then:o.then || null, word:o.word || PEND_WORDS, late:o.late || PEND_LATE_WORDS, timer:0};
   const t = $("msg-t").textContent;
+  // The line it covers, put back when the answer brings no words of its
+  // own (an automatic purge stop never blanks a warning).
+  if(t && t !== PEND_WORDS && !/^No answer\./.test(t)) p.prev = {t:t, full:MSG_FULL, cls:$("msg").className};
   if(!(o.keepNot && /\bNOT\b/.test(t)) && !o.said) say(p.word, PEND_FULL, "warn");
   p.timer = setTimeout(() => pendLate(p), PEND_MS);
   return p;
@@ -2166,7 +2171,7 @@ function pendAnswered(kind){
   clearTimeout(p.timer); PEND = null;
   const t = $("msg-t").textContent;
   if(t !== p.word && t !== p.late) return;
-  if(p.then) p.then(); else say("", "", "");
+  if(p.then) p.then(); else if(p.prev) say(p.prev.t, p.prev.full, p.prev.cls); else say("", "", "");
 }
 // A press that never went (refused at this page): no Pending left behind.
 function pendDrop(p){ if(p && PEND === p){ clearTimeout(p.timer); PEND = null; } }
@@ -2202,7 +2207,7 @@ function pendKind(p, body){
     const beat = /^(tp|wc):/.test(kind);
     const again = beat && PEND_RUNS.has(kind);
     if(beat && !again){ if(PEND_RUNS.size > 50) PEND_RUNS.clear(); PEND_RUNS.add(kind); }
-    if(kind && kind !== "fa" && !again) pendStart(kind, {keepNot:/^(tp|wc|pr):/.test(kind)});
+    if(kind && kind !== "fa" && !again) pendStart(kind, {keepNot:/^(tp|wc|pr):/.test(kind), late:PEND_NO_TILE.indexOf(kind) >= 0 ? PEND_LATE_SHOW_WORDS : ""});
     const r = send.apply(this, arguments);
     if(!kind) return r;
     const done = () => pendAnswered(kind);
@@ -3521,7 +3526,20 @@ async function pressStop(route){
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
   try{ drawTransport(false); }catch(e){}
-  let r = null, j = {}, lim = 0;
+  let r = null, j = {}, lim = 0, sentNow = null;
+  // The Stops this page has sent: only the newest one's late answer is
+  // said (round 2 of #306, M-A).
+  const mine = pressStop.sent = (pressStop.sent || 0) + 1;
+  // A Stop's answer, read and said: 1.0's pressStop's own reading.
+  const stopAnswerSaid = (route, r, j) => {
+    if(r.ok && route === "run-off" && !(j.failed || []).length) say("Show control is off.", stopWords(j), "ok");
+    else if(r.ok || (j && j.failed)){
+      const w = stopWords(j);
+      if(w === STOP_DISARM_FAILED){ STOP_SAID = w; say("Flame disarm FAILED. Use the e-stop.", w, "bad"); }
+      else if(/did NOT work/.test(w)) say("Stopped, but some parts failed.", w, "bad");
+      else say(j && j.hold && j.hold.ok ? "Stopped and on Hold. Resume when safe." : "Stopped.", w, "ok");
+    } else say("Stop was refused. Use the e-stop.", "Stop was refused: " + refusedWords(j, r.statusText || ("error " + r.status)) + " Use Disarm flames, or the hardware e-stop.", "bad");
+  };
   try{
     const opts = {method:"POST", credentials:"same-origin", cache:"no-store",
       headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))};
@@ -3532,21 +3550,28 @@ async function pressStop(route){
       return [r0, await r0.json().catch(() => ({}))];
     })();
     sent.catch(() => {});
+    sentNow = sent;
     // The Stop's time limit (review of #306, M1): no answer in
     // STOP_ANSWER_MS frees this page's Stop for a new tap. The request is
     // never cancelled (it may still land), and nothing says it failed.
     const late = new Promise((_ok, no) => { lim = setTimeout(() => no(Object.assign(new Error("no answer"), {late:true})), STOP_ANSWER_MS); });
     [r, j] = await Promise.race([sent, late]);
-    if(r.ok && route === "run-off" && !(j.failed || []).length) say("Show control is off.", stopWords(j), "ok");
-    else if(r.ok || (j && j.failed)){
-      const w = stopWords(j);
-      if(w === STOP_DISARM_FAILED){ STOP_SAID = w; say("Flame disarm FAILED. Use the e-stop.", w, "bad"); }
-      else if(/did NOT work/.test(w)) say("Stopped, but some parts failed.", w, "bad");
-      else say(j && j.hold && j.hold.ok ? "Stopped and on Hold. Resume when safe." : "Stopped.", w, "ok");
-    } else say("Stop was refused. Use the e-stop.", "Stop was refused: " + refusedWords(j, r.statusText || ("error " + r.status)) + " Use Disarm flames, or the hardware e-stop.", "bad");
+    stopAnswerSaid(route, r, j);
   }catch(e){
     if(e && e.late) say(STOP_LATE_WORDS, "No answer from the engine in " + (STOP_ANSWER_MS / 1000) + " s. The Stop may still have reached it: look at the show. Stop can be tapped again now, or use the hardware e-stop.", "bad");
     else say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or use the hardware e-stop.", "bad");
+    // The Stop's own answer after the limit (round 2 of #306, M-A): said
+    // exactly as it always was (a failed flame disarm above all), unless
+    // a newer Stop was sent since.
+    if(e && e.late && sentNow) sentNow.then(([r1, j1]) => {
+      if(mine !== pressStop.sent) return;
+      stopAnswerSaid(route, r1, j1);
+      FLIPPED.go = Date.now();
+      try{ drawTransport(false); }catch(_e){}
+    }, e1 => {
+      if(mine !== pressStop.sent) return;
+      say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e1 && e1.message) || e1) + "). Press Stop again, or use the hardware e-stop.", "bad");
+    });
   }finally{
     clearTimeout(lim);
     HALT_BUSY = false;

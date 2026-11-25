@@ -123617,7 +123617,7 @@ const msg = () => q("msg-t") ? q("msg-t").textContent : "";
 const cls = () => q("msg").className;
 const nxt = () => q("next-t").textContent;
 const hf = window.fetch;
-let CUT = false, HANG = {}, LATE = {};
+let CUT = false, HANG = {}, LATE = {}, STOP_PICK = [];
 const CP = [];
 window.fetch = async (url, opt) => {
   const u = String(url);
@@ -123625,7 +123625,10 @@ window.fetch = async (url, opt) => {
     const route = u.replace(/^.*\/api\/remote\//, "");
     CP.push(route);
     if(CUT || HANG[route]) return new Promise(() => {});
+    // A Stop's answer is the one chosen when it was sent (STOP_PICK).
+    const pick = route === "stop" && STOP_PICK.length ? STOP_PICK.shift() : null;
     if(LATE[route]) await nap(LATE[route]);
+    if(pick) window.__answer["stop"] = () => [200, pick];
   } else if(CUT && /\/api\/remote\//.test(u)) throw new TypeError("Failed to fetch");
   return hf(url, opt);
 };
@@ -123747,7 +123750,13 @@ if(PART === "layout"){
       out.e2[k] = {now:msg(), cls:cls(), sent:CP.slice(c0)};
       HANG[route] = false;
     }
-    await watch(PEND_MS + 600); out.e2.late = msg(); }
+    await watch(PEND_MS + 600); out.e2.late = msg();
+    // An automatic purge stop (fireStop's) over a warning: the warning is
+    // back once it is answered, never a blank line.
+    say("Purge NOT firing.", "", "bad");
+    post("/api/remote/purge-stop", moActor({})).catch(() => {});
+    const over = msg(); await nap(400);
+    out.e2.kept = {over:over, after:msg(), cls:cls()}; }
   // (f) Stop show on a dead link (review of #306, M1): Stopping at once,
   // its button busy; no answer in STOP_ANSWER_MS: said, the button free,
   // and a second double tap sends a new Stop.
@@ -123767,15 +123776,34 @@ if(PART === "layout"){
     CUT = false; await fresh(); }
   // (g) The first Stop answered after the limit, a second Stop answered
   // at once: the late answer never leaves Stop busy.
+  // The first's late answer a failed flame disarm, the second's a good
+  // Stop: the newer Stop's words stand.
+  const STOP_OK = {stopped:true, flames:{disarmed:true}, run_on:true, hold:{ok:true}};
+  const STOP_BAD = {stopped:true, flames:{disarmed:false}, run_on:true, hold:{ok:true}};
   { LATE["stop"] = 6500; say("", "", ""); const c0 = CP.length;
+    STOP_PICK = [STOP_BAD, STOP_OK];
     pressStop("stop"); await nap(STOP_ANSWER_MS + 300);
     const freed = {busy:HALT_BUSY, msg:msg()};
     LATE["stop"] = 0; pressStop("stop"); await nap(600);
     const second = {busy:HALT_BUSY, msg:msg()};
     await nap(2600);
-    out.g = {freed:freed, second:second, after:{busy:HALT_BUSY, go:q("go-l").textContent, msg:msg()},
-      stops:CP.slice(c0).filter(r => r === "stop").length}; }
-  out.bad_words = [PEND_WORDS, PEND_LATE_WORDS, STOP_LATE_WORDS, LOST_WORDS].filter(bad);
+    out.g = {freed:freed, second:second, after:{busy:HALT_BUSY, go:q("go-l").textContent, msg:msg(), said:STOP_SAID},
+      stops:CP.slice(c0).filter(r => r === "stop").length};
+    STOP_SAID = null; }
+  // (h) Round 2 of #306, M-A: a Stop answered at 5 s, after the limit,
+  // with the flame disarm FAILED: its own words replace No answer, on the
+  // line and the top line, exactly as without the limit.
+  { LATE["stop"] = 5000; say("", "", ""); window.__answer["stop"] = b => [200, STOP_BAD];
+    pressStop("stop"); await nap(STOP_ANSWER_MS + 300);
+    const before = msg(); await nap(1000);
+    out.h = {before:before, msg:msg(), cls:cls(), top:nxt(), busy:HALT_BUSY};
+    STOP_SAID = null; await nap(400); }
+  // (i) A healthy Stop answered at 4.3 s: its stopped words.
+  { LATE["stop"] = 4300; say("", "", ""); window.__answer["stop"] = b => [200, STOP_OK];
+    pressStop("stop"); await nap(STOP_ANSWER_MS + 700);
+    out.i = {msg:msg(), cls:cls(), busy:HALT_BUSY};
+    LATE["stop"] = 0; delete window.__answer["stop"]; }
+  out.bad_words = [PEND_WORDS, PEND_LATE_WORDS, PEND_LATE_SHOW_WORDS, STOP_LATE_WORDS, LOST_WORDS].filter(bad);
 }
 """
 
@@ -123878,8 +123906,13 @@ def test_ui2_phone_pending_no_answer_connection_lost():
             check(e2[k] == {"now": pend, "cls": "warn", "sent": [route]},
                   f"{where}: {route} says Pending in the same tick it is "
                   f"sent, and is sent at once: {e2[k]}")
-        check(e2["late"] == late,
-              f"{where}: and No answer at the timeout: {e2['late']}")
+        check(e2["kept"] == {"over": pend, "after": "Purge NOT firing.",
+                             "cls": "bad"},
+              f"{where}: a press answered with no words of its own puts "
+              f"back the warning it covered: {e2['kept']}")
+        check(e2["late"] == "No answer. Check the show PC.",
+              f"{where}: and No answer at the timeout, naming the show PC "
+              f"(Hold and the pinned Stops have no tile): {e2['late']}")
         f = r["f"]
         stop_late = "No answer. Tap Stop again, or e-stop."
         fl = [x.split("|")[0] for x in f["seen"]]
@@ -123904,6 +123937,23 @@ def test_ui2_phone_pending_no_answer_connection_lost():
               g["after"]["msg"] != "Stopping...",
               f"{where}: a Stop answered after the limit never leaves Stop "
               f"busy, and a second Stop goes and is answered: {g}")
+        stopped = "Stopped and on Hold. Resume when safe."
+        check(g["second"]["msg"] == stopped and g["after"]["msg"] == stopped
+              and g["after"]["said"] is None,
+              f"{where}: the first Stop's late answer, after a newer Stop, "
+              f"says nothing over the newer one's words: {g}")
+        h = r["h"]
+        check(h["before"] == stop_late and
+              h["msg"] == "Flame disarm FAILED. Use the e-stop." and
+              h["cls"] == "bad" and
+              h["top"] == "Flames NOT disarmed. Use the e-stop." and
+              not h["busy"],
+              f"{where}: a Stop answered at 5 s with the flame disarm "
+              f"FAILED: its own words replace No answer, on the line and "
+              f"the top line: {h}")
+        check(r["i"] == {"msg": stopped, "cls": "ok", "busy": False},
+              f"{where}: a healthy Stop answered at 4.3 s says it stopped: "
+              f"{r['i']}")
     # The top line's words change; nothing on the screen moves. At the
     # phone in hand and at the smallest a display size makes it.
     for size in ((384, 800), (270, 560)):

@@ -27533,6 +27533,33 @@ def build():
   "ltcplay/web/remote2.html",
   "    if(e && e.late) say(STOP_LATE_WORDS, ",
   "    if(e && e.late) say(\"Stopped.\", "),
+
+ # Round 2 of #306: a Stop's answer after the limit is still said (a
+ # failed flame disarm above all); Hold and the pinned Stops say Pending.
+ ("ui 2.0 phone pending: a Stop's answer after the limit is dropped",
+  "ltcplay/web/remote2.html",
+  "      if(mine !== pressStop.sent) return;\n      stopAnswerSaid(route, r1, j1);\n",
+  "      return;\n"),
+
+ ("ui 2.0 phone pending: Hold says no Pending",
+  "ltcplay/web/remote2.html",
+  '  if(r === "hold") return "hold";\n', ""),
+
+ ("ui 2.0 phone pending: Stop purge says no Pending",
+  "ltcplay/web/remote2.html",
+  '  if(r === "purge-stop") return "ps";\n', ""),
+
+ ("ui 2.0 phone pending: the cleaning's Stop says no Pending",
+  "ltcplay/web/remote2.html",
+  '  if(r === "cleaning-stop") return "cs";\n', ""),
+
+ ("ui 2.0 phone pending: live flame programming off says no Pending",
+  "ltcplay/web/remote2.html",
+  '  if(r === "live-flame" && b.on === false) return "lf";\n', ""),
+
+ ("ui 2.0 phone pending: the hazer test off says no Pending",
+  "ltcplay/web/remote2.html",
+  '  if(r === "hazer-test" && b.on === false) return "hz";\n', ""),
 ]
 
 

@@ -4481,5 +4481,11 @@
 "ui 2.0 phone pending: a Stop is held back while a press is Pending": "test_ui2_phone_pending_no_answer_connection_lost",
 "ui 2.0 phone pending: a Disarm waits behind a press that is Pending": "test_ui2_phone_pending_no_answer_connection_lost",
 "ui 2.0 phone pending: an unanswered Stop keeps Stop busy for good": "test_ui2_phone_pending_no_answer_connection_lost",
-"ui 2.0 phone pending: a Stop with no answer is said as stopped": "test_ui2_phone_pending_no_answer_connection_lost"
+"ui 2.0 phone pending: a Stop with no answer is said as stopped": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: a Stop's answer after the limit is dropped": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: Hold says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: Stop purge says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: the cleaning's Stop says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: live flame programming off says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: the hazer test off says no Pending": "test_ui2_phone_pending_no_answer_connection_lost"
 }
