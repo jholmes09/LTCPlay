@@ -2109,6 +2109,94 @@ function short8(text, fallback){
 }
 $("msg-more").addEventListener("click", () => sheet("Details", opText(MSG_FULL), [{label:"Close", cls:"blue"}]));
 
+// ---- Pending and No answer: a press on its way, on this phone alone ----
+// Jeff, 2026-11-24: "If there is a slow phone link then why not say
+// Pending and Timed Out and have that be a local on-device change in case
+// we lose connection at precisely the worst moment?" On the phone's
+// arrangement every arm and safety press (a flame Arm or Arm all, the
+// lasers' arm, a timed purge, the cleaning, Continue anyway, Stop and
+// every Disarm) says Pending on the line the moment it is sent, drawn here
+// with no wait on the network, until the engine answers it. No answer in
+// PEND_MS (this page's own timer): "No answer. Check the tile.", because
+// the engine may still have acted, so it never says armed or not armed.
+// The press's own words (from the engine's answer or a read after it)
+// replace either. Nothing here sends, retries, cancels or blocks a press:
+// a Stop or a Disarm is never held back by a Pending, and a lost phone
+// only warns (the top line, "Connection lost", renderStale). Off the
+// phone's arrangement (a tablet, a desktop, the rack screen) nothing here
+// changes anything.
+const PEND_MS = 4000;
+const PEND_WORDS = "Pending.", PEND_LATE_WORDS = "No answer. Check the tile.";
+const PEND_FULL = "Sent from this phone. The engine has not answered yet, so nothing is known yet: not armed, not disarmed, not started.";
+let PEND = null;
+// The holds whose first beat was sent: a later beat of one never says
+// Pending again (it would cover a Stop's or a Disarm's own words).
+const PEND_RUNS = new Set();
+function pendHere(){ return phoneArrangement(); }
+// A press of `kind` was sent: Pending on the line now. `then` runs when
+// the engine answers while the line still says Pending; `keepNot` leaves
+// a NOT line (a Stop or Disarm that did not go) where it is.
+function pendStart(kind, opt){
+  if(!pendHere()) return null;
+  const o = opt || {};
+  if(PEND) clearTimeout(PEND.timer);
+  const p = PEND = {kind:kind, at:Date.now(), then:o.then || null, word:o.word || PEND_WORDS, late:o.late || PEND_LATE_WORDS, timer:0};
+  const t = $("msg-t").textContent;
+  if(!(o.keepNot && /\bNOT\b/.test(t)) && !o.said) say(p.word, PEND_FULL, "warn");
+  p.timer = setTimeout(() => pendLate(p), PEND_MS);
+  return p;
+}
+// No answer in PEND_MS: said only while the line still says this press's
+// Pending (a Stop's or a Disarm's own words are never written over).
+function pendLate(p){
+  if(PEND !== p || $("msg-t").textContent !== p.word) return;
+  say(p.late, "No answer from the engine in " + (PEND_MS / 1000) + " s. It may still have acted, so this phone does not say what happened. Check the tile, or the show PC.", "bad");
+}
+// The engine answered a press of `kind` (or the press ended here): Pending
+// or No answer comes off the line, and the press's own words follow.
+function pendAnswered(kind){
+  const p = PEND;
+  if(!p || p.kind !== kind) return;
+  clearTimeout(p.timer); PEND = null;
+  const t = $("msg-t").textContent;
+  if(t !== p.word && t !== p.late) return;
+  if(p.then) p.then(); else say("", "", "");
+}
+// A press that never went (refused at this page): no Pending left behind.
+function pendDrop(p){ if(p && PEND === p){ clearTimeout(p.timer); PEND = null; } }
+// Which sends are presses: the route and body as the page sends them. A
+// hold's beats (a timed purge's, the cleaning's) are one press per run:
+// Pending until the engine answers its first beat. A flame arm's beats are
+// faGo's (its own Pending, kind "fa").
+function pendKind(p, body){
+  const r = String(p || "").replace(/^\/api\/remote\//, "").replace(/\?.*$/, "");
+  const b = body || {};
+  if(r === "laser-arm") return "lz";
+  if(r === "disarm-all" || r === "group-disarm") return "dis";
+  if(r === "purge-timed" && b.hold === true) return "tp:" + b.run;
+  if(r === "cleaning-beat" && b.hold === true) return "wc:" + b.run;
+  if(r === "preroll-continue") return "pr:" + (b.phase || "");
+  if(r === "arm-hold") return "fa";
+  return "";
+}
+// 1.0's post itself is unchanged; only its name is wrapped. Every send
+// still goes at once; the wrap only draws and times.
+{
+  const send = post;
+  post = function(p, body){
+    const kind = pendHere() ? pendKind(p, body) : "";
+    const beat = /^(tp|wc):/.test(kind);
+    const again = beat && PEND_RUNS.has(kind);
+    if(beat && !again){ if(PEND_RUNS.size > 50) PEND_RUNS.clear(); PEND_RUNS.add(kind); }
+    if(kind && kind !== "fa" && !again) pendStart(kind, {keepNot:/^(tp|wc|pr):/.test(kind)});
+    const r = send.apply(this, arguments);
+    if(!kind) return r;
+    const done = () => pendAnswered(kind);
+    r.then(done, done);
+    return r;
+  };
+}
+
 // ---- sheets: confirm, details, help, sign in. Never over the footer.
 let SHEET_DONE = null;
 function sheet(title, html, buttons, flip){
@@ -2980,13 +3068,23 @@ function render(){
 let WAS_LIVE = false;
 
 // Every 250 ms, stale or not (1.0's renderStale): what may be pressed now.
+// A phone that has lost the engine (no status inside FRESH_S): the top
+// line, pinned on every tab and already sized for its words, says
+// "Connection lost" until a status comes in again (Jeff, 2026-11-24). It
+// only warns: nothing is sent for it, nothing is disarmed, held or
+// stopped, and the show and the schedule carry on at the engine.
+const LOST_WORDS = "Connection lost. Stop and Disarm still work.";
+function lostStep(ns, isSt){
+  if(!isSt || !ST || !phoneArrangement()) return ns;
+  return Object.assign({}, ns, {text:LOST_WORDS, times:"", tone:"bad"});
+}
 function renderStale(){
   const isSt = stale();
   const s = ST || {};
   document.body.classList.toggle("stale", isSt);
   const local = !!(ME && ME.local);
   // the next step and the state
-  const ns = nextStep(ST, isSt, local, ALERTS);
+  const ns = lostStep(nextStep(ST, isSt, local, ALERTS), isSt);
   $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : "") + (ns.go ? " go" : "") + (NEXT_OPEN ? " open" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
   // On SHOW, Resume is its own big button at the top of the pane: the line
   // keeps no button for it, so on a short phone the pane has the room to
@@ -3407,6 +3505,8 @@ async function pressStop(route){
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
+  // No answer in PEND_MS on a phone: said, with the e-stop (pendStart).
+  pendStart("stop", {said:true, word:"Stopping...", late:"No answer. Use the e-stop."});
   try{ drawTransport(false); }catch(e){}
   let r = null, j = {};
   try{
@@ -3426,6 +3526,7 @@ async function pressStop(route){
   }catch(e){
     say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or use the hardware e-stop.", "bad");
   }finally{
+    pendAnswered("stop");
     HALT_BUSY = false;
     FLIPPED.go = Date.now();
     try{ drawTransport(false); }catch(e){}
@@ -5335,15 +5436,19 @@ async function faGo(i, plan){
   // Never stuck on Checking: whatever happens, the arm is over at the end.
   try{
     ARM_SAID = null;
+    // Pending from the first send until the engine's first answer, then
+    // Checking until the read after the hold (pendStart, on a phone).
+    const pd = pendStart("fa", {then:() => say("Checking...", "", "")});
     if(fa.all) armAllStart(); else armStart(i);
     fa.h = HOLD;
     if(fa.h && fa.h.parts.map(p => p.group).join(",") !== plan.go.join(",")){ armStop("what would arm changed"); fa.h = null; }
     if(!fa.h){
+      pendDrop(pd);
       fa.done = Date.now();
       faRefused((fa.said.filter(t => !/^Keep holding/.test(t)).pop() || "refused").replace(/^Not armed: /, ""));
       return;
     }
-    say("Checking...", "", "");
+    if(!pd) say("Checking...", "", "");
     try{ renderStale(); }catch(_e){}
     const t0 = Date.now();
     while(fa.h && HOLD === fa.h){

@@ -27482,6 +27482,45 @@ def build():
  ("superuser: Send now needs no password", "ltcplay/remote.py",
   '                if not u.confirm(me.get("name"), body.get("password"),\n                                 ctx.source):\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")',
   '                if False:\n                    self._audit_rank("upload-password-refused", ctx,\n                                     "audit-upload-now")'),
+
+ # Pending, No answer and Connection lost on a phone (Jeff, 2026-11-24):
+ # a lost phone only warns and sends nothing; Pending never looks like a
+ # success; no answer is said and never says armed; a Stop and a Disarm
+ # are never held back by a press that is Pending.
+ ("ui 2.0 phone pending: a phone that lost the engine sends a disarm",
+  "ltcplay/web/remote2.html",
+  "  if(!isSt || !ST || !phoneArrangement()) return ns;\n",
+  "  if(!isSt || !ST || !phoneArrangement()) return ns;\n  press(\"disarm-all\");\n"),
+
+ ("ui 2.0 phone pending: a phone that lost the engine does not say so",
+  "ltcplay/web/remote2.html",
+  "  if(!isSt || !ST || !phoneArrangement()) return ns;\n",
+  "  return ns;\n"),
+
+ ("ui 2.0 phone pending: Pending is drawn as a success",
+  "ltcplay/web/remote2.html",
+  'if(!(o.keepNot && /\\bNOT\\b/.test(t)) && !o.said) say(p.word, PEND_FULL, "warn");',
+  'if(!(o.keepNot && /\\bNOT\\b/.test(t)) && !o.said) say(p.word, PEND_FULL, "ok");'),
+
+ ("ui 2.0 phone pending: a press with no answer says armed",
+  "ltcplay/web/remote2.html",
+  '  say(p.late, "No answer from the engine in "',
+  '  say("Armed.", "No answer from the engine in "'),
+
+ ("ui 2.0 phone pending: a press with no answer is never said",
+  "ltcplay/web/remote2.html",
+  "  p.timer = setTimeout(() => pendLate(p), PEND_MS);\n",
+  ""),
+
+ ("ui 2.0 phone pending: a Stop is held back while a press is Pending",
+  "ltcplay/web/remote2.html",
+  "  if(HALT_BUSY) return;\n",
+  "  if(HALT_BUSY || PEND) return;\n"),
+
+ ("ui 2.0 phone pending: a Disarm waits behind a press that is Pending",
+  "ltcplay/web/remote2.html",
+  "    const r = send.apply(this, arguments);\n    if(!kind) return r;\n",
+  "    const r = kind === \"dis\" && PEND ? new Promise(() => {}) : send.apply(this, arguments);\n    if(!kind) return r;\n"),
 ]
 
 
