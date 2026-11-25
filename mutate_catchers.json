@@ -4487,5 +4487,6 @@
 "ui 2.0 phone pending: Stop purge says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
 "ui 2.0 phone pending: the cleaning's Stop says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
 "ui 2.0 phone pending: live flame programming off says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
-"ui 2.0 phone pending: the hazer test off says no Pending": "test_ui2_phone_pending_no_answer_connection_lost"
+"ui 2.0 phone pending: the hazer test off says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: the reads after a Stop stop waiting once its button is freed": "test_ui2_phone_pending_no_answer_connection_lost"
 }

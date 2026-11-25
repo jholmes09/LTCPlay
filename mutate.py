@@ -27560,6 +27560,13 @@ def build():
  ("ui 2.0 phone pending: the hazer test off says no Pending",
   "ltcplay/web/remote2.html",
   '  if(r === "hazer-test" && b.on === false) return "hz";\n', ""),
+
+ # Round 3 of #306: a Stop freed at the limit is still out for the reads
+ # that wait on a Stop (the timed purge, the cleaning, Continue anyway).
+ ("ui 2.0 phone pending: the reads after a Stop stop waiting once its button is freed",
+  "ltcplay/web/remote2.html",
+  '  if(typeof TP_STOP_OUT !== "undefined") TP_STOP_OUT += d;\n  if(typeof WCS_STOP_OUT !== "undefined") WCS_STOP_OUT += d;\n  if(typeof PRS_STOP_OUT !== "undefined") PRS_STOP_OUT += d;\n',
+  ""),
 ]
 
 

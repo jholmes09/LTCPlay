@@ -123803,6 +123803,39 @@ if(PART === "layout"){
     pressStop("stop"); await nap(STOP_ANSWER_MS + 700);
     out.i = {msg:msg(), cls:cls(), busy:HALT_BUSY};
     LATE["stop"] = 0; delete window.__answer["stop"]; }
+  // (k) Round 3 of #306: a Stop freed at the limit is still out: the
+  // timed purge's read after a Stop waits for its answer (the purge's
+  // control never comes back while the Stop is on its way), and so do the
+  // cleaning's and Continue anyway's (their counts).
+  { LATE["stop"] = 6000; window.__answer["stop"] = b => [200, STOP_OK]; say("", "", "");
+    // (e2) left its Hold, Stop purge and cleaning Stop never answered,
+    // which these counts still hold: a fresh start for this step.
+    TP_STOP_OUT = 0; WCS_STOP_OUT = 0; PRS_STOP_OUT = 0;
+    const pm = window.__patchMorning;
+    window.__patchMorning = mo => Object.assign(mo, {timed:{left_s:20, seconds:20, elapsed_s:1, machines:["front row 1"], device:"rack", who:"Jeff"}});
+    pressStop("stop"); await nap(STOP_ANSWER_MS + 900);
+    const mid = {busy:HALT_BUSY, stopping:!!TP_STOPPING, outs:[TP_STOP_OUT, WCS_STOP_OUT, PRS_STOP_OUT]};
+    await nap(2500);
+    out.k = {mid:mid, after:{busy:HALT_BUSY, stopping:!!TP_STOPPING, outs:[TP_STOP_OUT, WCS_STOP_OUT, PRS_STOP_OUT]}};
+    window.__patchMorning = pm; LATE["stop"] = 0; delete window.__answer["stop"]; }
+  // (l) Round 3 of #306: two word-less presses overlapping put back the
+  // warning both covered; a line already past its time is never brought
+  // back, and one put back keeps only the time it had left.
+  { say("Purge NOT firing.", "", "bad"); LATE["purge-stop"] = 1000; LATE["group-disarm"] = 300;
+    post("/api/remote/purge-stop", moActor({})).catch(() => {});
+    await nap(200);
+    post("/api/remote/group-disarm", actor({group:"front row"})).catch(() => {});
+    await nap(400); const mid = msg();
+    await nap(700);
+    out.l = {mid:mid, after:msg(), cls:cls()};
+    LATE["purge-stop"] = 2000; say("Stopped.", "", "ok", 1500);
+    post("/api/remote/purge-stop", moActor({})).catch(() => {});
+    await nap(2400); out.l.expired = msg();
+    LATE["purge-stop"] = 1000; say("Fresh words.", "", "ok", 3000);
+    post("/api/remote/purge-stop", moActor({})).catch(() => {});
+    await nap(1300); out.l.kept = msg();
+    await nap(2200); out.l.kept_end = msg();
+    LATE["purge-stop"] = 0; LATE["group-disarm"] = 0; }
   out.bad_words = [PEND_WORDS, PEND_LATE_WORDS, PEND_LATE_SHOW_WORDS, STOP_LATE_WORDS, LOST_WORDS].filter(bad);
 }
 """
@@ -123951,6 +123984,22 @@ def test_ui2_phone_pending_no_answer_connection_lost():
               f"{where}: a Stop answered at 5 s with the flame disarm "
               f"FAILED: its own words replace No answer, on the line and "
               f"the top line: {h}")
+        k = r["k"]
+        check(not k["mid"]["busy"] and k["mid"]["stopping"] and
+              k["mid"]["outs"] == [1, 1, 1] and not k["after"]["stopping"]
+              and k["after"]["outs"] == [0, 0, 0],
+              f"{where}: a Stop freed at the limit is still out: the timed "
+              f"purge's read waits for its answer, and the cleaning's and "
+              f"Continue anyway's counts hold it until it settles: {k}")
+        lw = r["l"]
+        check(lw["mid"] == pend and lw["after"] == "Purge NOT firing." and
+              lw["cls"] == "bad",
+              f"{where}: two word-less presses overlapping put back the "
+              f"warning both covered: {lw}")
+        check(lw["expired"] == "" and lw["kept"] == "Fresh words." and
+              lw["kept_end"] == "",
+              f"{where}: a line put back keeps only its time left, and one "
+              f"past its time is never brought back: {lw}")
         check(r["i"] == {"msg": stopped, "cls": "ok", "busy": False},
               f"{where}: a healthy Stop answered at 4.3 s says it stopped: "
               f"{r['i']}")

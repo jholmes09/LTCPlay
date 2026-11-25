@@ -2091,8 +2091,9 @@ window.addEventListener("resize", applyBottomPad);
 setInterval(applyBottomPad, 1000);
 
 // ---- the last message, in a few words; the engine's own words behind Details
-let MSG_FULL = "", MSG_TIMER = null;
+let MSG_FULL = "", MSG_TIMER = null, MSG_UNTIL = 0;
 function say(short, full, level, ms){
+  MSG_UNTIL = Date.now() + (ms || 30000);
   setText($("msg-t"), short || "");
   $("msg").className = level || "";
   MSG_FULL = (full && full !== short) ? String(full) : "";
@@ -2136,7 +2137,11 @@ const PEND_WORDS = "Pending.", PEND_LATE_WORDS = "No answer. Check the tile.";
 // Hold and the pinned Stops have no tile: their No answer names the show PC.
 const PEND_LATE_SHOW_WORDS = "No answer. Check the show PC.", PEND_NO_TILE = ["hold", "ps", "cs", "lf", "hz"];
 const PEND_FULL = "Sent from this phone. The engine has not answered yet, so nothing is known yet: not armed, not disarmed, not started.";
+// PEND: the newest press still waiting for its answer, or null. Every
+// press still waiting is in PEND_LIVE, each with its own No answer timer.
 let PEND = null;
+const PEND_LIVE = new Set();
+function pendNewest(){ let n = null; PEND_LIVE.forEach(x => { n = x; }); return n; }
 // The holds whose first beat was sent: a later beat of one never says
 // Pending again (it would cover a Stop's or a Disarm's own words).
 const PEND_RUNS = new Set();
@@ -2147,12 +2152,17 @@ function pendHere(){ return phoneArrangement(); }
 function pendStart(kind, opt){
   if(!pendHere()) return null;
   const o = opt || {};
-  if(PEND) clearTimeout(PEND.timer);
   const p = PEND = {kind:kind, at:Date.now(), then:o.then || null, word:o.word || PEND_WORDS, late:o.late || PEND_LATE_WORDS, timer:0};
   const t = $("msg-t").textContent;
   // The line it covers, put back when the answer brings no words of its
-  // own (an automatic purge stop never blanks a warning).
-  if(t && t !== PEND_WORDS && !/^No answer\./.test(t)) p.prev = {t:t, full:MSG_FULL, cls:$("msg").className};
+  // own (an automatic purge stop never blanks a warning), saved once: a
+  // press over another's Pending keeps that one's line, and its time
+  // left (round 3 of #306).
+  const under = pendNewest();
+  if(under && (t === under.word || t === under.late)) p.prev = under.prev;
+  else if(t && t !== PEND_WORDS && !/^No answer\./.test(t)) p.prev = {t:t, full:MSG_FULL, cls:$("msg").className, until:MSG_UNTIL};
+  PEND_LIVE.add(p);
+  if(PEND_LIVE.size > 50) pendDrop(PEND_LIVE.values().next().value);
   if(!(o.keepNot && /\bNOT\b/.test(t)) && !o.said) say(p.word, PEND_FULL, "warn");
   p.timer = setTimeout(() => pendLate(p), PEND_MS);
   return p;
@@ -2160,21 +2170,34 @@ function pendStart(kind, opt){
 // No answer in PEND_MS: said only while the line still says this press's
 // Pending (a Stop's or a Disarm's own words are never written over).
 function pendLate(p){
-  if(PEND !== p || $("msg-t").textContent !== p.word) return;
+  p.over = true;
+  if(!PEND_LIVE.has(p) || $("msg-t").textContent !== p.word) return;
   say(p.late, "No answer from the engine in " + (PEND_MS / 1000) + " s. It may still have acted, so this phone does not say what happened. Check the tile, or the show PC.", "bad");
 }
 // The engine answered a press of `kind` (or the press ended here): Pending
 // or No answer comes off the line, and the press's own words follow.
 function pendAnswered(kind){
-  const p = PEND;
-  if(!p || p.kind !== kind) return;
-  clearTimeout(p.timer); PEND = null;
+  // The newest of that kind still inside its PEND_MS, else the newest.
+  let p = null, q = null;
+  PEND_LIVE.forEach(x => { if(x.kind === kind){ q = x; if(!x.over) p = x; } });
+  pendDone(p || q);
+}
+// The engine answered press `p` (the send's own press).
+function pendDone(p){
+  if(!p || !PEND_LIVE.has(p)) return;
+  pendDrop(p);
+  // Another press still waiting inside its PEND_MS: its Pending stays.
+  let waiting = false;
+  PEND_LIVE.forEach(x => { if(!x.over) waiting = true; });
+  if(waiting) return;
   const t = $("msg-t").textContent;
   if(t !== p.word && t !== p.late) return;
-  if(p.then) p.then(); else if(p.prev) say(p.prev.t, p.prev.full, p.prev.cls); else say("", "", "");
+  const left = p.prev ? p.prev.until - Date.now() : 0;
+  if(p.then) p.then(); else if(p.prev && left > 0) say(p.prev.t, p.prev.full, p.prev.cls, left); else say("", "", "");
 }
-// A press that never went (refused at this page): no Pending left behind.
-function pendDrop(p){ if(p && PEND === p){ clearTimeout(p.timer); PEND = null; } }
+// A press that never went (refused at this page), or one answered: no
+// Pending left behind for it.
+function pendDrop(p){ if(p && PEND_LIVE.delete(p)){ clearTimeout(p.timer); PEND = pendNewest(); } }
 // Which sends are presses: the route and body as the page sends them. A
 // hold's beats (a timed purge's, the cleaning's) are one press per run:
 // Pending until the engine answers its first beat. A flame arm's beats are
@@ -2207,10 +2230,10 @@ function pendKind(p, body){
     const beat = /^(tp|wc):/.test(kind);
     const again = beat && PEND_RUNS.has(kind);
     if(beat && !again){ if(PEND_RUNS.size > 50) PEND_RUNS.clear(); PEND_RUNS.add(kind); }
-    if(kind && kind !== "fa" && !again) pendStart(kind, {keepNot:/^(tp|wc|pr):/.test(kind), late:PEND_NO_TILE.indexOf(kind) >= 0 ? PEND_LATE_SHOW_WORDS : ""});
+    const mine = kind && kind !== "fa" && !again ? pendStart(kind, {keepNot:/^(tp|wc|pr):/.test(kind), late:PEND_NO_TILE.indexOf(kind) >= 0 ? PEND_LATE_SHOW_WORDS : ""}) : null;
     const r = send.apply(this, arguments);
     if(!kind) return r;
-    const done = () => pendAnswered(kind);
+    const done = () => { if(mine) pendDone(mine); else pendAnswered(kind); };
     r.then(done, done);
     return r;
   };
@@ -3511,6 +3534,15 @@ $("tn-run").addEventListener("click", () => runShowHere());
 // Stop: the engine's complete halt (1.0's pressStop): the same body, the
 // same answer read the same way. No confirm: the double tap is its guard.
 const STOP_ANSWER_MS = 4000, STOP_LATE_WORDS = "No answer. Tap Stop again, or e-stop.";
+// A Stop freed at the limit is still out (round 3 of #306): the timed
+// purge's, the cleaning's and Continue anyway's reads after a Stop wait on
+// their *_STOP_OUT counts, so each counts it until that Stop settles, or a
+// newer Stop is sent. HALT_BUSY only frees the button.
+function stopStillOut(d){
+  if(typeof TP_STOP_OUT !== "undefined") TP_STOP_OUT += d;
+  if(typeof WCS_STOP_OUT !== "undefined") WCS_STOP_OUT += d;
+  if(typeof PRS_STOP_OUT !== "undefined") PRS_STOP_OUT += d;
+}
 async function pressStop(route){
   if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
   if(typeof faCut === "function") faCut("Stop show was pressed");
@@ -3524,6 +3556,7 @@ async function pressStop(route){
   Object.keys(STOP_MISSED).forEach(k => { delete STOP_MISSED[k]; });
   if(HALT_BUSY) return;
   HALT_BUSY = true;
+  if(pressStop.out) pressStop.out();
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
   try{ drawTransport(false); }catch(e){}
   let r = null, j = {}, lim = 0, sentNow = null;
@@ -3563,12 +3596,17 @@ async function pressStop(route){
     // The Stop's own answer after the limit (round 2 of #306, M-A): said
     // exactly as it always was (a failed flame disarm above all), unless
     // a newer Stop was sent since.
+    let held = false;
+    const out = () => { if(held){ held = false; stopStillOut(-1); } if(pressStop.out === out) pressStop.out = null; };
+    if(e && e.late && sentNow){ held = true; stopStillOut(1); pressStop.out = out; }
     if(e && e.late && sentNow) sentNow.then(([r1, j1]) => {
+      out();
       if(mine !== pressStop.sent) return;
       stopAnswerSaid(route, r1, j1);
       FLIPPED.go = Date.now();
       try{ drawTransport(false); }catch(_e){}
     }, e1 => {
+      out();
       if(mine !== pressStop.sent) return;
       say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e1 && e1.message) || e1) + "). Press Stop again, or use the hardware e-stop.", "bad");
     });
@@ -5485,7 +5523,7 @@ async function faGo(i, plan){
     ARM_SAID = null;
     // Pending from the first send until the engine's first answer, then
     // Checking until the read after the hold (pendStart, on a phone).
-    const pd = pendStart("fa", {then:() => say("Checking...", "", "")});
+    const pd = fa.pd = pendStart("fa", {then:() => say("Checking...", "", "")});
     if(fa.all) armAllStart(); else armStart(i);
     fa.h = HOLD;
     if(fa.h && fa.h.parts.map(p => p.group).join(",") !== plan.go.join(",")){ armStop("what would arm changed"); fa.h = null; }
@@ -5505,6 +5543,8 @@ async function faGo(i, plan){
     if(FA !== fa) return;
     await faRead(fa);
   } finally {
+    // Over, answered or not: its Pending never holds the line for others.
+    pendDrop(fa.pd);
     if(!fa.done) fa.done = Date.now();
     try{ renderStale(); }catch(_e){}
   }
