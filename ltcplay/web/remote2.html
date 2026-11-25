@@ -926,6 +926,9 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
   /* Two or three live modes: their words (a second line rather than cut
      on a narrow phone), then their Stops whole. */
   #next.many .t{display:flex;align-items:center;padding:0;white-space:normal}
+  /* Connection lost (review of #306, H1): its words whole on two lines
+     inside the same 44 px at 270 px wide, never cut. */
+  #next.lost:not(.many) .t{display:flex;align-items:center;padding:0;white-space:normal;line-height:1.2}
   #pins{order:5;flex:1 1 100%;flex-wrap:wrap;gap:6px;padding-bottom:4px}
   #pins .b{flex:1 1 0;min-width:0;min-height:56px;padding:0 8px;font-size:17px;white-space:normal;line-height:1.05}
   /* Four or five live modes: their Stops two to a row, their words whole. */
@@ -2114,8 +2117,9 @@ $("msg-more").addEventListener("click", () => sheet("Details", opText(MSG_FULL),
 // Pending and Timed Out and have that be a local on-device change in case
 // we lose connection at precisely the worst moment?" On the phone's
 // arrangement every arm and safety press (a flame Arm or Arm all, the
-// lasers' arm, a timed purge, the cleaning, Continue anyway, Stop and
-// every Disarm) says Pending on the line the moment it is sent, drawn here
+// lasers' arm, a timed purge, the cleaning, Continue anyway, every Disarm,
+// Hold and the pinned Stops) says Pending on the line the moment it is
+// sent (Stop show says Stopping, and has its own time limit), drawn here
 // with no wait on the network, until the engine answers it. No answer in
 // PEND_MS (this page's own timer): "No answer. Check the tile.", because
 // the engine may still have acted, so it never says armed or not armed.
@@ -2177,6 +2181,14 @@ function pendKind(p, body){
   if(r === "cleaning-beat" && b.hold === true) return "wc:" + b.run;
   if(r === "preroll-continue") return "pr:" + (b.phase || "");
   if(r === "arm-hold") return "fa";
+  // The other safety presses (review of #306, M2): Hold, the pinned
+  // Stops (Stop purge, the cleaning's Stop, live flame programming off,
+  // the hazer test off).
+  if(r === "hold") return "hold";
+  if(r === "purge-stop") return "ps";
+  if(r === "cleaning-stop") return "cs";
+  if(r === "live-flame" && b.on === false) return "lf";
+  if(r === "hazer-test" && b.on === false) return "hz";
   return "";
 }
 // 1.0's post itself is unchanged; only its name is wrapped. Every send
@@ -3073,10 +3085,10 @@ let WAS_LIVE = false;
 // "Connection lost" until a status comes in again (Jeff, 2026-11-24). It
 // only warns: nothing is sent for it, nothing is disarmed, held or
 // stopped, and the show and the schedule carry on at the engine.
-const LOST_WORDS = "Connection lost. Stop and Disarm still work.";
+const LOST_WORDS = "Connection lost. Use e-stop.";
 function lostStep(ns, isSt){
   if(!isSt || !ST || !phoneArrangement()) return ns;
-  return Object.assign({}, ns, {text:LOST_WORDS, times:"", tone:"bad"});
+  return Object.assign({}, ns, {text:LOST_WORDS, times:"", tone:"bad", lost:true});
 }
 function renderStale(){
   const isSt = stale();
@@ -3085,7 +3097,7 @@ function renderStale(){
   const local = !!(ME && ME.local);
   // the next step and the state
   const ns = lostStep(nextStep(ST, isSt, local, ALERTS), isSt);
-  $("next").className = ns.tone + (pinItems(ST).length > 1 ? " many" : "") + (ns.go ? " go" : "") + (NEXT_OPEN ? " open" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
+  $("next").className = ns.tone + (ns.lost ? " lost" : "") + (pinItems(ST).length > 1 ? " many" : "") + (ns.go ? " go" : "") + (NEXT_OPEN ? " open" : ""); setIcon($("next").querySelector("svg"), ns.icon); drawNextText(ns);
   // On SHOW, Resume is its own big button at the top of the pane: the line
   // keeps no button for it, so on a short phone the pane has the room to
   // show Resume whole (412x600: 64 px of pane with the button, Resume 72).
@@ -3491,6 +3503,7 @@ function drawRunHere(isSt){
 $("tn-run").addEventListener("click", () => runShowHere());
 // Stop: the engine's complete halt (1.0's pressStop): the same body, the
 // same answer read the same way. No confirm: the double tap is its guard.
+const STOP_ANSWER_MS = 4000, STOP_LATE_WORDS = "No answer. Tap Stop again, or e-stop.";
 async function pressStop(route){
   if(typeof slideCancel === "function") slideCancel("Stop show was pressed");
   if(typeof faCut === "function") faCut("Stop show was pressed");
@@ -3505,17 +3518,23 @@ async function pressStop(route){
   if(HALT_BUSY) return;
   HALT_BUSY = true;
   say("Stopping...", "Stopping: disarming, then fading to dark...", "warn");
-  // No answer in PEND_MS on a phone: said, with the e-stop (pendStart).
-  if(typeof pendStart === "function") pendStart("stop", {said:true, word:"Stopping...", late:"No answer. Use the e-stop."});
   try{ drawTransport(false); }catch(e){}
-  let r = null, j = {};
+  let r = null, j = {}, lim = 0;
   try{
     const opts = {method:"POST", credentials:"same-origin", cache:"no-store",
       headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))};
-    r = route === "run-off" ? await fetch("/api/remote/run-off", opts)
+    const sent = (async () => {
+      const r0 = route === "run-off" ? await fetch("/api/remote/run-off", opts)
                             : await fetch("/api/remote/stop", {method:"POST", credentials:"same-origin", cache:"no-store",
       headers:{"Content-Type":"application/json", "X-LTC-Window": WINDOW_ID}, body:JSON.stringify(actor({}))});
-    j = await r.json().catch(() => ({}));
+      return [r0, await r0.json().catch(() => ({}))];
+    })();
+    sent.catch(() => {});
+    // The Stop's time limit (review of #306, M1): no answer in
+    // STOP_ANSWER_MS frees this page's Stop for a new tap. The request is
+    // never cancelled (it may still land), and nothing says it failed.
+    const late = new Promise((_ok, no) => { lim = setTimeout(() => no(Object.assign(new Error("no answer"), {late:true})), STOP_ANSWER_MS); });
+    [r, j] = await Promise.race([sent, late]);
     if(r.ok && route === "run-off" && !(j.failed || []).length) say("Show control is off.", stopWords(j), "ok");
     else if(r.ok || (j && j.failed)){
       const w = stopWords(j);
@@ -3524,9 +3543,10 @@ async function pressStop(route){
       else say(j && j.hold && j.hold.ok ? "Stopped and on Hold. Resume when safe." : "Stopped.", w, "ok");
     } else say("Stop was refused. Use the e-stop.", "Stop was refused: " + refusedWords(j, r.statusText || ("error " + r.status)) + " Use Disarm flames, or the hardware e-stop.", "bad");
   }catch(e){
-    say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or use the hardware e-stop.", "bad");
+    if(e && e.late) say(STOP_LATE_WORDS, "No answer from the engine in " + (STOP_ANSWER_MS / 1000) + " s. The Stop may still have reached it: look at the show. Stop can be tapped again now, or use the hardware e-stop.", "bad");
+    else say("Stop did not arrive. Try again.", "Stop did not reach the engine (" + ((e && e.message) || e) + "). Press Stop again, or use the hardware e-stop.", "bad");
   }finally{
-    if(typeof pendAnswered === "function") pendAnswered("stop");
+    clearTimeout(lim);
     HALT_BUSY = false;
     FLIPPED.go = Date.now();
     try{ drawTransport(false); }catch(e){}

@@ -123617,7 +123617,7 @@ const msg = () => q("msg-t") ? q("msg-t").textContent : "";
 const cls = () => q("msg").className;
 const nxt = () => q("next-t").textContent;
 const hf = window.fetch;
-let CUT = false, HANG = {};
+let CUT = false, HANG = {}, LATE = {};
 const CP = [];
 window.fetch = async (url, opt) => {
   const u = String(url);
@@ -123625,6 +123625,7 @@ window.fetch = async (url, opt) => {
     const route = u.replace(/^.*\/api\/remote\//, "");
     CP.push(route);
     if(CUT || HANG[route]) return new Promise(() => {});
+    if(LATE[route]) await nap(LATE[route]);
   } else if(CUT && /\/api\/remote\//.test(u)) throw new TypeError("Failed to fetch");
   return hf(url, opt);
 };
@@ -123656,6 +123657,7 @@ if(PART === "layout"){
   CUT = true;
   const w = await watch(3200);
   out.lost_tops = w.tops; out.lost = rects(); out.lost_next = q("next").className;
+  out.fit = {sw:q("next-t").scrollWidth, cw:q("next-t").clientWidth, sh:q("next-t").scrollHeight, ch:q("next-t").clientHeight};
   out.lost_body = document.body.classList.contains("stale");
   // The same lost screen with the line's words as they were before them
   // (the page's own stale reactions, the Stop and the alert slot, stay):
@@ -123731,14 +123733,45 @@ if(PART === "layout"){
     const pr = msg(); HANG["preroll-continue"] = false;
     const w = await watch(PEND_MS + 600);
     out.e = {tp:tp, tp2:tp2, wc:wc, pr:pr, late:msg()}; }
-  // (f) Stop with no answer: Stopping, then No answer and the e-stop at
-  // PEND_MS. Last: a Stop that never answers keeps this page's Stop busy.
-  { HANG["stop"] = true; say("", "", "");
-    pressStop("stop");
-    const at_once = msg();
-    const w = await watch(PEND_MS + 600);
-    out.f = {at_once:at_once, seen:w.seen, end:msg(), end_cls:cls()}; }
-  out.bad_words = [PEND_WORDS, PEND_LATE_WORDS, "No answer. Use the e-stop.", LOST_WORDS].filter(bad);
+  // (e2) Hold and the pinned Stops: Pending in the same tick, No answer
+  // at PEND_MS; each sent at once.
+  { out.e2 = {};
+    for(const [k, route, body] of [["hold", "hold", actor(undefined)], ["ps", "purge-stop", actor({})], ["cs", "cleaning-stop", actor({})],
+        ["lf", "live-flame", {on:false}], ["hz", "hazer-test", actor({on:false})]]){
+      HANG[route] = true; q("msg-t").textContent = ""; const c0 = CP.length;
+      post("/api/remote/" + route, body).catch(() => {});
+      out.e2[k] = {now:msg(), cls:cls(), sent:CP.slice(c0)};
+      HANG[route] = false;
+    }
+    await watch(PEND_MS + 600); out.e2.late = msg(); }
+  // (f) Stop show on a dead link (review of #306, M1): Stopping at once,
+  // its button busy; no answer in STOP_ANSWER_MS: said, the button free,
+  // and a second double tap sends a new Stop.
+  const stopTap = () => { const b = q("b-stop"); for(let i = 0; i < 2; i++)
+    b.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:77, pointerType:"touch", isPrimary:true, detail:1})); };
+  { CUT = true; for(let i = 0; i < 80 && !stale(); i++) await nap(50); await nap(500);
+    say("", "", ""); const c0 = CP.length;
+    stopTap();
+    const at_once = msg(); await nap(800);
+    const mid = {busy:HALT_BUSY, label:q("stop-l").textContent, dis:q("b-stop").disabled};
+    const w = await watch(STOP_ANSWER_MS + 200);
+    const freed = {busy:HALT_BUSY, label:q("stop-l").textContent, dis:q("b-stop").disabled, msg:msg(), cls:cls()};
+    stopTap(); await nap(300);
+    out.f = {at_once:at_once, mid:mid, seen:w.seen, freed:freed, stops:CP.slice(c0).filter(r => r === "stop").length, again:msg()};
+    await nap(STOP_ANSWER_MS + 300);
+    out.f.freed2 = {busy:HALT_BUSY, msg:msg()};
+    CUT = false; await fresh(); }
+  // (g) The first Stop answered after the limit, a second Stop answered
+  // at once: the late answer never leaves Stop busy.
+  { LATE["stop"] = 6500; say("", "", ""); const c0 = CP.length;
+    pressStop("stop"); await nap(STOP_ANSWER_MS + 300);
+    const freed = {busy:HALT_BUSY, msg:msg()};
+    LATE["stop"] = 0; pressStop("stop"); await nap(600);
+    const second = {busy:HALT_BUSY, msg:msg()};
+    await nap(2600);
+    out.g = {freed:freed, second:second, after:{busy:HALT_BUSY, go:q("go-l").textContent, msg:msg()},
+      stops:CP.slice(c0).filter(r => r === "stop").length}; }
+  out.bad_words = [PEND_WORDS, PEND_LATE_WORDS, STOP_LATE_WORDS, LOST_WORDS].filter(bad);
 }
 """
 
@@ -123776,7 +123809,7 @@ def test_ui2_phone_pending_no_answer_connection_lost():
         return
     morning = {"/api/remote/morning": _morning_view_pico()}
     pend, late = "Pending.", "No answer. Check the tile."
-    lost_w = "Connection lost. Stop and Disarm still work."
+    lost_w = "Connection lost. Use e-stop."
     armed = re.compile(r"\barmed\b|\bdisarmed\b|started", re.I)
     size = (384, 800)
     where = "2.0 on a touch phone, 384x800, a press with no answer"
@@ -123834,14 +123867,39 @@ def test_ui2_phone_pending_no_answer_connection_lost():
               f"{where}: a timed purge's first beat, the cleaning's and "
               f"Continue anyway say Pending; a later beat of the same run "
               f"never covers other words; No answer at the timeout: {e}")
+        e2 = r["e2"]
+        for k, route in (("hold", "hold"), ("ps", "purge-stop"),
+                         ("cs", "cleaning-stop"), ("lf", "live-flame"),
+                         ("hz", "hazer-test")):
+            check(e2[k] == {"now": pend, "cls": "warn", "sent": [route]},
+                  f"{where}: {route} says Pending in the same tick it is "
+                  f"sent, and is sent at once: {e2[k]}")
+        check(e2["late"] == late,
+              f"{where}: and No answer at the timeout: {e2['late']}")
         f = r["f"]
+        stop_late = "No answer. Tap Stop again, or e-stop."
         fl = [x.split("|")[0] for x in f["seen"]]
-        check(f["at_once"] == "Stopping..." and
-              f["end"] == "No answer. Use the e-stop." and
-              f["end_cls"] == "bad" and set(fl) <= {
-                  "Stopping...", "No answer. Use the e-stop."},
-              f"{where}: a Stop with no answer: Stopping at once, then No "
-              f"answer and the e-stop: {f}")
+        check(f["at_once"] == "Stopping..." and f["mid"]["busy"] and
+              f["mid"]["label"] == "Stopping" and f["mid"]["dis"],
+              f"{where}: Stop show on a dead link: Stopping at once, its "
+              f"button busy: {f}")
+        check(set(fl) <= {"Stopping...", stop_late} and
+              f["freed"] == {"busy": False, "label": "Stop show",
+                             "dis": False, "msg": stop_late, "cls": "bad"},
+              f"{where}: no answer in the limit: said, and the button is "
+              f"free: {f}")
+        check(f["stops"] == 2 and f["again"] == "Stopping..." and
+              f["freed2"] == {"busy": False, "msg": stop_late},
+              f"{where}: a second double tap sends a new Stop, and is freed "
+              f"the same way: {f}")
+        g = r["g"]
+        check(g["freed"] == {"busy": False, "msg": stop_late} and
+              g["stops"] == 2 and not g["second"]["busy"] and
+              g["second"]["msg"] not in ("Stopping...", stop_late) and
+              not g["after"]["busy"] and g["after"]["go"] != "Stopping" and
+              g["after"]["msg"] != "Stopping...",
+              f"{where}: a Stop answered after the limit never leaves Stop "
+              f"busy, and a second Stop goes and is answered: {g}")
     # The top line's words change; nothing on the screen moves. At the
     # phone in hand and at the smallest a display size makes it.
     for size in ((384, 800), (270, 560)):
@@ -123852,6 +123910,10 @@ def test_ui2_phone_pending_no_answer_connection_lost():
         if not check(isinstance(g, dict) and "after" in g and
                      not g.get("problems"), f"{where}: driven: {g!r}"[:1500]):
             continue
+        check(g["fit"]["sw"] <= g["fit"]["cw"] and
+              g["fit"]["sh"] <= g["fit"]["ch"],
+              f"{where}: Connection lost. Use e-stop. fits the top line "
+              f"whole: {g['fit']}")
         check(lost_w in g["lost_tops"] and g["lost_body"] and
               "bad" in g["lost_next"].split(),
               f"{where}: Connection lost on the top line: {g['lost_tops']}")

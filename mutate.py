@@ -27521,6 +27521,18 @@ def build():
   "ltcplay/web/remote2.html",
   "    const r = send.apply(this, arguments);\n    if(!kind) return r;\n",
   "    const r = kind === \"dis\" && PEND ? new Promise(() => {}) : send.apply(this, arguments);\n    if(!kind) return r;\n"),
+
+ # Review of #306, M1: a Stop with no answer frees this page's Stop after
+ # STOP_ANSWER_MS, and says so, never that it stopped.
+ ("ui 2.0 phone pending: an unanswered Stop keeps Stop busy for good",
+  "ltcplay/web/remote2.html",
+  "    [r, j] = await Promise.race([sent, late]);\n",
+  "    [r, j] = await sent;\n"),
+
+ ("ui 2.0 phone pending: a Stop with no answer is said as stopped",
+  "ltcplay/web/remote2.html",
+  "    if(e && e.late) say(STOP_LATE_WORDS, ",
+  "    if(e && e.late) say(\"Stopped.\", "),
 ]
 
 
