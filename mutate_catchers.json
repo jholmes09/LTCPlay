@@ -4472,5 +4472,21 @@
 "cleaning: a phone's hold to arm another group, in a gap, does not block it": "test_cleaning_at_the_engine",
 "arm: the press to its first beat gets only the 1.5 s of a later gap": "test_screen_arm_on_a_slow_phone_link",
 "arm: every gap gets the first beat's 2.0 s": "test_screen_arm_on_a_slow_phone_link",
-"arm: a wall clock stepped back turns the Stop mark off": "test_screen_arm_on_a_slow_phone_link"
+"arm: a wall clock stepped back turns the Stop mark off": "test_screen_arm_on_a_slow_phone_link",
+"ui 2.0 phone pending: a phone that lost the engine sends a disarm": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: a phone that lost the engine does not say so": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: Pending is drawn as a success": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: a press with no answer says armed": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: a press with no answer is never said": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: a Stop is held back while a press is Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: a Disarm waits behind a press that is Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: an unanswered Stop keeps Stop busy for good": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: a Stop with no answer is said as stopped": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: a Stop's answer after the limit is dropped": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: Hold says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: Stop purge says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: the cleaning's Stop says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: live flame programming off says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: the hazer test off says no Pending": "test_ui2_phone_pending_no_answer_connection_lost",
+"ui 2.0 phone pending: the reads after a Stop stop waiting once its button is freed": "test_ui2_phone_pending_no_answer_connection_lost"
 }

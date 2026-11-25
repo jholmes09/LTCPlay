@@ -123605,6 +123605,460 @@ def test_ui2_cleaning_slide_on_a_phone():
               f"{where}: today's hold, as before: {r}")
     print("  ok")
 
+# Pending, No answer and Connection lost on a phone (Jeff, 2026-11-24:
+# "say Pending and Timed Out and have that be a local on-device change").
+# The network is cut in the page: a POST never answers (the request hangs),
+# and the status read throws. Everything said must come from this page
+# alone, at once, and never read armed.
+_UI2_PEND_STEPS = r"""
+const q = id => document.getElementById(id);
+const nap = ms => new Promise(r => setTimeout(r, ms));
+const msg = () => q("msg-t") ? q("msg-t").textContent : "";
+const cls = () => q("msg").className;
+const nxt = () => q("next-t").textContent;
+const hf = window.fetch;
+let CUT = false, HANG = {}, LATE = {}, STOP_PICK = [];
+const CP = [];
+window.fetch = async (url, opt) => {
+  const u = String(url);
+  if(opt && opt.method === "POST"){
+    const route = u.replace(/^.*\/api\/remote\//, "");
+    CP.push(route);
+    if(CUT || HANG[route]) return new Promise(() => {});
+    // A Stop's answer is the one chosen when it was sent (STOP_PICK).
+    const pick = route === "stop" && STOP_PICK.length ? STOP_PICK.shift() : null;
+    if(LATE[route]) await nap(LATE[route]);
+    if(pick) window.__answer["stop"] = () => [200, pick];
+  } else if(CUT && /\/api\/remote\//.test(u)) throw new TypeError("Failed to fetch");
+  return hf(url, opt);
+};
+// Every line the footer and the top line show, sampled every 50 ms.
+async function watch(ms){
+  const seen = [], tops = [], t0 = Date.now();
+  while(Date.now() - t0 < ms){
+    const m = msg() + "|" + cls();
+    if(seen[seen.length - 1] !== m) seen.push(m);
+    if(tops[tops.length - 1] !== nxt()) tops.push(nxt());
+    await nap(50);
+  }
+  return {seen:seen, tops:tops};
+}
+const fresh = async () => { for(let i = 0; i < 100 && stale(); i++) await nap(50); await nap(300); };
+const words = t => t.split(/\s+/).filter(Boolean).length;
+const bad = t => /hold/i.test(t) || /;/.test(t) || /[–—]/.test(t) || words(t) > 8;
+// Where every control is: nothing may move when the top line changes.
+const RECT_IDS = ["next", "next-t", "b-go", "b-hold", "b-stop", "alert", "b-armall", "b-disall", "lz-b", "msg", "wx"];
+const rects = () => { const o = {}; RECT_IDS.forEach(id => { const el = q(id); if(!el || !el.getClientRects().length){ o[id] = null; return; }
+  const r = el.getBoundingClientRect(); o[id] = [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; });
+  o.scroll = [document.scrollingElement.scrollWidth, innerWidth]; return o; };
+document.querySelector('.tab[data-tab="show"]').click();
+await nap(1500);
+out.vw = innerWidth; out.vh = innerHeight; out.phone = phoneArrangement();
+const PART = "__PART__";
+if(PART === "layout"){
+  out.before = rects();
+  CUT = true;
+  const w = await watch(3200);
+  out.lost_tops = w.tops; out.lost = rects(); out.lost_next = q("next").className;
+  const fit = () => ({sw:q("next-t").scrollWidth, cw:q("next-t").clientWidth, sh:q("next-t").scrollHeight, ch:q("next-t").clientHeight});
+  out.fit = fit();
+  // A wider fallback font (a runner without the page's own): still whole.
+  q("next-t").style.fontFamily = '"DejaVu Sans", Verdana, sans-serif'; await nap(100);
+  out.fit_wide = fit(); q("next-t").style.fontFamily = ""; await nap(100);
+  out.lost_body = document.body.classList.contains("stale");
+  // The same lost screen with the line's words as they were before them
+  // (the page's own stale reactions, the Stop and the alert slot, stay):
+  // whatever moves is the words' doing. Drawn in one tick each.
+  const mine = lostStep;
+  lostStep = ns => ns; renderStale();
+  out.old_words = nxt(); out.lost_old = rects();
+  lostStep = mine; renderStale();
+  out.new_words = nxt(); out.lost_new = rects();
+  CUT = false;
+  await fresh(); await nap(400);
+  out.after = rects(); out.after_next = nxt();
+} else {
+  const ids = ((ST.laser_arm || {}).lasers || []).map(x => x.id);
+  // (a) The lasers' arm sent with the network cut: Pending at once, in
+  // the same tick, never armed; No answer at PEND_MS; the top line says
+  // Connection lost once the status is silent; nothing else is sent.
+  { CUT = true; const c0 = CP.length;
+    q("msg-t").textContent = "";
+    lzPress({lasers:ids, on:true, confirmed:true});
+    const at_once = {msg:msg(), cls:cls(), pend:!!PEND};
+    const w = await watch(PEND_MS + 900);
+    out.a = {at_once:at_once, seen:w.seen, tops:w.tops, end:msg(), end_cls:cls(), posts:CP.slice(c0),
+      next_cls:q("next").className};
+    CUT = false; await fresh();
+    out.a.recovered = nxt(); out.a.recovered_cls = q("next").className; }
+  // (b) A flame arm whose answer never comes (the status fine): Pending
+  // at once, No answer at PEND_MS, never armed; then let go.
+  { HANG["arm-hold"] = true; const c0 = CP.length;
+    const plan = faPlan(0); plan.sig = faSig(); plan.epoch = FA_EPOCH;
+    faGo(0, plan);
+    const at_once = {msg:msg(), cls:cls()};
+    const w = await watch(PEND_MS + 700);
+    out.b = {at_once:at_once, seen:w.seen, end:msg(), starts:CP.slice(c0).filter(r => r === "arm-hold").length,
+      act:(document.querySelector('[data-arm="0"] .act') || {}).textContent || ""};
+    faCut("test over"); HANG["arm-hold"] = false; await nap(1200); }
+  // (c) The flame arm answered: Pending, then Checking, then the read.
+  { const plan = faPlan(1); plan.sig = faSig(); plan.epoch = FA_EPOCH;
+    const t = window.__answer["arm-hold"];
+    window.__answer["arm-hold"] = b => [200, {hold_id:"h1", held_s:0.2, needs_s:2.0, armed:false, text:"Keep holding"}];
+    faGo(1, plan);
+    const at_once = msg();
+    const w = await watch(1500);
+    faCut("test over"); window.__answer["arm-hold"] = t; await nap(1500);
+    out.c = {at_once:at_once, seen:w.seen}; }
+  // (d) A Disarm and a Stop while a press is Pending: each goes at once
+  // (one tap), its own words after, never Pending left on the line.
+  { HANG["laser-arm"] = true; lzPress({lasers:ids, on:true, confirmed:true}); await nap(200);
+    const p0 = CP.length, was = msg();
+    q("b-disall").click();
+    const dis_now = CP.slice(p0);
+    await nap(600);
+    const dis_msg = msg();
+    lzPress({lasers:ids, on:true, confirmed:true}); await nap(200);
+    const p1 = CP.length;
+    pressStop("stop");
+    const stop_now = CP.slice(p1);
+    await nap(700);
+    out.d = {was:was, dis_now:dis_now, dis_msg:dis_msg, stop_now:stop_now, stop_msg:msg()};
+    HANG["laser-arm"] = false; await nap(300); }
+  // (e) A timed purge's beats and a cleaning's: Pending at the first beat
+  // of a run, never again for a later beat of it; Continue anyway too.
+  { HANG["purge-timed"] = true; q("msg-t").textContent = "";
+    post("/api/remote/purge-timed", moActor({hold:true, run:"pt-1", seq:1, seconds:5})).catch(() => {});
+    const tp = msg(); say("Every flame group disarmed.", "", "ok");
+    post("/api/remote/purge-timed", moActor({hold:true, run:"pt-1", seq:2, seconds:5})).catch(() => {});
+    const tp2 = msg(); HANG["purge-timed"] = false;
+    HANG["cleaning-beat"] = true; q("msg-t").textContent = "";
+    post("/api/remote/cleaning-beat", actor({hold:true, run:"wc-1", seq:1, change:true})).catch(() => {});
+    const wc = msg(); HANG["cleaning-beat"] = false;
+    HANG["preroll-continue"] = true; q("msg-t").textContent = "";
+    post("/api/remote/preroll-continue", actor({phase:"begin", token:"t1"})).catch(() => {});
+    const pr = msg(); HANG["preroll-continue"] = false;
+    const w = await watch(PEND_MS + 600);
+    out.e = {tp:tp, tp2:tp2, wc:wc, pr:pr, late:msg()}; }
+  // (e2) Hold and the pinned Stops: Pending in the same tick, No answer
+  // at PEND_MS; each sent at once.
+  { out.e2 = {};
+    for(const [k, route, body] of [["hold", "hold", actor(undefined)], ["ps", "purge-stop", actor({})], ["cs", "cleaning-stop", actor({})],
+        ["lf", "live-flame", {on:false}], ["hz", "hazer-test", actor({on:false})]]){
+      HANG[route] = true; q("msg-t").textContent = ""; const c0 = CP.length;
+      post("/api/remote/" + route, body).catch(() => {});
+      out.e2[k] = {now:msg(), cls:cls(), sent:CP.slice(c0)};
+      HANG[route] = false;
+    }
+    await watch(PEND_MS + 600); out.e2.late = msg();
+    // An automatic purge stop (fireStop's) over a warning: the warning is
+    // back once it is answered, never a blank line.
+    say("Purge NOT firing.", "", "bad");
+    post("/api/remote/purge-stop", moActor({})).catch(() => {});
+    const over = msg(); await nap(400);
+    out.e2.kept = {over:over, after:msg(), cls:cls()}; }
+  // (f) Stop show on a dead link (review of #306, M1): Stopping at once,
+  // its button busy; no answer in STOP_ANSWER_MS: said, the button free,
+  // and a second double tap sends a new Stop.
+  const stopTap = () => { const b = q("b-stop"); for(let i = 0; i < 2; i++)
+    b.dispatchEvent(new PointerEvent("click", {bubbles:true, cancelable:true, pointerId:77, pointerType:"touch", isPrimary:true, detail:1})); };
+  { CUT = true; for(let i = 0; i < 80 && !stale(); i++) await nap(50); await nap(500);
+    say("", "", ""); const c0 = CP.length;
+    stopTap();
+    const at_once = msg(); await nap(800);
+    const mid = {busy:HALT_BUSY, label:q("stop-l").textContent, dis:q("b-stop").disabled};
+    const w = await watch(STOP_ANSWER_MS + 200);
+    const freed = {busy:HALT_BUSY, label:q("stop-l").textContent, dis:q("b-stop").disabled, msg:msg(), cls:cls()};
+    stopTap(); await nap(300);
+    out.f = {at_once:at_once, mid:mid, seen:w.seen, freed:freed, stops:CP.slice(c0).filter(r => r === "stop").length, again:msg()};
+    await nap(STOP_ANSWER_MS + 300);
+    out.f.freed2 = {busy:HALT_BUSY, msg:msg()};
+    CUT = false; await fresh(); }
+  // (g) The first Stop answered after the limit, a second Stop answered
+  // at once: the late answer never leaves Stop busy.
+  // The first's late answer a failed flame disarm, the second's a good
+  // Stop: the newer Stop's words stand.
+  const STOP_OK = {stopped:true, flames:{disarmed:true}, run_on:true, hold:{ok:true}};
+  const STOP_BAD = {stopped:true, flames:{disarmed:false}, run_on:true, hold:{ok:true}};
+  { LATE["stop"] = 6500; say("", "", ""); const c0 = CP.length;
+    STOP_PICK = [STOP_BAD, STOP_OK];
+    pressStop("stop"); await nap(STOP_ANSWER_MS + 300);
+    const freed = {busy:HALT_BUSY, msg:msg()};
+    LATE["stop"] = 0; pressStop("stop"); await nap(600);
+    const second = {busy:HALT_BUSY, msg:msg()};
+    await nap(2600);
+    out.g = {freed:freed, second:second, after:{busy:HALT_BUSY, go:q("go-l").textContent, msg:msg(), said:STOP_SAID},
+      stops:CP.slice(c0).filter(r => r === "stop").length};
+    STOP_SAID = null; }
+  // (h) Round 2 of #306, M-A: a Stop answered at 5 s, after the limit,
+  // with the flame disarm FAILED: its own words replace No answer, on the
+  // line and the top line, exactly as without the limit.
+  { LATE["stop"] = 5000; say("", "", ""); window.__answer["stop"] = b => [200, STOP_BAD];
+    pressStop("stop"); await nap(STOP_ANSWER_MS + 300);
+    const before = msg(); await nap(1000);
+    out.h = {before:before, msg:msg(), cls:cls(), top:nxt(), busy:HALT_BUSY};
+    STOP_SAID = null; await nap(400); }
+  // (i) A healthy Stop answered at 4.3 s: its stopped words.
+  { LATE["stop"] = 4300; say("", "", ""); window.__answer["stop"] = b => [200, STOP_OK];
+    pressStop("stop"); await nap(STOP_ANSWER_MS + 700);
+    out.i = {msg:msg(), cls:cls(), busy:HALT_BUSY};
+    LATE["stop"] = 0; delete window.__answer["stop"]; }
+  // (k) Round 3 of #306: a Stop freed at the limit is still out: the
+  // timed purge's read after a Stop waits for its answer (the purge's
+  // control never comes back while the Stop is on its way), and so do the
+  // cleaning's and Continue anyway's (their counts).
+  { LATE["stop"] = 6000; window.__answer["stop"] = b => [200, STOP_OK]; say("", "", "");
+    // (e2) left its Hold, Stop purge and cleaning Stop never answered,
+    // which these counts still hold: a fresh start for this step.
+    TP_STOP_OUT = 0; WCS_STOP_OUT = 0; PRS_STOP_OUT = 0;
+    const pm = window.__patchMorning;
+    window.__patchMorning = mo => Object.assign(mo, {timed:{left_s:20, seconds:20, elapsed_s:1, machines:["front row 1"], device:"rack", who:"Jeff"}});
+    pressStop("stop"); await nap(STOP_ANSWER_MS + 900);
+    const mid = {busy:HALT_BUSY, stopping:!!TP_STOPPING, outs:[TP_STOP_OUT, WCS_STOP_OUT, PRS_STOP_OUT]};
+    await nap(2500);
+    out.k = {mid:mid, after:{busy:HALT_BUSY, stopping:!!TP_STOPPING, outs:[TP_STOP_OUT, WCS_STOP_OUT, PRS_STOP_OUT]}};
+    window.__patchMorning = pm; LATE["stop"] = 0; delete window.__answer["stop"]; }
+  // (l) Round 3 of #306: two word-less presses overlapping put back the
+  // warning both covered; a line already past its time is never brought
+  // back, and one put back keeps only the time it had left.
+  { say("Purge NOT firing.", "", "bad"); LATE["purge-stop"] = 1000; LATE["group-disarm"] = 300;
+    post("/api/remote/purge-stop", moActor({})).catch(() => {});
+    await nap(200);
+    post("/api/remote/group-disarm", actor({group:"front row"})).catch(() => {});
+    await nap(400); const mid = msg();
+    await nap(700);
+    out.l = {mid:mid, after:msg(), cls:cls()};
+    LATE["purge-stop"] = 2000; say("Stopped.", "", "ok", 1500);
+    post("/api/remote/purge-stop", moActor({})).catch(() => {});
+    await nap(2400); out.l.expired = msg();
+    LATE["purge-stop"] = 1000; say("Fresh words.", "", "ok", 3000);
+    post("/api/remote/purge-stop", moActor({})).catch(() => {});
+    await nap(1300); out.l.kept = msg();
+    await nap(2200); out.l.kept_end = msg();
+    LATE["purge-stop"] = 0; LATE["group-disarm"] = 0; }
+  out.bad_words = [PEND_WORDS, PEND_LATE_WORDS, PEND_LATE_SHOW_WORDS, STOP_LATE_WORDS, LOST_WORDS].filter(bad);
+}
+"""
+
+
+def test_ui2_phone_pending_no_answer_connection_lost():
+    section("Pending, No answer and Connection lost on a phone (Jeff, "
+            "2026-11-24): every arm and safety press says Pending the moment "
+            "it is sent, drawn by the phone with the network cut; no answer "
+            "in time says No answer. Check the tile., never armed or not "
+            "armed; a flame arm says Checking once the engine answers; a "
+            "Disarm and a Stop go at once while a press is Pending; a phone "
+            "that lost the engine says Connection lost on its top line, "
+            "sends nothing for it and moves nothing, and the line clears "
+            "when the engine is back. The engine side, that a lost phone "
+            "never disarms a group or holds a show: "
+            "test_screen_armed_group_survives_the_phone_going_away")
+    check(callable(globals().get(
+        "test_screen_armed_group_survives_the_phone_going_away")),
+          "the engine's own proof that a lost phone disarms nothing and "
+          "holds no show is still in the suite")
+    page = _ui2_page_inline()
+    two = _ui2_pages()[1]
+    lost = two[two.find("function lostStep("):]
+    lost = lost[:lost.find("\n}\n")]
+    check("function lostStep(" in two and "post(" not in lost and
+          "press(" not in lost and "fetch(" not in lost,
+          "the lost line sends nothing")
+    chrome = _find_chromium()
+    if not chrome:
+        check(not (IN_CI and sys.platform.startswith("linux")),
+              "no Chromium or Chrome on this CI runner: 2.0 could not be "
+              "drawn")
+        print("  note: no Chromium here, so 2.0 was not drawn")
+        print("  ok")
+        return
+    morning = {"/api/remote/morning": _morning_view_pico()}
+    pend, late = "Pending.", "No answer. Check the tile."
+    lost_w = "Connection lost. Use e-stop."
+    armed = re.compile(r"\barmed\b|\bdisarmed\b|started", re.I)
+    size = (384, 800)
+    where = "2.0 on a touch phone, 384x800, a press with no answer"
+    r = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                          _UI2_PEND_STEPS.replace("__PART__", "press"),
+                          size, routes=morning, budget_ms=90000)
+    if check(isinstance(r, dict) and "f" in r and not r.get("problems"),
+             f"{where}: driven: {r!r}"[:1500]):
+        check(r["phone"] and r["bad_words"] == [],
+              f"{where}: the phone's words: 8 or fewer, no hold, no "
+              f"semicolon, no dash: {r['bad_words']}")
+        a = r["a"]
+        lines = [x.split("|")[0] for x in a["seen"]]
+        check(a["at_once"] == {"msg": pend, "cls": "warn", "pend": True},
+              f"{where}: the lasers' arm with the network cut: Pending in "
+              f"the same tick it was sent, not a success colour: "
+              f"{a['at_once']}")
+        check(set(lines) <= {pend, late} and late in lines and
+              a["end"] == late and a["end_cls"] == "bad" and
+              not any(armed.search(t) for t in lines),
+              f"{where}: then No answer. Check the tile. at the page's own "
+              f"timeout, never armed or not armed: {a['seen']}")
+        check(lost_w in a["tops"] and "bad" in a["next_cls"].split() and
+              a["posts"] == ["laser-arm"],
+              f"{where}: the status silent: Connection lost on the top line, "
+              f"and the phone sent nothing for it: {a['tops']} "
+              f"{a['posts']}")
+        check(a["recovered"] != lost_w,
+              f"{where}: the engine back: the line is the next step again: "
+              f"{a['recovered']}")
+        b = r["b"]
+        bl = [x.split("|")[0] for x in b["seen"]]
+        check(b["at_once"] == {"msg": pend, "cls": "warn"} and
+              b["starts"] >= 1 and set(bl) <= {pend, late} and
+              late in bl and not any(armed.search(t) for t in bl),
+              f"{where}: a flame arm the engine never answers: Pending at "
+              f"once, then No answer, never armed: {b}")
+        c = r["c"]
+        cl = [x.split("|")[0] for x in c["seen"]]
+        check(c["at_once"] == pend and "Checking..." in cl and
+              not any(armed.search(t) for t in cl),
+              f"{where}: a flame arm the engine answers: Pending, then "
+              f"Checking until a read: {c}")
+        d = r["d"]
+        check(d["was"] == pend and d["dis_now"] == ["disarm-all"] and
+              d["dis_msg"] not in (pend, late, "") and
+              d["stop_now"] == ["stop"] and
+              d["stop_msg"] not in (pend, late, ""),
+              f"{where}: a Disarm and a Stop while a press is Pending: sent "
+              f"in the same tap, their own words after: {d}")
+        e = r["e"]
+        check(e["tp"] == pend and e["tp2"] == "Every flame group "
+              "disarmed." and e["wc"] == pend and e["pr"] == pend and
+              e["late"] == late,
+              f"{where}: a timed purge's first beat, the cleaning's and "
+              f"Continue anyway say Pending; a later beat of the same run "
+              f"never covers other words; No answer at the timeout: {e}")
+        e2 = r["e2"]
+        for k, route in (("hold", "hold"), ("ps", "purge-stop"),
+                         ("cs", "cleaning-stop"), ("lf", "live-flame"),
+                         ("hz", "hazer-test")):
+            check(e2[k] == {"now": pend, "cls": "warn", "sent": [route]},
+                  f"{where}: {route} says Pending in the same tick it is "
+                  f"sent, and is sent at once: {e2[k]}")
+        check(e2["kept"] == {"over": pend, "after": "Purge NOT firing.",
+                             "cls": "bad"},
+              f"{where}: a press answered with no words of its own puts "
+              f"back the warning it covered: {e2['kept']}")
+        check(e2["late"] == "No answer. Check the show PC.",
+              f"{where}: and No answer at the timeout, naming the show PC "
+              f"(Hold and the pinned Stops have no tile): {e2['late']}")
+        f = r["f"]
+        stop_late = "No answer. Tap Stop again, or e-stop."
+        fl = [x.split("|")[0] for x in f["seen"]]
+        check(f["at_once"] == "Stopping..." and f["mid"]["busy"] and
+              f["mid"]["label"] == "Stopping" and f["mid"]["dis"],
+              f"{where}: Stop show on a dead link: Stopping at once, its "
+              f"button busy: {f}")
+        check(set(fl) <= {"Stopping...", stop_late} and
+              f["freed"] == {"busy": False, "label": "Stop show",
+                             "dis": False, "msg": stop_late, "cls": "bad"},
+              f"{where}: no answer in the limit: said, and the button is "
+              f"free: {f}")
+        check(f["stops"] == 2 and f["again"] == "Stopping..." and
+              f["freed2"] == {"busy": False, "msg": stop_late},
+              f"{where}: a second double tap sends a new Stop, and is freed "
+              f"the same way: {f}")
+        g = r["g"]
+        check(g["freed"] == {"busy": False, "msg": stop_late} and
+              g["stops"] == 2 and not g["second"]["busy"] and
+              g["second"]["msg"] not in ("Stopping...", stop_late) and
+              not g["after"]["busy"] and g["after"]["go"] != "Stopping" and
+              g["after"]["msg"] != "Stopping...",
+              f"{where}: a Stop answered after the limit never leaves Stop "
+              f"busy, and a second Stop goes and is answered: {g}")
+        stopped = "Stopped and on Hold. Resume when safe."
+        check(g["second"]["msg"] == stopped and g["after"]["msg"] == stopped
+              and g["after"]["said"] is None,
+              f"{where}: the first Stop's late answer, after a newer Stop, "
+              f"says nothing over the newer one's words: {g}")
+        h = r["h"]
+        check(h["before"] == stop_late and
+              h["msg"] == "Flame disarm FAILED. Use the e-stop." and
+              h["cls"] == "bad" and
+              h["top"] == "Flames NOT disarmed. Use the e-stop." and
+              not h["busy"],
+              f"{where}: a Stop answered at 5 s with the flame disarm "
+              f"FAILED: its own words replace No answer, on the line and "
+              f"the top line: {h}")
+        k = r["k"]
+        check(not k["mid"]["busy"] and k["mid"]["stopping"] and
+              k["mid"]["outs"] == [1, 1, 1] and not k["after"]["stopping"]
+              and k["after"]["outs"] == [0, 0, 0],
+              f"{where}: a Stop freed at the limit is still out: the timed "
+              f"purge's read waits for its answer, and the cleaning's and "
+              f"Continue anyway's counts hold it until it settles: {k}")
+        lw = r["l"]
+        check(lw["mid"] == pend and lw["after"] == "Purge NOT firing." and
+              lw["cls"] == "bad",
+              f"{where}: two word-less presses overlapping put back the "
+              f"warning both covered: {lw}")
+        check(lw["expired"] == "" and lw["kept"] == "Fresh words." and
+              lw["kept_end"] == "",
+              f"{where}: a line put back keeps only its time left, and one "
+              f"past its time is never brought back: {lw}")
+        check(r["i"] == {"msg": stopped, "cls": "ok", "busy": False},
+              f"{where}: a healthy Stop answered at 4.3 s says it stopped: "
+              f"{r['i']}")
+    # The top line's words change; nothing on the screen moves. At the
+    # phone in hand and at the smallest a display size makes it.
+    for size in ((384, 800), (270, 560)):
+        where = f"2.0 on a touch phone, {size[0]}x{size[1]}, contact lost"
+        g = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                              _UI2_PEND_STEPS.replace("__PART__", "layout"),
+                              size, routes=morning, budget_ms=60000)
+        if not check(isinstance(g, dict) and "after" in g and
+                     not g.get("problems"), f"{where}: driven: {g!r}"[:1500]):
+            continue
+        for fk in ("fit", "fit_wide"):
+            check(g[fk]["sw"] <= g[fk]["cw"] and g[fk]["sh"] <= g[fk]["ch"],
+                  f"{where}: Connection lost. Use e-stop. fits the top line "
+                  f"whole ({fk}): {g[fk]}")
+        check(lost_w in g["lost_tops"] and g["lost_body"] and
+              "bad" in g["lost_next"].split(),
+              f"{where}: Connection lost on the top line: {g['lost_tops']}")
+        pinned = ("next", "next-t", "wx", "msg")
+        check(all(g["lost"][k] == g["before"][k] for k in pinned) and
+              g["after"] == g["before"],
+              f"{where}: the top line and the footer stay where they were "
+              f"when the line said Connection lost, and every control is "
+              f"back where it was when it cleared: before {g['before']} "
+              f"lost {g['lost']} after {g['after']}")
+        check(g["old_words"] != g["new_words"] == lost_w and
+              g["lost_old"] == g["lost_new"],
+              f"{where}: the words Connection lost move nothing against the "
+              f"words before them ({g['old_words']!r}): {g['lost_old']} "
+              f"{g['lost_new']}")
+        check(g["before"]["scroll"][0] <= g["before"]["scroll"][1] and
+              g["lost"]["scroll"][0] <= g["lost"]["scroll"][1],
+              f"{where}: nothing scrolls sideways: {g['lost']['scroll']}")
+        check(g["after_next"] != lost_w,
+              f"{where}: the line clears once the engine is back: "
+              f"{g['after_next']}")
+    # Off a phone nothing of it: a desktop window's line and a press are
+    # as they were.
+    d = _ui2_drive_framed(chrome, page, _ui2_status_touch_holds(),
+                          r"""
+document.querySelector('.tab[data-tab="show"]').click();
+await h.sleep(1200);
+const ids = ((ST.laser_arm || {}).lasers || []).map(x => x.id);
+window.__delay["laser-arm"] = 1500;
+document.getElementById("msg-t").textContent = "";
+lzPress({lasers:ids, on:true, confirmed:true});
+out.msg = document.getElementById("msg-t").textContent; out.pend = PEND;
+out.lost = lostStep({text:"x", tone:"ok"}, true).text;
+await h.sleep(1800);
+""", (1280, 800), coarse=False, routes=morning, budget_ms=30000)
+    check(isinstance(d, dict) and d.get("msg") == "" and d.get("pend") is
+          None and d.get("lost") == "x",
+          f"a desktop window: no Pending and no lost line of the phone's: "
+          f"{d!r}"[:600])
+    print("  ok")
+
+
 def test_ui2_continue_anyway_slide_on_a_phone():
     section("Continue anyway's slide on a touch phone (step 7c of the phone "
             "build): in the alert slot, a slide in front of today's hold "
@@ -139060,6 +139514,7 @@ if __name__ == "__main__":
         test_ui2_timed_purge_slide_on_a_phone,
         test_ui2_cleaning_slide_on_a_phone,
         test_ui2_continue_anyway_slide_on_a_phone,
+        test_ui2_phone_pending_no_answer_connection_lost,
         test_ui2_broken_banner_fits_a_phone_and_a_2k_screen,
         test_ui2_slow_link_page_is_not_called_broken,
         test_ui2_day_makes_only_1_0_presses,
