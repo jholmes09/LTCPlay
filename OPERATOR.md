@@ -3145,8 +3145,23 @@ tab, and the hardware e-stop always works.
   file and loads it at once (tonight's list is rebuilt; nothing is
   started); the engine checks every rule and says what it refused or
   anything to know. Reload from the file reads it again (changes not saved
-  are dropped). Date exceptions in the file are kept as they are; the card
-  says how many. Edits not yet saved stay in the form when the screen
+  are dropped). Date exceptions are on the card below it, Special dates
+  (added 2026-11-26, after Thanksgiving did not run because of a closed
+  date nobody asked for): every exception in the file, its date and
+  weekday, and Closed or its own first show, minutes apart and last show
+  end; a date already past says Past and can still be removed. Change
+  fills the form with that date; Add or change this date puts a date in
+  as Closed or with its own hours (a date that is already there is
+  changed); Remove takes it out. These edit the form only: "Not saved
+  yet" shows on both cards until Save the schedule (on either card)
+  writes the whole file through the same check, so a weekly change and
+  the exceptions are saved together and none is lost. A date field
+  never takes a date that does not exist; a date that is not one gets
+  the scheduler's own sentence. When tonight is a special date, the
+  tonight card and the top line say so ("Closed tonight by a special
+  date." while no show is due or running, "Tonight runs special date
+  hours."). The shipped example has no exceptions: closed dates are
+  Jeff's to set. Edits not yet saved stay in the form when the screen
   goes back to SHOW by itself (a new alert, or a minute untouched near a
   show; typing counts as a touch), and the footer says "Unsaved schedule
   edits kept"; opening Schedule again never reads the file over them. A

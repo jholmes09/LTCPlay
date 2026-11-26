@@ -599,6 +599,16 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .sched label{display:flex;align-items:center;gap:8px;min-height:56px;font-weight:700}
 .sched input[type=checkbox]{width:28px;height:28px}
 @media (max-width:600px){ .sched{grid-template-columns:1fr 1fr} .sched .h{display:none} .sched label{grid-column:1 / -1} }
+/* Special dates (Thanksgiving 2026): one row a date, its words and its
+   Change and Remove. The row wraps, so nothing is wider than the screen. */
+#sp-list{display:flex;flex-direction:column;gap:6px;min-width:0}
+#sp-list .dim{color:var(--muted)}
+.sp-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px var(--gap);border-bottom:1px solid var(--line);padding:6px 0;min-width:0}
+.sp-row .sp-d{flex:1 1 14em;min-width:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px}
+.sp-row .sp-d b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.sp-row .sp-k{overflow-wrap:anywhere}
+.sp-row .sp-past{color:var(--muted);font-weight:700}
+.sp-row .pbar{flex:1 1 16em}
 /* Programming (P1, P2): 1.0's Show file and Programming session cards. */
 .pline{color:var(--muted);line-height:1.3}
 .pline b{color:var(--cream)}
@@ -1374,6 +1384,7 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
       <div class="card col" id="tn-card">
         <div class="t"><b>Tonight's shows</b><span id="tn-state"></span></div>
         <div class="pline" id="tn-next">Next: None tonight</div>
+        <div class="pline warn" id="tn-special" role="status" hidden></div>
         <div class="pline bad" id="tn-run-warn" role="alert" hidden></div>
         <button class="b green" id="tn-run" hidden><svg class="i"><use href="#i-power"/></svg>Show control on</button>
         <div id="tonight"></div>
@@ -1401,7 +1412,31 @@ input.f{font:inherit;min-height:56px;width:100%;padding:0 12px;border-radius:10p
         </div>
         <div class="pbar"><button class="b green" id="se-save"><svg class="i"><use href="#i-check"/></svg>Save the schedule</button><button class="b" id="se-reload"><svg class="i"><use href="#i-reset"/></svg>Reload from the file</button></div>
         <div class="pline" id="se-msg" role="status"></div>
+        <div class="pline warn" id="se-unsaved" role="status" hidden>Not saved yet. Press Save the schedule.</div>
         <div class="pline" id="se-note"></div>
+      </div>
+      <!-- SPECIAL DATES (Jeff, Thanksgiving 2026-11-26: a closed date he
+           never asked for was in the file, and no screen showed it): the
+           schedule file's date exceptions, each Closed or with its own
+           hours, added, changed and removed here. The show PC only, with
+           the editor. Edits go into the editor's copy of the file and are
+           written by the same Save (schedule-file, checked by the
+           scheduler first); nothing here starts or stops a show. -->
+      <div class="card col" id="sched-special" hidden>
+        <div class="t"><b>Special dates</b><span>A date closed, or with its own hours.</span></div>
+        <div id="sp-list"><div class="dim">Reading the schedule file.</div></div>
+        <b>Add or change a date</b>
+        <div class="segrid">
+          <label class="fl"><span>Date</span><input class="f" id="sp-date" type="date" min="1971-01-01" max="9998-12-30"></label>
+          <label class="fl"><span>That night</span><select class="f" id="sp-kind"><option value="closed">Closed, no shows</option><option value="hours">Its own hours</option></select></label>
+          <label class="fl" id="sp-first-l" hidden><span>First show</span><input class="f" id="sp-first" type="time"></label>
+          <label class="fl" id="sp-int-l" hidden><span>Minutes apart</span><input class="f" id="sp-int" type="number" min="1" step="1" inputmode="numeric"></label>
+          <label class="fl" id="sp-last-l" hidden><span>Last show ends</span><input class="f" id="sp-last" type="time"></label>
+        </div>
+        <div class="pbar"><button class="b" id="sp-add"><svg class="i"><use href="#i-check"/></svg>Add or change this date</button></div>
+        <div class="pline" id="sp-msg" role="status"></div>
+        <div class="pline warn" id="sp-unsaved" role="status" hidden>Not saved yet. Press Save the schedule.</div>
+        <div class="pbar"><button class="b green" id="sp-save"><svg class="i"><use href="#i-check"/></svg>Save the schedule</button></div>
       </div>
       <!-- PROGRAMMING (docs/REMOVE_1_0_PLAN.md P1 and P2): 1.0's
            Programming screen, here on the Schedule tab (the header has no
@@ -2570,6 +2605,10 @@ function nextStep(st, isStaleNow, local, items){
   // with Acknowledge says Acknowledge).
   if(bad.length) return {tone:"bad", icon:"warn", text:bad[0].what + (bad[0].act === "ack" ? " Fix, then Acknowledge." : " See the alert.")};
   if(isRehearsal(st) && !isLive(st)) return {tone:"warn", icon:"info", text:"Rehearsal: the schedule starts no show."};
+  // A special date closes tonight (Jeff, Thanksgiving 2026: no show ran
+  // and nothing said why). Said only while no show is running, due or
+  // delayed. Words only: it starts and stops nothing.
+  if(sch.attached && sch.special && sch.special.closed && !isLive(st) && !sch.next && !sch.delayed && !sch.start_waiting) return {tone:"ok", icon:"info", text:"Closed tonight by a special date."};
   if(sch.attached && !runIsOn(st)) return {tone:"warn", icon:"power", text: local ? "Show control is off." : "Show control off: turn on at show PC."};
   const c = countdownRead(CD, monoNow());
   const tm = showTimes(c, cdLength(st));
@@ -4418,6 +4457,144 @@ function seBaseline(){
 function seDirty(){
   return !!SCHED_DOC && SCHED_DOC === SE_BASE_DOC && JSON.stringify(readSchedule()) !== SE_BASE;
 }
+// ---- Special dates (Jeff, Thanksgiving 2026-11-26) ----
+// The show did not run: the file had a closed date nobody asked for, and
+// no screen showed it. Every date exception in the file is listed here
+// (Closed, or its own first show, minutes apart and last show end), past
+// ones too, and each can be changed or removed, a new one added. Edits go
+// into the editor's copy of the file (SCHED_DOC.exceptions), which 1.0's
+// readSchedule sends whole, so the one Save writes them through the same
+// route and the scheduler's own check, refused while a show is live.
+// Nothing here starts, stops or changes a show by itself.
+// The scheduler's own sentence for a date it cannot read (schedule.py
+// _date), up to the date typed, which a date field never hands over.
+const SP_DATE_WORDS = 'An exception has to be a date like "2026-11-14".';
+const SP_WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function spDays(doc){
+  const ex = (doc && doc.exceptions && typeof doc.exceptions === "object") ? doc.exceptions : {};
+  return Object.keys(ex).sort().map(d => ({date:d, v:ex[d]}));
+}
+// What one exception says: Closed, its own hours, or not readable here
+// (the save then says why, in the scheduler's words). Pure.
+function spWhat(v){
+  if(v === null) return "Closed, no shows";
+  if(v && typeof v === "object" && typeof v.first_start === "string" && v.interval_min != null && typeof v.last_end === "string")
+    return "From " + v.first_start + ", every " + v.interval_min + " minutes, ends " + v.last_end;
+  return "Not readable here. Saving says why.";
+}
+function spWeekday(d){
+  const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(String(d));
+  if(!m) return "";
+  const t = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return isNaN(t) ? "" : SP_WD[t.getUTCDay()];
+}
+// Today in the schedule's zone, as YYYY-MM-DD (the form's zone, else this
+// PC's): a date before it is past.
+function spToday(){
+  let z = "";
+  try{ z = $("se-tz").value || ""; }catch(e){}
+  try{
+    const p = new Intl.DateTimeFormat("en-US", Object.assign({year:"numeric", month:"2-digit", day:"2-digit"}, z ? {timeZone:z} : {})).formatToParts(new Date());
+    const g = k => (p.find(x => x.type === k) || {}).value || "";
+    return g("year") + "-" + g("month") + "-" + g("day");
+  }catch(e){ return ""; }
+}
+function spSay(text){ setText($("sp-msg"), text); }
+function spDraw(){
+  const doc = SCHED_DOC;
+  if(!doc){ $("sp-list").innerHTML = `<div class="dim">Reading the schedule file.</div>`; return; }
+  const rows = spDays(doc), today = spToday();
+  $("sp-list").innerHTML = rows.length ? rows.map(r => {
+    const past = today && r.date < today;
+    return `<div class="sp-row" data-date="${esc(r.date)}"><div class="sp-d"><b>${esc((spWeekday(r.date) + " " + r.date).trim())}</b>` +
+      `<span class="sp-k">${esc(spWhat(r.v))}</span>${past ? `<span class="sp-past">Past</span>` : ""}</div>` +
+      `<div class="pbar"><button class="b" type="button" data-sp-edit="${esc(r.date)}">Change</button>` +
+      `<button class="b" type="button" data-sp-del="${esc(r.date)}">Remove</button></div></div>`;
+  }).join("") : `<div class="dim">No special dates. Every night runs as usual.</div>`;
+  const n = rows.length;
+  $("se-note").textContent = n ? (n + " date exception" + (n === 1 ? "" : "s") + " in the file. See Special dates below.") : "";
+  spUnsaved();
+}
+function spKind(){
+  const own = $("sp-kind").value === "hours";
+  for(const id of ["sp-first-l", "sp-int-l", "sp-last-l"]) $(id).hidden = !own;
+}
+$("sp-kind").addEventListener("change", spKind);
+function spEdit(next){
+  if(!SCHED_DOC){ spSay("Reload from the file first. Nothing was changed."); return false; }
+  const ex = Object.assign({}, (SCHED_DOC.exceptions && typeof SCHED_DOC.exceptions === "object") ? SCHED_DOC.exceptions : {});
+  next(ex);
+  SCHED_DOC.exceptions = ex;
+  spDraw();
+  return true;
+}
+$("sp-add").addEventListener("click", () => {
+  const di = $("sp-date"), d = di.value;
+  // A date field hands over a whole real date or nothing: nothing (a
+  // date typed that is not one, or none) is the scheduler's sentence.
+  if(!d || (di.validity && di.validity.badInput) || !/^\d{4}-\d\d-\d\d$/.test(d)){ spSay(SP_DATE_WORDS + " Nothing was added."); return; }
+  let v = null;
+  if($("sp-kind").value === "hours"){
+    const fs = $("sp-first").value.trim(), im = $("sp-int").value.trim(), le = $("sp-last").value.trim();
+    if(!fs || !im || !le){ spSay("Fill in all three times. Nothing was added."); return; }
+    v = {first_start:fs, interval_min:Number(im), last_end:le};
+  }
+  let had = false;
+  if(spEdit(ex => { had = Object.prototype.hasOwnProperty.call(ex, d); ex[d] = v; }))
+    spSay((had ? "Changed " : "Added ") + d + ". Not saved yet.");
+});
+$("sp-list").addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest("button");
+  if(!b) return;
+  if(b.dataset.spDel){
+    const d = b.dataset.spDel;
+    if(spEdit(ex => { delete ex[d]; })) spSay("Removed " + d + ". Not saved yet.");
+  }else if(b.dataset.spEdit){
+    const d = b.dataset.spEdit, v = ((SCHED_DOC || {}).exceptions || {})[d];
+    $("sp-date").value = d;
+    const own = v !== null && v && typeof v === "object";
+    $("sp-kind").value = own ? "hours" : "closed";
+    $("sp-first").value = own ? String(v.first_start || "") : "";
+    $("sp-int").value = own && v.interval_min != null ? String(v.interval_min) : "";
+    $("sp-last").value = own ? String(v.last_end || "") : "";
+    spKind();
+    spSay("Change " + d + " below, then press Add or change.");
+    try{ $("sp-date").scrollIntoView({block:"center"}); }catch(e2){}
+  }
+});
+async function spSave(){
+  try{
+    const j = await post("/api/remote/schedule-file", {doc:readSchedule()});
+    setOpText($("se-msg"), j.text); setOpText($("sp-msg"), j.text);
+    if(j.doc) drawSchedule(j.doc);
+  }catch(e){ $("se-msg").textContent = e.message; $("sp-msg").textContent = e.message; }
+  spUnsaved();
+}
+$("sp-save").addEventListener("click", spSave);
+// Not saved yet: said on both cards whenever the form differs from the
+// file it showed (seDirty), straight after an edit and on every status.
+function spUnsaved(){
+  let d = false;
+  try{ d = seDirty(); }catch(e){}
+  if($("se-unsaved").hidden !== !d) $("se-unsaved").hidden = !d;
+  if($("sp-unsaved").hidden !== !d) $("sp-unsaved").hidden = !d;
+}
+for(const id of ["sched-edit", "sched-special"]){
+  $(id).addEventListener("input", spUnsaved);
+  $(id).addEventListener("change", () => setTimeout(spUnsaved, 0));
+}
+// Tonight's special date, from the engine (Remote._tonight_special): on
+// the tonight card, so nobody wonders why no show runs.
+function spTonight(sch){
+  const sp = sch && sch.attached ? sch.special : null;
+  const w = sp && sp.words ? String(sp.words) : "";
+  $("tn-special").hidden = !w;
+  setText($("tn-special"), w);
+}
+// 1.0's drawSchedule fills the editor; the special dates are drawn from
+// the same copy straight after, and the baseline for Not saved yet taken.
+const drawSchedule1 = drawSchedule;
+drawSchedule = function(doc){ drawSchedule1(doc); seBaseline(); spDraw(); };
 // 1.0's Schedule screen line: the state word and its sentence (1.0's
 // render, the same words).
 function tonightState(s){
@@ -4456,6 +4633,9 @@ function renderTonight(s){
   if($("sched-edit").hidden !== !local) $("sched-edit").hidden = !local;
   if(local && TAB === "schedule" && !SE_READ){ SE_READ = true; loadSchedule(); }
   seBaseline();
+  spTonight(sch);
+  if($("sched-special").hidden !== !local) $("sched-special").hidden = !local;
+  spUnsaved();
 }
 // ---- P13: 1.0's show machine switches (Programming cards) ----
 // COPIED FROM 1.0 (selftest.py checks): the announcement output picker,
