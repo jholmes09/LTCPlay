@@ -276,6 +276,8 @@ REMOTE_ROUTES = {
     # Tap, then confirm, to arm from a phone (confirmarm.py): both taps
     # are the arm row's, like the hold they stand in for.
     "arm-request": "arm", "arm-confirm": "arm",
+    # And for a timed purge (confirmpurge.py): the purge's own row.
+    "purge-request": "arm", "purge-confirm": "arm",
     "network": "settings", "screen-arming": "settings",
     # Remote access over Tailscale: never the role matrix's; only
     # may_manage_tailscale (remote.py), which answers everyone else like a

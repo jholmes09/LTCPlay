@@ -59481,11 +59481,34 @@ def test_remote_has_no_arm_route():
     # the engine's own hazer list that flamesafe types "hazer", through
     # the per-hazer arm (hazers.Hazers.arm_all); never a flame group or a
     # laser. Pinned below, and in test_arm_all_hazers_only_arms_hazers.
-    check(armish == ["arm-hold", "arm-release", "hazers-arm-all",
-                     "laser-arm", "screen-arming"],
+    # arm-request and arm-confirm (Jeff, 2026-11-27: tap, then confirm,
+    # from a phone, confirmarm.py) arm nothing by themselves either: the
+    # tap answers a ticket, and the Confirm reaches the arm only through
+    # arm_hold, the hold's own handler, which the Stream Deck reads.
+    # Pinned below, and in test_confirm_arm_tap_then_confirm.
+    check(armish == ["arm-confirm", "arm-hold", "arm-release",
+                     "arm-request", "hazers-arm-all", "laser-arm",
+                     "screen-arming"],
           f"the only flame arm routes are the hold and its release, the "
-          f"one laser arm route, the hazer-only Arm all hazers and the "
-          f"switch: {armish}")
+          f"tap and its Confirm that stand in for the hold, the one laser "
+          f"arm route, the hazer-only Arm all hazers and the switch: "
+          f"{armish}")
+    import inspect as _insp0
+    from ltcplay import confirmarm as _CA0
+    ca_src = _insp0.getsource(_CA0)
+    rq_src = _insp0.getsource(RM.Remote.arm_request) + \
+        _insp0.getsource(RM.Remote.arm_confirm) + \
+        _insp0.getsource(RM.Remote.confirm_arming) + \
+        _insp0.getsource(RM.Remote.confirm_arm_refusal)
+    check("confirmarm.ConfirmArm(\n                        self.arm_hold,"
+          in rq_src and "_holds[" not in rq_src and
+          "arm.wanted" not in rq_src and "import" not in
+          ca_src.split('"""', 2)[2].replace("import hmac", "")
+          .replace("import secrets", "").replace("import threading", "")
+          .replace("import time", ""),
+          "the tap and its Confirm reach the arm only through arm_hold: "
+          "they never write a hold themselves, and confirmarm.py imports "
+          "nothing of the engine, the deck or flamesafe")
     import inspect as _insp
     from ltcplay import hazers as _HZ
     from ltcplay import users as _U
@@ -70287,9 +70310,23 @@ def test_confirm_arm_tap_then_confirm():
         st, _h, out = confirm(tk, client=other)
         check(st == 409 and out["error"] == CA.NO_TICKET and holds() == [],
               f"another device's Confirm is refused: {st} {out}")
+        # The ticket itself: this device, a wrong ticket, then the right.
+        st, _h, out = confirm(tk[:-1] + ("A" if tk[-1] != "A" else "B"))
+        check(st == 409 and out["error"] == CA.NO_TICKET and holds() == [],
+              f"the right device with a wrong ticket is refused: {out}")
+        v = R.remote.confirm_arming().view("iPad at 10.20.0.44")
+        check(len(v["waiting"]) == 1,
+              "and neither spent it: nobody else's Confirm, and no wrong "
+              "ticket, takes an Arm tap away from the one who made it")
         st, _h, out = confirm(tk)
-        check(st == 409 and holds() == [],
-              "and it spent the ticket: the first device taps Arm again")
+        check(st == 200 and len(holds()) == 1,
+              f"the right ticket from the right device is taken: {out}")
+        R.remote.cancel_holds("the test lets it go")
+        step()
+        R.remote.confirm_arming().tick()
+        check(runs()[0]["state"] == "refused" and holds() == [],
+              "(let go again for the cases below)")
+        step(3.0)
         st, _h, out = tap()
         tk = out["ticket"]
         st, _h, out = tap(client=other)
@@ -70315,8 +70352,8 @@ def test_confirm_arm_tap_then_confirm():
             lambda b, c: (pressed.append(b), (200, {"hold_id": 1}))[1],
             lambda i, t: None, lambda *a: "", clock=lambda: tt[0],
             wall=lambda: tt[0], threaded=False)
-        pa, pb = (_ty.SimpleNamespace(device="phone A"),
-                  _ty.SimpleNamespace(device="phone B"))
+        pa, pb = (_ty.SimpleNamespace(device="phone A", token=""),
+                  _ty.SimpleNamespace(device="phone B", token=""))
         _c, o = solo.request(0, "g", pa, "Jeff", "iPad", 1)
         tt[0] += 1
         c1, o1 = solo.confirm(0, "g", pb, "Jeff", "iPad", 1, o["ticket"])
@@ -70415,8 +70452,132 @@ def test_confirm_arm_tap_then_confirm():
         R.remote.cancel_holds("Disarm all")
         step()
         R.remote.confirm_arming().tick()
+        check(runs()[0]["state"] == "refused" and holds() == [] and
+              runs()[0]["text"] == CA.CUT,
+              f"a cut during the hold ends the run, said as the cut it "
+              f"was: {runs()}")
+        # The cut alone ends it, whatever became of the hold: a hold put
+        # back by hand after the cut is let go on the next beat.
+        step(3.0)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        step()
+        R.remote.confirm_arming().tick()
+        with R.remote._arm_lock:
+            kept = dict(R.remote._holds[0])
+        R.remote.cancel_holds("a Stop")
+        with R.remote._arm_lock:
+            R.remote._holds[0] = kept
+        step()
+        R.remote.confirm_arming().tick()
+        check(runs()[0]["state"] == "refused" and
+              runs()[0]["text"] == CA.CUT and holds() == [],
+              f"a beat after a cut stamped since the Confirm lets the hold "
+              f"go even if it is still there: {runs()} {holds()}")
+        # The group's own Disarm, through its route, during the hold.
+        step(3.0)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        step()
+        R.remote.confirm_arming().tick()
+        st, _h, out = R.ask("POST", "/api/remote/group-disarm",
+                            {"group": "front row", "seen": R.seen()})
+        step()
+        R.remote.confirm_arming().tick()
         check(runs()[0]["state"] == "refused" and holds() == [],
-              f"a cut during the hold ends the run: {runs()}")
+              f"the group's Disarm ends the run: {st} {runs()}")
+        # Armed by something else while the engine holds: never credited.
+        step(3.0)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        step()
+        R.remote.confirm_arming().tick()
+        R.groups[0]["wanted"] = True
+        R.feed()
+        for _ in range(7):
+            step()
+            R.remote.confirm_arming().tick()
+        check(runs()[0]["state"] == "elsewhere" and
+              runs()[0]["text"] == CA.ELSEWHERE and holds() == [],
+              f"asked for with no word from the deck that this press did "
+              f"it: said as armed elsewhere, never as this press's: "
+              f"{runs()}")
+        R.groups[0]["wanted"] = False
+        R.groups[0]["armed"] = "disarmed"
+        R.feed()
+        # The words never say "nothing was armed" over a group that is.
+        tt2 = [10.0]
+        lamp = [False]
+        hid2 = [0]
+
+        def press2(b, c):
+            if b.get("hold_id") is None:
+                hid2[0] += 1
+            return 200, {"hold_id": hid2[0]}
+        slow = CA.ConfirmArm(press2, lambda i, t: None, lambda *a: "",
+                             asked=lambda i: lamp[0],
+                             clock=lambda: tt2[0], wall=lambda: tt2[0],
+                             threaded=False)
+        pa2 = _ty.SimpleNamespace(device="phone A", token="")
+        _c, o = slow.request(0, "front row", pa2, "Jeff", "iPad", 1)
+        tt2[0] += 1
+        slow.confirm(0, "front row", pa2, "Jeff", "iPad", 1, o["ticket"])
+        lamp[0] = True
+        tt2[0] += CA.DRIVE_MAX_S + 0.1
+        slow.tick()
+        sr = slow.view()["runs"][0]
+        check(sr["state"] == "timeout" and
+              sr["text"] == CA.ARMED_ANYWAY.format(g="front row") and
+              "Nothing was armed" not in sr["text"],
+              f"3 s up with the group in fact asked for: the words say "
+              f"armed, and to check the lamp: {sr}")
+        _no_dashes(CA.ARMED_ANYWAY + CA.CUT + CA.BROKE, "the run's words")
+        # A sign out during the hold, and a watcher that raises.
+        live = [True]
+        gone = []
+        so = CA.ConfirmArm(press2, lambda i, t: gone.append((i, t)),
+                           lambda *a: "", session_live=lambda c: live[0],
+                           clock=lambda: tt2[0], wall=lambda: tt2[0],
+                           threaded=False)
+        _c, o = so.request(0, "g", pa2, "Jeff", "iPad", 1)
+        tt2[0] += 1
+        so.confirm(0, "g", pa2, "Jeff", "iPad", 1, o["ticket"])
+        live[0] = False
+        tt2[0] += 0.1
+        so.tick()
+        check(so.view()["runs"][0]["text"] == CA.SIGNED_OUT and
+              gone == [(0, "phone A")],
+              f"a sign out during the hold lets it go: {so.view()['runs']}")
+
+        def boom(c):
+            raise RuntimeError("x")
+        bad = CA.ConfirmArm(press2, lambda i, t: gone.append("b"),
+                            lambda *a: "", session_live=boom,
+                            clock=lambda: tt2[0], wall=lambda: tt2[0],
+                            threaded=False)
+        _c, o = bad.request(0, "g", pa2, "Jeff", "iPad", 1)
+        tt2[0] += 1
+        bad.confirm(0, "g", pa2, "Jeff", "iPad", 1, o["ticket"])
+        tt2[0] += 0.1
+        bad.tick()
+        check(bad.view()["runs"][0]["state"] == "refused" and
+              bad.view()["runs"][0]["text"] == CA.BROKE and "b" in gone and
+              bad.request(0, "g", pa2, "Jeff", "iPad", 1)[0] == 200,
+              f"a check that raises ends the run and lets go; the group "
+              f"can be tapped again: {bad.view()['runs']}")
+        # A new sign-in is a new person at the phone: an old ticket is not
+        # theirs.
+        tk1 = _ty.SimpleNamespace(device="phone A", token="session-1")
+        tk2 = _ty.SimpleNamespace(device="phone A", token="session-2")
+        _c, o = bad.request(1, "h", tk1, "Jeff", "iPad", 1)
+        tt2[0] += 1
+        c9, o9 = bad.confirm(1, "h", tk2, "Jeff", "iPad", 1, o["ticket"])
+        check(c9 == 409 and o9["error"] == CA.NO_TICKET,
+              f"a ticket from before a sign out and back in is refused: "
+              f"{c9} {o9}")
         for _ in range(15):
             step()
             R.remote.confirm_arming().tick()
@@ -83573,6 +83734,167 @@ def _tp_hold(R, seconds=5, hold_s=None, client=None, window="W1",
 def _tp_lines(R, outcome):
     return [r for r in R.svc.journal
             if r.get("action") == "purge" and r.get("outcome") == outcome]
+
+
+def test_confirm_purge_tap_then_confirm():
+    section("tap, then confirm, for a timed purge from a phone (Jeff, "
+            "2026-11-27): a Purge tap selects nothing; only a Confirm from "
+            "the same device, 0.3 to 5 s later, selects the machines; the "
+            "engine keeps the page open, waits for every group armed, "
+            "starts the timed purge through its own route, and clears the "
+            "selection when it is over; a selection taken away is never "
+            "selected again; 5 s with a group not armed clears it")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    from ltcplay import confirmpurge as CP
+    from ltcplay import users as US
+    check(CP.TICKET_S == 5.0 and CP.CONFIRM_MIN_S == 0.3 and
+          CP.ARM_WAIT_S == 5.0 and CP.OPEN_S < 0.5 and CP.BEAT_S == 0.1,
+          "the numbers Jeff approved: 5 s to confirm, never the same tap, "
+          "5 s for the groups to arm, the page's open beat kept up")
+    check(all(r in RM.POST_ROUTES and US.REMOTE_ROUTES.get(r) == "arm"
+              for r in RM.CONFIRM_PURGE_ROUTES),
+          "both taps are routes of the arm row, like the purge's own")
+    R = _morning_rig(S, _MO_CONFIG, link=_FakeTimedLink())
+    R.m.timed_blockers = R.remote.timed_purge_blockers
+    R.remote.confirm_purge_threaded = False
+    link = R.link
+    other = ("10.20.0.45", 50001)
+    phone = "iPad at 10.20.0.44"
+
+    def cp():
+        return R.remote.confirm_purging()
+
+    def step(dt=0.1):
+        R.mono[0] += dt
+        R.wall[0] += dt
+        R.feed()
+        R.remote._deck_seen = R.mono[0]
+        cp().tick()
+        if R.m.purge.timed_running():
+            R.m.purge.timed_send()
+        R.m.tick()
+
+    def run(n):
+        for _ in range(n):
+            step()
+
+    def tap(seconds=2, machines=("g1", "g2"), **kw):
+        return R.ask("POST", "/api/remote/purge-request",
+                     {"machines": list(machines), "seconds": seconds,
+                      "seen": R.seen()}, **kw)
+
+    def confirm(ticket, **kw):
+        return R.ask("POST", "/api/remote/purge-confirm",
+                     {"ticket": ticket, "seen": R.seen()}, **kw)
+
+    def state():
+        return (cp().view()["run"] or {}).get("state")
+
+    def front(armed):
+        R.groups[0]["armed"] = "armed" if armed else "disarmed"
+        R.groups[0]["wanted"] = armed
+        R.feed()
+    try:
+        # The Purge tap: a ticket, nothing selected, nothing fired.
+        st, _h, out = tap()
+        tk = out.get("ticket")
+        check(st == 200 and isinstance(tk, str) and len(tk) >= 16 and
+              out["seconds"] == 2 and R.m.purge.selected == [] and
+              not link.frames,
+              f"a Purge tap answers a ticket and selects nothing: {out}")
+        check(tk not in repr(cp().view()),
+              "the status never carries the ticket")
+        st, _h, out = confirm(tk)
+        check(st == 409 and out["error"] == CP.TOO_SOON and
+              R.m.purge.selected == [],
+              f"a Confirm with the tap itself is refused: {st} {out}")
+        st, _h, out = tap(31)
+        check(st == 409 and "longer than the longest" in out["error"],
+              f"over this show machine's longest: refused at the tap: {out}")
+        # Another device, and a wrong ticket: refused, the ticket kept.
+        st, _h, out = tap()
+        tk = out["ticket"]
+        step(0.6)
+        st, _h, out = confirm(tk, client=other)
+        st2, _h, out2 = confirm(tk[:-1] + ("A" if tk[-1] != "A" else "B"))
+        check(st == 409 and out["error"] == CP.NO_TICKET and st2 == 409 and
+              out2["error"] == CP.NO_TICKET and R.m.purge.selected == [],
+              f"another device, or a wrong ticket, selects nothing: {out} "
+              f"{out2}")
+        # The Confirm: selected in the phone's name, nothing fired yet.
+        st, _h, out = confirm(tk)
+        check(st == 200 and out["state"] == "arming" and
+              R.m.purge.selected == ["g1", "g2"] and
+              R.m.purge.owner == phone and not link.frames,
+              f"the Confirm selects the machines and fires nothing: {st} "
+              f"{out} {R.m.purge.selected} {R.m.purge.owner}")
+        # Its group not armed yet: the engine keeps the page open and
+        # waits. Nothing fires.
+        run(25)
+        check(state() == "arming" and R.m.purge.selected == ["g1", "g2"]
+              and not link.frames and not R.m.purge.timed_running(),
+              f"2.5 s with the group not armed: the selection lives on the "
+              f"engine's own open beat, and nothing fires: {state()}")
+        # flamesafe reports it armed: the timed purge's own hold, then it
+        # runs for its seconds and stops by itself.
+        front(True)
+        run(13)
+        check(state() == "firing" and R.m.purge.timed_running() and
+              link.frames and link.limits and
+              _tp_lines(R, "timed_start"),
+              f"armed: the engine's beats start the timed purge through "
+              f"its own route, with the link's hard end: {state()} "
+              f"{link.limits}")
+        run(22)
+        check(state() == "done" and not R.m.purge.timed_running() and
+              R.m.purge.selected == [] and R.m.purge.owner is None,
+              f"its 2 s up: it stopped by itself and the engine cleared "
+              f"the selection, so the deck lets the group go: "
+              f"{cp().view()['run']} {R.m.purge.selected}")
+        n_frames = len(link.frames)
+        # The group never arms: cleared at 5 s, nothing fired.
+        front(False)
+        step(2.5)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        check(st == 200 and R.m.purge.selected == ["g1", "g2"],
+              f"a second run: {st} {out}")
+        run(52)
+        check(state() == "timeout" and
+              cp().view()["run"]["text"] == CP.NOT_ARMED and
+              R.m.purge.selected == [] and len(link.frames) == n_frames,
+              f"5 s with the group not armed: cleared, nothing fired: "
+              f"{cp().view()['run']}")
+        # The selection taken away (a Stop, a Hold, a Clear): never
+        # selected again, and nothing fires even once the group arms.
+        step(2.5)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        run(3)
+        R.m.purge.clear("a Stop")
+        run(2)
+        front(True)
+        run(20)
+        check(state() == "stopped" and
+              cp().view()["run"]["text"] == CP.TAKEN_AWAY and
+              R.m.purge.selected == [] and len(link.frames) == n_frames,
+              f"a selection taken away ends the run; nothing is selected "
+              f"or fired again: {cp().view()['run']}")
+        _no_dashes(CP.NO_TICKET + CP.TOO_LATE + CP.TOO_SOON + CP.BUSY +
+                   CP.NOT_ARMED + CP.NOT_STARTED + CP.TAKEN_AWAY +
+                   CP.SIGNED_OUT + CP.NOT_SELECTED + CP.BROKE,
+                   "the confirmed purge's sentences")
+    finally:
+        c = R.remote.confirm_purge
+        if c is not None:
+            c.close()
+        R.close()
+    print("  ok")
 
 
 def test_timed_purge_flame_link_hard_end():
@@ -140143,6 +140465,7 @@ if __name__ == "__main__":
         test_morning_arrange_mode_arms_nothing,
         test_morning_arrange_disables_firing,
         test_purge_release_can_never_start_a_fire,
+        test_confirm_purge_tap_then_confirm,
         test_timed_purge_flame_link_hard_end,
         test_timed_purge_at_the_engine,
         test_timed_purge_every_end_cause,

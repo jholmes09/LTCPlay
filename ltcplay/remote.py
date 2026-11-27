@@ -54,6 +54,15 @@ longer than ARM_BEAT_GAP_S, a Stop, a disarm or a sign out lets the hold
 go; an interrupted hold never carries on. A group once armed is never
 disarmed by a page going quiet (Jeff, 2026-11-24).
 
+TAP, THEN CONFIRM (Jeff, 2026-11-27; confirmarm.py): a phone's two taps
+(arm-request, then arm-confirm with its one-use ticket, the same device
+and person, 0.3 to 5 s apart) stand in for the finger. The engine then
+makes that hold's first press itself and beats it, 0.1 s apart and for
+3 s at most, through arm_hold above with every rule above. Nothing else
+changes: the Stream Deck program and flamesafe see a screen hold. A Stop,
+a disarm, a sign out or arming switched off ends it; lifting a finger does
+not, and neither does the schedule's Hold, which cuts no hold to arm.
+
 Every refusal is said on the page in a sentence that names the reason
 (2026-10-22, Jeff: "I'm supposed to be able to enable flames via the
 screen"; a hold that went nowhere used to look like a working one). The
@@ -195,6 +204,10 @@ ARM_ROUTES = ("arm-hold", "arm-release", "group-disarm")
 # Tap, then confirm, to arm one flame group from a phone (confirmarm.py,
 # Jeff 2026-11-27). No new way to arm: the engine beats its own arm-hold.
 CONFIRM_ARM_ROUTES = ("arm-request", "arm-confirm")
+# Tap, then confirm, for a timed purge from a phone (confirmpurge.py, Jeff
+# 2026-11-27). No new way to purge: the engine asks the Startup page's own
+# routes (morning_post) in the phone's name.
+CONFIRM_PURGE_ROUTES = ("purge-request", "purge-confirm")
 ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
 # Disarm all flame groups is a plain disarm through the Stream Deck (Jeff,
 # 2026-10-23): it goes that way only while the deck read this engine within
@@ -379,7 +392,7 @@ GET_ROUTES = ("whoami", "status", "network", "tailscale", "deck-input",
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + \
-    CONFIRM_ARM_ROUTES + (
+    CONFIRM_ARM_ROUTES + CONFIRM_PURGE_ROUTES + (
     "network", "tailscale", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone", "preshow-audio") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
@@ -2270,6 +2283,10 @@ class Remote:
         # A test sets confirm_arm_threaded False and ticks it itself.
         self.confirm_arm = None
         self.confirm_arm_threaded = True
+        self._confirm_arm_lock = threading.Lock()
+        # confirmpurge.ConfirmPurge, built on the first Purge tap.
+        self.confirm_purge = None
+        self.confirm_purge_threaded = True
         # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
         # and the "hazers" mismatch alert's sentence and id.
         self.hazers = None
@@ -2837,6 +2854,10 @@ class Remote:
                 if pr is not None:
                     pr.request_end(f"{name.capitalize()} was pressed")
             return (*out,) + ({},)
+        if name == "purge-request":
+            return (*self.purge_request(body, ctx),) + ({},)
+        if name == "purge-confirm":
+            return (*self.purge_confirm(body, ctx),) + ({},)
         if name == "arm-request":
             return (*self.arm_request(body, ctx),) + ({},)
         if name == "arm-confirm":
@@ -6155,11 +6176,28 @@ class Remote:
                 token = getattr(ctx, "token", "")
                 return bool(token) and \
                     self.users.session(token) is not None
-            ca = self.confirm_arm = confirmarm.ConfirmArm(
-                self.arm_hold, release, self.confirm_arm_refusal,
-                session_live=session_live, journal=self._journal,
-                clock=self.clock, wall=self.wall,
-                threaded=self.confirm_arm_threaded)
+            def cut_since(i, since):
+                with self._arm_lock:
+                    cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
+                return any(c is not None and c[0] >= since for c in cuts)
+
+            def asked(i):
+                fl = self.flame_status.view() if self.flame_status else None
+                try:
+                    g = fl["groups"][i]
+                except (TypeError, KeyError, IndexError):
+                    return False
+                return g.get("armed") == "armed" or bool(g.get("wanted"))
+            with self._confirm_arm_lock:
+                # One only: two first taps at once never build two.
+                if self.confirm_arm is None:
+                    self.confirm_arm = confirmarm.ConfirmArm(
+                        self.arm_hold, release, self.confirm_arm_refusal,
+                        session_live=session_live, cut_since=cut_since,
+                        asked=asked, journal=self._journal,
+                        clock=self.clock, wall=self.wall,
+                        threaded=self.confirm_arm_threaded)
+                ca = self.confirm_arm
         return ca
 
     def _confirm_arm_actor(self, body, ctx):
@@ -6194,6 +6232,143 @@ class Remote:
         return self.confirm_arming().confirm(i, gname, ctx, who, device,
                                              body.get("seen"),
                                              body.get("ticket"))
+
+    # -- tap, then confirm, for a timed purge (confirmpurge.py) -------------
+    def purge_confirm_refusal(self, ctx, ids, seconds, seen):
+        """(why, whole seconds): why a tap to purge these machines for this
+        long could not go ahead right now, or "". What can be known before
+        anything is selected; purge-select and purge-timed then apply
+        every rule of their own, on every step."""
+        from . import morning as morning_mod
+        m = self.morning
+        if m is None:
+            return "The Startup page is not set up in this engine.", None
+        if not self.purge_enabled(ctx.local):
+            return ("Arming a purge from here is switched off "
+                    "(purge_arming, and from the show network "
+                    "screen_arming, in ltcplay_remote.json)."), None
+        try:
+            deck_alive = self.clock() - (self._deck_seen or -1e9) <= \
+                self.DECK_QUIET_S
+        except Exception:                            # noqa: BLE001
+            deck_alive = False
+        if not deck_alive:
+            return ("The Stream Deck program has not read this engine in "
+                    "the last 2 s, and it is what arms a group for the "
+                    "purge. Nothing was armed."), None
+        ts = self.timed_purge_settings()
+        if ts["error"]:
+            return f"No timed purge: {ts['error']}", None
+        secs, swhy = morning_mod.timed_seconds(seconds, ts["max_s"])
+        if swhy:
+            return swhy, None
+        if not isinstance(ids, list) or not ids or len(ids) > 64 or \
+                not all(isinstance(x, str) and x for x in ids) or \
+                len(set(ids)) != len(ids):
+            return "Name the machines to purge. Nothing was changed.", None
+        unknown = [x for x in ids if x not in m.cfg.by_id]
+        if unknown:
+            return (f"There is no machine called {unknown[0]}. Nothing was "
+                    f"changed."), None
+        try:
+            seen_ok = abs(self.wall() - float(seen) / 1000.0) <= 1.0
+        except (TypeError, ValueError):
+            seen_ok = False
+        why = m.purge._refusal(ctx.device, seen_ok)
+        if why:
+            return why, None
+        if m.device_arranging(ctx.device):
+            return (f"{ctx.device} is in Arrange mode on the Startup page. "
+                    f"Nothing was changed."), None
+        p = m.purge
+        with p._lock:
+            busy = bool(p.selected) or p.fire is not None or \
+                p.timed_hold is not None
+            owner = p.owner
+        if busy:
+            return ((f"{owner} has a purge selected or running. "
+                     if owner else "A purge is selected or running. ") +
+                    "One purge at a time: Clear it first."), None
+        why = self.timed_purge_blockers(None)
+        if why:
+            return f"No timed purge: {why}", None
+        return "", secs
+
+    def confirm_purging(self):
+        """The engine's one confirmpurge.ConfirmPurge, built on first use."""
+        cp = self.confirm_purge
+        if cp is None:
+            from . import confirmpurge
+
+            def armed(ids):
+                m = self.morning
+                fl = self.flame_status.view() if self.flame_status else None
+                if m is None or not fl or fl["stale"] or \
+                        fl["age_ms"] is None or \
+                        fl["age_ms"] > ARM_FRESH_S * 1000:
+                    return False
+                on = {g["name"] for g in fl["groups"]
+                      if g.get("armed") == "armed"}
+                try:
+                    return all(m.cfg.by_id[x].group in on for x in ids)
+                except KeyError:
+                    return False
+
+            def selected(ids, device):
+                m = self.morning
+                if m is None:
+                    return False
+                with m.purge._lock:
+                    return m.purge.owner == device and \
+                        set(ids) <= set(m.purge.selected)
+
+            def running():
+                m = self.morning
+                return m is not None and m.purge.timed_running()
+
+            def last():
+                m = self.morning
+                return getattr(m.purge, "timed_last", "") if m else ""
+
+            def session_live(ctx):
+                if not self.users_active():
+                    return True
+                token = getattr(ctx, "token", "")
+                return bool(token) and \
+                    self.users.session(token) is not None
+            with self._confirm_arm_lock:
+                if self.confirm_purge is None:
+                    self.confirm_purge = confirmpurge.ConfirmPurge(
+                        self.morning_post, self.purge_confirm_refusal,
+                        armed, selected, running, last=last,
+                        session_live=session_live, journal=self._journal,
+                        clock=self.clock, wall=self.wall,
+                        threaded=self.confirm_purge_threaded)
+                cp = self.confirm_purge
+        return cp
+
+    def _confirm_purge_actor(self, body, ctx):
+        who, device = ctx.device, ctx.screen
+        if self.users_active():
+            who = self.signed_in_name(ctx, body)
+        return who, device
+
+    def purge_request(self, body, ctx):
+        """The Purge tap: the rules checked, a one-use ticket answered.
+        Nothing is selected, armed or fired."""
+        who, device = self._confirm_purge_actor(body, ctx)
+        return self.confirm_purging().request(
+            ctx, who, device, body.get("machines"), body.get("seconds"),
+            body.get("group") if isinstance(body.get("group"), str) else "",
+            body.get("seen"))
+
+    def purge_confirm(self, body, ctx):
+        """The Confirm tap: the ticket, the same device and person, the
+        rules again, then the engine runs the whole timed purge."""
+        who, device = self._confirm_purge_actor(body, ctx)
+        return self.confirm_purging().confirm(ctx, who, device,
+                                              body.get("ticket"),
+                                              body.get("seen"))
 
     def group_disarm(self, body, ctx, confirm=True):
         """Disarm one group: handed to the Stream Deck process, which owns
@@ -11705,6 +11880,8 @@ class Remote:
         # ended and who is waiting on a Confirm. Display only.
         ca = self.confirm_arm
         out["arming"]["confirm"] = ca.view(tok) if ca is not None else None
+        cp = self.confirm_purge
+        out["arming"]["purge"] = cp.view(tok) if cp is not None else None
         self.artnet_alert()
         out["artnet_note"] = self.artnet_note()
         out["config_changed"] = self.config_changed_view(ctx)

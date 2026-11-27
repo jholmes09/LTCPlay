@@ -31,9 +31,12 @@ and the engine's own time, every BEAT_S until the deck takes it.
      it (remote.ARM_CUT).
   3. The watcher beats that hold, and only that hold, until the Stream
      Deck program takes it or DRIVE_MAX_S is up. It never starts a hold:
-     a hold that was cut (a Stop, a Hold, a disarm, a sign out, arming
-     switched off) is refused on its next beat and the run ends. Lifting a
-     finger does not end it: Disarm, Stop and Hold do.
+     a hold that was cut (a Stop, a disarm, a sign out, arming switched
+     off) is refused on its next beat and the run ends, and so is a beat
+     after any cut stamped since the Confirm, whatever became of the hold.
+     Lifting a finger does not end it: Disarm and Stop do. A Hold (the
+     schedule's) cuts no hold to arm, a finger's or this one: it never
+     has.
 
 What it never does: arm with one tap, arm for a different device or person
 than the one that asked, carry on after a cut, or keep trying past
@@ -63,6 +66,12 @@ TIMED_OUT = (f"The Stream Deck program did not take the arm within "
 ELSEWHERE = ("The group was armed or asked for by another screen or the "
              "deck, not by this press. Check the group's lamp.")
 SIGNED_OUT = "Signed out before the arm was taken. Nothing was armed."
+ARMED_ANYWAY = ("{g} is armed or asked for, though this press was not "
+                "told so. Check the group's lamp, and Disarm it if it "
+                "should not be.")
+CUT = ("A Stop or a disarm came after Confirm. Nothing was armed by this "
+       "press.")
+BROKE = "The arm could not be held. Nothing was armed by this press."
 STATES = ("holding", "armed", "elsewhere", "refused", "timeout")
 
 
@@ -70,14 +79,21 @@ class ConfirmArm:
     """One instance in the engine. `press(body, ctx)` is Remote.arm_hold,
     `release(i, token)` drops that device's hold on group i,
     `precheck(i, name, ctx, seen_ms, since)` is "" or why a hold could
-    not start now (`since`: this clock at the Arm tap, None at the tap), `session_live(ctx)` is False once the person signed out."""
+    not start now (`since`: this clock at the Arm tap, None at the tap),
+    `session_live(ctx)` is False once the person signed out,
+    `cut_since(i, since)` is True when a Stop or a disarm cut group i's
+    holds at or after `since` on this clock, `asked(i)` is True while
+    flamesafe reports group i armed or asked for."""
 
     def __init__(self, press, release, precheck,
-                 session_live=lambda ctx: True, journal=None,
+                 session_live=lambda ctx: True,
+                 cut_since=lambda i, since: False,
+                 asked=lambda i: False, journal=None,
                  clock=time.monotonic, wall=time.time, threaded=True,
                  new_ticket=lambda: secrets.token_urlsafe(18)):
         self._press, self._release = press, release
         self._precheck, self._session_live = precheck, session_live
+        self._cut_since, self._asked = cut_since, asked
         self._journal = journal
         self._clock, self._wall = clock, wall
         self._new_ticket = new_ticket
@@ -125,7 +141,9 @@ class ConfirmArm:
         with self._lock:
             self._tickets[i] = {"ticket": ticket, "token": token,
                                 "who": who, "screen": screen, "at": now,
-                                "group": name}
+                                "group": name,
+                                "session": str(getattr(ctx, "token", "")
+                                               or "")}
         self._note(who, screen, "asked",
                    f"{who} tapped Arm for {name} on the {screen}. Nothing "
                    f"arms without a Confirm within {TICKET_S:g} s.")
@@ -137,15 +155,20 @@ class ConfirmArm:
         now = self._clock()
         token = ctx.device
         with self._lock:
-            # Spent whatever comes of it: a ticket is never tried twice.
-            t = self._tickets.pop(i, None)
-        mine = (t is not None and isinstance(ticket, str) and
-                hmac.compare_digest(t["ticket"].encode("utf-8"),
-                                    ticket.encode("utf-8")) and
-                t["token"] == token and t["who"] == who)
+            t = self._tickets.get(i)
+            mine = (t is not None and isinstance(ticket, str) and
+                    hmac.compare_digest(t["ticket"].encode("utf-8"),
+                                        ticket.encode("utf-8")) and
+                    t["token"] == token and t["who"] == who and
+                    t["session"] == str(getattr(ctx, "token", "") or ""))
+            if mine:
+                # Spent whatever comes of it: a ticket is never tried
+                # twice. Anyone else's Confirm spends nothing: it cannot
+                # take the Arm tap away from the one who made it.
+                del self._tickets[i]
 
         def refuse(why):
-            if t is not None:
+            if mine:
                 self._note(who, screen, "refused",
                            f"{who}'s Confirm to arm {name} on the {screen} "
                            f"was refused. {why}")
@@ -190,6 +213,15 @@ class ConfirmArm:
 
     # -- step 3: the watcher's beats ---------------------------------------
     def _end(self, r, state, text, now, let_go=False):
+        if state in ("refused", "timeout"):
+            # Never "nothing was armed" over a lamp that says armed: the
+            # Stream Deck program may have taken it as this run ended.
+            try:
+                asked = self._asked(r["group"]) is True
+            except Exception:                        # noqa: BLE001
+                asked = False
+            if asked:
+                text = ARMED_ANYWAY.format(g=r["name"])
         r["state"], r["text"], r["ended"] = state, text, now
         hold_id, r["hold_id"] = r["hold_id"], None
         if let_go and hold_id is not None:
@@ -213,7 +245,11 @@ class ConfirmArm:
                     if now - (r["ended"] or now) > KEEP_S:
                         del self._runs[i]
                     continue
-                self._beat(r, now)
+                try:
+                    self._beat(r, now)
+                except Exception:                    # noqa: BLE001
+                    if r["state"] == "holding":
+                        self._end(r, "refused", BROKE, now, let_go=True)
 
     def _beat(self, r, now):
         if r["hold_id"] is None:
@@ -221,10 +257,12 @@ class ConfirmArm:
             # start a new hold, which only a Confirm may do.
             return self._end(r, "refused", "The hold was interrupted. "
                                            "Nothing was armed.", now)
-        if not self._session_live(r["ctx"]):
-            return self._end(r, "refused", SIGNED_OUT, now, let_go=True)
         if now > r["deadline"]:
             return self._end(r, "timeout", TIMED_OUT, now, let_go=True)
+        if self._cut_since(r["group"], r["start"]):
+            return self._end(r, "refused", CUT, now, let_go=True)
+        if not self._session_live(r["ctx"]):
+            return self._end(r, "refused", SIGNED_OUT, now, let_go=True)
         body = {"group": r["group"], "hold_id": r["hold_id"],
                 "seen": int(self._wall() * 1000)}
         try:
@@ -253,16 +291,6 @@ class ConfirmArm:
             r["hold_id"] = None
             return self._end(r, "refused", "The hold was interrupted. "
                                            "Nothing was armed.", now)
-
-    def cancel(self, why):
-        """Every ticket gone and every run let go (an Abort, a Stop)."""
-        now = self._clock()
-        with self._lock:
-            self._tickets.clear()
-            for r in self._runs.values():
-                if r["state"] == "holding":
-                    self._end(r, "refused", f"{why} Nothing was armed by "
-                                            f"this press.", now, let_go=True)
 
     # -- what a page reads -------------------------------------------------
     def view(self, device=None):

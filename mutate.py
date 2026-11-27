@@ -12073,23 +12073,18 @@ def build():
 
  ("confirm arm: another device's Confirm is taken",
   'ltcplay/confirmarm.py',
-  '                t["token"] == token and t["who"] == who)',
-  '                True and t["who"] == who)'),
+  '                    t["token"] == token and t["who"] == who and',
+  '                    True and t["who"] == who and'),
 
  ("confirm arm: another person's Confirm is taken",
   'ltcplay/confirmarm.py',
-  '                t["token"] == token and t["who"] == who)',
-  '                t["token"] == token and True)'),
+  '                    t["token"] == token and t["who"] == who and',
+  '                    t["token"] == token and True and'),
 
  ('confirm arm: a ticket can be used twice',
   'ltcplay/confirmarm.py',
-  '            t = self._tickets.pop(i, None)',
-  '            t = self._tickets.get(i)'),
-
- ('confirm arm: the rules are not checked again at the Confirm',
-  'ltcplay/confirmarm.py',
-  '        why = self._precheck(i, name, ctx, seen, t["at"])',
-  '        why = ""'),
+  '                # take the Arm tap away from the one who made it.\n                del self._tickets[i]',
+  '                # take the Arm tap away from the one who made it.\n                pass'),
 
  ('confirm arm: a Stop after the Arm tap does not refuse the Confirm',
   'ltcplay/remote.py',
@@ -12101,20 +12096,65 @@ def build():
   '        if now > r["deadline"]:',
   '        if False:'),
 
- ('confirm arm: a second device takes a waiting group',
-  'ltcplay/confirmarm.py',
-  '                    t["token"] != token:\n                return 409,',
-  '                    False:\n                return 409,'),
-
- ('confirm arm: an Arm tap on a stale page is taken',
-  'ltcplay/remote.py',
-  '            return (f"The page\'s status is more than {ARM_PAGE_FRESH_S:g} s "\n                    f"old. Wait for it to be live, then tap Arm again.")',
-  '            pass'),
-
  ("confirm arm: the taps are not the arm row's",
   'ltcplay/users.py',
   '    "arm-request": "arm", "arm-confirm": "arm",',
   '    "arm-request": "safety", "arm-confirm": "safety",'),
+
+ ('confirm arm: any ticket is taken',
+  'ltcplay/confirmarm.py',
+  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8")) and',
+  '                    True and'),
+
+ ('confirm arm: a ticket outlives a sign out and back in',
+  'ltcplay/confirmarm.py',
+  '                    t["session"] == str(getattr(ctx, "token", "") or ""))',
+  '                    True)'),
+
+ ("confirm arm: a cut since the Confirm does not end the engine's hold",
+  'ltcplay/confirmarm.py',
+  '        if self._cut_since(r["group"], r["start"]):',
+  '        if False:'),
+
+ ("confirm arm: a sign out does not end the engine's hold",
+  'ltcplay/confirmarm.py',
+  '        if not self._session_live(r["ctx"]):',
+  '        if False:'),
+
+ ("confirm arm: 'nothing was armed' is said over a group that is",
+  'ltcplay/confirmarm.py',
+  '            if asked:\n                text = ARMED_ANYWAY',
+  '            if False:\n                text = ARMED_ANYWAY'),
+
+ ("confirm arm: an arm the deck did not credit is called this press's",
+  'ltcplay/confirmarm.py',
+  '            if out.get("taken") is True:',
+  '            if True:'),
+
+ ('confirm purge: a Confirm with the Purge tap itself selects',
+  'ltcplay/confirmpurge.py',
+  '        if age < CONFIRM_MIN_S:\n            return refuse(TOO_SOON)',
+  '        if False:\n            return refuse(TOO_SOON)'),
+
+ ('confirm purge: any ticket is taken',
+  'ltcplay/confirmpurge.py',
+  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8")) and',
+  '                    True and'),
+
+ ('confirm purge: the start hold begins before every group is armed',
+  'ltcplay/confirmpurge.py',
+  '            if not self._armed(r["ids"]):',
+  '            if False:'),
+
+ ('confirm purge: a selection taken away does not end the run',
+  'ltcplay/confirmpurge.py',
+  '        if not self._selected(r["ids"], r["token"]):',
+  '        if False:'),
+
+ ('confirm purge: the engine waits past 5 s for a group to arm',
+  'ltcplay/confirmpurge.py',
+  '                if now > r["arm_by"]:',
+  '                if False:'),
 
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
