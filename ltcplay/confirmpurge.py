@@ -31,14 +31,21 @@ arms the selection's groups exactly as for a click on the Startup page.
      (purge-timed) until the engine starts it.
   4. The timed purge runs on the engine's clock and stops by itself, as it
      always did, with its page closed. When it is over the watcher clears
-     the selection (purge-clear), so the Stream Deck program lets the
-     groups go.
+     the selection, so the Stream Deck program lets the groups go. That
+     clear is the system's (a page that closed), never an operator's
+     Clear: the purge's groups stay remembered until flamesafe reports
+     them off, so the next show start still waits for that.
 
 It is bounded at every step: ARM_WAIT_S to arm, HOLD_MAX_S to start, the
-purge's own seconds, then the clear. Any refusal, a sign out, the
-selection taken away (a Stop, a Hold, Disarm all, a Clear from the phone or
-the show machine) ends the run and clears what it selected. It never
-selects again and never starts a second purge.
+purge's own seconds, then the clear. Any refusal, a sign out, a selection
+that is no longer exactly the ticket's machines (a Stop, a Hold, Disarm
+all, a Clear, a machine added or taken off by anyone) ends the run and
+clears what is selected. It never selects again and never starts a second
+purge.
+
+Stop purge (purge-stop, from any screen) ends a run at ANY step, before a
+flame as well as during one: nothing is held down here, so there is no
+finger to lift (the cold review of #310, P0).
 
 Pure logic with injected handlers and clocks.
 """
@@ -69,8 +76,9 @@ NOT_ARMED = (f"flamesafe did not report every selected group armed within "
              f"cleared.")
 NOT_STARTED = (f"The timed purge did not start within {HOLD_MAX_S:g} s. "
                f"Nothing was fired, and the selection was cleared.")
-TAKEN_AWAY = ("The purge selection was cleared before the purge started "
-              "(a Stop, a Hold, a disarm or a Clear). Nothing was fired.")
+TAKEN_AWAY = ("The purge selection changed before the purge started (a "
+              "Stop, a Hold, a disarm, a Clear, or a machine added or "
+              "taken off). Nothing was fired.")
 SIGNED_OUT = ("Signed out before the purge started. Nothing was fired, and "
               "the selection was cleared.")
 BROKE = ("The purge could not be carried on. It was stopped and the "
@@ -87,11 +95,14 @@ class ConfirmPurge:
     Remote.morning_post; `precheck(ctx, ids, seconds, seen_ms)` answers
     (why, whole seconds); `armed(ids)` is True once flamesafe reports every
     one of those machines' groups ARMED on a fresh status; `selected(ids,
-    device)` is True while that device still owns a selection holding all
-    of them; `running()` is True while a timed purge runs; `last()` is the
-    engine's sentence on how the last one ended."""
+    device)` is True while that device owns a selection of exactly those
+    machines; `running()` is True while a timed purge runs; `last()` is
+    the engine's sentence on how the last one ended; `clear(device, why)`
+    is the system's clear of that device's selection (never an operator's
+    Clear) and `stop(why)` ends a purge that is firing."""
 
     def __init__(self, post, precheck, armed, selected, running,
+                 clear=lambda device, why: None, stop=lambda why: None,
                  last=lambda: "", session_live=lambda ctx: True,
                  journal=None, clock=time.monotonic, wall=time.time,
                  threaded=True,
@@ -99,6 +110,12 @@ class ConfirmPurge:
         self._post, self._precheck = post, precheck
         self._armed, self._selected = armed, selected
         self._running, self._last = running, last
+        self._clear_sel, self._stop_fire = clear, stop
+        # One count for every start hold this engine ever beats: a hold
+        # whose beats do not run past the screen's last is dead to
+        # morning.Purge (_timed_dead), so it never restarts at 1.
+        self._seq = int(wall() * 1000)
+        self._snap = {"run": None, "ticket": None}
         self._session_live = session_live
         self._journal = journal
         self._clock, self._wall = clock, wall
@@ -163,6 +180,7 @@ class ConfirmPurge:
                             "seconds": secs, "label": str(label or "")[:64],
                             "session": str(getattr(ctx, "token", "")
                                            or "")}
+            self._publish()
         self._note(who, screen, "asked",
                    f"{who} tapped Purge on the {screen}: "
                    f"{', '.join(ids)} for {secs} s. Nothing is armed or "
@@ -186,6 +204,7 @@ class ConfirmPurge:
                 # Spent whatever comes of it: a ticket is never tried
                 # twice. Anyone else's Confirm spends nothing.
                 self._ticket = None
+                self._publish()
             live = self._run is not None and self._run["state"] in LIVE
 
         def refuse(why):
@@ -216,7 +235,7 @@ class ConfirmPurge:
                    "text": "", "start": now, "ended": None,
                    "arm_by": now + ARM_WAIT_S, "hold_by": None,
                    "end_by": None, "open_at": None, "open_seq": 0,
-                   "rid": f"confirm-{self._ids}", "seq": 0,
+                   "rid": f"confirm-{self._ids}-{self._seq}",
                    "inst": f"confirm-{self._ids}"}
             self._run = run
             self._open(run, now)
@@ -231,7 +250,9 @@ class ConfirmPurge:
                 if code == 200:
                     why = f"{NOT_SELECTED} {why}".strip()
                 self._end(run, "refused", why, now, clear=True)
+                self._publish()
                 return 409, {"error": why}
+            self._publish()
         self._note(who, screen, "confirmed",
                    f"{who} confirmed a timed purge on the {screen}: "
                    f"{', '.join(run['ids'])} for {secs} s. The engine "
@@ -252,10 +273,17 @@ class ConfirmPurge:
 
     def _end(self, r, state, text, now, clear=False, stop=False):
         r["state"], r["text"], r["ended"] = state, text, now
+        why = f"the confirmed purge ended ({state})"
         if stop:
-            self._ask("purge-stop", {}, r["ctx"])
+            try:
+                self._stop_fire(why)
+            except Exception:                        # noqa: BLE001
+                pass
         if clear:
-            self._ask("purge-clear", {}, r["ctx"])
+            try:
+                self._clear_sel(r["token"], why)
+            except Exception:                        # noqa: BLE001
+                pass
         self._note(r["who"], r["screen"], state,
                    f"{r['who']}'s confirmed purge on the {r['screen']} "
                    f"ended: {state}. {text}".rstrip())
@@ -264,23 +292,29 @@ class ConfirmPurge:
         """One pass. Never selects, and never starts a second purge."""
         now = self._clock() if now is None else now
         with self._lock:
-            t = self._ticket
-            if t is not None and now - t["at"] > TICKET_S:
-                self._ticket = None
-            r = self._run
-            if r is None:
-                return
-            if r["state"] not in LIVE:
-                if now - (r["ended"] or now) > KEEP_S:
-                    self._run = None
-                return
             try:
-                self._pass(r, now)
-            except Exception:                        # noqa: BLE001
-                # Never stranded: stopped, cleared, said.
-                if r["state"] in LIVE:
-                    self._end(r, "refused", BROKE, now, clear=True,
-                              stop=r["state"] == "firing")
+                self._tick(now)
+            finally:
+                self._publish()
+
+    def _tick(self, now):
+        t = self._ticket
+        if t is not None and now - t["at"] > TICKET_S:
+            self._ticket = None
+        r = self._run
+        if r is None:
+            return
+        if r["state"] not in LIVE:
+            if now - (r["ended"] or now) > KEEP_S:
+                self._run = None
+            return
+        try:
+            self._pass(r, now)
+        except Exception:                            # noqa: BLE001
+            # Never stranded: stopped, cleared, said.
+            if r["state"] in LIVE:
+                self._end(r, "refused", BROKE, now, clear=True,
+                          stop=r["state"] == "firing")
 
     def _pass(self, r, now):
         if r["state"] == "firing":
@@ -306,10 +340,10 @@ class ConfirmPurge:
             self._ask("purge-timed", {"hold": False, "run": r["rid"]},
                       r["ctx"])
             return self._end(r, "timeout", NOT_STARTED, now, clear=True)
-        r["seq"] += 1
+        self._seq += 1
         code, out = self._ask("purge-timed",
                               {"hold": True, "run": r["rid"],
-                               "seq": r["seq"], "seconds": r["seconds"]},
+                               "seq": self._seq, "seconds": r["seconds"]},
                               r["ctx"])
         if code != 200:
             return self._end(r, "refused",
@@ -336,24 +370,54 @@ class ConfirmPurge:
             said = ""
         self._end(r, "done", said, now, clear=True)
 
-    # -- what a page reads --------------------------------------------------
-    def view(self, device=None):
+    def cancel(self, why):
+        """Stop purge, from any screen: the ticket gone, and a run ended
+        and cleared at whatever step it is, before a flame or during one.
+        True when there was one to end."""
         now = self._clock()
         with self._lock:
-            r, t = self._run, self._ticket
-            run = None if r is None else {
+            self._ticket = None
+            r = self._run
+            live = r is not None and r["state"] in LIVE
+            if live:
+                self._end(r, "stopped", str(why), now, clear=True,
+                          stop=r["state"] == "firing")
+            self._publish()
+        return live
+
+    # -- what a page reads --------------------------------------------------
+    def _publish(self):
+        """What view() serves, swapped in whole (under self._lock)."""
+        r, t = self._run, self._ticket
+        self._snap = {
+            "run": None if r is None else {
                 "run": r["id"], "state": r["state"], "text": r["text"],
                 "machines": list(r["ids"]), "label": r["label"],
                 "seconds": r["seconds"], "who": r["who"],
-                "mine": device is not None and r["token"] == device}
-            waiting = None
-            if t is not None and now - t["at"] <= TICKET_S:
-                waiting = {"machines": list(t["ids"]), "label": t["label"],
-                           "seconds": t["seconds"], "who": t["who"],
-                           "left_s": round(max(0.0, TICKET_S -
-                                               (now - t["at"])), 1),
-                           "mine": device is not None and
-                           t["token"] == device}
+                "token": r["token"]},
+            "ticket": None if t is None else {
+                "machines": list(t["ids"]), "label": t["label"],
+                "seconds": t["seconds"], "who": t["who"], "at": t["at"],
+                "token": t["token"]}}
+
+    def view(self, device=None):
+        """The run and who is waiting on a Confirm, never the ticket. Read
+        off a snapshot: a status poll never waits on the watcher."""
+        now = self._clock()
+        snap = self._snap
+        run, t = snap["run"], snap["ticket"]
+        if run is not None:
+            run = dict(run, mine=device is not None and
+                       run["token"] == device)
+            del run["token"]
+        waiting = None
+        if t is not None and now - t["at"] <= TICKET_S:
+            waiting = {"machines": t["machines"], "label": t["label"],
+                       "seconds": t["seconds"], "who": t["who"],
+                       "left_s": round(max(0.0, TICKET_S -
+                                           (now - t["at"])), 1),
+                       "mine": device is not None and
+                       t["token"] == device}
         return {"run": run, "waiting": waiting, "ticket_s": TICKET_S,
                 "min_s": CONFIRM_MIN_S, "arm_wait_s": ARM_WAIT_S}
 

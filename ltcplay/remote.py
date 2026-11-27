@@ -6270,11 +6270,26 @@ class Remote:
         if unknown:
             return (f"There is no machine called {unknown[0]}. Nothing was "
                     f"changed."), None
+        for x in ids:
+            mach = m.cfg.by_id[x]
+            if m.lockout.is_locked("machine", x):
+                return (f"{mach.name} is locked out. Unlock it, or leave "
+                        f"it out. Nothing was changed."), None
+            never = m.cfg.purge_refusal(mach)
+            if never:
+                return f"{mach.name}: {never}", None
         try:
             seen_ok = abs(self.wall() - float(seen) / 1000.0) <= 1.0
         except (TypeError, ValueError):
             seen_ok = False
         why = m.purge._refusal(ctx.device, seen_ok)
+        if why:
+            return why, None
+        try:
+            why = m.fire_arrange_refusal() or ""
+        except Exception as e:                       # noqa: BLE001
+            why = (f"Arrange mode could not be read ({type(e).__name__}). "
+                   f"Nothing was changed.")
         if why:
             return why, None
         if m.device_arranging(ctx.device):
@@ -6315,12 +6330,33 @@ class Remote:
                     return False
 
             def selected(ids, device):
+                # Exactly the ticket's machines, this device's: one added
+                # or taken off by anyone ends the run (the cold review of
+                # #310: a machine added after Confirm was fired too).
                 m = self.morning
                 if m is None:
                     return False
                 with m.purge._lock:
                     return m.purge.owner == device and \
-                        set(ids) <= set(m.purge.selected)
+                        set(ids) == set(m.purge.selected)
+
+            def clear(device, why):
+                # The system's clear (a page that closed), never an
+                # operator's Clear: the purge's groups stay remembered
+                # until flamesafe reports them off, so a show start still
+                # waits for that (#266, #269). Only this device's own.
+                m = self.morning
+                if m is None:
+                    return
+                with m.purge._lock:
+                    mine = m.purge.owner == device
+                if mine:
+                    m.purge.clear(why)
+
+            def stop(why):
+                m = self.morning
+                if m is not None:
+                    m.purge.stop(why)
 
             def running():
                 m = self.morning
@@ -6331,16 +6367,21 @@ class Remote:
                 return getattr(m.purge, "timed_last", "") if m else ""
 
             def session_live(ctx):
+                # Still signed in, and still allowed to arm: the
+                # watcher's own steps never pass the web layer's role
+                # check, so it is asked here on every pass.
                 if not self.users_active():
                     return True
                 token = getattr(ctx, "token", "")
-                return bool(token) and \
-                    self.users.session(token) is not None
+                s = self.users.session(token) if token else None
+                return s is not None and \
+                    self.users.may(s.get("role"), "arm") is True
             with self._confirm_arm_lock:
                 if self.confirm_purge is None:
                     self.confirm_purge = confirmpurge.ConfirmPurge(
                         self.morning_post, self.purge_confirm_refusal,
-                        armed, selected, running, last=last,
+                        armed, selected, running, clear=clear, stop=stop,
+                        last=last,
                         session_live=session_live, journal=self._journal,
                         clock=self.clock, wall=self.wall,
                         threaded=self.confirm_purge_threaded)
@@ -8547,6 +8588,18 @@ class Remote:
                                   "set up in this engine."}
         who, screen, _surface = self._actor(ctx, body)
         device = ctx.device
+        if name == "purge-stop":
+            # A tap-and-confirm purge (confirmpurge.py) has no finger to
+            # lift: Stop purge, from any screen, ends it at any step,
+            # before a flame as well as during one, whoever owns the
+            # selection (the cold review of #310, P0). First, before the
+            # owner rule can refuse the press.
+            cp = self.confirm_purge
+            if cp is not None and cp.cancel(
+                    f"Stop purge was pressed on the {screen}."):
+                return 200, {"ok": True, "text": "Purge stopped. Nothing "
+                                                 "more is fired, and the "
+                                                 "selection is cleared."}
         try:
             seen = float(body.get("seen"))
             seen_ok = abs(self.wall() - seen / 1000.0) <= 1.0
