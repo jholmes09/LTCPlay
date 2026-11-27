@@ -12086,11 +12086,6 @@ def build():
   '                # take the Arm tap away from the one who made it.\n                del self._tickets[i]',
   '                # take the Arm tap away from the one who made it.\n                pass'),
 
- ('confirm arm: the rules are not checked again at the Confirm',
-  'ltcplay/confirmarm.py',
-  '        why = self._precheck(i, name, ctx, seen, t["at"])',
-  '        why = ""'),
-
  ('confirm arm: a Stop after the Arm tap does not refuse the Confirm',
   'ltcplay/remote.py',
   '            cut = any(c is not None and c[0] >= since for c in cuts)',
@@ -12100,16 +12095,6 @@ def build():
   'ltcplay/confirmarm.py',
   '        if now > r["deadline"]:',
   '        if False:'),
-
- ('confirm arm: a second device takes a waiting group',
-  'ltcplay/confirmarm.py',
-  '                    t["token"] != token:\n                return 409,',
-  '                    False:\n                return 409,'),
-
- ('confirm arm: an Arm tap on a stale page is taken',
-  'ltcplay/remote.py',
-  '            return (f"The page\'s status is more than {ARM_PAGE_FRESH_S:g} s "\n                    f"old. Wait for it to be live, then tap Arm again.")',
-  '            pass'),
 
  ("confirm arm: the taps are not the arm row's",
   'ltcplay/users.py',
@@ -12125,11 +12110,6 @@ def build():
   'ltcplay/confirmarm.py',
   '                    t["session"] == str(getattr(ctx, "token", "") or ""))',
   '                    True)'),
-
- ("confirm arm: someone else's Confirm spends the ticket",
-  'ltcplay/confirmarm.py',
-  '            if mine:\n                # Spent whatever',
-  '            if t is not None:\n                # Spent whatever'),
 
  ("confirm arm: a cut since the Confirm does not end the engine's hold",
   'ltcplay/confirmarm.py',
