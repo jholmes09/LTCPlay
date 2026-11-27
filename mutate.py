@@ -12061,6 +12061,61 @@ def build():
   '        if not self.arming_enabled():\n            # First, before anything else',
   '        if False:\n            # First, before anything else'),
 
+ ('confirm arm: a Confirm with the Arm tap itself arms',
+  'ltcplay/confirmarm.py',
+  '        if age < CONFIRM_MIN_S:\n            return refuse(TOO_SOON)',
+  '        if False:\n            return refuse(TOO_SOON)'),
+
+ ("confirm arm: a Confirm after the ticket's 5 s arms",
+  'ltcplay/confirmarm.py',
+  '        if age > TICKET_S:\n            return refuse(TOO_LATE)',
+  '        if False:\n            return refuse(TOO_LATE)'),
+
+ ("confirm arm: another device's Confirm is taken",
+  'ltcplay/confirmarm.py',
+  '                t["token"] == token and t["who"] == who)',
+  '                True and t["who"] == who)'),
+
+ ("confirm arm: another person's Confirm is taken",
+  'ltcplay/confirmarm.py',
+  '                t["token"] == token and t["who"] == who)',
+  '                t["token"] == token and True)'),
+
+ ('confirm arm: a ticket can be used twice',
+  'ltcplay/confirmarm.py',
+  '            t = self._tickets.pop(i, None)',
+  '            t = self._tickets.get(i)'),
+
+ ('confirm arm: the rules are not checked again at the Confirm',
+  'ltcplay/confirmarm.py',
+  '        why = self._precheck(i, name, ctx, seen, t["at"])',
+  '        why = ""'),
+
+ ('confirm arm: a Stop after the Arm tap does not refuse the Confirm',
+  'ltcplay/remote.py',
+  '            cut = any(c is not None and c[0] >= since for c in cuts)',
+  '            cut = False'),
+
+ ('confirm arm: the engine holds the key past 3 s',
+  'ltcplay/confirmarm.py',
+  '        if now > r["deadline"]:',
+  '        if False:'),
+
+ ('confirm arm: a second device takes a waiting group',
+  'ltcplay/confirmarm.py',
+  '                    t["token"] != token:\n                return 409,',
+  '                    False:\n                return 409,'),
+
+ ('confirm arm: an Arm tap on a stale page is taken',
+  'ltcplay/remote.py',
+  '            return (f"The page\'s status is more than {ARM_PAGE_FRESH_S:g} s "\n                    f"old. Wait for it to be live, then tap Arm again.")',
+  '            pass'),
+
+ ("confirm arm: the taps are not the arm row's",
+  'ltcplay/users.py',
+  '    "arm-request": "arm", "arm-confirm": "arm",',
+  '    "arm-request": "safety", "arm-confirm": "safety",'),
+
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
   '        if not self.arming_enabled():\n            # The Stream Deck reads',

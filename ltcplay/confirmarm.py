@@ -69,8 +69,8 @@ STATES = ("holding", "armed", "elsewhere", "refused", "timeout")
 class ConfirmArm:
     """One instance in the engine. `press(body, ctx)` is Remote.arm_hold,
     `release(i, token)` drops that device's hold on group i,
-    `precheck(i, name, ctx, seen_ms)` is "" or why a hold could not start
-    now, `session_live(ctx)` is False once the person signed out."""
+    `precheck(i, name, ctx, seen_ms, since)` is "" or why a hold could
+    not start now (`since`: this clock at the Arm tap, None at the tap), `session_live(ctx)` is False once the person signed out."""
 
     def __init__(self, press, release, precheck,
                  session_live=lambda ctx: True, journal=None,
@@ -115,7 +115,7 @@ class ConfirmArm:
                     t["token"] != token:
                 return 409, {"error": f"{t['who']} is already arming "
                                       f"{name}. Nothing was changed."}
-        why = self._precheck(i, name, ctx, seen)
+        why = self._precheck(i, name, ctx, seen, None)
         if why:
             self._note(who, screen, "refused",
                        f"{who}'s Arm tap for {name} on the {screen} was "
@@ -157,7 +157,7 @@ class ConfirmArm:
             return refuse(TOO_LATE)
         if age < CONFIRM_MIN_S:
             return refuse(TOO_SOON)
-        why = self._precheck(i, name, ctx, seen)
+        why = self._precheck(i, name, ctx, seen, t["at"])
         if why:
             return refuse(why)
         # The first press of the hold, with the page's own status time: a

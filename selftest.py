@@ -70203,6 +70203,245 @@ def test_stream_deck_start_stop_is_one_key():
     print("  ok")
 
 
+def test_confirm_arm_tap_then_confirm():
+    section("tap, then confirm, to arm from a phone (Jeff, 2026-11-27): an "
+            "Arm tap arms nothing and answers a one-use ticket; only a "
+            "Confirm from the same device, 0.3 to 5 s later, starts the "
+            "engine's own hold to arm, which the engine then beats itself "
+            "until the Stream Deck takes it; a Stop or a disarm after the "
+            "Arm tap refuses the Confirm, one during the hold ends it, and "
+            "it never carries on; 3 s with no take lets go")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    from ltcplay import confirmarm as CA
+    from ltcplay import users as US
+    check(CA.TICKET_S == 5.0 and CA.CONFIRM_MIN_S == 0.3 and
+          CA.DRIVE_MAX_S == 3.0 and CA.BEAT_S == RM.ARM_BEAT_PERIOD_S,
+          "the numbers are what Jeff approved: 5 s to confirm, never the "
+          "same tap, 3 s to be taken, the hold's own beat")
+    check(RM.CONFIRM_ARM_ROUTES == ("arm-request", "arm-confirm") and
+          all(r in RM.POST_ROUTES and US.REMOTE_ROUTES.get(r) == "arm"
+              for r in RM.CONFIRM_ARM_ROUTES),
+          "both taps are routes of the arm row, like the hold")
+    R = _arm_rig(S)
+    R.remote.confirm_arm_threaded = False
+    other = ("10.20.0.45", 50001)
+
+    def step(dt=0.1):
+        R.mono[0] += dt
+        R.wall[0] += dt
+        R.remote._deck_seen = R.mono[0]
+        R.feed()
+
+    def tap(group="front row", **kw):
+        R.remote._deck_seen = R.mono[0]
+        return R.ask("POST", "/api/remote/arm-request",
+                     dict({"group": group, "seen": R.seen()}), **kw)
+
+    def confirm(ticket, group="front row", **kw):
+        R.remote._deck_seen = R.mono[0]
+        return R.ask("POST", "/api/remote/arm-confirm",
+                     {"group": group, "seen": R.seen(), "ticket": ticket},
+                     **kw)
+
+    def holds():
+        return R.remote.deck_input()["holds"]
+
+    def runs():
+        return R.remote.confirm_arming().view()["runs"]
+    try:
+        # Switched off: neither tap is taken.
+        RM.save_settings(R.work, screen_arming=False)
+        st, _h, out = tap()
+        check(st == 403 and out.get("arming_off") is True,
+              f"screen arming off: the Arm tap is refused: {st} {out}")
+        st, _h, out = confirm("x")
+        check(st == 403 and out.get("arming_off") is True,
+              f"and the Confirm: {st} {out}")
+        RM.save_settings(R.work, screen_arming=True)
+        # The Arm tap: a ticket, nothing held, nothing armed.
+        st, _h, out = tap()
+        tk = out.get("ticket")
+        check(st == 200 and isinstance(tk, str) and len(tk) >= 16 and
+              out["expires_s"] == 5.0 and holds() == [] and
+              R.groups[0]["armed"] == "disarmed",
+              f"an Arm tap answers a ticket and holds nothing: {st} {out}")
+        v = R.remote.confirm_arming().view("iPad at 10.20.0.44")
+        check(len(v["waiting"]) == 1 and v["waiting"][0]["mine"] and
+              "ticket" not in v["waiting"][0] and tk not in repr(v),
+              f"the status says who is waiting, never the ticket: {v}")
+        # The same tap is never both.
+        st, _h, out = confirm(tk)
+        check(st == 409 and out["error"] == CA.TOO_SOON and holds() == [],
+              f"a Confirm with the Arm tap itself is refused: {st} {out}")
+        step(1.0)
+        st, _h, out = confirm(tk)
+        check(st == 409 and out["error"] == CA.NO_TICKET and holds() == [],
+              f"and that ticket is spent: {st} {out}")
+        # Another device, another group, too late, a made-up ticket.
+        st, _h, out = tap()
+        tk = out["ticket"]
+        step(1.0)
+        st, _h, out = confirm(tk, client=other)
+        check(st == 409 and out["error"] == CA.NO_TICKET and holds() == [],
+              f"another device's Confirm is refused: {st} {out}")
+        st, _h, out = confirm(tk)
+        check(st == 409 and holds() == [],
+              "and it spent the ticket: the first device taps Arm again")
+        st, _h, out = tap()
+        tk = out["ticket"]
+        st, _h, out = tap(client=other)
+        check(st == 409 and "already arming" in out["error"],
+              f"a second device cannot tap Arm on a waiting group: {out}")
+        step(1.0)
+        st, _h, out = confirm(tk, group="cat-walk")
+        check(st == 409 and out["error"] == CA.NO_TICKET and holds() == [],
+              f"a ticket is its own group's only: {st} {out}")
+        step(4.5)
+        st, _h, out = confirm(tk)
+        check(st == 409 and out["error"] == CA.TOO_LATE and holds() == [],
+              f"a Confirm 5.5 s after the tap is refused: {st} {out}")
+        st, _h, out = confirm("A" * 24)
+        check(st == 409 and out["error"] == CA.NO_TICKET and holds() == [],
+              "a made-up ticket is refused")
+        # The ticket is one device's and one person's (with sign-ins the
+        # same person may be on two phones, and two people on one).
+        import types as _ty
+        tt = [50.0]
+        pressed = []
+        solo = CA.ConfirmArm(
+            lambda b, c: (pressed.append(b), (200, {"hold_id": 1}))[1],
+            lambda i, t: None, lambda *a: "", clock=lambda: tt[0],
+            wall=lambda: tt[0], threaded=False)
+        pa, pb = (_ty.SimpleNamespace(device="phone A"),
+                  _ty.SimpleNamespace(device="phone B"))
+        _c, o = solo.request(0, "g", pa, "Jeff", "iPad", 1)
+        tt[0] += 1
+        c1, o1 = solo.confirm(0, "g", pb, "Jeff", "iPad", 1, o["ticket"])
+        _c, o = solo.request(0, "g", pa, "Jeff", "iPad", 1)
+        tt[0] += 1
+        c2, o2 = solo.confirm(0, "g", pa, "Andy", "iPad", 1, o["ticket"])
+        check(c1 == 409 and o1["error"] == CA.NO_TICKET and c2 == 409 and
+              o2["error"] == CA.NO_TICKET and pressed == [],
+              f"the same person on another phone, or another person on "
+              f"the same phone, cannot confirm: {c1} {c2} {pressed}")
+        _c, o = solo.request(0, "g", pa, "Jeff", "iPad", 1)
+        tt[0] += 1
+        c3, _o = solo.confirm(0, "g", pa, "Jeff", "iPad", 1, o["ticket"])
+        check(c3 == 200 and pressed == [{"group": 0, "seen": 1}],
+              f"and the one who tapped can: {c3} {pressed}")
+        # The rules of a hold, at the tap.
+        st, _h, out = tap("wave flamer")
+        check(st == 409 and "already armed" in out["error"],
+              f"an armed group is not tapped: {st} {out}")
+        st, _h, out = tap("no such")
+        check(st == 400, "a group flamesafe does not report is refused")
+        st, _h, out = R.ask("POST", "/api/remote/arm-request",
+                            {"group": "front row",
+                             "seen": R.seen() - 2600})
+        check(st == 409 and "2.5 s old" in out["error"],
+              f"a page status 2.6 s old cannot tap Arm: {st} {out}")
+        R.remote._deck_seen = R.mono[0] - 5
+        st, _h, out = R.ask("POST", "/api/remote/arm-request",
+                            {"group": "front row", "seen": R.seen()})
+        check(st == 409 and "Stream Deck program" in out["error"],
+              f"no Stream Deck program reading: refused at the tap: {out}")
+        # A Stop (every hold cut) between the tap and the Confirm.
+        st, _h, out = tap()
+        tk = out["ticket"]
+        step(0.5)
+        R.remote.cancel_holds("a Stop")
+        step(0.5)
+        st, _h, out = confirm(tk)
+        check(st == 409 and out["error"] == RM.CONFIRM_ARM_CUT and
+              holds() == [],
+              f"a Stop after the Arm tap refuses the Confirm, though the "
+              f"page has read a newer status since: {st} {out}")
+        _no_dashes(RM.CONFIRM_ARM_CUT + CA.TOO_SOON + CA.TOO_LATE +
+                   CA.NO_TICKET + CA.TIMED_OUT + CA.ELSEWHERE +
+                   CA.SIGNED_OUT, "the confirmed arm's sentences")
+        # The whole thing: tap, confirm, the engine beats, the deck takes.
+        step(3.0)
+        st, _h, out = tap()
+        tk = out["ticket"]
+        step(0.6)
+        st, _h, out = confirm(tk)
+        hs = holds()
+        check(st == 200 and out["state"] == "holding" and len(hs) == 1 and
+              hs[0]["group"] == 0 and hs[0]["fresh"] and
+              hs[0]["held_s"] == 0.0 and
+              hs[0]["who"] == "iPad at 10.20.0.44",
+              f"a Confirm starts the engine's own hold, at nothing held: "
+              f"{st} {out} {hs}")
+        hid = hs[0]["id"]
+        for _ in range(10):
+            step()
+            R.remote.confirm_arming().tick()
+        hs = holds()
+        check(len(hs) == 1 and hs[0]["id"] == hid and hs[0]["fresh"] and
+              abs(hs[0]["held_s"] - RM.SCREEN_HOLD_S) < 1e-6,
+              f"ten beats of the engine's own prove the 1 s the deck "
+              f"needs, on the same hold: {hs}")
+        check(runs()[0]["state"] == "holding",
+              "and nothing is claimed before the deck takes it")
+        R.groups[0]["wanted"] = True
+        R.feed()
+        R.remote.deck_input(f"taken={hid}")
+        step()
+        R.remote.confirm_arming().tick()
+        check(runs()[0]["state"] == "armed" and holds() == [] and
+              any(r.get("action") == "arm confirm" and
+                  r.get("outcome") == "armed" for r in R.svc.journal),
+              f"the deck took it: said, journaled, the hold over: {runs()}")
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        cf = (out.get("arming") or {}).get("confirm") or {}
+        check(st == 200 and cf.get("runs") and
+              cf["runs"][0]["state"] == "armed" and cf["runs"][0]["mine"],
+              f"the status carries the run for the page: {cf}")
+        # A disarm of the group during the engine's hold: it ends, and the
+        # watcher never presses again.
+        R.groups[0]["wanted"] = False
+        R.feed()
+        step(3.0)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        check(st == 200 and len(holds()) == 1, f"a second run: {st} {out}")
+        for _ in range(3):
+            step()
+            R.remote.confirm_arming().tick()
+        R.remote.cancel_holds("Disarm all")
+        step()
+        R.remote.confirm_arming().tick()
+        check(runs()[0]["state"] == "refused" and holds() == [],
+              f"a cut during the hold ends the run: {runs()}")
+        for _ in range(15):
+            step()
+            R.remote.confirm_arming().tick()
+        check(holds() == [] and R.groups[0]["armed"] == "disarmed",
+              "and nothing is held again: an interrupted arm never "
+              "carries on")
+        # Nobody takes it: let go at 3 s.
+        step(3.0)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        for _ in range(32):
+            step()
+            R.remote.confirm_arming().tick()
+        check(runs()[0]["state"] == "timeout" and
+              runs()[0]["text"] == CA.TIMED_OUT and holds() == [],
+              f"3 s with no deck taking it: let go, said: {runs()}")
+    finally:
+        ca = R.remote.confirm_arm
+        if ca is not None:
+            ca.close()
+        R.close()
+    print("  ok")
+
+
 def test_screen_arm_deck_rules():
     section("screen arming, the Stream Deck: a screen hold is a press of the "
             "group key; it fires only after the deck's own hold AND 1 s of "
@@ -139787,6 +140026,7 @@ if __name__ == "__main__":
         test_flame_link_aim_slots_skip_the_seek_guard,
         test_screen_arming_is_off_unless_switched_on,
         test_screen_arm_engine_rules,
+        test_confirm_arm_tap_then_confirm,
         test_screen_arm_deck_rules,
         test_screen_armed_group_survives_the_phone_going_away,
         test_screen_arm_on_a_slow_phone_link,

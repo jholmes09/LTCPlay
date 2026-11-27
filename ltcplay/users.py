@@ -273,6 +273,9 @@ REMOTE_ROUTES = {
     "continue": "show", "mark-a": "show", "mark-b": "show",
     "loop": "show", "follow": "show",
     "arm-hold": "arm",
+    # Tap, then confirm, to arm from a phone (confirmarm.py): both taps
+    # are the arm row's, like the hold they stand in for.
+    "arm-request": "arm", "arm-confirm": "arm",
     "network": "settings", "screen-arming": "settings",
     # Remote access over Tailscale: never the role matrix's; only
     # may_manage_tailscale (remote.py), which answers everyone else like a
