@@ -45,6 +45,7 @@ PAGE = os.path.join(HERE, "web", "index.html")
 # nothing. /remote-logic.js is its pure rules (web/remote_rules.js), also
 # written into the page as it is served.
 REMOTE2_PAGE = os.path.join(HERE, "web", "remote2.html")
+PHONE_PAGE = os.path.join(HERE, "web", "phone.html")
 REMOTE_RULES = os.path.join(HERE, "web", "remote_rules.js")
 UI_ROUTES = ("/remote2", "/remote-logic.js", "/remote1", "/ui")
 OLD_SCREEN_ROUTES = ("/remote1", "/ui")
@@ -240,7 +241,7 @@ def network_may_reach(route):
     operator, the Stream Deck's journal lines) are the machine's own, and
     a network session reaching them bypassed every rule /api/remote/*
     keeps (who pressed, no scrubbing during a show). Loopback is unchanged."""
-    return (route in ("/", "/index.html", "/remote", "/api/brand")
+    return (route in ("/", "/index.html", "/remote", "/phone", "/api/brand")
             or route in UI_ROUTES
             or route.startswith("/brand/") or route in ICONS
             or route == "/api/remote" or route.startswith("/api/remote/"))
@@ -1657,6 +1658,11 @@ class Handler(BaseHTTPRequestHandler):
                                   headers={"Location": "/remote"})
             if route == "/remote-logic.js":
                 return self._remote_logic()
+            if route == "/phone":
+                # The phone page: one file, no rules injected.
+                with open(PHONE_PAGE, "rb") as fh:
+                    return self._send(200, fh.read(),
+                                      "text/html; charset=utf-8")
             if route in ("/remote", "/remote2") or (
                     route in ("/", "/index.html") and not self._local()):
                 # The screen, to the show network and this machine alike

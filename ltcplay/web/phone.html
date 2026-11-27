@@ -1,0 +1,1328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="LTC Phone">
+<title>LTC Phone</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/png" href="/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" sizes="180x180">
+<meta name="theme-color" content="#070605">
+<style>
+@font-face{font-family:"Playfair Display";font-weight:900;font-style:normal;font-display:swap;src:url(/brand/PlayfairDisplay-900.woff2) format("woff2")}
+@font-face{font-family:"Cinzel";font-weight:700;font-style:normal;font-display:swap;src:url(/brand/Cinzel-700.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-weight:400;font-style:normal;font-display:swap;src:url(/brand/Inter-400.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-weight:700;font-style:normal;font-display:swap;src:url(/brand/Inter-700.woff2) format("woff2")}
+@font-face{font-family:"Inter";font-weight:800;font-style:normal;font-display:swap;src:url(/brand/Inter-800.woff2) format("woff2")}
+/* Layout: one-screen shell. Top strip, a 30px status line, one scrolling panel
+   (the confirm bar is an overlay on its bottom edge), the tab bar, then the
+   master DISARM bar pinned last. Nothing in the shell changes size with state. */
+:root{
+  color-scheme:dark;
+  --bg:#070605; --panel:#15110d; --panel2:#1f1a14; --bronze:#2C2418; --line:#4a3f2e;
+  --gold:#D4A84A; --champagne:#F6E3AE; --cream:#EFE3C6; --muted:#B99B5C;
+  --green:#28BE5A; --green-ink:#04150a; --amber:#F5A01E; --amber-ink:#1e1000;
+  --red:#E61E18; --red-hi:#FF5A50; --red-deep:#9E1016; --white:#fff;
+  --sans:"Inter",-apple-system,"Segoe UI",system-ui,sans-serif;
+  --serif:"Playfair Display",Georgia,serif;
+  --caps:"Cinzel","Trajan Pro",Georgia,serif;
+  --gl:max(16px, env(safe-area-inset-left, 0px)); --gr:max(16px, env(safe-area-inset-right, 0px));
+  --tap:3.5rem; --r:10px;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%;margin:0;overflow-x:hidden}
+html{font-size:16px;-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--cream);font-family:var(--sans);font-size:1rem;
+  font-variant-numeric:tabular-nums lining-nums;overflow:hidden;touch-action:pan-y;
+  -webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+button{font:inherit;color:inherit;border:0;background:none;margin:0;padding:0;cursor:pointer;touch-action:manipulation;text-align:center}
+button:focus-visible{outline:3px solid var(--champagne);outline-offset:2px}
+button:disabled{opacity:.35;cursor:default}
+input{font:inherit}
+#app{height:100%;max-width:520px;margin:0 auto;display:grid;grid-template:"top" auto "link" 30px "main" minmax(0,1fr) "tabs" auto "master" auto / minmax(0,1fr);overflow:hidden}
+
+#top{grid-area:top;display:flex;align-items:center;gap:10px;padding:8px var(--gr) 8px var(--gl);background:var(--panel);min-width:0}
+#top img{height:34px;width:auto;flex:none}
+#top .st{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.1;overflow:hidden}
+.cap{font-family:var(--caps);font-weight:700;letter-spacing:.14em;font-size:.6875rem;color:var(--gold);text-transform:uppercase}
+#top .st span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#top .clk{font-weight:800;font-size:clamp(1.125rem,6vw,1.5rem);color:var(--champagne)}
+.pill{flex:none;font-weight:800;font-size:.8125rem;letter-spacing:.04em;padding:6px 10px;border-radius:99px;background:var(--bronze);color:var(--champagne);white-space:nowrap}
+.pill.on{background:var(--green);color:var(--green-ink)}
+.pill.warn{background:var(--amber);color:var(--amber-ink)}
+#gear{flex:none;width:44px;height:44px;border-radius:var(--r);border:1px solid var(--line);display:grid;place-items:center}
+#gear.out{border-color:var(--gold);box-shadow:inset 0 0 0 2px var(--gold)}
+#gear svg{width:22px;height:22px;stroke:var(--gold);fill:none;stroke-width:2}
+
+#link{grid-area:link;position:relative;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:0 var(--gr) 0 var(--gl);height:30px;font-weight:800;font-size:.875rem;letter-spacing:.08em;border-bottom:1px solid var(--line);white-space:nowrap;z-index:5}
+#link.ok{background:var(--panel2);color:var(--muted)}
+#link i{display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor;margin-right:8px}
+#link.slow{background:var(--amber);color:var(--amber-ink)}
+#link.lost{background:var(--red);color:var(--white)}
+#alerts{height:44px;margin:-7px 0;padding:0 10px;border-radius:var(--r);font-weight:800;font-size:.8125rem;letter-spacing:.06em;min-width:44px;position:relative;z-index:6}
+#alerts.fault{background:var(--red);color:var(--white);box-shadow:0 0 0 2px var(--white)}
+#alerts.warning{background:var(--amber);color:var(--amber-ink);box-shadow:0 0 0 2px var(--amber-ink)}
+#link.lost #alerts{box-shadow:0 0 0 2px var(--white)}
+
+#mainw{grid-area:main;position:relative;min-height:0;min-width:0}
+#main{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;touch-action:pan-y;overscroll-behavior:contain;padding:12px var(--gr) 120px var(--gl);display:flex;flex-direction:column;gap:12px}
+#main>*{flex:none;min-width:0}
+#main>.show{flex:1 0 auto;padding-bottom:0}
+#main.stale .card,#main.stale .hero,#main.stale>.seg{filter:saturate(.25) brightness(.8)}
+.seg{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.seg button{min-height:var(--tap);font-weight:800;font-size:.9375rem;letter-spacing:.03em;background:var(--panel);color:var(--muted);border-left:1px solid var(--line);padding:0 4px;overflow-wrap:anywhere}
+.seg button:first-child{border-left:0}
+.seg button small{display:block;font-size:.6875rem;font-weight:700;opacity:.85}
+.seg .sel{background:var(--bronze);color:var(--champagne);box-shadow:inset 0 -3px 0 var(--gold)}
+.seg .armed{background:var(--green);color:var(--green-ink)}
+.seg .safe{background:var(--bronze);color:var(--champagne);box-shadow:inset 0 0 0 2px var(--gold)}
+.seg .locked{background:var(--amber);color:var(--amber-ink)}
+.seg .wait{background:var(--bronze);color:var(--amber);box-shadow:inset 0 0 0 2px var(--amber)}
+.seg .noans{background:var(--amber);color:var(--amber-ink)}
+.seg .partlock{color:var(--amber);box-shadow:inset 0 0 0 2px var(--amber)}
+.seg .unk{color:var(--amber)}
+.seg button:disabled.armed,.seg button:disabled.locked,.seg button:disabled.wait,.seg button:disabled.unk,.seg button:disabled.safe{opacity:1}
+.seg .asking{box-shadow:inset 0 0 0 3px var(--gold)}
+.seg.sm button{min-height:2.875rem;font-size:.8125rem}
+.seg.sm .sel{box-shadow:none}
+
+.card{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);display:flex;flex-direction:column;min-width:0}
+.card.all{border:2px solid var(--gold);background:var(--bronze)}
+.card.all>.hd{background:linear-gradient(#F0CF7A,#C9953A);border-radius:7px 7px 0 0;margin-bottom:12px;padding:8px 12px}
+.card.all .nm{font-family:var(--caps);font-weight:700;letter-spacing:.16em;font-size:.9375rem;text-transform:uppercase}
+.card.all>.hd .nm{color:var(--bg)}
+.card.all>.seg button{min-height:4.25rem;font-size:1.0625rem;background:var(--bg)}
+.card.all>.seg .armed{background:var(--green)} .card.all>.seg .locked{background:var(--amber)} .card.all>.seg .safe{background:var(--panel2)}
+.card.all>.seg .noans{background:var(--amber)}
+.card.all>.row .btn{min-height:4rem;background:var(--bg)} .card.all>.row .btn.amber{background:var(--amber)}
+.hd{display:flex;align-items:center;gap:8px;padding:10px 12px 8px;min-height:44px;width:100%;text-align:left}
+.hd .nm{flex:1;min-width:0;font-weight:800;font-size:1.125rem;color:var(--champagne);overflow-wrap:anywhere}
+.hd .chev{flex:none;width:22px;height:22px;stroke:var(--gold);fill:none;stroke-width:2.5;transition:transform .15s}
+.open>.hd .chev{transform:rotate(180deg)}
+.hd .pill{font-size:.6875rem;padding:4px 8px}
+.card>.seg,.card>.lv{margin:0 12px 12px}
+.units{border-top:1px solid var(--line);padding:10px 12px;display:flex;flex-direction:column;gap:10px;background:var(--panel2);border-radius:0 0 var(--r) var(--r)}
+.unit{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:center}
+.unit .un{font-weight:700;font-size:.9375rem;overflow-wrap:anywhere;min-width:0}
+.unit.lk .un{color:var(--amber)}
+
+.lv{display:grid;grid-template-columns:var(--tap) minmax(0,1fr) var(--tap);gap:8px;align-items:center}
+.lv .cap{grid-column:1/-1}
+.lv+.lv{margin-top:-4px}
+.lv .val{text-align:center;font-weight:800;font-size:clamp(1rem,7vw,1.5rem);color:var(--champagne);min-width:0}
+.lv .val.small{font-size:1rem}
+.lv .bar{grid-column:1/-1;height:6px;border-radius:3px;background:var(--bronze);overflow:hidden}
+.lv .bar i{display:block;height:100%;background:var(--gold)}
+.step{height:var(--tap);min-width:0;border-radius:var(--r);background:var(--bronze);border:1px solid var(--line);font-weight:800;font-size:1.75rem;color:var(--champagne)}
+.step:active,.btn:active,.seg button:active{filter:brightness(1.3)}
+
+.btn{min-height:var(--tap);border-radius:var(--r);font-weight:800;font-size:1rem;letter-spacing:.03em;padding:0 12px;background:var(--bronze);color:var(--champagne);border:1px solid var(--line);overflow-wrap:anywhere}
+.btn small{display:block;font-size:.6875rem;font-weight:700}
+.btn.green{background:var(--green);color:var(--green-ink);border-color:var(--green)}
+.btn.amber{background:var(--amber);color:var(--amber-ink);border-color:var(--amber)}
+.btn.red{background:var(--red);color:var(--white);border-color:var(--red)}
+.btn.gold{background:linear-gradient(#F0CF7A,#C9953A);color:var(--bg);border-color:#C9953A}
+.row{display:flex;align-items:center;gap:10px}
+.row .nm{flex:1;min-width:0;font-weight:800;font-size:1.0625rem;color:var(--champagne);overflow-wrap:anywhere}
+.row .btn{flex:none;min-width:6.5rem;max-width:45%}
+.card>.row{padding:10px 12px}
+h2{margin:6px 0 -4px;font-family:var(--caps);font-weight:700;font-size:.8125rem;letter-spacing:.2em;color:var(--gold);display:flex;align-items:center;gap:10px}
+h2::after{content:"";flex:1;height:1px;background:var(--line)}
+.none{font-family:var(--caps);font-weight:700;letter-spacing:.2em;color:var(--muted);text-align:center;padding:16px 0}
+
+.show{display:flex;flex-direction:column;gap:14px;justify-content:space-between;min-height:min-content}
+.hero{text-align:center;display:flex;flex-direction:column;gap:6px;align-items:center;padding-top:8px;min-width:0;width:100%}
+.hero .cap{font-size:.8125rem;letter-spacing:.3em;overflow-wrap:anywhere}
+.hero .big{font-weight:800;font-size:clamp(2rem,17vw,6.5rem);line-height:1;color:var(--champagne);letter-spacing:-.02em;max-width:100%}
+.hero .big.live{color:var(--green)} .hero .big.held{color:var(--amber)}
+.hero .name{font-family:var(--serif);font-weight:900;font-size:1.375rem;color:var(--champagne);text-wrap:balance;overflow-wrap:anywhere;min-height:1.6em;max-width:100%}
+.prog{width:100%;height:8px;border-radius:4px;background:var(--bronze);overflow:hidden}
+.prog i{display:block;height:100%;background:var(--green)}
+.of{font-weight:700;color:var(--muted);font-size:.9375rem}
+.times{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.times span{font-weight:700;font-size:.9375rem;padding:6px 12px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.times .nx{border-color:var(--gold);color:var(--champagne)}
+.times .rn{border-color:var(--green);color:var(--green)}
+.times .dn{opacity:.45;text-decoration:line-through}
+.transport{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.transport .btn{min-height:5.25rem;font-size:1.0625rem;padding:0 4px;letter-spacing:0}
+.hero .cap.bad{color:var(--red-hi)} .hero .cap.good{color:var(--green)}
+.hero .big.chkw{font-size:clamp(2.1rem,12vw,3.75rem);color:var(--amber);letter-spacing:.02em;padding:14px 0}
+.prog.chk{height:12px;border-radius:6px}
+.prog.chk i{background:var(--amber)}
+.checks{list-style:none;margin:4px 0 0;padding:0;width:100%;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);text-align:left}
+.checks li{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid var(--line);font-size:1rem;min-width:0}
+.checks li:first-child{border-top:0}
+.checks b{flex:1;min-width:0;font-weight:700;overflow-wrap:anywhere}
+.checks svg{flex:none;width:20px;height:20px;fill:none;stroke-width:3.5;stroke:var(--green)}
+.checks svg.no{stroke:var(--red-hi)} .checks svg.wn{stroke:var(--amber)}
+.checks li.no{background:rgba(230,30,24,.14)} .checks li.no b{color:var(--white);font-weight:800}
+.checks li.wn b{color:var(--amber)}
+.checks li span{flex:none;max-width:45%;font-weight:800;font-size:.8125rem;color:var(--red-hi);letter-spacing:.03em;overflow-wrap:anywhere}
+.checks li.wn span{color:var(--amber)}
+.tw{display:flex;flex-direction:column;gap:10px}
+.btn.wide{min-height:4rem;font-size:1.125rem}
+
+/* the confirm bar: an overlay on the bottom edge of the panel, never part of the flow */
+#mainw>#sheet{position:absolute;left:0;right:0;bottom:0;z-index:8;padding:12px var(--gr) 10px var(--gl);background:var(--panel2);border-top:2px solid var(--gold);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center}
+#mainw>#sheet[hidden]{display:none}
+#sheet .what{grid-column:1/-1;font-weight:800;font-size:1.0625rem;color:var(--champagne);overflow-wrap:anywhere}
+#sheet .btn{min-height:4rem;font-size:1.25rem}
+#sheet .x{min-width:4rem}
+#sheet .t{position:absolute;left:0;top:-2px;height:2px;background:var(--bg);right:0;transform-origin:right}
+#sheet.line{background:var(--red-deep);border-top-color:var(--red-hi);display:block;padding:0}
+#sheet.line.warn{background:#5a3a00;border-top-color:var(--amber)}
+#sheet.line.ok{background:#0c3a1c;border-top-color:var(--green)}
+#sheet .ln{display:block;width:100%;min-height:44px;max-height:calc(3 * 1.35em + 24px);overflow-y:auto;padding:12px var(--gr) 12px var(--gl);text-align:left;font-weight:700;font-size:.9375rem;line-height:1.35;color:var(--white);overflow-wrap:anywhere;user-select:text}
+
+#tabs{grid-area:tabs;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid var(--line);background:var(--panel);padding:0 var(--gr) 0 var(--gl)}
+#tabs button{min-height:3.25rem;font-family:var(--caps);font-weight:700;font-size:min(.75rem,3.3vw);letter-spacing:.06em;color:var(--muted);border-top:3px solid transparent;min-width:0}
+#tabs .sel{color:var(--champagne);border-top-color:var(--gold)}
+#masterw{grid-area:master;padding:8px var(--gr) max(10px, env(safe-area-inset-bottom, 0px)) var(--gl);background:var(--panel)}
+#master{width:100%;min-height:4.25rem;border-radius:var(--r);background:var(--red);color:var(--white);font-weight:800;font-size:1.375rem;letter-spacing:.06em;border:2px solid #ff8a80}
+#master:active{background:var(--red-deep)}
+#master.done{background:var(--bronze);border-color:var(--gold);color:var(--champagne)}
+#master.send{background:var(--red-deep);border-color:var(--amber)}
+#master.noans{background:var(--amber);border-color:var(--amber-ink);color:var(--amber-ink)}
+
+#cfg{position:fixed;inset:0;z-index:20;background:rgba(7,6,5,.86);display:flex;align-items:flex-end;justify-content:center;
+  padding:env(safe-area-inset-top,0px) var(--gr) calc(env(safe-area-inset-bottom,0px) + 12px) var(--gl)}
+#cfg[hidden]{display:none}
+#cfg .box{width:100%;max-width:480px;max-height:100%;overflow-y:auto;overflow-x:hidden;background:var(--panel);border:1px solid var(--gold);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:12px;touch-action:pan-y}
+#cfg .opt{display:flex;flex-direction:column;gap:8px}
+.who{display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:700;min-width:0}
+.who span{min-width:0;overflow-wrap:anywhere}
+.names{display:flex;flex-direction:column;gap:8px}
+.names .btn.sel{border-color:var(--gold);background:linear-gradient(#F0CF7A,#C9953A);color:var(--bg)}
+.field{width:100%;min-height:3.5rem;border-radius:var(--r);border:1px solid var(--line);background:var(--bg);color:var(--cream);padding:0 14px;font-size:1.125rem;user-select:text;-webkit-user-select:text}
+.alrow{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);min-width:0}
+.alrow:first-of-type{border-top:0}
+.alrow .tx{flex:1;min-width:0;font-weight:700;overflow-wrap:anywhere}
+.alrow.fault .tx{color:var(--red-hi)} .alrow.warning .tx{color:var(--amber)}
+.alrow .btn{flex:none;min-width:5rem}
+.rep{display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--line);min-width:0}
+.rep b{flex:none;max-width:45%;overflow-wrap:anywhere;color:var(--champagne)}
+.rep span{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:700}
+.rep.good span{color:var(--green)} .rep.bad span{color:var(--red-hi)} .rep.warn span{color:var(--amber)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <img src="/brand/logo_small.png" alt="Jeff Holmes Presents">
+    <div class="st"><span class="cap" id="t-word"></span><span class="clk" id="t-clk">--:--:--</span></div>
+    <span class="pill" id="t-arm">UNKNOWN</span>
+    <button id="gear" data-act="gear" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg></button>
+  </header>
+  <div id="link" class="lost"><span id="link-t"></span><button id="alerts" data-act="alerts" hidden></button></div>
+  <div id="mainw">
+    <main id="main"></main>
+    <div id="sheet" hidden></div>
+  </div>
+  <nav id="tabs"></nav>
+  <div id="masterw"><button id="master" data-act="master">DISARM ALL</button></div>
+</div>
+<div id="cfg" hidden></div>
+<!-- purge: its own safety PR -->
+<div id="purge-mount" hidden></div>
+
+<script>
+"use strict";
+/* ---------- plumbing ---------- */
+const WINDOW_ID = "w-" + Math.random().toString(36).slice(2, 8);
+const PAGE_ID = "pg-" + Math.random().toString(36).slice(2, 10);
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const mono = () => performance.now();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const p2 = x => String(x).padStart(2, "0");
+const mmss = t => { t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; return (h ? p2(h) + ":" : "") + p2(m) + ":" + p2(s); };
+const hms = t => { t = Math.max(0, Math.round(t)); return p2(Math.floor(t / 3600)) + ":" + p2(Math.floor(t % 3600 / 60)) + ":" + p2(t % 60); };
+function clock12(hm){ const m = /^(\d{1,2}):(\d{2})/.exec(String(hm || "")); if(!m) return String(hm || ""); let h = +m[1]; const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12; return h + ":" + m[2] + " " + ap; }
+function short(t, n){ t = String(t || "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + "\u2026" : t; }
+
+async function getJSON(p, ms){
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms || 1500);
+  try{
+    const r = await fetch(p, {cache:"no-store", credentials:"same-origin", signal:ctl.signal});
+    const j = await r.json().catch(() => ({}));
+    if(!r.ok){ const e = new Error(j.error || r.statusText); e.status = r.status; throw e; }
+    return j;
+  } finally { clearTimeout(t); }
+}
+// A POST that never throws: {net:true} when nothing answered, else {status, j}.
+async function post(p, body, ms){
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms || 4000);
+  try{
+    const r = await fetch("/api/remote/" + p, {method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json", "X-LTC-Window":WINDOW_ID}, body:JSON.stringify(body || {}), signal:ctl.signal});
+    const j = await r.json().catch(() => ({}));
+    return {net:false, ok:r.ok, status:r.status, j:j || {}};
+  }catch(e){ return {net:true, ok:false, status:0, j:{}}; }
+  finally{ clearTimeout(t); }
+}
+const seenNow = () => ST ? ST.served_at : null;
+const words = r => String((r && r.j && (r.j.error || r.j.text)) || "Refused. Nothing was changed.");
+
+/* ---------- state ---------- */
+let ST = null, LAST_OK = null, LOST_SINCE = mono(), SEQ = 0, EPOCH = 0, CD = null, PR_AT = null;
+let MO = null, MO_AT = 0, MO_BUSY = false;
+const UI = {tab:"show", kind:"flame", open:{}, stopAt:0, signAuto:false, flash:0, sign:{names:null, name:"", msg:"", need:false}};
+let BAR = null;          // confirm bar or a line
+let SHEET = null;        // "cfg" | "alerts" | "report"
+let REPORT = null;
+const PEND = {};         // key -> {state:"sending"|"pending"|"noans", at}
+const WAITS = [];        // things waiting on a newer status
+const RETRY = {};        // key -> true while a safe press is being retried
+let HZ = {run:null, timer:null, until:0};
+function masterMode(){ return "all"; }              // later: "flame" | "stop"
+function masterConfigurable(){ return false; }
+
+/* ---------- derived facts ---------- */
+function linkAge(){ return LAST_OK == null ? mono() - LOST_SINCE : mono() - LAST_OK; }
+function linkState(){ if(LAST_OK == null) return "lost"; const a = mono() - LAST_OK; return a > 5000 ? "lost" : a > 2000 ? "slow" : "ok"; }
+const lost = () => linkState() === "lost";
+const ME = () => (ST && ST.me) || {};
+function may(row){ const m = ME().may; return !(m && m[row] === false); }
+const usersOut = () => !!(ME().users_active && !ME().user);
+const sch = () => (ST && ST.schedule) || {};
+const live = () => { const s = sch().state; return s === "SHOW" || s === "PAUSED"; };
+const heldNow = () => { const s = sch(); return s.state === "PAUSED" || s.state === "HOLD" || s.held === true || !!(ST && ST.alert_hold && ST.alert_hold.held); };
+function flamesKnown(){ const f = ST && ST.flames; return !!(f && f.connected === true && f.stale !== true); }
+const fgroups = () => (ST && ST.flames && ST.flames.groups) || [];
+const lockedNames = () => new Set((ST && ST.morning && ST.morning.locked_machines) || []);
+function groupKey(map, name){ if(!map) return null; if(name in map) return name; const l = String(name).toLowerCase(); return Object.keys(map).find(k => k.toLowerCase() === l) || null; }
+function machinesOf(name){
+  if(!MO || !MO.groups) return null;
+  const k = groupKey(MO.groups, name); if(k == null) return null;
+  const by = {}; (MO.machines || []).forEach(m => { by[m.id] = m; });
+  return (MO.groups[k] || []).map(id => by[id]).filter(Boolean);
+}
+function gcount(name){
+  const gm = ST && ST.morning && ST.morning.group_machines;
+  const k = groupKey(gm, name);
+  if(k != null) return {n:gm[k].machines, k:gm[k].locked};
+  const ms = machinesOf(name); if(!ms) return null;
+  const ln = lockedNames(); return {n:ms.length, k:ms.filter(m => ln.has(m.name)).length};
+}
+function gview(g){
+  const c = gcount(g.name) || {n:0, k:0};
+  let st = "unknown";
+  if(flamesKnown()) st = g.armed === "armed" ? "armed" : g.armed === "held" ? "held" : g.armed === "disarmed" ? "safe" : "unknown";
+  return {name:g.name, st, n:c.n, k:c.k, full:c.n > 0 && c.k >= c.n, part:c.k > 0 && c.k < c.n};
+}
+function hazList(){ return (ST && ST.hazers && ST.hazers.hazers) || []; }
+function hazDown(){ const h = ST && ST.hazers; return !!(h && h.down); }
+function lasers(){ const la = ST && ST.laser_arm; return la && !la.error && Array.isArray(la.lasers) ? la.lasers : null; }
+function laserBad(){ const la = ST && ST.laser_arm; return !!(la && la.error); }
+function laserGroups(){ const la = ST && ST.laser_arm; return la && la.groups ? la.groups : {}; }
+
+/* ---------- pending presses ---------- */
+// A press reads PENDING until a status newer than the press shows the change,
+// NO ANSWER after 3 s, or the engine's refusal. Never what was tapped.
+function track(key, test, tmo, onFail){
+  const w = {key, test, t0:mono(), seq:SEQ, tmo:tmo || 3000, onFail};
+  for(let i = WAITS.length - 1; i >= 0; i--) if(WAITS[i].key === key) WAITS.splice(i, 1);
+  WAITS.push(w); PEND[key] = {state:"pending", at:mono()};
+  return w;
+}
+function waitFor(test, tmo){
+  return new Promise(res => { WAITS.push({key:null, test, t0:mono(), seq:SEQ, tmo:tmo || 4000, res}); });
+}
+function evalWaits(){
+  for(let i = WAITS.length - 1; i >= 0; i--){
+    const w = WAITS[i]; let r = false;
+    if(SEQ > w.seq && ST){ try{ r = w.test(ST); }catch(e){ r = false; } }
+    if(r && r.fail){ WAITS.splice(i, 1); finish(w, "fail", r.text); continue; }
+    if(r){ WAITS.splice(i, 1); finish(w, "ok"); continue; }
+    if(mono() - w.t0 > w.tmo){ WAITS.splice(i, 1); finish(w, "timeout"); }
+  }
+}
+function finish(w, how, text){
+  if(w.res){ w.res({how, text}); return; }
+  if(how === "ok") delete PEND[w.key];
+  else if(how === "timeout") PEND[w.key] = {state:"noans", at:mono()};
+  else { delete PEND[w.key]; if(w.onFail) w.onFail(text); else if(text) line(text, "bad"); }
+}
+function pendLabel(key, normal){
+  const p = PEND[key]; if(!p) return null;
+  return p.state === "sending" ? "SENDING" : p.state === "noans" ? "NO ANSWER" : "PENDING";
+}
+function expirePends(){
+  let ch = false;
+  for(const k in PEND){ if(PEND[k].state === "noans" && mono() - PEND[k].at > 4000){ delete PEND[k]; ch = true; } }
+  return ch;
+}
+// A press that is safe to repeat (disarm, Stop, Hold, off): tried again every
+// second until the engine answers at all.
+async function sendSafe(key, route, bodyFn, onAnswer){
+  if(RETRY[key]) return;
+  RETRY[key] = true; PEND[key] = {state:"sending", at:mono()};
+  let r;
+  for(;;){
+    r = await post(route, bodyFn(), 3500);
+    if(!r.net) break;
+    PEND[key] = {state:"sending", at:mono()}; render();
+    await sleep(1000);
+  }
+  delete RETRY[key]; delete PEND[key];
+  render();
+  return onAnswer ? onAnswer(r) : r;
+}
+
+/* ---------- the bar ---------- */
+function line(text, tone, onTap){ BAR = {kind:"line", text:String(text || ""), tone:tone || "bad", onTap}; render(); }
+function ask(what, tone, minMs, lifeMs, onConfirm, onCancel){
+  const now = mono();
+  BAR = {kind:"confirm", what, tone, minAt:now + minMs, endAt:now + lifeMs, life:lifeMs, onConfirm, onCancel};
+  render();
+}
+function barClose(){ if(BAR && BAR.kind === "confirm" && BAR.onCancel) BAR.onCancel(); BAR = null; render(); }
+
+/* ---------- polling ---------- */
+let POLLING = false;
+function startPolling(){
+  if(POLLING) return; POLLING = true;
+  const loop = async () => {
+    const ep = EPOCH; let got = null;
+    try{ got = await getJSON("/api/remote/status", 1500); }catch(e){}
+    if(got && ep === EPOCH){
+      ST = got; LAST_OK = mono(); SEQ++;
+      CD = anchor(CD, got.countdown, mono());
+      const pr = got.preroll; PR_AT = pr && typeof pr.age_s === "number" ? {age:pr.age_s, at:mono()} : null;
+      onStatus();
+    }
+    setTimeout(loop, 250);
+  };
+  loop();
+}
+const CD_SLACK = 1500;
+function anchor(prev, c, now){
+  if(!c || typeof c.s !== "number" || !isFinite(c.s)) return null;
+  const s = Math.max(0, c.s);
+  if(!c.running) return {kind:c.kind, length:c.length, running:false, s, at:null};
+  let at = now + s * 1000;
+  if(prev && prev.running && prev.kind === c.kind && at <= prev.at + CD_SLACK) at = Math.min(prev.at, at);
+  return {kind:c.kind, length:c.length, running:true, s, at};
+}
+function cdRead(){ if(!CD) return null; return {kind:CD.kind, length:CD.length, s:CD.running ? Math.max(0, (CD.at - mono()) / 1000) : CD.s}; }
+function onStatus(){
+  evalWaits(); runWatch(); hazBeat(); maybeMorning();
+  if(usersOut() && !UI.signAuto){ UI.signAuto = true; openSign(); }
+  render();
+}
+async function maybeMorning(force){
+  const need = force || !MO || (UI.tab === "arm" && UI.kind === "flame" && mono() - MO_AT > 5000) || mono() - MO_AT > 30000;
+  if(!need || MO_BUSY) return;
+  MO_BUSY = true;
+  try{ MO = await getJSON("/api/remote/morning", 3000); MO_AT = mono(); }catch(e){ MO_AT = mono() - 3000; }
+  MO_BUSY = false; render();
+}
+
+/* ---------- renderers ---------- */
+function setHTML(el, h){ if(el.__h !== h){ el.__h = h; el.innerHTML = h; } }
+function setText(el, t){ if(el.textContent !== t) el.textContent = t; }
+function setCls(el, c){ if(el.className !== c) el.className = c; }
+const chev = '<svg class="chev" viewBox="0 0 24 24"><path d="M5 9l7 7 7-7"/></svg>';
+function B(attrs, cls, txt, dis){
+  return `<button ${attrs} class="${cls || ""}"${dis ? " disabled" : ""}>${txt}</button>`;
+}
+// One segment button. key = pending key; lit = css class for the engine's state.
+function segBtn(act, data, key, label, lit, dis, extra){
+  const pl = pendLabel(key);
+  let cls = lit || "", txt = label, d = dis;
+  if(pl){ txt = pl; cls = pl === "NO ANSWER" ? "noans" : ""; d = (pl === "PENDING" && !/^dis/.test(act)) ? true : dis; }
+  if(extra && !pl) txt += extra;
+  if(BAR && BAR.kind === "confirm" && BAR.key === key && !pl) cls += " asking";
+  return B(`data-act="${act}" ${data}`, cls, txt, d);
+}
+const seg = (cls, inner) => `<div class="seg ${cls || ""}">${inner}</div>`;
+const dn = (s) => `data-n="${esc(s)}"`;
+
+function renderAll(){
+  renderTop(); renderLink(); renderTabs(); renderMain(); renderBar(); renderMaster(); renderSheet();
+}
+let RQ = false;
+function render(){ if(RQ) return; RQ = true; queueMicrotask(() => { RQ = false; renderAll(); }); }
+
+function stateWord(){
+  const s = sch(), sh = (ST && ST.show) || {}, pr = (ST && ST.preroll) || {};
+  if(!ST) return {w:"NO DATA", short:"NO DATA", cls:""};
+  if(pr.state === "queued" || pr.state === "checking") return {w:"RIG CHECK", short:"RIG CHECK", cls:"", chk:true};
+  const fc = failedChoice();
+  if(fc) return {w:"RIG CHECK FAILED", short:"CHECK FAILED", cls:"bad", fail:true};
+  if(live() && s.state === "SHOW" && !heldNow()) return {w:"PLAYING", short:"PLAYING", cls:"live"};
+  if(live() || s.state === "HOLD" || heldNow()) return {w:"HELD", short:"HELD", cls:"held"};
+  if(sh.show_control_on === false) return {w:"SHOW CONTROL OFF", short:"CONTROL OFF", cls:"bad"};
+  const nx = s.next;
+  if((s.state === "STANDBY" || s.state === "IDLE") && nx && nx.start) return {w:"NEXT SHOW " + clock12(nx.start), short:"NEXT " + clock12(nx.start), cls:""};
+  const m = {BOOT:"STARTING", IDLE:"IDLE", STANDBY:"STANDBY", CLOSING:"CLOSING", OFF:"OFF"};
+  const t = m[s.state] || (s.attached === false ? "NO SCHEDULE" : "IDLE");
+  return {w:t, short:t, cls:""};
+}
+function clockText(){
+  const c = cdRead();
+  if(!c) return "--:--:--";
+  if(c.kind === "left" && typeof c.length === "number") return mmss(c.length - c.s);
+  if(c.kind === "left") return mmss(c.s);
+  return hms(c.s);
+}
+function counts(){
+  let a = 0, n = 0;
+  const gs = fgroups(); n += gs.length; a += gs.filter(g => g.armed === "armed").length;
+  const hs = hazList(); n += hs.length; a += hs.filter(h => h.armed).length;
+  const ls = lasers() || []; n += ls.length; a += ls.filter(l => l.armed).length;
+  return {a, n};
+}
+function renderTop(){
+  const w = stateWord();
+  setText($("t-word"), w.short);
+  $("t-word").style.color = w.cls === "bad" ? "var(--red-hi)" : "";
+  const el = $("t-clk");
+  setText(el, clockText());
+  el.style.color = w.cls === "live" ? "var(--green)" : w.cls === "held" ? "var(--amber)" : "";
+  const c = counts(), p = $("t-arm");
+  const unk = !ST || lost() || !flamesKnown();
+  const testing = ST && ((ST.hazer_test && ST.hazer_test.on) || ((ST.morning || {}).laser_tests_on || []).length);
+  let t, cls = "pill";
+  if(unk){ t = "UNKNOWN"; cls += " warn"; }
+  else if(c.a){ t = c.a + " ARMED"; cls += " on"; }
+  else if(testing){ t = "TEST"; cls += " warn"; }
+  else t = "SAFE";
+  setText(p, t); setCls(p, cls);
+  setCls($("gear"), usersOut() ? "out" : "");
+}
+function renderLink(){
+  const s = linkState(), l = $("link");
+  setCls(l, s);
+  const t = s === "lost" ? "NO CONTACT " + mmss(linkAge() / 1000) : s === "slow" ? "SLOW LINK" : "LINK OK";
+  setHTML($("link-t"), `<i></i>${t}`);
+  const al = (ST && ST.alerts) || [], b = $("alerts");
+  if(!al.length){ b.hidden = true; }
+  else{
+    b.hidden = false;
+    const f = al.some(a => a.severity === "fault");
+    setCls(b, f ? "fault" : "warning");
+    setText(b, al.length + (al.length === 1 ? " ALERT" : " ALERTS"));
+  }
+}
+function renderTabs(){
+  setHTML($("tabs"), [["show","SHOW"],["arm","ARM"],["haze","HAZE"],["service","SERVICE"]].map(([k, t]) => B(`data-act="tab" data-n="${k}"`, UI.tab === k ? "sel" : "", t)).join(""));
+}
+function renderMaster(){
+  const b = $("master");
+  const key = "master", pl = pendLabel(key);
+  let t = "DISARM ALL", cls = "";
+  const mm = masterMode();
+  if(mm === "flame") t = "DISARM FLAME"; else if(mm === "stop") t = "DISARM ALL + STOP";
+  if(pl){ t = pl; cls = pl === "SENDING" ? "send" : pl === "NO ANSWER" ? "noans" : "send"; }
+  else if(mono() < UI.flash){ t = "DISARMED"; cls = "done"; }
+  setText(b, t); setCls(b, cls);
+}
+
+/* ----- SHOW ----- */
+function failedChoice(){
+  const p = (ST && ST.preroll) || {}, s = sch();
+  if(!p || p.continued) return null;
+  if(live()) return null;
+  if(p.show_check && Array.isArray(p.show_check.items)) return {items:p.show_check.items, off:p.show_check.off || [], cont:true};
+  if(p.state === "failed" && !p.manual && typeof p.age_s === "number" && p.age_s < 600) return {items:p.items || [], off:[], cont:true};
+  return null;
+}
+const mk = ok => `<svg viewBox="0 0 24 24" class="${ok === true ? "ok" : ok === "wn" ? "wn" : "no"}"><path d="${ok === true ? "M4 12.5l5 5L20 6.5" : ok === "wn" ? "M12 5v9M12 18.5v.5" : "M5 5l14 14M19 5L5 19"}"/></svg>`;
+function vShow(){
+  const s = sch(), sh = (ST && ST.show) || {}, pr = (ST && ST.preroll) || {};
+  const w = stateWord(), fc = failedChoice();
+  const dead = lost();
+  let mid = "";
+  if(fc){
+    mid = `<ul class="checks">` + fc.items.map(i => {
+      const bad = !i.ok && i.required !== false, wn = !i.ok && i.required === false;
+      return `<li class="${bad ? "no" : wn ? "wn" : ""}">${mk(i.ok ? true : wn ? "wn" : false)}<b>${esc(i.name)}</b>${bad ? `<span>${esc(short(i.text, 28))}</span>` : wn ? `<span>${esc(short(i.text, 28))}</span>` : ""}</li>`;
+    }).join("") + `</ul>`;
+  }else if(w.chk){
+    mid = `<span class="big chkw">CHECKING</span><span class="prog chk"><i id="ck" style="width:100%"></i></span>`;
+  }else{
+    const c = cdRead();
+    mid = `<span class="big ${w.cls === "live" ? "live" : w.cls === "held" ? "held" : ""}" id="big">${esc(clockText())}</span>`;
+    if(live() && c && c.kind === "left" && typeof c.length === "number" && c.length > 0)
+      mid += `<span class="prog"><i id="pg" style="width:0%"></i></span><span class="of">${esc(mmss(c.length))}</span>`;
+    const cn = pr.continued;
+    if(cn && live() && (cn.off || []).length) mid += `<span class="pill warn">${esc("OFF " + cn.off.join(", "))}</span>`;
+  }
+  const name = sh.show ? esc(sh.show) : "&nbsp;";
+  const slots = (s.slots || []).map(x => {
+    const c = x.status === "NEXT" ? "nx" : x.status === "RUNNING" ? "rn" : (x.status === "PENDING" ? "" : "dn");
+    return `<span class="${c}">${esc(clock12(x.start).replace(/ (AM|PM)$/, ""))}</span>`;
+  }).join("");
+  // transport
+  const onOff = sh.show_control_on === false;
+  const held = heldNow() && !w.chk;
+  const chkOn = w.chk;
+  let goLabel = held ? "RESUME" : "START NOW", goKey = held ? "resume" : "start", goOk;
+  const blocked = s.start_blocked;
+  if(held) goOk = may("show") && !dead && s.state !== "OFF";
+  else goOk = may("show") && !dead && !onOff && !live() && !chkOn && !!s.attached && !(blocked && !blocked.loading) && !!ST;
+  const pl = pendLabel("go");
+  let go;
+  if(pl) go = B(`data-act="go"`, "btn green" + (pl === "NO ANSWER" ? " amber" : ""), pl, pl === "PENDING");
+  else go = B(`data-act="go"`, "btn green", chkOn ? `<span style="font-size:.8125rem">CHECKING</span>` : goLabel, !goOk);
+  const hpl = pendLabel("hold");
+  const holdOk = !ST || (s.state === "SHOW" && !held) ;
+  const hold = hpl ? B(`data-act="hold"`, "btn amber", hpl, false) : B(`data-act="hold"`, "btn amber", "HOLD", !holdOk);
+  const spl = pendLabel("stop"), armed = mono() < UI.stopAt;
+  const stop = spl ? B(`data-act="stop"`, "btn red", spl, false) : B(`data-act="stop"`, "btn red", armed ? "TAP AGAIN" : "STOP<small>TAP TWICE</small>", false);
+  let cont = "";
+  if(fc && fc.cont){
+    const cpl = pendLabel("cont");
+    const off = fc.off.length ? fc.off : fc.items.filter(i => !i.ok && i.required !== false).map(i => i.name);
+    cont = B(`data-act="cont"`, "btn amber wide", cpl || `CONTINUE ANYWAY${off.length ? `<small>${esc(short("WITHOUT " + off.join(", ").toUpperCase(), 40))}</small>` : ""}`, dead || !may("show") || cpl === "PENDING");
+  }
+  return `<div class="show"><div class="hero"><span class="cap ${w.cls === "bad" ? "bad" : ""}">${esc(w.w)}</span>${mid}` +
+    `<span class="name">${name}</span><div class="times">${slots}</div></div>` +
+    `<div class="tw">${cont}<div class="transport">${go}${hold}${stop}</div></div></div>`;
+}
+
+/* ----- ARM ----- */
+function armedNFlame(){ return fgroups().filter(g => g.armed === "armed").length; }
+function vArm(){
+  const k = UI.kind;
+  const fN = flamesKnown() ? armedNFlame() : "?", fT = fgroups().length;
+  const hN = hazList().filter(h => h.armed).length, lN = (lasers() || []).filter(l => l.armed).length;
+  let h = `<div class="seg">` + [["flame","FLAME", fN + "/" + fT], ["haze","HAZE", hN + "/" + hazList().length], ["laser","LASER", lN + "/" + (lasers() || []).length]]
+    .map(([x, t, c]) => B(`data-act="kind" data-n="${x}"`, x === k ? "sel" : "", `${t}<small>${c}</small>`)).join("") + `</div>`;
+  if(k === "flame") return h + vFlame();
+  if(k === "haze") return h + vHazeArm();
+  return h + vLaserArm();
+}
+function vFlame(){
+  const gs = fgroups().map(gview);
+  if(!gs.length) return `<div class="none">NO GROUPS</div>`;
+  const known = flamesKnown(), dead = lost();
+  const canArm = may("arm") && !dead;
+  // ALL
+  const armedG = gs.filter(g => g.st === "armed"), heldG = gs.filter(g => g.st === "held");
+  const open = gs.filter(g => !g.full);
+  const targets = open.filter(g => g.st === "safe" || g.st === "unknown");
+  let tn = gs.reduce((a, g) => a + g.n, 0), tk = gs.reduce((a, g) => a + g.k, 0);
+  let aArm;
+  if(!known) aArm = segBtn("arm-all", "", "arm:flame:*", "UNKNOWN", "unk", true);
+  else if(!open.length) aArm = segBtn("arm-all", "", "arm:flame:*", "ARM", "", true);
+  else if(!targets.length && open.every(g => g.st === "armed")) aArm = segBtn("arm-all", "", "arm:flame:*", "ARMED", "armed", true);
+  else{
+    const a = open.filter(g => g.st === "armed").length;
+    aArm = segBtn("arm-all", "", "arm:flame:*", "ARM", "", !canArm || !targets.length, a ? `<small>${a}/${open.length}</small>` : "");
+  }
+  const anyOn = armedG.length || heldG.length || !known;
+  const aDis = segBtn("dis-all", "", "dis:flame:*", anyOn ? "DISARM" : "SAFE", anyOn ? "" : "safe", false);
+  const allFull = tn > 0 && tk >= tn;
+  const aLock = lockBtn("lock-all", "", "lock:*", tn, tk, !MO || dead);
+  let h = `<section class="card all"><div class="hd"><span class="nm">ALL FLAMES</span>${lockTag(tn, tk)}</div>${seg("", aArm + aDis + aLock)}</section><h2>GROUPS</h2>`;
+  gs.forEach(g => {
+    const ms = machinesOf(g.name), o = !!UI.open["g:" + g.name], one = g.n < 2;
+    let arm;
+    if(!known || g.st === "unknown") arm = segBtn("arm", dn(g.name), "arm:flame:" + g.name, "UNKNOWN", "unk", true);
+    else if(g.st === "armed") arm = segBtn("arm", dn(g.name), "arm:flame:" + g.name, "ARMED", "armed", true);
+    else if(g.st === "held") arm = segBtn("arm", dn(g.name), "arm:flame:" + g.name, "WAITING", "wait", true);
+    else arm = segBtn("arm", dn(g.name), "arm:flame:" + g.name, "ARM", "", !canArm || g.full);
+    const dis = segBtn("dis", dn(g.name), "dis:flame:" + g.name, g.st === "safe" && !g.full ? "SAFE" : "DISARM", g.st === "safe" && !g.full ? "safe" : "", false);
+    const lk = lockBtn("lock", dn(g.name), "lock:" + g.name, g.n, g.k, !ms || dead || (g.full && !may("unlock")));
+    const body = seg("", arm + dis + lk);
+    h += `<section class="card ${o && !one ? "open" : ""}">` +
+      (one || !ms ? `<div class="hd"><span class="nm">${esc(g.name)}</span>${lockTag(g.n, g.k)}</div>` :
+        `<button class="hd" data-act="open" data-n="${esc("g:" + g.name)}" aria-expanded="${o}"><span class="nm">${esc(g.name)}</span>${lockTag(g.n, g.k)}${chev}</button>`) +
+      body + (o && !one && ms ? `<div class="units">` + ms.map(m => {
+        const lkd = lockedNames().has(m.name);
+        return `<div class="unit ${lkd ? "lk" : ""}"><span class="un">${esc(m.name)}</span>` +
+          seg("sm", segBtn("lock-m", `data-id="${esc(m.id)}" ${dn(m.name)}`, "lock:m:" + m.id, lkd ? "LOCKED" : "LOCKOUT", lkd ? "locked" : "", dead || (lkd && !may("unlock")))) + `</div>`;
+      }).join("") + `</div>` : "") + `</section>`;
+  });
+  return h;
+}
+function lockTag(n, k){ return k && k < n ? `<span class="pill warn">${k} LOCKED</span>` : ""; }
+function lockBtn(act, data, key, n, k, dis){
+  const full = n > 0 && k >= n;
+  if(full) return segBtn(act, data, key, "LOCKED", "locked", dis);
+  return segBtn(act, data, key, "LOCKOUT", k ? "partlock" : "", dis || n === 0, k ? `<small>${k} OF ${n}</small>` : "");
+}
+function haveHazers(){ return hazList().length > 0; }
+function hazState(h){
+  if(hazDown()) return "unknown";
+  if(h.armed) return h.state === "waiting" ? "wait" : "armed";
+  return "safe";
+}
+function unitCard(kind, id, name, st, extraLock, armDis){
+  const dead = lost();
+  const canArm = may("arm") && !dead;
+  const k = kind + ":" + id;
+  let arm;
+  if(st === "unknown") arm = segBtn("arm-" + kind, dn(id), "arm:" + k, "UNKNOWN", "unk", true);
+  else if(st === "armed") arm = segBtn("arm-" + kind, dn(id), "arm:" + k, "ARMED", "armed", true);
+  else if(st === "wait") arm = segBtn("arm-" + kind, dn(id), "arm:" + k, "WAITING", "wait", true);
+  else if(st === "locked") arm = segBtn("arm-" + kind, dn(id), "arm:" + k, "LOCKED", "locked", true);
+  else arm = segBtn("arm-" + kind, dn(id), "arm:" + k, "ARM", "", !canArm);
+  const on = st === "armed" || st === "wait" || st === "unknown";
+  const dis = segBtn("dis-" + kind, dn(id), "dis:" + k, on ? "DISARM" : "SAFE", on ? "" : "safe", false);
+  return `<section class="card"><div class="hd"><span class="nm">${esc(name)}</span></div>${seg("", arm + dis)}</section>`;
+}
+function allCard(kind, title, states){
+  const dead = lost(), canArm = may("arm") && !dead;
+  const unk = states.some(s => s === "unknown");
+  const a = states.filter(s => s === "armed").length, w = states.filter(s => s === "wait").length;
+  const armable = states.filter(s => s === "safe").length;
+  const k = kind + ":*";
+  let arm;
+  if(unk && !a) arm = segBtn("arm-all-" + kind, "", "arm:" + k, "UNKNOWN", "unk", true);
+  else if(a && !armable && !w) arm = segBtn("arm-all-" + kind, "", "arm:" + k, "ARMED", "armed", true);
+  else arm = segBtn("arm-all-" + kind, "", "arm:" + k, "ARM", "", !canArm || !armable, a ? `<small>${a}/${states.length}</small>` : "");
+  const on = a || w || unk;
+  const dis = segBtn("dis-all-" + kind, "", "dis:" + k, on ? "DISARM" : "SAFE", on ? "" : "safe", false);
+  return `<section class="card all"><div class="hd"><span class="nm">${title}</span></div>${seg("", arm + dis)}</section>`;
+}
+function vHazeArm(){
+  const hs = hazList();
+  if(!hs.length) return `<div class="none">${hazDown() ? "UNKNOWN" : "NONE"}</div>`;
+  const st = hs.map(hazState);
+  return allCard("haze", "ALL HAZERS", st) + `<h2>HAZERS</h2>` + hs.map((h, i) => unitCard("haze", h.name, h.name, st[i])).join("");
+}
+function laserState(l){ if(laserBad()) return "unknown"; if(l.armed) return "armed"; if(l.locked) return "locked"; return "safe"; }
+function vLaserArm(){
+  const ls = lasers();
+  if(laserBad()) return `<div class="none">UNKNOWN</div>`;
+  if(!ls || !ls.length) return `<div class="none">NONE</div>`;
+  const st = ls.map(laserState);
+  let h = allCard("laser", "ALL LASERS", st);
+  const gk = Object.keys(laserGroups());
+  if(gk.length > 1){
+    h += `<h2>GROUPS</h2>`;
+    gk.forEach(g => {
+      const ids = laserGroups()[g] || [], sts = ls.map((l, i) => ids.includes(l.id) ? st[i] : null).filter(Boolean);
+      const dead = lost(), canArm = may("arm") && !dead;
+      const a = sts.filter(s => s === "armed").length, armable = sts.filter(s => s === "safe").length;
+      const key = "laser:g:" + g;
+      const arm = a && !armable ? segBtn("arm-lgroup", dn(g), "arm:" + key, "ARMED", "armed", true)
+        : segBtn("arm-lgroup", dn(g), "arm:" + key, "ARM", "", !canArm || !armable, a ? `<small>${a}/${sts.length}</small>` : "");
+      const dis = segBtn("dis-lgroup", dn(g), "dis:" + key, a ? "DISARM" : "SAFE", a ? "" : "safe", false);
+      h += `<section class="card"><div class="hd"><span class="nm">${esc(g)}</span></div>${seg("", arm + dis)}</section>`;
+    });
+  }
+  h += `<h2>LASERS</h2>` + ls.map((l, i) => unitCard("laser", l.id, l.name, st[i])).join("");
+  return h;
+}
+
+/* ----- HAZE levels ----- */
+function lvRow(cap, who, f, vals, dis){
+  const v = vals.length && vals.every(x => x === vals[0]) ? vals[0] : null;
+  const key = `lv:${who}:${f}`, pl = pendLabel(key);
+  const dd = dis || pl === "PENDING";
+  return `<div class="lv"><span class="cap">${cap}</span>` +
+    B(`data-act="lv" ${dn(who)} data-f="${f}" data-d="-5" aria-label="${cap} down"`, "step", "&minus;", dd) +
+    `<span class="val ${pl ? "small" : ""}">${pl || (v == null ? "MIX" : v + "%")}</span>` +
+    B(`data-act="lv" ${dn(who)} data-f="${f}" data-d="5" aria-label="${cap} up"`, "step", "+", dd) +
+    `<span class="bar"><i style="width:${v == null ? 0 : v}%"></i></span></div>`;
+}
+function vHaze(){
+  const hs = hazList();
+  if(!hs.length) return `<div class="none">${hazDown() ? "UNKNOWN" : "NONE"}</div>`;
+  const dis = lost() || !may("arm") || hazDown();
+  const c = (title, who, list, all) => `<section class="card ${all ? "all" : ""}"><div class="hd"><span class="nm">${esc(title)}</span></div>` +
+    lvRow("HAZE", who, "haze", list.map(h => h.haze_pct), dis) + lvRow("FAN", who, "fan", list.map(h => h.fan_pct), dis) + `</section>`;
+  return c("ALL HAZERS", "*", hs, true) + `<h2>HAZERS</h2>` + hs.map(h => c(h.name, h.name, [h])).join("");
+}
+
+/* ----- SERVICE ----- */
+function htRow(name){
+  const ht = ST && ST.hazer_test;
+  const key = "run:" + name, pl = pendLabel(key);
+  const rows = ht && ht.hazers ? ht.hazers : [];
+  const mine = name === "*" ? rows : rows.filter(r => r.name === name);
+  const on = mine.some(r => r.on || r.state === "on" || r.state === "waiting");
+  const unk = !ht || ht.available === false || !Array.isArray(ht.hazers);
+  const left = Math.max(0, ...mine.map(r => +r.left_s || 0));
+  if(on && !pl) return B(`data-act="run-stop" ${dn(name)}`, "btn amber", `STOP ${Math.ceil(left)}`, false);
+  if(pl) return B(`data-act="run" ${dn(name)}`, "btn" + (pl === "NO ANSWER" ? " amber" : ""), pl, pl === "PENDING");
+  if(unk) return B(`data-act="run" ${dn(name)}`, "btn", "UNKNOWN", true);
+  return B(`data-act="run" ${dn(name)}`, "btn", "RUN", lost() || !may("arm"));
+}
+function ltRow(id){
+  const ls = lasers() || [], on = new Set(((ST && ST.morning) || {}).laser_tests_on || []);
+  const key = "lt:" + id, pl = pendLabel(key);
+  const set = id === "*" ? ls : ls.filter(l => l.id === id);
+  const armed = set.filter(l => l.armed);
+  if(laserBad()) return B(`data-act="lt" ${dn(id)}`, "btn", "UNKNOWN", true);
+  const nOn = armed.filter(l => on.has(l.id)).length;
+  if(pl) return B(`data-act="lt" ${dn(id)}`, "btn" + (pl === "NO ANSWER" ? " amber" : ""), pl, pl === "PENDING");
+  if(!armed.length) return B(`data-act="lt" ${dn(id)}`, "btn", "DISARMED", true);
+  if(nOn === armed.length) return B(`data-act="lt" ${dn(id)}`, "btn amber", "TEST ON", false);
+  return B(`data-act="lt" ${dn(id)}`, "btn" + (nOn ? " amber" : ""), nOn ? "TEST MIX" : "TEST OFF", lost() || !may("unlock"));
+}
+function vService(){
+  const hs = hazList(), ls = lasers() || [];
+  let h = `<h2>HAZER RUN</h2>`;
+  if(!hs.length) h += `<div class="none">${hazDown() ? "UNKNOWN" : "NONE"}</div>`;
+  else{
+    h += `<section class="card all"><div class="row"><span class="nm">ALL HAZERS</span>${htRow("*")}</div></section><h2>HAZERS</h2>`;
+    h += hs.map(x => `<section class="card"><div class="row"><span class="nm">${esc(x.name)}</span>${htRow(x.name)}</div></section>`).join("");
+  }
+  h += `<h2>LASER TEST</h2>`;
+  if(laserBad()) h += `<div class="none">UNKNOWN</div>`;
+  else if(!ls.length) h += `<div class="none">NONE</div>`;
+  else{
+    h += `<section class="card all"><div class="row"><span class="nm">ALL LASERS</span>${ltRow("*")}</div></section><h2>LASERS</h2>`;
+    h += ls.map(l => `<section class="card"><div class="row"><span class="nm">${esc(l.name)}</span>${ltRow(l.id)}</div></section>`).join("");
+  }
+  h += `<!-- purge: its own safety PR -->`;
+  return h;
+}
+
+function renderMain(){
+  const m = $("main");
+  const sc = m.scrollTop;
+  const fn = {show:vShow, arm:vArm, haze:vHaze, service:vService}[UI.tab];
+  const h = ST ? fn() : `<div class="none">NO DATA</div>`;
+  const key = UI.tab;
+  const stale = lost();
+  const tabChanged = m.__tab !== key;
+  if(tabChanged){ m.__tab = key; m.__h = null; }
+  setHTML(m, h);
+  if(tabChanged) m.scrollTop = 0; else if(m.scrollTop !== sc) m.scrollTop = sc;
+  m.classList.toggle("stale", stale);
+  if(UI.tab === "show") renderLive();
+}
+// the parts of SHOW that move with the clock, written without touching the markup
+function renderLive(){
+  const c = cdRead(), big = $("big");
+  if(big) setText(big, clockText());
+  const pg = $("pg");
+  if(pg && c && typeof c.length === "number" && c.length > 0) pg.style.width = Math.min(100, Math.max(0, (c.length - c.s) / c.length * 100)) + "%";
+  const ck = $("ck");
+  if(ck){
+    const pr = (ST && ST.preroll) || {}, win = pr.window_s || 10;
+    let left = 1;
+    if(pr.state === "checking" && PR_AT){ const age = PR_AT.age + (mono() - PR_AT.at) / 1000; left = Math.max(0, 1 - age / win); }
+    ck.style.width = (left * 100) + "%";
+  }
+}
+
+/* ----- bar and sheets ----- */
+function renderBar(){
+  const s = $("sheet");
+  if(!BAR){ s.hidden = true; s.__h = ""; return; }
+  s.hidden = false;
+  if(BAR.kind === "line"){
+    s.className = "line " + (BAR.tone === "bad" ? "" : BAR.tone);
+    setHTML(s, `<button class="ln" data-act="line">${esc(BAR.text)}</button>`);
+    return;
+  }
+  s.className = "";
+  const ready = mono() >= BAR.minAt && !lost();
+  setHTML(s, `<i class="t" id="drain"></i><span class="what">${esc(BAR.what)}</span>` +
+    B(`data-act="ok"`, "btn " + BAR.tone, "CONFIRM", !ready) + B(`data-act="no" aria-label="Cancel"`, "btn x", "&#10005;"));
+  const d = $("drain");
+  if(d) d.style.transform = "scaleX(" + Math.min(1, (mono() - (BAR.endAt - BAR.life)) / BAR.life) + ")";
+}
+function renderSheet(){
+  const c = $("cfg");
+  if(!SHEET){ c.hidden = true; c.__h = ""; return; }
+  c.hidden = false;
+  let h = "";
+  if(SHEET === "cfg") h = cfgHTML();
+  else if(SHEET === "alerts") h = alertsHTML();
+  else if(SHEET === "report") h = reportHTML();
+  if(c.__h !== h){
+    const act = document.activeElement, keep = act && act.id === "pw" ? act.value : null;
+    c.__h = h; c.innerHTML = h;
+    if(keep != null && $("pw")){ $("pw").value = keep; $("pw").focus(); }
+  }
+}
+function cfgHTML(){
+  const me = ME(), u = UI.sign;
+  if(me.users_active && !me.user){
+    if(u.need) return `<div class="box"><span class="cap">SET PASSWORD AT RACK</span>${B('data-act="close"', "btn gold", "DONE")}</div>`;
+    return `<div class="box"><span class="cap">SIGN IN</span><div class="names">` +
+      (u.names || []).map(n => B(`data-act="pick" data-n="${esc(n)}"`, "btn" + (n === u.name ? " sel" : ""), esc(n))).join("") + `</div>` +
+      `<input class="field" id="pw" type="password" autocomplete="current-password" aria-label="Password">` +
+      (u.msg ? `<div class="alrow"><span class="tx" style="color:var(--red-hi)">${esc(u.msg)}</span></div>` : "") +
+      B('data-act="signin"', "btn gold", u.busy ? "PENDING" : "SIGN IN", !!u.busy) + B('data-act="close"', "btn", "CLOSE") + `</div>`;
+  }
+  const opts = masterConfigurable() ? `<span class="cap">MASTER DISARM</span><div class="opt">` +
+    [["all","DISARM ALL"],["flame","DISARM FLAME"],["stop","DISARM ALL + STOP"]].map(([k, t]) => B(`data-act="mm" data-n="${k}"`, "btn" + (masterMode() === k ? " sel" : ""), t)).join("") + `</div>` : "";
+  return `<div class="box"><div class="who"><span class="cap">${me.users_active ? "SIGNED IN" : "NO SIGN IN"}</span><span>${esc(me.user || "")}${me.role ? " &middot; " + esc(String(me.role).toUpperCase()) : ""}</span></div>` +
+    opts + (me.users_active ? B('data-act="signout"', "btn", "SIGN OUT") : "") + B('data-act="close"', "btn gold", "DONE") + `</div>`;
+}
+function alertsHTML(){
+  const al = (ST && ST.alerts) || [];
+  return `<div class="box"><span class="cap">ALERTS</span>` + (al.length ? al.map(a => {
+    const pl = pendLabel("al:" + a.id);
+    return `<div class="alrow ${a.severity === "fault" ? "fault" : "warning"}"><span class="tx">${esc(a.text)}</span>` +
+      B(`data-act="ack" data-id="${esc(a.id)}" data-v="${esc(a.ver)}"`, "btn" + (pl === "NO ANSWER" ? " amber" : ""), pl || "ACK", pl === "PENDING") + `</div>`;
+  }).join("") : `<div class="none">NONE</div>`) + B('data-act="close"', "btn gold", "DONE") + `</div>`;
+}
+function reportHTML(){
+  return `<div class="box"><span class="cap">ARM ALL FLAMES</span>` + (REPORT || []).map(r =>
+    `<div class="rep ${r.state === "armed" ? "good" : r.state === "elsewhere" ? "warn" : "bad"}"><b>${esc(r.name)}</b><span>${esc(r.state === "armed" ? "ARMED" : r.text || r.state.toUpperCase())}</span></div>`).join("") +
+    B('data-act="close"', "btn gold", "DONE") + `</div>`;
+}
+
+/* ---------- actions ---------- */
+function gone(){ BAR = null; }
+const KEYMAP = {};
+document.addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if(e.target.id === "cfg"){ closeSheet(); return; }
+  if(!b || b.disabled) return;
+  const a = b.dataset.act; if(!a) return;
+  const h = ACT[a]; if(!h) return;
+  try{ h(b.dataset, b); }catch(err){ line("Page error", "bad"); }
+});
+function closeSheet(){ SHEET = null; render(); }
+const ACT = {
+  tab(d){ UI.tab = d.n; if(BAR && BAR.kind === "confirm") barClose(); $("main").scrollTop = 0; maybeMorning(); render(); },
+  kind(d){ UI.kind = d.n; if(BAR && BAR.kind === "confirm") barClose(); maybeMorning(); render(); },
+  open(d){ UI.open[d.n] = !UI.open[d.n]; render(); },
+  gear(){ SHEET = "cfg"; if(usersOut()) loadNames(); render(); },
+  alerts(){ SHEET = "alerts"; render(); },
+  close(){ closeSheet(); },
+  line(){ const f = BAR && BAR.onTap; BAR = null; render(); if(f) f(); },
+  no(){ barClose(); },
+  ok(){ if(!BAR || BAR.kind !== "confirm") return; if(mono() < BAR.minAt || lost()) return; const f = BAR.onConfirm; BAR = null; render(); f(); },
+  mm(d){ },
+  master(){ doMaster(); },
+  go(){ doGo(); }, hold(){ doHold(); }, stop(){ doStop(); }, cont(){ doCont(); },
+  arm(d){ armGroup(d.n); },
+  "arm-all"(){ armAllFlames(); },
+  dis(d){ disGroup(d.n); },
+  "dis-all"(){ disAllFlames(); },
+  lock(d){ lockGroup(groupsNamed(d.n)); },
+  "lock-all"(){ lockGroup(fgroups().map(g => g.name), true); },
+  "lock-m"(d){ lockMachine(d.id, d.n); },
+  "arm-haze"(d){ hazArm(d.n); }, "arm-all-haze"(){ hazArm("*"); },
+  "dis-haze"(d){ hazDis(d.n); }, "dis-all-haze"(){ hazDis("*"); },
+  "arm-laser"(d){ lasArm([d.n], "laser:" + d.n); }, "arm-all-laser"(){ lasArm(null, "laser:*"); },
+  "dis-laser"(d){ lasDis([d.n], "laser:" + d.n); }, "dis-all-laser"(){ lasDis(null, "laser:*"); },
+  "arm-lgroup"(d){ lasArm(laserGroups()[d.n] || [], "laser:g:" + d.n); },
+  "dis-lgroup"(d){ lasDis(laserGroups()[d.n] || [], "laser:g:" + d.n); },
+  lv(d){ doLevel(d.n, d.f, +d.d); },
+  run(d){ hzRun(d.n); }, "run-stop"(d){ hzStop(d.n); },
+  lt(d){ lasTest(d.n); },
+  ack(d){ doAck(+d.id, +d.v); },
+  pick(d){ UI.sign.name = d.n; renderSheet(); const p = $("pw"); if(p) p.focus(); },
+  signin(){ doSignin(); },
+  signout(){ doSignout(); },
+};
+function groupsNamed(n){ return [n]; }
+
+/* flame arm: tap, then confirm */
+async function armRequest(name){
+  const sent = mono();
+  const r = await post("arm-request", {group:name, seen:seenNow()});
+  if(r.net) return {err:"NO ANSWER"};
+  if(!r.ok) return {err:words(r)};
+  return {sent, ticket:r.j.ticket, min:(+r.j.min_s || 0.3) * 1000, life:(+r.j.expires_s || 5) * 1000};
+}
+function runFor(name, id){
+  const rs = (((ST || {}).arming || {}).confirm || {}).runs || [];
+  return rs.find(x => x.run === id) || rs.find(x => x.name === name && x.mine);
+}
+// after Confirm: follow the engine's run, then the group's own armed value
+function followArm(name, runId){
+  const key = "arm:flame:" + name; let tone = "bad";
+  track(key, st => {
+    const g = ((st.flames || {}).groups || []).find(x => x.name === name);
+    const run = runFor(name, runId);
+    if(run && run.state !== "holding" && run.state !== "armed"){
+      tone = run.state === "elsewhere" ? "warn" : "bad";
+      return {fail:true, text:run.text || run.state.toUpperCase()};
+    }
+    return !!(g && g.armed === "armed" && flamesKnown());
+  }, 9000, t => line(t, tone));
+}
+async function armGroup(name){
+  const key = "arm:flame:" + name;
+  if(PEND[key] && PEND[key].state === "pending") return;
+  PEND[key] = {state:"pending", at:mono()}; render();
+  const q = await armRequest(name);
+  delete PEND[key];
+  if(q.err){ line(q.err, "bad"); return; }
+  ask("ARM " + name.toUpperCase(), "green", q.min, q.life - (mono() - q.sent), async () => {
+    PEND[key] = {state:"pending", at:mono()}; render();
+    const r = await post("arm-confirm", {group:name, ticket:q.ticket, seen:seenNow()});
+    delete PEND[key];
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok){ line(words(r), "bad"); return; }
+    followArm(name, r.j.run);
+  });
+  BAR.key = key; render();
+}
+let SEQRUN = null;
+async function armAllFlames(){
+  const gs = fgroups().map(gview).filter(g => g.st === "safe" && !g.full);
+  if(!gs.length || SEQRUN) return;
+  ask("ARM ALL FLAMES", "green", 300, 8000, async () => {
+    const run = SEQRUN = {cancel:false, done:0, total:gs.length};
+    PEND["arm:flame:*"] = {state:"pending", at:mono()};
+    const rep = [];
+    for(const g of gs){
+      if(run.cancel || lost()) { rep.push({name:g.name, state:"refused", text:"NOT TRIED"}); continue; }
+      BAR = {kind:"line", tone:"warn", text:"ARMING " + (rep.length + 1) + " OF " + gs.length, onTap:null}; render();
+      const q = await armRequest(g.name);
+      if(q.err){ rep.push({name:g.name, state:"refused", text:q.err}); continue; }
+      await sleep(q.min + 30);
+      if(run.cancel){ rep.push({name:g.name, state:"refused", text:"CANCELLED"}); continue; }
+      const key = "arm:flame:" + g.name;
+      PEND[key] = {state:"pending", at:mono()}; render();
+      const r = await post("arm-confirm", {group:g.name, ticket:q.ticket, seen:seenNow()});
+      delete PEND[key];
+      if(r.net){ rep.push({name:g.name, state:"timeout", text:"NO ANSWER"}); continue; }
+      if(!r.ok){ rep.push({name:g.name, state:"refused", text:words(r)}); continue; }
+      const out = await waitFor(st => {
+        const run2 = runFor(g.name, r.j.run);
+        if(run2 && run2.state !== "holding"){
+          if(run2.state === "armed"){ const gg = (st.flames.groups || []).find(x => x.name === g.name); return gg && gg.armed === "armed" ? true : false; }
+          return {fail:true, text:run2.text || run2.state};
+        }
+        return false;
+      }, 8000);
+      if(out.how === "ok") rep.push({name:g.name, state:"armed", text:""});
+      else if(out.how === "fail"){ const run2 = runFor(g.name, r.j.run); rep.push({name:g.name, state:run2 ? run2.state : "refused", text:out.text}); }
+      else rep.push({name:g.name, state:"timeout", text:"NO ANSWER"});
+    }
+    delete PEND["arm:flame:*"]; SEQRUN = null;
+    REPORT = rep;
+    const ok = rep.filter(r => r.state === "armed").length;
+    line("ARMED " + ok + " OF " + rep.length, ok === rep.length ? "ok" : "bad", () => { SHEET = "report"; render(); });
+  }, () => {});
+  BAR.key = "arm:flame:*";
+}
+function cancelSeq(){ if(SEQRUN) SEQRUN.cancel = true; }
+
+/* disarm */
+function disGroup(name){
+  cancelSeq();
+  const key = "dis:flame:" + name;
+  sendSafe(key, "group-disarm", () => ({group:name, seen:seenNow()}), r => {
+    if(!r.ok){ line(words(r), "bad"); return; }
+    if(r.j.forced || r.j.confirmed === false) line(words(r), "warn");
+    track(key, st => { const g = ((st.flames || {}).groups || []).find(x => x.name === name); return !!(g && g.armed === "disarmed" && flamesKnown()); });
+  });
+}
+function disAllFlames(){
+  cancelSeq();
+  const key = "dis:flame:*";
+  sendSafe(key, "disarm-all", () => ({seen:seenNow()}), r => {
+    if(!r.ok){ line(words(r), "bad"); return; }
+    if(r.j.plain === false) line(words(r), "warn");
+    track(key, st => flamesKnown() && (st.flames.groups || []).every(g => g.armed === "disarmed"));
+  });
+}
+/* lock */
+function lockMachine(id, name){
+  const ln = lockedNames();
+  const key = "lock:m:" + id;
+  if(ln.has(name)){
+    ask("UNLOCK " + name.toUpperCase(), "amber", 300, 8000, async () => {
+      PEND[key] = {state:"pending", at:mono()}; render();
+      const r = await post("lock", {kind:"machine", id, on:false, confirmed:true});
+      if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+      if(!r.ok){ delete PEND[key]; line(words(r), "bad"); return; }
+      track(key, st => !new Set(((st.morning || {}).locked_machines) || []).has(name)); maybeMorning(true);
+    }, () => {}); BAR.key = key; return;
+  }
+  PEND[key] = {state:"pending", at:mono()}; render();
+  post("lock", {kind:"machine", id, on:true}).then(r => {
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok){ delete PEND[key]; line(words(r), "bad"); return; }
+    track(key, st => new Set(((st.morning || {}).locked_machines) || []).has(name)); maybeMorning(true);
+  });
+}
+function lockGroup(names, all){
+  const ms = [];
+  for(const n of names){ const l = machinesOf(n); if(!l) return; ms.push(...l); }
+  if(!ms.length) return;
+  const ln = lockedNames();
+  const key = all ? "lock:*" : "lock:" + names[0];
+  const allLocked = ms.every(m => ln.has(m.name));
+  if(allLocked){
+    ask("UNLOCK " + (all ? "ALL FLAMES" : names[0].toUpperCase()), "amber", 300, 8000, async () => {
+      PEND[key] = {state:"pending", at:mono()}; render();
+      let err = null;
+      for(const m of ms){ const r = await post("lock", {kind:"machine", id:m.id, on:false, confirmed:true}); if(r.net){ err = "NO ANSWER"; break; } if(!r.ok){ err = words(r); break; } }
+      if(err){ delete PEND[key]; line(err, "bad"); maybeMorning(true); return; }
+      const nm = new Set(ms.map(m => m.name));
+      track(key, st => !((st.morning || {}).locked_machines || []).some(x => nm.has(x))); maybeMorning(true);
+    }, () => {}); BAR.key = key; return;
+  }
+  PEND[key] = {state:"pending", at:mono()}; render();
+  Promise.all(ms.filter(m => !ln.has(m.name)).map(m => post("lock", {kind:"machine", id:m.id, on:true}))).then(rs => {
+    const bad = rs.find(r => !r.net && !r.ok);
+    if(bad){ delete PEND[key]; line(words(bad), "bad"); maybeMorning(true); return; }
+    if(rs.some(r => r.net)){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    const nm = new Set(ms.map(m => m.name));
+    track(key, st => { const l = new Set(((st.morning || {}).locked_machines) || []); return [...nm].every(x => l.has(x)); }); maybeMorning(true);
+  });
+}
+
+/* hazers */
+function hazArm(who){
+  const names = who === "*" ? hazList().filter(h => !h.armed).map(h => h.name) : [who];
+  if(!names.length) return;
+  const key = "arm:haze:" + who;
+  ask(who === "*" ? "ARM ALL HAZERS" : "ARM " + who.toUpperCase(), "green", 300, 8000, async () => {
+    PEND[key] = {state:"pending", at:mono()}; render();
+    let r;
+    if(who === "*") r = await post("hazers-arm-all", {seen:seenNow()});
+    else r = await post("hazer", {hazer:who, on:true});
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok){ delete PEND[key]; line(words(r), "bad"); return; }
+    if(who === "*" && r.j.not_armed && r.j.not_armed.length) line(r.j.not_armed.map(x => x.name + ": " + x.why).join(" "), "warn");
+    track(key, st => { const hs = (st.hazers || {}).hazers || []; return hs.filter(h => who === "*" || h.name === who).every(h => h.armed) && (who === "*" ? hs.length > 0 : true); });
+  }, () => {}); BAR.key = key;
+}
+function hazDis(who){
+  cancelSeq();
+  const key = "dis:haze:" + who;
+  const route = who === "*" ? "hazers-off" : "hazer";
+  sendSafe(key, route, () => who === "*" ? {seen:seenNow()} : {hazer:who, on:false}, r => {
+    if(!r.ok){ line(words(r), "bad"); return; }
+    track(key, st => ((st.hazers || {}).hazers || []).filter(h => who === "*" || h.name === who).every(h => !h.armed));
+  });
+}
+function doLevel(who, f, d){
+  const hs = hazList(); const sel = who === "*" ? hs : hs.filter(h => h.name === who);
+  if(!sel.length) return;
+  const vals = sel.map(h => f === "haze" ? h.haze_pct : h.fan_pct);
+  let base = vals.every(v => v === vals[0]) ? vals[0] : Math.round(vals.reduce((a, b) => a + b, 0) / vals.length / 5) * 5;
+  const to = Math.max(0, Math.min(100, Math.round((base + d) / 5) * 5));
+  const key = `lv:${who}:${f}`;
+  PEND[key] = {state:"pending", at:mono()}; render();
+  const body = {hazer:who === "*" ? "all" : who}; body[f] = to;
+  post("hazer-level", body).then(r => {
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok){ delete PEND[key]; line(words(r), "bad"); return; }
+    track(key, st => ((st.hazers || {}).hazers || []).filter(h => who === "*" || h.name === who).every(h => (f === "haze" ? h.haze_pct : h.fan_pct) === to));
+  });
+}
+/* lasers */
+function lasArm(ids, key0){
+  const ls = lasers() || [];
+  const pool = ids == null ? ls.map(l => l.id) : ids;
+  const todo = ls.filter(l => pool.includes(l.id) && !l.armed && !l.locked).map(l => l.id);
+  if(!todo.length) return;
+  const key = "arm:" + key0;
+  ask("ARM " + (ids == null ? "ALL LASERS" : (ids.length === 1 ? (ls.find(l => l.id === ids[0]) || {}).name || ids[0] : key0.replace(/^laser:g:/, "")).toUpperCase()), "green", 300, 8000, async () => {
+    PEND[key] = {state:"pending", at:mono()}; render();
+    const r = await post("laser-arm", {lasers:todo, on:true, confirmed:true});
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok){ delete PEND[key]; line(words(r), "bad"); return; }
+    track(key, st => { const l = (st.laser_arm || {}).lasers || []; return todo.every(id => (l.find(x => x.id === id) || {}).armed); });
+  }, () => {}); BAR.key = key;
+}
+function lasDis(ids, key0){
+  cancelSeq();
+  const key = "dis:" + key0;
+  sendSafe(key, "laser-arm", () => ids == null ? {all:true, on:false} : {lasers:ids, on:false}, r => {
+    if(!r.ok){ line(words(r), "bad"); return; }
+    track(key, st => { const l = (st.laser_arm || {}).lasers || []; return l.filter(x => ids == null || ids.includes(x.id)).every(x => !x.armed); });
+  });
+}
+function lasTest(id){
+  const ls = lasers() || [], on = new Set(((ST || {}).morning || {}).laser_tests_on || []);
+  const set = (id === "*" ? ls : ls.filter(l => l.id === id)).filter(l => l.armed);
+  if(!set.length) return;
+  const key = "lt:" + id;
+  const isOn = set.every(l => on.has(l.id));
+  const body = on2 => id === "*" ? {all:true, on:on2} : {laser:id, on:on2};
+  if(isOn){
+    sendSafe(key, "laser-test", () => body(false), r => {
+      if(!r.ok){ line(words(r), "bad"); return; }
+      track(key, st => !set.some(l => (((st.morning || {}).laser_tests_on) || []).includes(l.id)));
+    });
+    return;
+  }
+  ask("TEST " + (id === "*" ? "ALL LASERS" : set[0].name.toUpperCase()), "amber", 300, 8000, async () => {
+    PEND[key] = {state:"pending", at:mono()}; render();
+    const r = await post("laser-test", body(true));
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok){ delete PEND[key]; line(words(r), "bad"); return; }
+    track(key, st => set.some(l => (((st.morning || {}).laser_tests_on) || []).includes(l.id)));
+  }, () => {}); BAR.key = key;
+}
+/* hazer run (service) */
+function hzRun(who){
+  const key = "run:" + who;
+  ask("RUN " + (who === "*" ? "ALL HAZERS" : who.toUpperCase()), "amber", 300, 8000, async () => {
+    PEND[key] = {state:"pending", at:mono()}; render();
+    const run = "hzt-" + Date.now().toString(36);
+    const r = await post("hazer-test", {on:true, hazers:who === "*" ? "all" : [who], run, page:PAGE_ID, seen:seenNow()});
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok){ delete PEND[key]; line(words(r), "bad"); return; }
+    HZ.run = run; HZ.until = mono() + 4000; hzTimer();
+    track(key, st => ((st.hazer_test || {}).hazers || []).some(h => (who === "*" || h.name === who) && (h.on || h.state === "on" || h.state === "waiting")));
+  }, () => {}); BAR.key = key;
+}
+function hzTimer(){
+  if(HZ.timer) return;
+  const ms = Math.max(500, ((((ST || {}).hazer_test || {}).beat_s) || 2) * 1000);
+  HZ.timer = setInterval(async () => {
+    if(!HZ.run) return;
+    const r = await post("hazer-test", {beat:HZ.run, page:PAGE_ID});
+    if(!r.net && !r.ok){ hzEnd(); }
+  }, ms);
+}
+function hzEnd(){ clearInterval(HZ.timer); HZ.timer = null; HZ.run = null; }
+function hazBeat(){
+  if(!HZ.timer) return;
+  const on = !!((ST || {}).hazer_test || {}).on;
+  if(!on && mono() > HZ.until) hzEnd();
+}
+function hzStop(who){
+  const key = "run:" + who;
+  sendSafe(key, "hazer-test", () => who === "*" ? {on:false} : {on:false, hazers:[who]}, r => {
+    if(!r.ok){ line(words(r), "bad"); return; }
+    track(key, st => !((st.hazer_test || {}).hazers || []).some(h => (who === "*" || h.name === who) && (h.on || h.state === "on" || h.state === "waiting")));
+  });
+}
+
+/* ---------- SHOW buttons ---------- */
+function doGo(){
+  const held = heldNow() && !(((ST || {}).preroll || {}).state === "checking");
+  const key = "go"; PEND[key] = {state:"pending", at:mono()}; render();
+  post(held ? "resume" : "start-now", held ? {seen:seenNow()} : {confirmed:true, seen:seenNow()}, 20000).then(r => {
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok || r.j.ok === false){ delete PEND[key]; line(words(r), "bad"); return; }
+    track(key, st => { const s = st.schedule || {}, p = st.preroll || {}; return held ? (s.state === "SHOW") : (s.state === "SHOW" || p.state === "queued" || p.state === "checking" || !!(st.show && st.show.starting)); });
+  });
+}
+function doHold(){
+  sendSafe("hold", "hold", () => ({seen:seenNow()}), r => {
+    if(!r.ok || r.j.ok === false){ line(words(r), "bad"); return; }
+    track("hold", st => { const s = st.schedule || {}; return s.state === "PAUSED" || s.state === "HOLD" || s.held === true; });
+  });
+}
+function doStop(){
+  const now = mono();
+  if(now > UI.stopAt){ UI.stopAt = now + 3000; render(); setTimeout(render, 3100); return; }
+  UI.stopAt = 0; cancelSeq();
+  sendSafe("stop", "stop", () => ({seen:seenNow()}), r => {
+    if(!r.ok && !(r.j && r.j.failed)){ line(words(r), "bad"); return; }
+    if(r.j && r.j.error) line(words(r), "bad");
+    track("stop", st => { const s = st.schedule || {}; return s.state === "HOLD" || s.stop_held === true || (s.state !== "SHOW" && s.state !== "PAUSED"); });
+  });
+}
+function doCont(){
+  const token = String(Date.now()) + "-" + String(Math.random()).slice(2, 10);
+  const key = "cont";
+  PEND[key] = {state:"pending", at:mono()}; render();
+  const fc = failedChoice();
+  const off = fc ? (fc.off.length ? fc.off : fc.items.filter(i => !i.ok && i.required !== false).map(i => i.name)) : [];
+  post("preroll-continue", {phase:"begin", token, seen:seenNow()}).then(r => {
+    delete PEND[key];
+    if(r.net){ line("NO ANSWER", "bad"); return; }
+    if(!r.ok){ line(words(r), "bad"); return; }
+    const hold = (+r.j.hold_s || +((ST.preroll || {}).continue_hold_s) || 1) * 1000 + 150;
+    ask("START WITHOUT " + (off.join(", ").toUpperCase() || "FAILED"), "amber", hold, 20000, async () => {
+      PEND[key] = {state:"pending", at:mono()}; render();
+      const d = await post("preroll-continue", {phase:"done", token, seen:seenNow()}, 20000);
+      if(d.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+      if(!d.ok || d.j.ok === false){ delete PEND[key]; line(words(d), "bad"); return; }
+      track(key, st => { const s = st.schedule || {}, p = st.preroll || {}; return s.state === "SHOW" || !!p.continued; });
+    }, () => {});
+    BAR.key = key;
+  });
+}
+/* master */
+async function doMaster(){
+  cancelSeq();
+  const key = "master", mm = masterMode();
+  if(RETRY[key]) return;
+  RETRY[key] = true; PEND[key] = {state:"sending", at:mono()}; render();
+  const jobs = [["disarm-all", () => ({seen:seenNow()}), true], ["hazers-off", () => ({seen:seenNow()}), haveHazers()],
+    ["laser-arm", () => ({all:true, on:false}), !!lasers()]];
+  if(mm === "flame") jobs.splice(1);
+  if(mm === "stop") jobs.push(["stop", () => ({seen:seenNow()}), true]);
+  const res = await Promise.all(jobs.map(async ([route, fn, show]) => {
+    let r;
+    for(;;){ r = await post(route, fn(), 3500); if(!r.net) break; await sleep(1000); }
+    return {route, r, show};
+  }));
+  delete RETRY[key];
+  const bad = res.find(x => x.show && !x.r.ok);
+  if(bad) line(words(bad.r), "bad");
+  else{
+    const f = res.find(x => x.route === "disarm-all");
+    if(f && f.r.j && f.r.j.plain === false) line(words(f.r), "warn");
+  }
+  track(key, st => {
+    const gs = (st.flames || {}).groups || [];
+    const fo = (st.flames && st.flames.connected && !st.flames.stale) ? gs.every(g => g.armed === "disarmed") : false;
+    const ho = (((st.hazers || {}).hazers) || []).every(h => !h.armed);
+    const lo = (((st.laser_arm || {}).lasers) || []).every(l => !l.armed);
+    return (mm === "flame" ? fo : fo && ho && lo);
+  }, 3000);
+  const w = WAITS.find(x => x.key === key);
+  if(w){ const old = w.test; w.test = st => { const r = old(st); if(r === true) UI.flash = mono() + 1500; return r; }; }
+}
+/* alerts */
+function doAck(id, ver){
+  const key = "al:" + id;
+  PEND[key] = {state:"pending", at:mono()}; render();
+  post("alert", {id, action:"acknowledge", ver}).then(r => {
+    if(r.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!r.ok){ delete PEND[key]; line(words(r), "bad"); SHEET = null; render(); return; }
+    track(key, st => !(st.alerts || []).some(a => a.id === id));
+  });
+}
+/* sign in */
+async function loadNames(){
+  try{ const u = await getJSON("/api/remote/users", 3000); UI.sign.names = u.names || []; }catch(e){ UI.sign.names = UI.sign.names || []; UI.sign.msg = "NO NAMES"; }
+  renderSheet();
+}
+function openSign(){ UI.sign.msg = ""; SHEET = "cfg"; loadNames(); render(); }
+async function doSignin(){
+  const u = UI.sign, pw = $("pw");
+  if(!u.name){ u.msg = "PICK A NAME"; renderSheet(); return; }
+  u.busy = true; u.msg = ""; renderSheet();
+  const r = await post("signin", {name:u.name, password:pw ? pw.value : ""});
+  u.busy = false;
+  if(r.net){ u.msg = "NO ANSWER"; renderSheet(); return; }
+  if(!r.ok){ if(r.j && r.j.needs_new_password) u.need = true; u.msg = words(r); renderSheet(); return; }
+  u.msg = ""; u.need = false; SHEET = null;
+  try{ const s = await getJSON("/api/remote/status", 1500); ST = s; LAST_OK = mono(); SEQ++; }catch(e){}
+  render();
+}
+async function doSignout(){
+  const r = await post("signout", {});
+  SHEET = null;
+  if(!r.net && !r.ok) line(words(r), "bad");
+  UI.signAuto = false; render();
+}
+
+/* ---------- arm runs seen in the status: an alert in the bar when another screen's run matters ---------- */
+function runWatch(){ /* runs this page started are followed by followArm / armAllFlames */ }
+
+/* ---------- clock tick ---------- */
+setInterval(() => {
+  expirePends(); evalWaits();
+  if(BAR && BAR.kind === "confirm" && mono() > BAR.endAt){ const f = BAR.onCancel; BAR = null; if(f) f(); }
+  renderAll();
+}, 250);
+document.addEventListener("visibilitychange", () => {
+  if(document.visibilityState === "visible"){
+    EPOCH++; LAST_OK = null; LOST_SINCE = mono(); wake(); renderAll();
+  }
+});
+let WL = null;
+async function wake(){ try{ if(navigator.wakeLock && document.visibilityState === "visible") WL = await navigator.wakeLock.request("screen"); }catch(e){} }
+wake();
+renderAll();
+startPolling();
+</script>
+</body>
+</html>
