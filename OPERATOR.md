@@ -3145,8 +3145,31 @@ tab, and the hardware e-stop always works.
   file and loads it at once (tonight's list is rebuilt; nothing is
   started); the engine checks every rule and says what it refused or
   anything to know. Reload from the file reads it again (changes not saved
-  are dropped). Date exceptions in the file are kept as they are; the card
-  says how many. Edits not yet saved stay in the form when the screen
+  are dropped). Date exceptions are on the card below it, Special dates
+  (added 2026-11-26, after Thanksgiving did not run because of a closed
+  date nobody asked for): every exception in the file, its date and
+  weekday, and Closed or its own first show, minutes apart and last show
+  end; a date already past says Past and can still be removed. Change
+  fills the form with that date; Add or change this date puts a date in
+  as Closed or with its own hours (a date that is already there is
+  changed); Remove takes it out. These edit the form only: "Not saved
+  yet" shows on both cards until Save the schedule (on either card)
+  writes the whole file through the same check, so a weekly change and
+  the exceptions are saved together and none is lost. A date field
+  never takes a date that does not exist; a typed date that is not a
+  real one says "Not a real date. Nothing was added.", and a bad date
+  already in the file is refused by Save in the scheduler's own
+  sentence. A date is Past by the scheduler's own night (up to 2 AM it
+  is still the night before). When tonight is closed by a special date,
+  the tonight card says "Closed tonight by a special date." and "Next:
+  None. Closed by a special date.", SHOW's countdown says "Special date,
+  Closed tonight", and the top line says "Closed tonight by a special
+  date." while no show is due or running. On a night with its own hours
+  the tonight card says "Tonight runs special date hours."; the top line
+  says the next show as usual. The shipped example has no exceptions
+  (it had a closed 2026-11-26 and a short 2026-12-24; both are gone): a
+  show PC already set up keeps its own schedule file, so check Special
+  dates there. Closed dates are Jeff's to set. Edits not yet saved stay in the form when the screen
   goes back to SHOW by itself (a new alert, or a minute untouched near a
   show; typing counts as a touch), and the footer says "Unsaved schedule
   edits kept"; opening Schedule again never reads the file over them. A

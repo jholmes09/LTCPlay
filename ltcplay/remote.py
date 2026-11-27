@@ -11409,6 +11409,30 @@ class Remote:
             self._journal("system", "engine", "users", "fault", text,
                           fault=True)
 
+    @staticmethod
+    def _tonight_special(svc, tn):
+        """{"date", "closed", "words"} when tonight's date is a date
+        exception in the schedule the scheduler runs (closed by it, or
+        with its own hours), else None. Read only: the rule is the
+        scheduler's own loaded copy, and nothing here starts, stops or
+        changes a show."""
+        try:
+            rule = getattr(svc, "rule", None)
+            exc = getattr(rule, "exceptions", None)
+            day = str((tn or {}).get("date") or "")
+            if not isinstance(exc, dict) or not day:
+                return None
+            from datetime import date as _date
+            d = _date.fromisoformat(day)
+            if d not in exc:
+                return None
+            closed = exc[d] is None
+            return {"date": day, "closed": closed,
+                    "words": ("Closed tonight by a special date." if closed
+                              else "Tonight runs special date hours.")}
+        except Exception:                        # noqa: BLE001
+            return None
+
     def status(self, ctx):
         self.users_file_check()
         out = {"served_at": int(self.wall() * 1000), "fresh_s": FRESH_S,
@@ -11440,6 +11464,14 @@ class Remote:
                     "run_warning": st.get("run_warning"),
                     "run_warning_urgent": st.get("run_warning_urgent"),
                     "slots": tn.get("slots", [])}
+                # A special date tonight (Jeff, Thanksgiving 2026: the
+                # show did not run and nothing said why): closed by one,
+                # or its own hours. Said only; it starts nothing.
+                out["schedule"]["special"] = self._tonight_special(svc, tn)
+                # The night the scheduler is on (its own night rule: up to
+                # 2 AM it is still the night before), so the page marks a
+                # special date Past by the same rule.
+                out["schedule"]["night"] = tn.get("date")
             except Exception as e:
                 out["schedule"] = {"attached": True, "ok": False,
                                    "error": f"{type(e).__name__}: {e}"}
