@@ -12156,6 +12156,21 @@ def build():
   '                if now > r["arm_by"]:',
   '                if False:'),
 
+ ('confirm purge: Stop purge before the flame is ignored',
+  'ltcplay/confirmpurge.py',
+  '            if live:\n                self._end(r, "stopped", str(why), now, clear=True,',
+  '            if False:\n                self._end(r, "stopped", str(why), now, clear=True,'),
+
+ ('confirm purge: a machine added after the Confirm is fired too',
+  'ltcplay/remote.py',
+  '                        set(ids) == set(m.purge.selected)',
+  '                        set(ids) <= set(m.purge.selected)'),
+
+ ("confirm purge: its clear forgets the purge's groups like an operator's Clear",
+  'ltcplay/remote.py',
+  '                if mine:\n                    m.purge.clear(why)',
+  '                if mine:\n                    m.purge.clear(why, device=device)'),
+
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
   '        if not self.arming_enabled():\n            # The Stream Deck reads',
