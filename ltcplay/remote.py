@@ -209,17 +209,39 @@ CONFIRM_ARM_ROUTES = ("arm-request", "arm-confirm")
 # routes (morning_post) in the phone's name.
 CONFIRM_PURGE_ROUTES = ("purge-request", "purge-confirm")
 # The phone page's master DISARM (Jeff, 2026-11-27): one press, one
-# request, and the engine does every step itself. What it covers is this
-# show machine's setting, phone_master_disarm in ltcplay_remote.json:
-#   "all" (the default): every flame group, every hazer, every laser.
-#   "flames": the flame groups only.
-#   "all_stop": everything, then Stop.
-# A setting that is missing or cannot be read is "all": it can only fail
-# toward disarming more. master-disarm is a safety press, never refused.
-# master-disarm-mode changes the setting: the settings row (an admin), and
-# never while a show plays or anything is armed, so the red button never
-# changes its meaning under someone relying on it.
-PHONE_MASTER_MODES = ("all", "flames", "all_stop")
+# request, and the engine does every step itself. It ALWAYS disarms every
+# flame group (the fireball's is one of them): that is not a setting.
+# What else it does is this show machine's setting, phone_master_disarm in
+# ltcplay_remote.json, three switches:
+#   "hazers": true   also every hazer off
+#   "lasers": true   also every laser disarmed
+#   "stop": false    then Stop the show
+# A setting that is missing or cannot be read is hazers and lasers on,
+# Stop off: it can only fail toward disarming more. master-disarm is a
+# safety press, never refused. master-disarm-mode changes the switches:
+# the settings row (an admin), and never while a show plays or anything is
+# armed, so the red button never changes its meaning under someone relying
+# on it.
+PHONE_MASTER_DEFAULT = {"hazers": True, "lasers": True, "stop": False}
+
+
+def master_switches(v, path=""):
+    """phone_master_disarm checked: a dict of the three switches, each the
+    JSON word true or false; one left out keeps its default."""
+    where = f"{path}: " if path else ""
+    if not isinstance(v, dict) or any(k not in PHONE_MASTER_DEFAULT
+                                      for k in v):
+        raise ValueError(f"{where}phone_master_disarm must be an object "
+                         f"with hazers, lasers and stop.")
+    out = dict(PHONE_MASTER_DEFAULT)
+    for k, x in v.items():
+        if x is not True and x is not False:
+            raise ValueError(f"{where}phone_master_disarm.{k} must be true "
+                             f"or false.")
+        out[k] = x
+    return out
+
+
 MASTER_ROUTES = ("master-disarm", "master-disarm-mode")
 ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
 # Disarm all flame groups is a plain disarm through the Stream Deck (Jeff,
@@ -859,7 +881,7 @@ def load_settings(folder=None):
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
            "tailscale_remote": False, "tailscale_logins": [],
-           "phone_master_disarm": "all",
+           "phone_master_disarm": dict(PHONE_MASTER_DEFAULT),
            "alert_pixels": None,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
            "purge_timed_s": TIMED_DEFAULT_S,
@@ -883,7 +905,7 @@ def settings_from_doc(doc, path, out=None):
         out = {"show_network_address": None, "flamesafe_config": None,
                "screen_arming": False, "purge_arming": True,
                "tailscale_remote": False, "tailscale_logins": [],
-           "phone_master_disarm": "all",
+           "phone_master_disarm": dict(PHONE_MASTER_DEFAULT),
                "booth_alert": None, "alert_pixels": None,
                "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
                "purge_timed_s": TIMED_DEFAULT_S,
@@ -905,11 +927,8 @@ def settings_from_doc(doc, path, out=None):
             raise ValueError(f"{path}: screen_arming must be true or false.")
         out["screen_arming"] = v
     if "phone_master_disarm" in doc:
-        v = doc["phone_master_disarm"]
-        if v not in PHONE_MASTER_MODES:
-            raise ValueError(f"{path}: phone_master_disarm must be one of "
-                             f"{', '.join(PHONE_MASTER_MODES)}.")
-        out["phone_master_disarm"] = v
+        out["phone_master_disarm"] = master_switches(
+            doc["phone_master_disarm"], path)
     if "tailscale_remote" in doc:
         # Only the JSON word true turns it on, as for screen_arming.
         v = doc["tailscale_remote"]
@@ -6261,33 +6280,34 @@ class Remote:
 
     # -- the phone page's master DISARM ------------------------------------
     def master_mode(self):
-        """What the master DISARM covers: phone_master_disarm, read at
-        most once a second. Missing, unreadable or anything else: "all"."""
+        """What the master DISARM does besides the flames: the three
+        switches, read at most once a second. Missing or unreadable: hazers
+        and lasers on, Stop off."""
         now = self.clock()
         c = self._master_mode
         if c is not None and 0 <= now - c[0] < 1.0:
-            return c[1]
+            return dict(c[1])
         try:
-            v = load_settings(self.folder)["phone_master_disarm"]
+            v = master_switches(load_settings(self.folder)
+                                ["phone_master_disarm"])
         except (ValueError, OSError, KeyError):
-            v = "all"
-        if v not in PHONE_MASTER_MODES:
-            v = "all"
+            v = dict(PHONE_MASTER_DEFAULT)
         self._master_mode = (now, v)
-        return v
+        return dict(v)
 
     def master_disarm(self, body, ctx):
         """Every step of the master DISARM, each through its own route
-        with all its rules, in one request. Never stops at a step that
-        failed: each one is tried, and the answer names any that failed.
-        A step for something this engine does not have (no hazers, no
-        Startup page) is not a failure."""
+        with all its rules, in one request. The flames always. Never stops
+        at a step that failed: each one is tried, and the answer names any
+        that failed. A step for something this engine does not have (no
+        hazers, no Startup page) is not a failure."""
         mode = self.master_mode()
         steps = [("disarm-all", {}, "Flames")]
-        if mode != "flames":
-            steps += [("hazers-off", {}, "Hazers"),
-                      ("laser-arm", {"all": True, "on": False}, "Lasers")]
-        if mode == "all_stop":
+        if mode["hazers"]:
+            steps.append(("hazers-off", {}, "Hazers"))
+        if mode["lasers"]:
+            steps.append(("laser-arm", {"all": True, "on": False}, "Lasers"))
+        if mode["stop"]:
             steps.append(("stop", {}, "Stop"))
         done, failed = [], []
         for name, extra, what in steps:
@@ -6340,9 +6360,14 @@ class Remote:
         return ""
 
     def master_mode_set(self, body, ctx):
-        mode = body.get("mode")
-        if mode not in PHONE_MASTER_MODES:
-            return 400, {"error": "mode has to be all, flames or all_stop. "
+        """Change one or more of the three switches. The flames are not
+        one of them: a body that names them is refused."""
+        want = {k: body[k] for k in ("hazers", "lasers", "stop")
+                if k in body}
+        if not want or "flames" in body or any(
+                v is not True and v is not False for v in want.values()):
+            return 400, {"error": "Say hazers, lasers or stop, each true or "
+                                  "false. The flames are always disarmed. "
                                   "Nothing was changed."}
         why = self.master_mode_locked()
         if why:
@@ -6350,15 +6375,18 @@ class Remote:
                                   f"only with no show playing and nothing "
                                   f"armed. Nothing was changed."}
         who, screen, _surface = self._actor(ctx, body)
+        self._master_mode = None
+        new = dict(self.master_mode(), **want)
         try:
-            save_settings(self.folder, phone_master_disarm=mode)
+            save_settings(self.folder, phone_master_disarm=new)
         except (ValueError, OSError) as e:
             return 409, {"error": f"Not changed: {e}"}
         self._master_mode = None
-        text = (f"{who} set the phone page's master DISARM to {mode} on "
-                f"the {screen}.")
+        on = ["flames"] + [k for k in ("hazers", "lasers", "stop") if new[k]]
+        text = (f"{who} set the phone page's master DISARM on the {screen}: "
+                f"{', '.join(on)}.")
         self._journal(who, screen, "master disarm mode", "done", text)
-        return 200, {"ok": True, "mode": mode, "text": text}
+        return 200, {"ok": True, "mode": new, "text": text}
 
     # -- tap, then confirm, for a timed purge (confirmpurge.py) -------------
     def purge_confirm_refusal(self, ctx, ids, seconds, seen):

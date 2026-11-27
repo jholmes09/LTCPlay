@@ -42,7 +42,7 @@
 "_send()'s guard is removed, so anything can reach the socket": "test_beyond_allow_list_rejects_everything_but_brightness",
 "master disarm: a failed step stops the steps after it": "test_phone_master_disarm",
 "master disarm: a setting that cannot be read covers less than everything": "test_phone_master_disarm",
-"master disarm: it stops the show in every mode": "test_phone_master_disarm",
+"master disarm: it stops the show with its Stop switch off": "test_phone_master_disarm",
 "master disarm: its meaning changes with something armed": "test_phone_master_disarm",
 "show audio: a dropped stream leaves the announcement bus playing": "test_announce_plays_through_the_show_audio",
 "Hold does not end a Start now waiting for the show audio": "test_refused_starts_say_why_and_what_to_press",

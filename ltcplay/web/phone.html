@@ -64,6 +64,7 @@ input{font:inherit}
 #link.slow{background:var(--amber);color:var(--amber-ink)}
 #link.lost{background:var(--red);color:var(--white)}
 #alerts{flex:none;height:22px;line-height:22px;white-space:nowrap;overflow:visible;margin:0;padding:0 10px;border-radius:var(--r);font-weight:800;font-size:.8125rem;letter-spacing:.06em;min-width:44px;position:relative;z-index:6}
+.card:not(.all) .nm,.un{text-transform:capitalize}
 #alerts::after{content:"";position:absolute;inset:-11px 0}
 .hd.in{padding:0;flex:1;min-width:0}
 #alerts.fault{background:var(--red);color:var(--white);box-shadow:0 0 0 2px var(--white)}
@@ -186,6 +187,7 @@ h2::after{content:"";flex:1;height:1px;background:var(--line)}
 #tabs .sel{color:var(--champagne);border-top-color:var(--gold)}
 #masterw{grid-area:master;padding:8px var(--gr) max(10px, env(safe-area-inset-bottom, 0px)) var(--gl);background:var(--panel)}
 #master{width:100%;min-height:4.25rem;border-radius:var(--r);background:var(--red);color:var(--white);font-weight:800;font-size:1.375rem;letter-spacing:.06em;border:2px solid #ff8a80}
+#master.long{font-size:1rem;letter-spacing:.02em}
 #master:active{background:var(--red-deep)}
 #master.done{background:var(--bronze);border-color:var(--gold);color:var(--champagne)}
 #master.send{background:var(--red-deep);border-color:var(--amber)}
@@ -196,6 +198,11 @@ h2::after{content:"";flex:1;height:1px;background:var(--line)}
 #cfg[hidden]{display:none}
 #cfg .box{width:100%;max-width:480px;max-height:100%;overflow-y:auto;overflow-x:hidden;background:var(--panel);border:1px solid var(--gold);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:12px;touch-action:pan-y}
 #cfg .opt{display:flex;flex-direction:column;gap:8px}
+#cfg .opt .btn{display:flex;align-items:center;gap:12px;text-align:left;padding:0 14px}
+#cfg .opt .btn i{flex:none;width:22px;height:22px;border-radius:5px;border:2px solid var(--gold)}
+#cfg .opt .btn.sel{border-color:var(--gold)}
+#cfg .opt .btn.sel i{background:var(--gold);box-shadow:inset 0 0 0 3px var(--panel)}
+#cfg .opt .btn.sel:disabled{opacity:.7}
 .who{display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:700;min-width:0}
 .who span{min-width:0;overflow-wrap:anywhere}
 .names{display:flex;flex-direction:column;gap:8px}
@@ -284,9 +291,18 @@ const PEND = {};         // key -> {state:"sending"|"pending"|"noans", at}
 const WAITS = [];        // things waiting on a newer status
 const RETRY = {};        // key -> true while a safe press is being retried
 let HZ = {run:null, timer:null, until:0};
-// The master DISARM's meaning is the show machine's setting, the same on
-// every phone: "all", "flames" or "all_stop". Not known yet: "all".
-function masterMode(){ const m = ((ST || {}).phone || {}).master; return m === "flames" || m === "all_stop" ? m : "all"; }
+// The master DISARM always disarms the flames. What else it does is the
+// show machine's setting, the same on every phone: hazers, lasers, stop.
+// Not known yet: hazers and lasers too, no Stop.
+function masterMode(){
+  const m = ((ST || {}).phone || {}).master || {};
+  return {hazers:m.hazers !== false, lasers:m.lasers !== false, stop:m.stop === true};
+}
+function masterWords(){
+  const m = masterMode();
+  const t = m.hazers && m.lasers ? "DISARM ALL" : "DISARM FLAMES" + (m.hazers ? " + HAZERS" : "") + (m.lasers ? " + LASERS" : "");
+  return t + (m.stop ? " + STOP" : "");
+}
 function masterLocked(){ return String(((ST || {}).phone || {}).master_locked || ""); }
 function masterConfigurable(){ return !!(ST && ST.phone) && !!ME().user && may("settings"); }
 
@@ -525,9 +541,7 @@ function renderTabs(){
 function renderMaster(){
   const b = $("master");
   const key = "master", pl = pendLabel(key);
-  let t = "DISARM ALL", cls = "";
-  const mm = masterMode();
-  if(mm === "flames") t = "DISARM FLAMES"; else if(mm === "all_stop") t = "DISARM ALL + STOP";
+  let t = masterWords(), cls = t.length > 17 ? "long" : "";
   if(pl){ t = pl; cls = pl === "SENDING" ? "send" : pl === "NO ANSWER" ? "noans" : "send"; }
   else if(mono() < UI.flash){ t = "DISARMED"; cls = "done"; }
   setText(b, t); setCls(b, cls);
@@ -564,7 +578,13 @@ function vShow(){
     if(cn && live() && (cn.off || []).length) mid += `<span class="pill warn">${esc("OFF " + cn.off.join(", "))}</span>`;
   }
   const name = sh.show ? esc(sh.show) : "&nbsp;";
-  const slots = (s.slots || []).map(x => {
+  // The next five show times, from the one playing or next (Jeff,
+  // 2026-11-27): a night of 15 minute shows is over twenty chips.
+  const all = s.slots || [];
+  let from = all.findIndex(x => x.status === "RUNNING" || x.status === "NEXT");
+  if(from < 0) from = all.findIndex(x => x.status === "PENDING");
+  if(from < 0) from = Math.max(0, all.length - 5);
+  const slots = all.slice(from, from + 5).map(x => {
     const c = x.status === "NEXT" ? "nx" : x.status === "RUNNING" ? "rn" : (x.status === "PENDING" ? "" : "dn");
     return `<span class="${c}">${esc(clock12(x.start).replace(/ (AM|PM)$/, ""))}</span>`;
   }).join("");
@@ -939,7 +959,8 @@ function cfgHTML(){
       B('data-act="signin"', "btn gold", u.busy ? "PENDING" : "SIGN IN", !!u.busy) + B('data-act="close"', "btn", "CLOSE") + `</div>`;
   }
   const opts = masterConfigurable() ? `<span class="cap">MASTER DISARM</span><div class="opt">` +
-    [["all","DISARM ALL"],["flames","DISARM FLAMES"],["all_stop","DISARM ALL + STOP"]].map(([k, t]) => B(`data-act="mm" data-n="${k}"`, "btn" + (masterMode() === k ? " sel" : ""), `<i></i>${t}`, lost() || (!!masterLocked() && masterMode() !== k))).join("") + `</div>` : "";
+    B("", "btn sel", `<i></i>FLAMES`, true) +
+    [["hazers","HAZERS"],["lasers","LASERS"],["stop","STOP SHOW"]].map(([k, t]) => B(`data-act="mm" data-n="${k}"`, "btn" + (masterMode()[k] ? " sel" : ""), `<i></i>${t}`, lost() || !!masterLocked())).join("") + `</div>` : "";
   return `<div class="box"><div class="who"><span class="cap">${me.users_active ? "SIGNED IN" : "NO SIGN IN"}</span><span>${esc(me.user || "")}${me.role ? " &middot; " + esc(String(me.role).toUpperCase()) : ""}</span></div>` +
     opts + (me.users_active ? B('data-act="signout"', "btn", "SIGN OUT") : "") + B('data-act="close"', "btn gold", "DONE") + `</div>`;
 }
@@ -980,8 +1001,7 @@ const ACT = {
   no(){ barClose(); },
   ok(){ if(!BAR || BAR.kind !== "confirm") return; if(mono() < BAR.minAt || lost()) return; const f = BAR.onConfirm; BAR = null; render(); f(); },
   async mm(d){
-    if(d.n === masterMode()) return;
-    const r = await post("master-disarm-mode", {mode:d.n, seen:seenNow()});
+    const r = await post("master-disarm-mode", {[d.n]:!masterMode()[d.n], seen:seenNow()});
     if(r.net){ closeSheet(); line("NO ANSWER", "bad"); return; }
     if(!r.ok){ closeSheet(); line(words(r), "bad"); return; }
     render();
@@ -1348,7 +1368,7 @@ async function doMaster(){
     const fo = (st.flames && st.flames.connected && !st.flames.stale) ? gs.every(g => g.armed === "disarmed") : false;
     const ho = (((st.hazers || {}).hazers) || []).every(h => !h.armed);
     const lo = (((st.laser_arm || {}).lasers) || []).every(l => !l.armed);
-    return (mm === "flames" ? fo : fo && ho && lo);
+    return fo && (!mm.hazers || ho) && (!mm.lasers || lo);
   }, 3000);
   const w = WAITS.find(x => x.key === key);
   if(w){ const old = w.test; w.test = st => { const q = old(st); if(q === true) UI.flash = mono() + 1500; return q; }; }

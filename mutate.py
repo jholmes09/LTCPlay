@@ -12173,12 +12173,12 @@ def build():
 
  ('master disarm: a setting that cannot be read covers less than everything',
   'ltcplay/remote.py',
-  '        except (ValueError, OSError, KeyError):\n            v = "all"\n        if v not in PHONE_MASTER_MODES:',
-  '        except (ValueError, OSError, KeyError):\n            v = "flames"\n        if v not in PHONE_MASTER_MODES:'),
+  '        except (ValueError, OSError, KeyError):\n            v = dict(PHONE_MASTER_DEFAULT)',
+  '        except (ValueError, OSError, KeyError):\n            v = {"hazers": False, "lasers": False, "stop": False}'),
 
- ('master disarm: it stops the show in every mode',
+ ('master disarm: it stops the show with its Stop switch off',
   'ltcplay/remote.py',
-  '        if mode == "all_stop":\n            steps.append(("stop", {}, "Stop"))',
+  '        if mode["stop"]:\n            steps.append(("stop", {}, "Stop"))',
   '        if True:\n            steps.append(("stop", {}, "Stop"))'),
 
  ('master disarm: its meaning changes with something armed',

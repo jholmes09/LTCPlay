@@ -4,7 +4,8 @@ const {chromium} = require("playwright");
 const fs = require("fs");
 const path = require("path");
 const {makeRig, start} = require("./phone_fake.js");
-const SHOTS = process.argv[2] || path.join(__dirname, "shots");
+// Screenshots go to a temp folder, never into the repo.
+const SHOTS = process.env.PHONE_SHOTS || path.join(require("os").tmpdir(), "phone-shots");
 fs.mkdirSync(SHOTS, {recursive: true});
 const SIZES = [[320, 568], [360, 740], [390, 844], [430, 932]];
 let pass = 0, fail = 0;
