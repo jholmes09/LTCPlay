@@ -54,6 +54,15 @@ longer than ARM_BEAT_GAP_S, a Stop, a disarm or a sign out lets the hold
 go; an interrupted hold never carries on. A group once armed is never
 disarmed by a page going quiet (Jeff, 2026-11-24).
 
+TAP, THEN CONFIRM (Jeff, 2026-11-27; confirmarm.py): a phone's two taps
+(arm-request, then arm-confirm with its one-use ticket, the same device
+and person, 0.3 to 5 s apart) stand in for the finger. The engine then
+makes that hold's first press itself and beats it, 0.1 s apart and for
+3 s at most, through arm_hold above with every rule above. Nothing else
+changes: the Stream Deck program and flamesafe see a screen hold. A Stop,
+a disarm, a sign out or arming switched off ends it; lifting a finger does
+not, and neither does the schedule's Hold, which cuts no hold to arm.
+
 Every refusal is said on the page in a sentence that names the reason
 (2026-10-22, Jeff: "I'm supposed to be able to enable flames via the
 screen"; a hold that went nowhere used to look like a working one). The
@@ -2270,6 +2279,7 @@ class Remote:
         # A test sets confirm_arm_threaded False and ticks it itself.
         self.confirm_arm = None
         self.confirm_arm_threaded = True
+        self._confirm_arm_lock = threading.Lock()
         # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
         # and the "hazers" mismatch alert's sentence and id.
         self.hazers = None
@@ -6155,11 +6165,28 @@ class Remote:
                 token = getattr(ctx, "token", "")
                 return bool(token) and \
                     self.users.session(token) is not None
-            ca = self.confirm_arm = confirmarm.ConfirmArm(
-                self.arm_hold, release, self.confirm_arm_refusal,
-                session_live=session_live, journal=self._journal,
-                clock=self.clock, wall=self.wall,
-                threaded=self.confirm_arm_threaded)
+            def cut_since(i, since):
+                with self._arm_lock:
+                    cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
+                return any(c is not None and c[0] >= since for c in cuts)
+
+            def asked(i):
+                fl = self.flame_status.view() if self.flame_status else None
+                try:
+                    g = fl["groups"][i]
+                except (TypeError, KeyError, IndexError):
+                    return False
+                return g.get("armed") == "armed" or bool(g.get("wanted"))
+            with self._confirm_arm_lock:
+                # One only: two first taps at once never build two.
+                if self.confirm_arm is None:
+                    self.confirm_arm = confirmarm.ConfirmArm(
+                        self.arm_hold, release, self.confirm_arm_refusal,
+                        session_live=session_live, cut_since=cut_since,
+                        asked=asked, journal=self._journal,
+                        clock=self.clock, wall=self.wall,
+                        threaded=self.confirm_arm_threaded)
+                ca = self.confirm_arm
         return ca
 
     def _confirm_arm_actor(self, body, ctx):

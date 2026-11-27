@@ -12073,18 +12073,18 @@ def build():
 
  ("confirm arm: another device's Confirm is taken",
   'ltcplay/confirmarm.py',
-  '                t["token"] == token and t["who"] == who)',
-  '                True and t["who"] == who)'),
+  '                    t["token"] == token and t["who"] == who and',
+  '                    True and t["who"] == who and'),
 
  ("confirm arm: another person's Confirm is taken",
   'ltcplay/confirmarm.py',
-  '                t["token"] == token and t["who"] == who)',
-  '                t["token"] == token and True)'),
+  '                    t["token"] == token and t["who"] == who and',
+  '                    t["token"] == token and True and'),
 
  ('confirm arm: a ticket can be used twice',
   'ltcplay/confirmarm.py',
-  '            t = self._tickets.pop(i, None)',
-  '            t = self._tickets.get(i)'),
+  '                # take the Arm tap away from the one who made it.\n                del self._tickets[i]',
+  '                # take the Arm tap away from the one who made it.\n                pass'),
 
  ('confirm arm: the rules are not checked again at the Confirm',
   'ltcplay/confirmarm.py',
@@ -12115,6 +12115,41 @@ def build():
   'ltcplay/users.py',
   '    "arm-request": "arm", "arm-confirm": "arm",',
   '    "arm-request": "safety", "arm-confirm": "safety",'),
+
+ ('confirm arm: any ticket is taken',
+  'ltcplay/confirmarm.py',
+  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8")) and',
+  '                    True and'),
+
+ ('confirm arm: a ticket outlives a sign out and back in',
+  'ltcplay/confirmarm.py',
+  '                    t["session"] == str(getattr(ctx, "token", "") or ""))',
+  '                    True)'),
+
+ ("confirm arm: someone else's Confirm spends the ticket",
+  'ltcplay/confirmarm.py',
+  '            if mine:\n                # Spent whatever',
+  '            if t is not None:\n                # Spent whatever'),
+
+ ("confirm arm: a cut since the Confirm does not end the engine's hold",
+  'ltcplay/confirmarm.py',
+  '        if self._cut_since(r["group"], r["start"]):',
+  '        if False:'),
+
+ ("confirm arm: a sign out does not end the engine's hold",
+  'ltcplay/confirmarm.py',
+  '        if not self._session_live(r["ctx"]):',
+  '        if False:'),
+
+ ("confirm arm: 'nothing was armed' is said over a group that is",
+  'ltcplay/confirmarm.py',
+  '            if asked:\n                text = ARMED_ANYWAY',
+  '            if False:\n                text = ARMED_ANYWAY'),
+
+ ("confirm arm: an arm the deck did not credit is called this press's",
+  'ltcplay/confirmarm.py',
+  '            if out.get("taken") is True:',
+  '            if True:'),
 
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
