@@ -11468,6 +11468,10 @@ class Remote:
                 # show did not run and nothing said why): closed by one,
                 # or its own hours. Said only; it starts nothing.
                 out["schedule"]["special"] = self._tonight_special(svc, tn)
+                # The night the scheduler is on (its own night rule: up to
+                # 2 AM it is still the night before), so the page marks a
+                # special date Past by the same rule.
+                out["schedule"]["night"] = tn.get("date")
             except Exception as e:
                 out["schedule"] = {"attached": True, "ok": False,
                                    "error": f"{type(e).__name__}: {e}"}

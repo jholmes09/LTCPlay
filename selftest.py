@@ -138691,6 +138691,9 @@ def test_special_dates_engine_round_trip_and_tonight_said():
               f"the status says tonight is closed by a special date: "
               f"{sch.get('special')} next {sch.get('next')} "
               f"slots {sch.get('slots')}")
+        check(sch.get("night") == "2026-11-14",
+              f"the status says the scheduler's own night: "
+              f"{sch.get('night')}")
         tv = R.svc.tonight_view()
         check("closed by an exception" in tv["why"],
               f"the scheduler's own why: {tv['why']}")
@@ -138796,7 +138799,8 @@ _SP_FILE = {
                                           "last_end": "20:00"}}}}
 
 # The words of the Special dates card and its answers: plain, eight words
-# or fewer, no semicolons, no dashes, never "hold".
+# or fewer, no semicolons, no dashes, never "hold". _SP_WORDS are written
+# in the page as they are; _SP_SAID are put together when drawn.
 _SP_WORDS = ("Special dates", "A date closed, or with its own hours.",
              "Add or change a date", "That night", "Closed, no shows",
              "Its own hours", "First show", "Minutes apart",
@@ -138805,23 +138809,29 @@ _SP_WORDS = ("Special dates", "A date closed, or with its own hours.",
              "Save the schedule", "Change", "Remove", "Past",
              "No special dates. Every night runs as usual.",
              "Fill in all three times. Nothing was added.",
-             "Nothing was added.", "Not saved yet.",
+             "Not a real date.", "Nothing was added.", "Not saved yet.",
              "Closed tonight by a special date.",
-             "Reading the schedule file.",
-             "See Special dates below.")
+             "Next: None. Closed by a special date.",
+             "Special date", "Closed tonight",
+             "Reading the schedule file.", "See Special dates.")
+_SP_SAID = ("Not a real date. Nothing was added.",
+            "1 date exception. See Special dates.",
+            "2 date exceptions. See Special dates.",
+            "Removed 2025-12-25. Not saved yet.",
+            "Added 2099-11-26. Not saved yet.",
+            "Changed 2099-12-24. Not saved yet.",
+            "Change 2099-12-24 below, then press Add or change.",
+            "From 17:00, every 20 minutes, ends 20:00",
+            "Tonight runs special date hours.")
 
-_SP_JS = r"""
-<script>
-(function(){
-const posts = [];
-const realFetch = window.fetch;
-window.fetch = function(u, o){
-  if(o && o.method === "POST") posts.push({u:String(u), b:JSON.parse(String(o.body || "{}"))});
-  return realFetch.apply(this, arguments);
-};
-const wait = ms => new Promise(r => setTimeout(r, ms));
+# Driven inside the page (_ui2_drive_framed): the Schedule tab drawn, then
+# Remove, a bad date, Add, Change and Save pressed, the card measured after
+# each (44 px taps, nothing past an edge, overlapping or cut, no sideways
+# scroll), the page's real width and height said.
+_SP_STEPS = r"""
 const q = id => document.getElementById(id);
 const R = el => el.getBoundingClientRect();
+const wait = h.sleep;
 function shown(el){
   if(!el || !el.getClientRects().length) return false;
   for(let p = el; p; p = p.parentElement){ if(p.hidden) return false; }
@@ -138843,93 +138853,92 @@ function layout(){
     if(a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) over.push((ctl[i].id || ctl[i].textContent.trim().slice(0, 10)) + "/" + (ctl[j].id || ctl[j].textContent.trim().slice(0, 10)));
   }
   const wide = [...card.querySelectorAll("*")].filter(shown).filter(e => R(e).right > vw + 0.5).map(e => e.id || e.className || e.tagName).slice(0, 5);
-  const sc = document.scrollingElement;
-  return {vw:vw, vh:innerHeight, coarse:matchMedia("(pointer:coarse)").matches, small:small, off:off, cut:cut, over:over, wide:wide,
-    xscroll:Math.max(sc.scrollWidth - innerWidth, document.querySelector("main") ? document.querySelector("main").scrollWidth - document.querySelector("main").clientWidth : 0), n:ctl.length};
+  const sc = document.scrollingElement, main = document.querySelector("main");
+  return {small:small, off:off, cut:cut, over:over, wide:wide, n:ctl.length,
+    xscroll:Math.max(sc.scrollWidth - innerWidth, main ? main.scrollWidth - main.clientWidth : 0)};
 }
-async function go(){
-  for(let i = 0; i < 80 && !(typeof ST !== "undefined" && ST && ST.schedule); i++) await wait(100);
-  document.querySelector('.tab[data-tab="schedule"]').click();
-  await wait(1500);
-  const out = {};
-  out.shown = shown(q("sched-special"));
-  out.first = rows();
-  out.note = q("se-note").textContent;
-  out.unsaved0 = [shown(q("sp-unsaved")), shown(q("se-unsaved"))];
-  out.tn = shown(q("tn-special")) ? q("tn-special").textContent : "";
-  out.top = q("next-t").textContent;
-  out.layout = layout();
-  // Phone and tablet sizes measure only; the desktop presses too.
-  if(/presses=1/.test(location.search)){
-    // The top line (nextStep) round a closed date: a show due, running,
-    // no special date, its own hours, no contact.
-    const cl = o => JSON.parse(JSON.stringify(o)), ns = (s, stale) => nextStep(s, !!stale, true, []).text;
-    const s0 = cl(ST), sa = cl(ST), sb = cl(ST), sc = cl(ST), sd = cl(ST), se = cl(ST);
-    for(const x of [sa, sb, sc, sd, se]) x.show = Object.assign({}, x.show, {show_control_on:true});
-    sa.schedule.next = {show:1, start:"19:00", in_s:600};
-    sb.schedule.state = "SHOW"; sb.schedule.running = 2;
-    delete sc.schedule.special;
-    sd.schedule.special = {date:"2026-11-26", closed:false, words:"Tonight runs special date hours."};
-    out.ns = {closed:ns(s0), on:ns(se), added:ns(sa), live:ns(sb), none:ns(sc), own:ns(sd), stale:ns(s0, true)};
-    const tn0 = R(q("tn-card")), se0 = R(q("sched-edit"));
-    q("sched-special").hidden = true; await wait(50);
-    const tn1 = R(q("tn-card")), se1 = R(q("sched-edit"));
-    q("sched-special").hidden = false; await wait(50);
-    out.still = [tn0.top === tn1.top && tn0.height === tn1.height, se0.top === se1.top && se0.height === se1.height];
-    // The kind picks which fields show.
-    out.closedFields = ["sp-first", "sp-int", "sp-last"].map(i => shown(q(i)));
-    // Remove the past date.
-    document.querySelector('#sp-list [data-sp-del="2025-12-25"]').click(); await wait(100);
-    out.afterDel = rows(); out.msgDel = q("sp-msg").textContent;
-    out.unsaved1 = [shown(q("sp-unsaved")), shown(q("se-unsaved"))];
-    // A typed date that is not one: the date field hands over nothing.
-    q("sp-date").value = "2026-02-30";
-    out.badValue = q("sp-date").value;
-    q("sp-add").click(); await wait(100);
-    out.msgBad = q("sp-msg").textContent; out.afterBad = rows().length;
-    // Add a closed date.
-    q("sp-date").value = "2099-11-26"; q("sp-kind").value = "closed"; q("sp-kind").dispatchEvent(new Event("change"));
-    q("sp-add").click(); await wait(100);
-    out.msgAdd = q("sp-msg").textContent; out.afterAdd = rows();
-    // Its own hours with a time left out: nothing added.
-    q("sp-date").value = "2099-12-31"; q("sp-kind").value = "hours"; q("sp-kind").dispatchEvent(new Event("change"));
-    out.hoursFields = ["sp-first", "sp-int", "sp-last"].map(i => shown(q(i)));
-    q("sp-first").value = "18:00"; q("sp-int").value = ""; q("sp-last").value = "21:00";
-    q("sp-add").click(); await wait(100);
-    out.msgMissing = q("sp-msg").textContent; out.afterMissing = rows().length;
-    // Change the Christmas Eve hours: Change fills the form.
-    document.querySelector('#sp-list [data-sp-edit="2099-12-24"]').click(); await wait(100);
-    out.filled = [q("sp-date").value, q("sp-kind").value, q("sp-first").value, q("sp-int").value, q("sp-last").value];
-    q("sp-first").value = "18:00"; q("sp-int").value = "30";
-    q("sp-add").click(); await wait(100);
-    out.msgChange = q("sp-msg").textContent; out.afterChange = rows();
-    out.note2 = q("se-note").textContent;
-    out.layout2 = layout();
-    // Save: the editor's own route and body, the exceptions in it.
-    posts.length = 0;
-    q("sp-save").click(); await wait(800);
-    out.save = posts.map(p => [p.u, p.b]);
-    out.msgSave = q("sp-msg").textContent;
-    out.unsaved2 = [shown(q("sp-unsaved")), shown(q("se-unsaved"))];
-    // A weekly change alone: Save of the editor keeps the exceptions.
-    q("se-grace").value = "90"; q("se-grace").dispatchEvent(new Event("input", {bubbles:true})); await wait(50);
-    out.unsaved3 = [shown(q("sp-unsaved")), shown(q("se-unsaved"))];
-    posts.length = 0; q("se-save").click(); await wait(800);
-    out.save2 = posts.map(p => [p.u, p.b]);
-    // Remove every one: the list says so.
-    for(let i = 0; i < 5 && document.querySelector("#sp-list [data-sp-del]"); i++) document.querySelector("#sp-list [data-sp-del]").click();
-    await wait(100);
-    out.empty = q("sp-list").textContent; out.note3 = q("se-note").textContent;
-    // An iPad: no Special dates card.
-    ME.local = false; await wait(800); out.ipad = shown(q("sched-special")); ME.local = true;
-  }
-  const pre = document.createElement("pre"); pre.id = "rack-measure";
-  pre.textContent = JSON.stringify(out);
-  document.body.appendChild(pre);
-}
-go();
-})();
-</script>
+window.__answer["schedule-file"] = () => [200, window.__spAnswer];
+document.querySelector('.tab[data-tab="schedule"]').click();
+for(let i = 0; i < 40 && !document.querySelector("#sp-list .sp-row"); i++) await wait(100);
+await wait(400);
+out.vw = innerWidth; out.vh = innerHeight; out.coarse = matchMedia("(pointer:coarse)").matches;
+out.shown = shown(q("sched-special"));
+out.first = rows();
+out.note = q("se-note").textContent;
+out.unsaved0 = [shown(q("sp-unsaved")), shown(q("se-unsaved"))];
+out.tn = shown(q("tn-special")) ? q("tn-special").textContent : "";
+out.tnNext = q("tn-next").textContent;
+out.top = q("next-t").textContent;
+out.cd = [q("cd-l").textContent, q("cd-v").textContent];
+out.L = {first:layout()};
+// The top line (nextStep) round a closed date: control on, a show due,
+// running, no special date, its own hours, no contact.
+const cl = o => JSON.parse(JSON.stringify(o)), ns = (s, stale) => nextStep(s, !!stale, true, []).text;
+const s0 = cl(ST), sa = cl(ST), sb = cl(ST), sc = cl(ST), sd = cl(ST), se = cl(ST);
+for(const x of [sa, sb, sc, sd, se]) x.show = Object.assign({}, x.show, {show_control_on:true});
+sa.schedule.next = {show:1, start:"19:00", in_s:600};
+sb.schedule.state = "SHOW"; sb.schedule.running = 2;
+delete sc.schedule.special;
+sd.schedule.special = {date:"2026-11-26", closed:false, words:"Tonight runs special date hours."};
+out.ns = {closed:ns(s0), on:ns(se), added:ns(sa), live:ns(sb), none:ns(sc), own:ns(sd), stale:ns(s0, true)};
+// The kind picks which fields show.
+out.closedFields = ["sp-first", "sp-int", "sp-last"].map(i => shown(q(i)));
+// Remove the past date.
+document.querySelector('#sp-list [data-sp-del="2025-12-25"]').click(); await wait(150);
+out.afterDel = rows(); out.msgDel = q("sp-msg").textContent;
+out.unsaved1 = [shown(q("sp-unsaved")), shown(q("se-unsaved"))];
+out.L.remove = layout();
+// A typed date that is not one: the date field hands over nothing.
+q("sp-date").value = "2026-02-30";
+out.badValue = q("sp-date").value;
+q("sp-add").click(); await wait(150);
+out.msgBad = q("sp-msg").textContent; out.afterBad = rows().length;
+out.L.bad = layout();
+// Add a closed date.
+q("sp-date").value = "2099-11-26"; q("sp-kind").value = "closed"; q("sp-kind").dispatchEvent(new Event("change"));
+q("sp-add").click(); await wait(150);
+out.msgAdd = q("sp-msg").textContent; out.afterAdd = rows();
+// Its own hours with a time left out: nothing added.
+q("sp-date").value = "2099-12-31"; q("sp-kind").value = "hours"; q("sp-kind").dispatchEvent(new Event("change"));
+out.hoursFields = ["sp-first", "sp-int", "sp-last"].map(i => shown(q(i)));
+q("sp-first").value = "18:00"; q("sp-int").value = ""; q("sp-last").value = "21:00";
+q("sp-add").click(); await wait(150);
+out.msgMissing = q("sp-msg").textContent; out.afterMissing = rows().length;
+// Change the Christmas Eve hours: Change fills the form.
+document.querySelector('#sp-list [data-sp-edit="2099-12-24"]').click(); await wait(150);
+out.filled = [q("sp-date").value, q("sp-kind").value, q("sp-first").value, q("sp-int").value, q("sp-last").value];
+out.msgFill = q("sp-msg").textContent;
+q("sp-first").value = "18:00"; q("sp-int").value = "30";
+q("sp-add").click(); await wait(150);
+out.msgChange = q("sp-msg").textContent; out.afterChange = rows();
+out.note2 = q("se-note").textContent;
+out.L.change = layout();
+// Save: the editor's own route and body, the exceptions in it.
+window.__posts.length = 0;
+q("sp-save").click(); await wait(800);
+out.save = h.posts("schedule-file").map(p => p.body);
+out.msgSave = q("sp-msg").textContent;
+out.unsaved2 = [shown(q("sp-unsaved")), shown(q("se-unsaved"))];
+// A weekly change alone: Save of the editor keeps the exceptions.
+q("se-grace").value = "90"; q("se-grace").dispatchEvent(new Event("input", {bubbles:true})); await wait(50);
+out.unsaved3 = [shown(q("sp-unsaved")), shown(q("se-unsaved"))];
+window.__posts.length = 0; q("se-save").click(); await wait(800);
+out.save2 = h.posts("schedule-file").map(p => p.body);
+// Remove every one: the list says so.
+for(let i = 0; i < 5 && document.querySelector("#sp-list [data-sp-del]"); i++){ document.querySelector("#sp-list [data-sp-del]").click(); await wait(50); }
+out.empty = q("sp-list").textContent; out.note3 = q("se-note").textContent;
+out.L.empty = layout();
+// The tablet and desktop: the tonight card and the editor do not move
+// for the card below them (offsets in the page, so a scroll that the
+// shorter page takes back is not a move).
+const box = el => [el.offsetTop, el.offsetLeft, el.offsetWidth, el.offsetHeight];
+const tn0 = box(q("tn-card")), se0 = box(q("sched-edit"));
+q("sched-special").hidden = true; await wait(50);
+const tn1 = box(q("tn-card")), se1 = box(q("sched-edit"));
+q("sched-special").hidden = false; await wait(50);
+out.still = [JSON.stringify(tn0) === JSON.stringify(tn1), JSON.stringify(se0) === JSON.stringify(se1)];
+// An iPad: no Special dates card.
+ME.local = false; await wait(800); out.ipad = shown(q("sched-special")); ME.local = true;
 """
 
 
@@ -138938,6 +138947,7 @@ def _sp_status():
     st["schedule"].update({
         "next": None, "delayed": None, "run_warning": None,
         "run_warning_urgent": False, "slots": [], "state": "OFF",
+        "night": "2026-11-26",
         "special": {"date": "2026-11-26", "closed": True,
                     "words": "Closed tonight by a special date."}})
     return st
@@ -138946,14 +138956,17 @@ def _sp_status():
 def test_special_dates_tab_in_a_browser():
     section("special dates on the Schedule tab, drawn and pressed in a "
             "real browser against the stub: every exception in the file "
-            "listed (Closed or its own hours, past ones marked and "
-            "removable), one added Closed, one changed, one removed, a bad "
-            "date refused in the scheduler's words, Not saved yet until "
+            "listed (Closed or its own hours, past ones marked by the "
+            "scheduler's night and removable), one added Closed, one "
+            "changed, one removed, a bad date refused, Not saved yet until "
             "Save, which posts the editor's own {doc} with the exceptions; "
             "a weekly save keeps them; tonight's closed date said on the "
-            "tonight card and in the top line; phone, tablet and desktop: "
-            "44 px taps, nothing off the side, nothing overlapping, the "
-            "tablet's and desktop's existing cards not moved; plain words")
+            "tonight card, its Next, SHOW's countdown and the top line; "
+            "touch phones 384x800, 393x852, 270x560, on its side 852x393, "
+            "a tablet both ways and desktops, each its real size: 44 px "
+            "taps, nothing off the side, overlapping or cut at the first "
+            "draw, a bad date, a Change and a Remove; the existing cards "
+            "not moved; plain words")
     import copy
     page = _ui2_page_inline()
     card = page[page.find('<div class="card col" id="sched-special"'):]
@@ -138962,8 +138975,9 @@ def test_special_dates_tab_in_a_browser():
               page.find("drawSchedule = function(doc)")]
     check(len(card) > 500 and len(js) > 2000, "the card and its code are "
                                               "found")
-    for w in _SP_WORDS:
-        check(w in page, f"the page says {w!r}")
+    for w in _SP_WORDS + _SP_SAID:
+        if w in _SP_WORDS:
+            check(w in page, f"the page says {w!r}")
         check(len(w.split()) <= 8 and ";" not in w and
               not re.search(r"\bhold\b", w, re.I),
               f"{w!r}: eight words or fewer, no semicolon, no hold")
@@ -138975,19 +138989,12 @@ def test_special_dates_tab_in_a_browser():
           "the card's words never say hold")
     check(page.count("@media (max-width:500px) and (pointer:coarse){") == 1,
           "still one touch phone block in the page's style")
-    # The page's sentence is the scheduler's own, up to the typed date.
-    S = _sched()
-    if S is not None:
-        try:
-            S._date("2026-02-30", "An exception")
-            said = ""
-        except ValueError as e:
-            said = str(e)
-        check(said.startswith('An exception has to be a date like '
-                              '"2026-11-14"') and
-              "const SP_DATE_WORDS = 'An exception has to be a date like "
-              "\"2026-11-14\".';" in page,
-              f"a bad date is the scheduler's sentence: {said!r}")
+    check('const SP_DATE_WORDS = "Not a real date.";' in page,
+          "a date the field cannot hand over is said in plain words")
+    from ltcplay import remote as RM
+    src = open(RM.__file__, encoding="utf-8").read()
+    check('out["schedule"]["night"] = tn.get("date")' in src,
+          "the status carries the scheduler's own night, for Past")
     chrome = _find_chromium()
     if not chrome:
         check(not (IN_CI and sys.platform.startswith("linux")),
@@ -139001,128 +139008,118 @@ def test_special_dates_tab_in_a_browser():
     routes = {"/api/brand": {"show": "x"},
               "/api/remote/schedule-file": _SP_FILE,
               "/api/timelines": {"timelines": []}}
-    answers = {"/api/remote/schedule-file": {
-        "ok": True, "text": "Schedule saved.", "doc": saved}}
+    steps = ("window.__spAnswer = " + json.dumps(
+        {"ok": True, "text": "Schedule saved.", "doc": saved}) + ";\n" +
+        _SP_STEPS)
     first = [["2025-12-25", "Thu 2025-12-25", "Closed, no shows", True, 2],
              ["2099-12-24", "Thu 2099-12-24",
               "From 17:00, every 20 minutes, ends 20:00", False, 2]]
-    # A desktop pressed; a show PC, a tablet both ways and a narrow mouse
-    # window measured; touch phones upright, the narrowest, on its side.
-    runs = ((None, "?tour=0&presses=1", ((1366, 768),), 30000),
-            (None, "?tour=0", ((1920, 1080), (1024, 768), (768, 1024),
-                               (560, 900)), 12000),
-            ("touch", "?tour=0", ((390, 844), (270, 560), (844, 390)),
-             12000))
-    for touch, frag, sizes, budget in runs:
-        cmd = ([chrome] if isinstance(chrome, str) else list(chrome)) + \
-            ([_UI2_COARSE] if touch else [])
-        got = _rack_screen_in_chromium(cmd, page, _sp_status(), sizes,
-                                       measure_js=_SP_JS, frag=frag,
-                                       routes=routes, posts=answers,
-                                       budget_ms=budget)
-        for (w, h), r in got.items():
-            where = f"special dates, {w}x{h}{' touch' if touch else ''}"
-            if not check(isinstance(r, dict) and "first" in r,
-                         f"{where}: drawn and measured: {r!r}"[:900]):
-                continue
-            check(r["shown"] and r["first"] == first,
-                  f"{where}: every exception listed, the past one marked: "
-                  f"{r['first']}")
-            check(r["note"] == "2 date exceptions in the file. See Special "
-                               "dates below.",
-                  f"{where}: the editor's note points to the card: "
-                  f"{r['note']!r}")
-            check(r["unsaved0"] == [False, False],
-                  f"{where}: nothing unsaved at first: {r['unsaved0']}")
-            check(r["tn"] == "Closed tonight by a special date." and
-                  r["top"] == "Closed tonight by a special date.",
-                  f"{where}: tonight's closed date said on the tonight card "
-                  f"and the top line: {r['tn']!r} {r['top']!r}")
-            L = r["layout"]
-            check(not L["small"] and not L["off"] and not L["over"] and
-                  not L["cut"] and not L["wide"] and L["xscroll"] <= 0 and
-                  L["n"] >= 6 and L["coarse"] == bool(touch),
-                  f"{where}: 44 px taps, nothing off the side, overlapping "
-                  f"or cut: {L}")
-            if "presses=1" not in frag:
-                continue
-            ns = r.get("ns") or {}
-            check(ns.get("closed") == "Closed tonight by a special date." and
-                  ns.get("on") == ns.get("closed") and
-                  ns.get("added", "").startswith("Show 1 starts in") and
-                  ns.get("live", "").startswith("Show 2 running") and
-                  ns.get("none") == "No more shows tonight." and
-                  ns.get("own") == "No more shows tonight." and
-                  ns.get("stale", "").startswith("No contact"),
-                  f"{where}: the top line says a closed date only while no "
-                  f"show is due or running; the rest as before: {ns}")
+    sizes = [((384, 800), True), ((393, 852), True), ((270, 560), True),
+             ((852, 393), True), ((1024, 768), False), ((768, 1024), False),
+             ((1366, 768), False), ((1920, 1080), False)]
+    for (w, hh), touch in sizes:
+        where = f"special dates, {w}x{hh}{' touch' if touch else ''}"
+        r = _ui2_drive_framed(chrome, page, _sp_status(), steps, (w, hh),
+                              coarse=touch, routes=routes,
+                              budget_ms=40000)
+        if not check(isinstance(r, dict) and "first" in r and
+                     not r.get("problems"),
+                     f"{where}: drawn and driven: {r!r}"[:1500]):
+            continue
+        check(r["vw"] == w and r["vh"] == hh and r["coarse"] == touch,
+              f"{where}: drawn at its real size: {r['vw']}x{r['vh']} "
+              f"coarse {r['coarse']}")
+        check(r["shown"] and r["first"] == first,
+              f"{where}: every exception listed, the past one marked: "
+              f"{r['first']}")
+        check(r["note"] == "2 date exceptions. See Special dates.",
+              f"{where}: the editor's note points to the card: "
+              f"{r['note']!r}")
+        check(r["unsaved0"] == [False, False],
+              f"{where}: nothing unsaved at first: {r['unsaved0']}")
+        check(r["tn"] == "Closed tonight by a special date." and
+              r["tnNext"] == "Next: None. Closed by a special date." and
+              r["top"] == "Closed tonight by a special date." and
+              r["cd"] == ["Special date", "Closed tonight"],
+              f"{where}: tonight's closed date said on the tonight card, "
+              f"its Next, SHOW's countdown and the top line: {r['tn']!r} "
+              f"{r['tnNext']!r} {r['top']!r} {r['cd']}")
+        for k in ("first", "remove", "bad", "change", "empty"):
+            L = r["L"].get(k) or {}
+            check(L and not L["small"] and not L["off"] and
+                  not L["over"] and not L["cut"] and not L["wide"] and
+                  L["xscroll"] <= 0 and L["n"] >= 6,
+                  f"{where}, {k}: 44 px taps, nothing off the side, "
+                  f"overlapping or cut, no sideways scroll: {L}")
+        ns = r.get("ns") or {}
+        check(ns.get("closed") == "Closed tonight by a special date." and
+              ns.get("on") == ns.get("closed") and
+              ns.get("added", "").startswith("Show 1 starts in") and
+              ns.get("live", "").startswith("Show 2 running") and
+              ns.get("none") == "No more shows tonight." and
+              ns.get("own") == "No more shows tonight." and
+              ns.get("stale", "").startswith("No contact"),
+              f"{where}: the top line says a closed date only while no "
+              f"show is due or running; the rest as before: {ns}")
+        check(r["closedFields"] == [False, False, False] and
+              r["hoursFields"] == [True, True, True],
+              f"{where}: the three times only for its own hours: "
+              f"{r['closedFields']} {r['hoursFields']}")
+        check([x[0] for x in r["afterDel"]] == ["2099-12-24"] and
+              r["msgDel"] == "Removed 2025-12-25. Not saved yet." and
+              r["unsaved1"] == [True, True],
+              f"{where}: a past date removed, Not saved yet on both "
+              f"cards: {r['afterDel']} {r['msgDel']!r} {r['unsaved1']}")
+        check(r["badValue"] == "" and r["afterBad"] == 1 and
+              r["msgBad"] == "Not a real date. Nothing was added.",
+              f"{where}: a typed date that is not one: said, nothing "
+              f"added: {r['badValue']!r} {r['msgBad']!r}")
+        check(r["msgAdd"] == "Added 2099-11-26. Not saved yet." and
+              [x[0] for x in r["afterAdd"]] == ["2099-11-26", "2099-12-24"]
+              and r["afterAdd"][0][2] == "Closed, no shows",
+              f"{where}: a closed date added in date order: "
+              f"{r['afterAdd']} {r['msgAdd']!r}")
+        check(r["msgMissing"] == "Fill in all three times. Nothing was "
+                                 "added." and r["afterMissing"] == 2,
+              f"{where}: its own hours need all three: "
+              f"{r['msgMissing']!r}")
+        check(r["filled"] == ["2099-12-24", "hours", "17:00", "20",
+                              "20:00"] and
+              r["msgFill"] == "Change 2099-12-24 below, then press Add or "
+                              "change." and
+              r["msgChange"] == "Changed 2099-12-24. Not saved yet." and
+              r["afterChange"][1][2] ==
+              "From 18:00, every 30 minutes, ends 20:00",
+              f"{where}: Change fills the form, the date's hours "
+              f"changed: {r['filled']} {r['msgFill']!r} "
+              f"{r['afterChange']}")
+        check(r["note2"] == "2 date exceptions. See Special dates.",
+              f"{where}: the note follows: {r['note2']!r}")
+        want = copy.deepcopy(_SP_FILE["doc"])
+        want["exceptions"] = saved["exceptions"]
+        check(r["save"] == [{"doc": want}],
+              f"{where}: Save posts the editor's {{doc}} with the "
+              f"exceptions, the rest as the file had it: {r['save']}")
+        check(r["msgSave"] == "Schedule saved." and
+              r["unsaved2"] == [False, False],
+              f"{where}: the engine's answer, nothing unsaved: "
+              f"{r['msgSave']!r} {r['unsaved2']}")
+        check(r["unsaved3"] == [True, True],
+              f"{where}: a weekly edit is Not saved yet too: "
+              f"{r['unsaved3']}")
+        w2 = r["save2"][0]["doc"] if r["save2"] else {}
+        check(w2.get("exceptions") == saved["exceptions"] and
+              w2.get("late_grace_s") == 90,
+              f"{where}: the editor's own Save keeps the exceptions: {w2}")
+        check(r["empty"] == "No special dates. Every night runs as usual."
+              and r["note3"] == "",
+              f"{where}: none left, said: {r['empty']!r}")
+        if w > 600 and hh > 500:
             check(r["still"] == [True, True],
                   f"{where}: the tonight card and the editor do not move: "
                   f"{r['still']}")
-            check(r["closedFields"] == [False, False, False] and
-                  r["hoursFields"] == [True, True, True],
-                  f"{where}: the three times only for its own hours: "
-                  f"{r['closedFields']} {r['hoursFields']}")
-            check([x[0] for x in r["afterDel"]] == ["2099-12-24"] and
-                  r["msgDel"] == "Removed 2025-12-25. Not saved yet." and
-                  r["unsaved1"] == [True, True],
-                  f"{where}: a past date removed, Not saved yet on both "
-                  f"cards: {r['afterDel']} {r['msgDel']!r} {r['unsaved1']}")
-            check(r["badValue"] == "" and r["afterBad"] == 1 and
-                  r["msgBad"] == 'An exception has to be a date like '
-                                 '"2026-11-14". Nothing was added.',
-                  f"{where}: a typed date that is not one: the scheduler's "
-                  f"sentence, nothing added: {r['badValue']!r} "
-                  f"{r['msgBad']!r}")
-            check(r["msgAdd"] == "Added 2099-11-26. Not saved yet." and
-                  [x[0] for x in r["afterAdd"]] ==
-                  ["2099-11-26", "2099-12-24"] and
-                  r["afterAdd"][0][2] == "Closed, no shows",
-                  f"{where}: a closed date added in date order: "
-                  f"{r['afterAdd']} {r['msgAdd']!r}")
-            check(r["msgMissing"] == "Fill in all three times. Nothing was "
-                                     "added." and r["afterMissing"] == 2,
-                  f"{where}: its own hours need all three: "
-                  f"{r['msgMissing']!r}")
-            check(r["filled"] == ["2099-12-24", "hours", "17:00", "20",
-                                  "20:00"] and
-                  r["msgChange"] == "Changed 2099-12-24. Not saved yet." and
-                  r["afterChange"][1][2] ==
-                  "From 18:00, every 30 minutes, ends 20:00",
-                  f"{where}: Change fills the form, the date's hours "
-                  f"changed: {r['filled']} {r['afterChange']}")
-            check(r["note2"] == "2 date exceptions in the file. See Special "
-                                "dates below.",
-                  f"{where}: the note follows: {r['note2']!r}")
-            L2 = r["layout2"]
-            check(not L2["small"] and not L2["off"] and not L2["over"] and
-                  not L2["cut"] and L2["xscroll"] <= 0,
-                  f"{where}: with every field shown, still 44 px and "
-                  f"inside: {L2}")
-            want = copy.deepcopy(_SP_FILE["doc"])
-            want["exceptions"] = saved["exceptions"]
-            check(r["save"] == [["/api/remote/schedule-file",
-                                 {"doc": want}]],
-                  f"{where}: Save posts the editor's {{doc}} with the "
-                  f"exceptions, the rest as the file had it: {r['save']}")
-            check(r["msgSave"] == "Schedule saved." and
-                  r["unsaved2"] == [False, False],
-                  f"{where}: the engine's answer, nothing unsaved: "
-                  f"{r['msgSave']!r} {r['unsaved2']}")
-            check(r["unsaved3"] == [True, True],
-                  f"{where}: a weekly edit is Not saved yet too: "
-                  f"{r['unsaved3']}")
-            w2 = r["save2"][0][1]["doc"] if r["save2"] else {}
-            check(w2.get("exceptions") == saved["exceptions"] and
-                  w2.get("late_grace_s") == 90,
-                  f"{where}: the editor's own Save keeps the exceptions: "
-                  f"{w2}")
-            check(r["empty"] == "No special dates. Every night runs as "
-                                "usual." and r["note3"] == "",
-                  f"{where}: none left, said: {r['empty']!r}")
-            check(r["ipad"] is False, f"{where}: an iPad gets no editor")
+        check(r["ipad"] is False, f"{where}: an iPad gets no editor")
     print("  ok")
-
 
 if __name__ == "__main__":
     t0 = time.time()

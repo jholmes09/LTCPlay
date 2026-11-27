@@ -609,6 +609,11 @@ select.f{font:inherit;min-height:56px;padding:0 12px;border-radius:10px;border:2
 .sp-row .sp-k{overflow-wrap:anywhere}
 .sp-row .sp-past{color:var(--muted);font-weight:700}
 .sp-row .pbar{flex:1 1 16em}
+/* A path or a file name with no space (the schedule file's, in Save's
+   answer) breaks where it must, so the Schedule tab never scrolls
+   sideways on a phone (review of #307, at 270 px). A line that fits is
+   drawn as before. */
+#t-schedule .pline{overflow-wrap:anywhere}
 /* Programming (P1, P2): 1.0's Show file and Programming session cards. */
 .pline{color:var(--muted);line-height:1.3}
 .pline b{color:var(--cream)}
@@ -3204,6 +3209,9 @@ function renderStale(){
     else if(isRehearsal(ST) && !isLive(ST)){ setText($("cd-l"), "Rehearsal"); setText($("cd-v"), "No shows start"); }
     else if(sch.next){ setText($("cd-l"), "Show " + sch.next.show + " at " + sch.next.start); setText($("cd-v"), c && c.kind === "next" ? "in " + clockText(c.s) : ""); }
     else if(sch.delayed){ setText($("cd-l"), "Show " + sch.delayed.show); setText($("cd-v"), "delayed"); }
+    // A special date closes tonight (Thanksgiving 2026): the reason, not
+    // only None tonight. Words only.
+    else if(sch.attached && sch.special && sch.special.closed){ setText($("cd-l"), "Special date"); setText($("cd-v"), "Closed tonight"); }
     else { setText($("cd-l"), "Next show"); setText($("cd-v"), sch.attached ? "None tonight" : "No schedule"); }
   }
   drawTransport(isSt);
@@ -4466,9 +4474,12 @@ function seDirty(){
 // readSchedule sends whole, so the one Save writes them through the same
 // route and the scheduler's own check, refused while a show is live.
 // Nothing here starts, stops or changes a show by itself.
-// The scheduler's own sentence for a date it cannot read (schedule.py
-// _date), up to the date typed, which a date field never hands over.
-const SP_DATE_WORDS = 'An exception has to be a date like "2026-11-14".';
+// A date the field cannot hand over (none, or a typed one that is not
+// a real date). A date in the file the scheduler cannot read is refused
+// by Save in the scheduler's own sentence (schedule.py _date).
+// Eight words or fewer on a phone (review of #307): its gist.
+const SP_DATE_WORDS = "Not a real date.";
+let SP_NIGHT = "";
 const SP_WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 function spDays(doc){
   const ex = (doc && doc.exceptions && typeof doc.exceptions === "object") ? doc.exceptions : {};
@@ -4488,22 +4499,32 @@ function spWeekday(d){
   const t = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
   return isNaN(t) ? "" : SP_WD[t.getUTCDay()];
 }
-// Today in the schedule's zone, as YYYY-MM-DD (the form's zone, else this
-// PC's): a date before it is past.
+// Tonight's night, as YYYY-MM-DD: the scheduler's own (status
+// schedule.night, its night rule: up to 2 AM it is still the night
+// before). Without it, the same plain rule on the schedule's clock (the
+// form's zone, else this PC's). A date before it is past.
+function spNight(){
+  const n = ST && ST.schedule && ST.schedule.night;
+  if(typeof n === "string" && /^\d{4}-\d\d-\d\d$/.test(n)) return n;
+  return spToday();
+}
 function spToday(){
   let z = "";
   try{ z = $("se-tz").value || ""; }catch(e){}
   try{
-    const p = new Intl.DateTimeFormat("en-US", Object.assign({year:"numeric", month:"2-digit", day:"2-digit"}, z ? {timeZone:z} : {})).formatToParts(new Date());
+    const p = new Intl.DateTimeFormat("en-US", Object.assign({year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", hourCycle:"h23"}, z ? {timeZone:z} : {})).formatToParts(new Date());
     const g = k => (p.find(x => x.type === k) || {}).value || "";
-    return g("year") + "-" + g("month") + "-" + g("day");
+    let d = new Date(Date.UTC(+g("year"), +g("month") - 1, +g("day")));
+    if(+g("hour") < 2) d = new Date(d.getTime() - 86400000);   // schedule.NIGHT_RESET
+    return d.toISOString().slice(0, 10);
   }catch(e){ return ""; }
 }
 function spSay(text){ setText($("sp-msg"), text); }
 function spDraw(){
   const doc = SCHED_DOC;
   if(!doc){ $("sp-list").innerHTML = `<div class="dim">Reading the schedule file.</div>`; return; }
-  const rows = spDays(doc), today = spToday();
+  const rows = spDays(doc), today = spNight();
+  SP_NIGHT = today;
   $("sp-list").innerHTML = rows.length ? rows.map(r => {
     const past = today && r.date < today;
     return `<div class="sp-row" data-date="${esc(r.date)}"><div class="sp-d"><b>${esc((spWeekday(r.date) + " " + r.date).trim())}</b>` +
@@ -4512,7 +4533,7 @@ function spDraw(){
       `<button class="b" type="button" data-sp-del="${esc(r.date)}">Remove</button></div></div>`;
   }).join("") : `<div class="dim">No special dates. Every night runs as usual.</div>`;
   const n = rows.length;
-  $("se-note").textContent = n ? (n + " date exception" + (n === 1 ? "" : "s") + " in the file. See Special dates below.") : "";
+  $("se-note").textContent = n ? (n + " date exception" + (n === 1 ? "" : "s") + ". See Special dates.") : "";
   spUnsaved();
 }
 function spKind(){
@@ -4590,6 +4611,10 @@ function spTonight(sch){
   const w = sp && sp.words ? String(sp.words) : "";
   $("tn-special").hidden = !w;
   setText($("tn-special"), w);
+  // Next: the reason, not only None tonight, on a closed night.
+  if(sp && sp.closed && !sch.next && !sch.delayed) setText($("tn-next"), "Next: None. Closed by a special date.");
+  // The night moved on (2 AM): Past is drawn again.
+  if(SCHED_DOC && SP_NIGHT && spNight() !== SP_NIGHT) spDraw();
 }
 // 1.0's drawSchedule fills the editor; the special dates are drawn from
 // the same copy straight after, and the baseline for Not saved yet taken.

@@ -3156,12 +3156,20 @@ tab, and the hardware e-stop always works.
   yet" shows on both cards until Save the schedule (on either card)
   writes the whole file through the same check, so a weekly change and
   the exceptions are saved together and none is lost. A date field
-  never takes a date that does not exist; a date that is not one gets
-  the scheduler's own sentence. When tonight is a special date, the
-  tonight card and the top line say so ("Closed tonight by a special
-  date." while no show is due or running, "Tonight runs special date
-  hours."). The shipped example has no exceptions: closed dates are
-  Jeff's to set. Edits not yet saved stay in the form when the screen
+  never takes a date that does not exist; a typed date that is not a
+  real one says "Not a real date. Nothing was added.", and a bad date
+  already in the file is refused by Save in the scheduler's own
+  sentence. A date is Past by the scheduler's own night (up to 2 AM it
+  is still the night before). When tonight is closed by a special date,
+  the tonight card says "Closed tonight by a special date." and "Next:
+  None. Closed by a special date.", SHOW's countdown says "Special date,
+  Closed tonight", and the top line says "Closed tonight by a special
+  date." while no show is due or running. On a night with its own hours
+  the tonight card says "Tonight runs special date hours."; the top line
+  says the next show as usual. The shipped example has no exceptions
+  (it had a closed 2026-11-26 and a short 2026-12-24; both are gone): a
+  show PC already set up keeps its own schedule file, so check Special
+  dates there. Closed dates are Jeff's to set. Edits not yet saved stay in the form when the screen
   goes back to SHOW by itself (a new alert, or a minute untouched near a
   show; typing counts as a touch), and the footer says "Unsaved schedule
   edits kept"; opening Schedule again never reads the file over them. A
