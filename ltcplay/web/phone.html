@@ -64,6 +64,7 @@ input{font:inherit}
 #link.slow{background:var(--amber);color:var(--amber-ink)}
 #link.lost{background:var(--red);color:var(--white)}
 #alerts{flex:none;height:22px;line-height:22px;white-space:nowrap;overflow:visible;margin:0;padding:0 10px;border-radius:var(--r);font-weight:800;font-size:.8125rem;letter-spacing:.06em;min-width:44px;position:relative;z-index:6}
+.card:not(.all) .nm,.un{text-transform:capitalize}
 #alerts::after{content:"";position:absolute;inset:-11px 0}
 .hd.in{padding:0;flex:1;min-width:0}
 #alerts.fault{background:var(--red);color:var(--white);box-shadow:0 0 0 2px var(--white)}
@@ -561,7 +562,13 @@ function vShow(){
     if(cn && live() && (cn.off || []).length) mid += `<span class="pill warn">${esc("OFF " + cn.off.join(", "))}</span>`;
   }
   const name = sh.show ? esc(sh.show) : "&nbsp;";
-  const slots = (s.slots || []).map(x => {
+  // The next five show times, from the one playing or next (Jeff,
+  // 2026-11-27): a night of 15 minute shows is over twenty chips.
+  const all = s.slots || [];
+  let from = all.findIndex(x => x.status === "RUNNING" || x.status === "NEXT");
+  if(from < 0) from = all.findIndex(x => x.status === "PENDING");
+  if(from < 0) from = Math.max(0, all.length - 5);
+  const slots = all.slice(from, from + 5).map(x => {
     const c = x.status === "NEXT" ? "nx" : x.status === "RUNNING" ? "rn" : (x.status === "PENDING" ? "" : "dn");
     return `<span class="${c}">${esc(clock12(x.start).replace(/ (AM|PM)$/, ""))}</span>`;
   }).join("");
