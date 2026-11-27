@@ -143,6 +143,7 @@ function start(rig, port) {
           set.forEach((l) => { if (b.on) { if (l.armed) rig.laserTests.add(l.id); } else rig.laserTests.delete(l.id); }); return ok(); }
         case "start-now": rig.state = "SHOW"; rig.showStartedAt = Date.now(); return ok();
         case "resume": rig.state = "SHOW"; rig.showStartedAt = Date.now() - 100000; return ok();
+        case "master-disarm": rig.groups.forEach((g) => (g.armed = "disarmed")); rig.hazers.forEach((h) => (h.armed = false)); rig.lasers.forEach((l) => (l.armed = false)); return ok({mode: "all", done: ["Flames", "Hazers", "Lasers"]});
         case "hold": rig.state = "PAUSED"; return ok();
         case "stop": rig.state = "HOLD"; rig.stopHeld = true; rig.groups.forEach((g) => (g.armed = "disarmed")); return ok({stopped: true});
         case "alert": rig.alerts = rig.alerts.filter((a) => a.id !== b.id); return ok();

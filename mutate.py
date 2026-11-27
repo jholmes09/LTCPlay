@@ -12171,6 +12171,26 @@ def build():
   '                if mine:\n                    m.purge.clear(why)',
   '                if mine:\n                    m.purge.clear(why, device=device)'),
 
+ ('master disarm: a setting that cannot be read covers less than everything',
+  'ltcplay/remote.py',
+  '        except (ValueError, OSError, KeyError):\n            v = "all"\n        if v not in PHONE_MASTER_MODES:',
+  '        except (ValueError, OSError, KeyError):\n            v = "flames"\n        if v not in PHONE_MASTER_MODES:'),
+
+ ('master disarm: it stops the show in every mode',
+  'ltcplay/remote.py',
+  '        if mode == "all_stop":\n            steps.append(("stop", {}, "Stop"))',
+  '        if True:\n            steps.append(("stop", {}, "Stop"))'),
+
+ ('master disarm: its meaning changes with something armed',
+  'ltcplay/remote.py',
+  '        why = self.master_mode_locked()\n        if why:\n            return 409, {"error": f"{why} The master DISARM',
+  '        why = self.master_mode_locked()\n        if False:\n            return 409, {"error": f"{why} The master DISARM'),
+
+ ('master disarm: a failed step stops the steps after it',
+  'ltcplay/remote.py',
+  '            if code == 404:\n                continue                 # not in this engine',
+  '            if code == 404 or failed:\n                continue                 # not in this engine'),
+
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
   '        if not self.arming_enabled():\n            # The Stream Deck reads',

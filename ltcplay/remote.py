@@ -208,6 +208,19 @@ CONFIRM_ARM_ROUTES = ("arm-request", "arm-confirm")
 # 2026-11-27). No new way to purge: the engine asks the Startup page's own
 # routes (morning_post) in the phone's name.
 CONFIRM_PURGE_ROUTES = ("purge-request", "purge-confirm")
+# The phone page's master DISARM (Jeff, 2026-11-27): one press, one
+# request, and the engine does every step itself. What it covers is this
+# show machine's setting, phone_master_disarm in ltcplay_remote.json:
+#   "all" (the default): every flame group, every hazer, every laser.
+#   "flames": the flame groups only.
+#   "all_stop": everything, then Stop.
+# A setting that is missing or cannot be read is "all": it can only fail
+# toward disarming more. master-disarm is a safety press, never refused.
+# master-disarm-mode changes the setting: the settings row (an admin), and
+# never while a show plays or anything is armed, so the red button never
+# changes its meaning under someone relying on it.
+PHONE_MASTER_MODES = ("all", "flames", "all_stop")
+MASTER_ROUTES = ("master-disarm", "master-disarm-mode")
 ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
 # Disarm all flame groups is a plain disarm through the Stream Deck (Jeff,
 # 2026-10-23): it goes that way only while the deck read this engine within
@@ -392,7 +405,7 @@ GET_ROUTES = ("whoami", "status", "network", "tailscale", "deck-input",
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
 POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + \
-    CONFIRM_ARM_ROUTES + CONFIRM_PURGE_ROUTES + (
+    CONFIRM_ARM_ROUTES + CONFIRM_PURGE_ROUTES + MASTER_ROUTES + (
     "network", "tailscale", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone", "preshow-audio") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
@@ -846,6 +859,7 @@ def load_settings(folder=None):
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
            "tailscale_remote": False, "tailscale_logins": [],
+           "phone_master_disarm": "all",
            "alert_pixels": None,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
            "purge_timed_s": TIMED_DEFAULT_S,
@@ -869,6 +883,7 @@ def settings_from_doc(doc, path, out=None):
         out = {"show_network_address": None, "flamesafe_config": None,
                "screen_arming": False, "purge_arming": True,
                "tailscale_remote": False, "tailscale_logins": [],
+           "phone_master_disarm": "all",
                "booth_alert": None, "alert_pixels": None,
                "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
                "purge_timed_s": TIMED_DEFAULT_S,
@@ -889,6 +904,12 @@ def settings_from_doc(doc, path, out=None):
         if v is not True and v is not False:
             raise ValueError(f"{path}: screen_arming must be true or false.")
         out["screen_arming"] = v
+    if "phone_master_disarm" in doc:
+        v = doc["phone_master_disarm"]
+        if v not in PHONE_MASTER_MODES:
+            raise ValueError(f"{path}: phone_master_disarm must be one of "
+                             f"{', '.join(PHONE_MASTER_MODES)}.")
+        out["phone_master_disarm"] = v
     if "tailscale_remote" in doc:
         # Only the JSON word true turns it on, as for screen_arming.
         v = doc["tailscale_remote"]
@@ -2284,6 +2305,7 @@ class Remote:
         self.confirm_arm = None
         self.confirm_arm_threaded = True
         self._confirm_arm_lock = threading.Lock()
+        self._master_mode = None     # (clock, mode): read once a second
         # confirmpurge.ConfirmPurge, built on the first Purge tap.
         self.confirm_purge = None
         self.confirm_purge_threaded = True
@@ -2854,6 +2876,10 @@ class Remote:
                 if pr is not None:
                     pr.request_end(f"{name.capitalize()} was pressed")
             return (*out,) + ({},)
+        if name == "master-disarm":
+            return (*self.master_disarm(body, ctx),) + ({},)
+        if name == "master-disarm-mode":
+            return (*self.master_mode_set(body, ctx),) + ({},)
         if name == "purge-request":
             return (*self.purge_request(body, ctx),) + ({},)
         if name == "purge-confirm":
@@ -6232,6 +6258,107 @@ class Remote:
         return self.confirm_arming().confirm(i, gname, ctx, who, device,
                                              body.get("seen"),
                                              body.get("ticket"))
+
+    # -- the phone page's master DISARM ------------------------------------
+    def master_mode(self):
+        """What the master DISARM covers: phone_master_disarm, read at
+        most once a second. Missing, unreadable or anything else: "all"."""
+        now = self.clock()
+        c = self._master_mode
+        if c is not None and 0 <= now - c[0] < 1.0:
+            return c[1]
+        try:
+            v = load_settings(self.folder)["phone_master_disarm"]
+        except (ValueError, OSError, KeyError):
+            v = "all"
+        if v not in PHONE_MASTER_MODES:
+            v = "all"
+        self._master_mode = (now, v)
+        return v
+
+    def master_disarm(self, body, ctx):
+        """Every step of the master DISARM, each through its own route
+        with all its rules, in one request. Never stops at a step that
+        failed: each one is tried, and the answer names any that failed.
+        A step for something this engine does not have (no hazers, no
+        Startup page) is not a failure."""
+        mode = self.master_mode()
+        steps = [("disarm-all", {}, "Flames")]
+        if mode != "flames":
+            steps += [("hazers-off", {}, "Hazers"),
+                      ("laser-arm", {"all": True, "on": False}, "Lasers")]
+        if mode == "all_stop":
+            steps.append(("stop", {}, "Stop"))
+        done, failed = [], []
+        for name, extra, what in steps:
+            try:
+                code, out, _h = self.post("/api/remote/" + name,
+                                          dict(extra, seen=body.get("seen")),
+                                          ctx)
+            except Exception as e:                   # noqa: BLE001
+                code, out = 500, {"error": f"it could not be done "
+                                           f"({type(e).__name__})."}
+            out = out if isinstance(out, dict) else {}
+            if code == 404:
+                continue                 # not in this engine
+            said = str(out.get("error") or out.get("text") or "")
+            if 200 <= code < 300 and not out.get("error"):
+                done.append(what)
+            else:
+                failed.append(f"{what}: {said or 'refused'}")
+        if failed:
+            why = ("NOT ALL DISARMED. " + " ".join(failed) +
+                   " Check every lamp, and use Stop.")
+            return 500, {"ok": False, "mode": mode, "done": done,
+                         "failed": failed, "error": why}
+        return 200, {"ok": True, "mode": mode, "done": done,
+                     "text": "Disarm sent: " + ", ".join(done) + "."}
+
+    def master_mode_locked(self):
+        """Why the master DISARM's meaning may not be changed right now,
+        or "": a show playing, or anything armed, asked for or not known.
+        Anything that cannot be read counts as armed."""
+        try:
+            state = str(getattr(getattr(self.schedule, "machine", None),
+                                "state", "") or "")
+            if state in ("SHOW", "PAUSED"):
+                return "A show is playing."
+            fl = self.flame_status.view() if self.flame_status else None
+            if fl is not None and any(
+                    g.get("armed") != "disarmed" or g.get("wanted")
+                    for g in fl.get("groups") or []):
+                return "A flame group is armed or not known."
+            hz = self.hazers
+            if hz is not None and any(
+                    h.get("armed") for h in hz.view().get("hazers") or []):
+                return "A hazer is armed."
+            m = self.morning
+            if m is not None and m.laser_arm.armed_ids():
+                return "A laser is armed."
+        except Exception as e:                       # noqa: BLE001
+            return f"The rig's state could not be read ({type(e).__name__})."
+        return ""
+
+    def master_mode_set(self, body, ctx):
+        mode = body.get("mode")
+        if mode not in PHONE_MASTER_MODES:
+            return 400, {"error": "mode has to be all, flames or all_stop. "
+                                  "Nothing was changed."}
+        why = self.master_mode_locked()
+        if why:
+            return 409, {"error": f"{why} The master DISARM is changed "
+                                  f"only with no show playing and nothing "
+                                  f"armed. Nothing was changed."}
+        who, screen, _surface = self._actor(ctx, body)
+        try:
+            save_settings(self.folder, phone_master_disarm=mode)
+        except (ValueError, OSError) as e:
+            return 409, {"error": f"Not changed: {e}"}
+        self._master_mode = None
+        text = (f"{who} set the phone page's master DISARM to {mode} on "
+                f"the {screen}.")
+        self._journal(who, screen, "master disarm mode", "done", text)
+        return 200, {"ok": True, "mode": mode, "text": text}
 
     # -- tap, then confirm, for a timed purge (confirmpurge.py) -------------
     def purge_confirm_refusal(self, ctx, ids, seconds, seen):
@@ -11935,6 +12062,11 @@ class Remote:
         out["arming"]["confirm"] = ca.view(tok) if ca is not None else None
         cp = self.confirm_purge
         out["arming"]["purge"] = cp.view(tok) if cp is not None else None
+        # The phone page's master DISARM: what it covers on this show
+        # machine, and why that may not be changed right now ("" when it
+        # may).
+        out["phone"] = {"master": self.master_mode(),
+                        "master_locked": self.master_mode_locked()}
         self.artnet_alert()
         out["artnet_note"] = self.artnet_note()
         out["config_changed"] = self.config_changed_view(ctx)

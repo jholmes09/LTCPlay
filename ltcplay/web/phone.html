@@ -284,8 +284,11 @@ const PEND = {};         // key -> {state:"sending"|"pending"|"noans", at}
 const WAITS = [];        // things waiting on a newer status
 const RETRY = {};        // key -> true while a safe press is being retried
 let HZ = {run:null, timer:null, until:0};
-function masterMode(){ return "all"; }              // later: "flame" | "stop"
-function masterConfigurable(){ return false; }
+// The master DISARM's meaning is the show machine's setting, the same on
+// every phone: "all", "flames" or "all_stop". Not known yet: "all".
+function masterMode(){ const m = ((ST || {}).phone || {}).master; return m === "flames" || m === "all_stop" ? m : "all"; }
+function masterLocked(){ return String(((ST || {}).phone || {}).master_locked || ""); }
+function masterConfigurable(){ return !!(ST && ST.phone) && !!ME().user && may("settings"); }
 
 /* ---------- derived facts ---------- */
 function linkAge(){ return LAST_OK == null ? mono() - LOST_SINCE : mono() - LAST_OK; }
@@ -524,7 +527,7 @@ function renderMaster(){
   const key = "master", pl = pendLabel(key);
   let t = "DISARM ALL", cls = "";
   const mm = masterMode();
-  if(mm === "flame") t = "DISARM FLAME"; else if(mm === "stop") t = "DISARM ALL + STOP";
+  if(mm === "flames") t = "DISARM FLAMES"; else if(mm === "all_stop") t = "DISARM ALL + STOP";
   if(pl){ t = pl; cls = pl === "SENDING" ? "send" : pl === "NO ANSWER" ? "noans" : "send"; }
   else if(mono() < UI.flash){ t = "DISARMED"; cls = "done"; }
   setText(b, t); setCls(b, cls);
@@ -936,7 +939,7 @@ function cfgHTML(){
       B('data-act="signin"', "btn gold", u.busy ? "PENDING" : "SIGN IN", !!u.busy) + B('data-act="close"', "btn", "CLOSE") + `</div>`;
   }
   const opts = masterConfigurable() ? `<span class="cap">MASTER DISARM</span><div class="opt">` +
-    [["all","DISARM ALL"],["flame","DISARM FLAME"],["stop","DISARM ALL + STOP"]].map(([k, t]) => B(`data-act="mm" data-n="${k}"`, "btn" + (masterMode() === k ? " sel" : ""), t)).join("") + `</div>` : "";
+    [["all","DISARM ALL"],["flames","DISARM FLAMES"],["all_stop","DISARM ALL + STOP"]].map(([k, t]) => B(`data-act="mm" data-n="${k}"`, "btn" + (masterMode() === k ? " sel" : ""), `<i></i>${t}`, lost() || (!!masterLocked() && masterMode() !== k))).join("") + `</div>` : "";
   return `<div class="box"><div class="who"><span class="cap">${me.users_active ? "SIGNED IN" : "NO SIGN IN"}</span><span>${esc(me.user || "")}${me.role ? " &middot; " + esc(String(me.role).toUpperCase()) : ""}</span></div>` +
     opts + (me.users_active ? B('data-act="signout"', "btn", "SIGN OUT") : "") + B('data-act="close"', "btn gold", "DONE") + `</div>`;
 }
@@ -976,7 +979,13 @@ const ACT = {
   line(){ const f = BAR && BAR.onTap; BAR = null; render(); if(f) f(); },
   no(){ barClose(); },
   ok(){ if(!BAR || BAR.kind !== "confirm") return; if(mono() < BAR.minAt || lost()) return; const f = BAR.onConfirm; BAR = null; render(); f(); },
-  mm(d){ },
+  async mm(d){
+    if(d.n === masterMode()) return;
+    const r = await post("master-disarm-mode", {mode:d.n, seen:seenNow()});
+    if(r.net){ closeSheet(); line("NO ANSWER", "bad"); return; }
+    if(!r.ok){ closeSheet(); line(words(r), "bad"); return; }
+    render();
+  },
   master(){ doMaster(); },
   go(){ doGo(); }, hold(){ doHold(); }, stop(){ doStop(); }, cont(){ doCont(); },
   arm(d){ armGroup(d.n); },
@@ -1324,35 +1333,25 @@ function doCont(){
 }
 /* master */
 async function doMaster(){
+  // One press, one request: the engine does every step itself, so a bad
+  // link can never land one disarm and lose another. Tried until answered.
   cancelSeq();
   const key = "master", mm = masterMode();
   if(RETRY[key]) return;
   RETRY[key] = true; PEND[key] = {state:"sending", at:mono()}; render();
-  const jobs = [["disarm-all", () => ({seen:seenNow()}), true], ["hazers-off", () => ({seen:seenNow()}), haveHazers()],
-    ["laser-arm", () => ({all:true, on:false}), !!lasers()]];
-  if(mm === "flame") jobs.splice(1);
-  if(mm === "stop") jobs.push(["stop", () => ({seen:seenNow()}), true]);
-  const res = await Promise.all(jobs.map(async ([route, fn, show]) => {
-    let r;
-    for(;;){ r = await post(route, fn(), 3500); if(!r.net) break; await sleep(1000); }
-    return {route, r, show};
-  }));
+  let r;
+  for(;;){ r = await post("master-disarm", {seen:seenNow()}, 4500); if(!r.net) break; await sleep(1000); }
   delete RETRY[key];
-  const bad = res.find(x => x.show && !x.r.ok);
-  if(bad) line(words(bad.r), "bad");
-  else{
-    const f = res.find(x => x.route === "disarm-all");
-    if(f && f.r.j && f.r.j.plain === false) line(words(f.r), "warn");
-  }
+  if(!r.ok) line(words(r), "bad");
   track(key, st => {
     const gs = (st.flames || {}).groups || [];
     const fo = (st.flames && st.flames.connected && !st.flames.stale) ? gs.every(g => g.armed === "disarmed") : false;
     const ho = (((st.hazers || {}).hazers) || []).every(h => !h.armed);
     const lo = (((st.laser_arm || {}).lasers) || []).every(l => !l.armed);
-    return (mm === "flame" ? fo : fo && ho && lo);
+    return (mm === "flames" ? fo : fo && ho && lo);
   }, 3000);
   const w = WAITS.find(x => x.key === key);
-  if(w){ const old = w.test; w.test = st => { const r = old(st); if(r === true) UI.flash = mono() + 1500; return r; }; }
+  if(w){ const old = w.test; w.test = st => { const q = old(st); if(q === true) UI.flash = mono() + 1500; return q; }; }
 }
 /* alerts */
 function doAck(id, ver){
