@@ -13302,6 +13302,11 @@ def build():
   '            ("Announcements", False,',
   '            ("Announcements", True,'),
 
+ ("rig check: the Booth speaker is required again",
+  "ltcplay/web.py",
+  '            ("Booth speaker", False,',
+  '            ("Booth speaker", True,'),
+
  ("no PA: an advisory check reads FAILED in the rig check's line",
   "ltcplay/preroll.py",
   '    if not it.get("required", True):\n'

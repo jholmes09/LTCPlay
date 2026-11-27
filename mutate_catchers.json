@@ -44,6 +44,7 @@
 "master disarm: a setting that cannot be read covers less than everything": "test_phone_master_disarm",
 "master disarm: it stops the show with its Stop switch off": "test_phone_master_disarm",
 "master disarm: its meaning changes with something armed": "test_phone_master_disarm",
+"rig check: the Booth speaker is required again": "test_preroll_wiring_in_the_engine",
 "show audio: a dropped stream leaves the announcement bus playing": "test_announce_plays_through_the_show_audio",
 "Hold does not end a Start now waiting for the show audio": "test_refused_starts_say_why_and_what_to_press",
 "deck: announcement presses share Stop's queue": "test_streamdeck_announce_presses_never_queue_behind_or_ahead_of_stop",

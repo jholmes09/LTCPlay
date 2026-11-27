@@ -110529,10 +110529,35 @@ def test_preroll_wiring_in_the_engine():
     check(isinstance(pr, P.PreRoll) and svc.preroll is pr and
           remote.preroll is pr and pr.window_s == 10 and
           [c[0] for c in pr.checks] == list(P.NAMES) and
-          all(c[1] == (c[0] != "Announcements") for c in pr.checks),
+          all(c[1] == (c[0] not in ("Announcements", "Booth speaker"))
+              for c in pr.checks),
           f"built, every check required but Announcements (advisory, "
-          f"Jeff 2026-10-30), in order: "
+          f"Jeff 2026-10-30) and Booth speaker (advisory, Jeff "
+          f"2026-11-27), in order: "
           f"{[c[:2] for c in getattr(pr, 'checks', [])]}")
+    # A booth speaker that is named but not attached (Jeff, 2026-11-27):
+    # with the engine's own wiring it is a warning line, the rig check
+    # passes, and no alert holds the show.
+    booth_req = [c[1] for c in pr.checks if c[0] == "Booth speaker"]
+    al = AL.Alerts()
+    bp = P.PreRoll([("Audio", True, lambda p: (True, "")),
+                    ("Booth speaker", booth_req[0] if booth_req else True,
+                     lambda p: P.check_booth(
+                         p, types.SimpleNamespace(enabled=True,
+                                                  device_name="Booth"),
+                         lambda n: (_ for _ in ()).throw(
+                             RuntimeError("gone"))))],
+                   window_s=3, alert=al.raise_, clear_alert=lambda k: None)
+    r = bp.run(("night", 1), "show 1 (18:00)")
+    item = [i for i in r["items"] if i["name"] == "Booth speaker"]
+    check(r["state"] == "passed" and item and not item[0]["ok"] and
+          item[0]["required"] is False,
+          f"a booth speaker not attached: the rig check passes: {r}")
+    check("Booth speaker WARNING: booth speaker Booth is not attached"
+          in r["text"] and "FAILED" not in r["text"],
+          f"said as a warning line: {r['text']}")
+    check(not al.open() and bp.last_failed() is None,
+          f"no alert, nothing to continue past: {al.view()}")
     # Fail closed: a rig check that cannot be built is an alert that holds
     # every show, never a quiet print.
     svc.preroll = None

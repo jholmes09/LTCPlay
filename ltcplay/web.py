@@ -2368,7 +2368,12 @@ def _attach_preroll(httpd, fire_ice, fstatus):
             # for the operator's own buttons, never a failed check.
             ("Announcements", False,
              lambda p: P.check_announcements(p, httpd.announce)),
-            ("Booth speaker", True,
+            # Advisory (Jeff, 2026-11-27: "Booth check should be advisory.
+            # It's not critical at all."): the show PC has no output to
+            # spare for it, so a booth speaker that is named but not
+            # attached is a warning line, never a failed check or a held
+            # show.
+            ("Booth speaker", False,
              lambda p: P.check_booth(p, remote.alerts.booth, booth_resolve)),
             ("Timecode", True, lambda p: P.check_timecode(
                 p, getattr(clk(), "out", None),
