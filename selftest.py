@@ -83736,6 +83736,167 @@ def _tp_lines(R, outcome):
             if r.get("action") == "purge" and r.get("outcome") == outcome]
 
 
+def test_confirm_purge_tap_then_confirm():
+    section("tap, then confirm, for a timed purge from a phone (Jeff, "
+            "2026-11-27): a Purge tap selects nothing; only a Confirm from "
+            "the same device, 0.3 to 5 s later, selects the machines; the "
+            "engine keeps the page open, waits for every group armed, "
+            "starts the timed purge through its own route, and clears the "
+            "selection when it is over; a selection taken away is never "
+            "selected again; 5 s with a group not armed clears it")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import remote as RM
+    from ltcplay import confirmpurge as CP
+    from ltcplay import users as US
+    check(CP.TICKET_S == 5.0 and CP.CONFIRM_MIN_S == 0.3 and
+          CP.ARM_WAIT_S == 5.0 and CP.OPEN_S < 0.5 and CP.BEAT_S == 0.1,
+          "the numbers Jeff approved: 5 s to confirm, never the same tap, "
+          "5 s for the groups to arm, the page's open beat kept up")
+    check(all(r in RM.POST_ROUTES and US.REMOTE_ROUTES.get(r) == "arm"
+              for r in RM.CONFIRM_PURGE_ROUTES),
+          "both taps are routes of the arm row, like the purge's own")
+    R = _morning_rig(S, _MO_CONFIG, link=_FakeTimedLink())
+    R.m.timed_blockers = R.remote.timed_purge_blockers
+    R.remote.confirm_purge_threaded = False
+    link = R.link
+    other = ("10.20.0.45", 50001)
+    phone = "iPad at 10.20.0.44"
+
+    def cp():
+        return R.remote.confirm_purging()
+
+    def step(dt=0.1):
+        R.mono[0] += dt
+        R.wall[0] += dt
+        R.feed()
+        R.remote._deck_seen = R.mono[0]
+        cp().tick()
+        if R.m.purge.timed_running():
+            R.m.purge.timed_send()
+        R.m.tick()
+
+    def run(n):
+        for _ in range(n):
+            step()
+
+    def tap(seconds=2, machines=("g1", "g2"), **kw):
+        return R.ask("POST", "/api/remote/purge-request",
+                     {"machines": list(machines), "seconds": seconds,
+                      "seen": R.seen()}, **kw)
+
+    def confirm(ticket, **kw):
+        return R.ask("POST", "/api/remote/purge-confirm",
+                     {"ticket": ticket, "seen": R.seen()}, **kw)
+
+    def state():
+        return (cp().view()["run"] or {}).get("state")
+
+    def front(armed):
+        R.groups[0]["armed"] = "armed" if armed else "disarmed"
+        R.groups[0]["wanted"] = armed
+        R.feed()
+    try:
+        # The Purge tap: a ticket, nothing selected, nothing fired.
+        st, _h, out = tap()
+        tk = out.get("ticket")
+        check(st == 200 and isinstance(tk, str) and len(tk) >= 16 and
+              out["seconds"] == 2 and R.m.purge.selected == [] and
+              not link.frames,
+              f"a Purge tap answers a ticket and selects nothing: {out}")
+        check(tk not in repr(cp().view()),
+              "the status never carries the ticket")
+        st, _h, out = confirm(tk)
+        check(st == 409 and out["error"] == CP.TOO_SOON and
+              R.m.purge.selected == [],
+              f"a Confirm with the tap itself is refused: {st} {out}")
+        st, _h, out = tap(31)
+        check(st == 409 and "longer than the longest" in out["error"],
+              f"over this show machine's longest: refused at the tap: {out}")
+        # Another device, and a wrong ticket: refused, the ticket kept.
+        st, _h, out = tap()
+        tk = out["ticket"]
+        step(0.6)
+        st, _h, out = confirm(tk, client=other)
+        st2, _h, out2 = confirm(tk[:-1] + ("A" if tk[-1] != "A" else "B"))
+        check(st == 409 and out["error"] == CP.NO_TICKET and st2 == 409 and
+              out2["error"] == CP.NO_TICKET and R.m.purge.selected == [],
+              f"another device, or a wrong ticket, selects nothing: {out} "
+              f"{out2}")
+        # The Confirm: selected in the phone's name, nothing fired yet.
+        st, _h, out = confirm(tk)
+        check(st == 200 and out["state"] == "arming" and
+              R.m.purge.selected == ["g1", "g2"] and
+              R.m.purge.owner == phone and not link.frames,
+              f"the Confirm selects the machines and fires nothing: {st} "
+              f"{out} {R.m.purge.selected} {R.m.purge.owner}")
+        # Its group not armed yet: the engine keeps the page open and
+        # waits. Nothing fires.
+        run(25)
+        check(state() == "arming" and R.m.purge.selected == ["g1", "g2"]
+              and not link.frames and not R.m.purge.timed_running(),
+              f"2.5 s with the group not armed: the selection lives on the "
+              f"engine's own open beat, and nothing fires: {state()}")
+        # flamesafe reports it armed: the timed purge's own hold, then it
+        # runs for its seconds and stops by itself.
+        front(True)
+        run(13)
+        check(state() == "firing" and R.m.purge.timed_running() and
+              link.frames and link.limits and
+              _tp_lines(R, "timed_start"),
+              f"armed: the engine's beats start the timed purge through "
+              f"its own route, with the link's hard end: {state()} "
+              f"{link.limits}")
+        run(22)
+        check(state() == "done" and not R.m.purge.timed_running() and
+              R.m.purge.selected == [] and R.m.purge.owner is None,
+              f"its 2 s up: it stopped by itself and the engine cleared "
+              f"the selection, so the deck lets the group go: "
+              f"{cp().view()['run']} {R.m.purge.selected}")
+        n_frames = len(link.frames)
+        # The group never arms: cleared at 5 s, nothing fired.
+        front(False)
+        step(2.5)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        check(st == 200 and R.m.purge.selected == ["g1", "g2"],
+              f"a second run: {st} {out}")
+        run(52)
+        check(state() == "timeout" and
+              cp().view()["run"]["text"] == CP.NOT_ARMED and
+              R.m.purge.selected == [] and len(link.frames) == n_frames,
+              f"5 s with the group not armed: cleared, nothing fired: "
+              f"{cp().view()['run']}")
+        # The selection taken away (a Stop, a Hold, a Clear): never
+        # selected again, and nothing fires even once the group arms.
+        step(2.5)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        run(3)
+        R.m.purge.clear("a Stop")
+        run(2)
+        front(True)
+        run(20)
+        check(state() == "stopped" and
+              cp().view()["run"]["text"] == CP.TAKEN_AWAY and
+              R.m.purge.selected == [] and len(link.frames) == n_frames,
+              f"a selection taken away ends the run; nothing is selected "
+              f"or fired again: {cp().view()['run']}")
+        _no_dashes(CP.NO_TICKET + CP.TOO_LATE + CP.TOO_SOON + CP.BUSY +
+                   CP.NOT_ARMED + CP.NOT_STARTED + CP.TAKEN_AWAY +
+                   CP.SIGNED_OUT + CP.NOT_SELECTED + CP.BROKE,
+                   "the confirmed purge's sentences")
+    finally:
+        c = R.remote.confirm_purge
+        if c is not None:
+            c.close()
+        R.close()
+    print("  ok")
+
+
 def test_timed_purge_flame_link_hard_end():
     section("timed purge, the flame link (Jeff, 2026-10-29): purge_limit "
             "sets a hard end on the link's own clock; past it every frame "
@@ -140304,6 +140465,7 @@ if __name__ == "__main__":
         test_morning_arrange_mode_arms_nothing,
         test_morning_arrange_disables_firing,
         test_purge_release_can_never_start_a_fire,
+        test_confirm_purge_tap_then_confirm,
         test_timed_purge_flame_link_hard_end,
         test_timed_purge_at_the_engine,
         test_timed_purge_every_end_cause,

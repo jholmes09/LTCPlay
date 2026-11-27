@@ -12131,6 +12131,31 @@ def build():
   '            if out.get("taken") is True:',
   '            if True:'),
 
+ ('confirm purge: a Confirm with the Purge tap itself selects',
+  'ltcplay/confirmpurge.py',
+  '        if age < CONFIRM_MIN_S:\n            return refuse(TOO_SOON)',
+  '        if False:\n            return refuse(TOO_SOON)'),
+
+ ('confirm purge: any ticket is taken',
+  'ltcplay/confirmpurge.py',
+  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8")) and',
+  '                    True and'),
+
+ ('confirm purge: the start hold begins before every group is armed',
+  'ltcplay/confirmpurge.py',
+  '            if not self._armed(r["ids"]):',
+  '            if False:'),
+
+ ('confirm purge: a selection taken away does not end the run',
+  'ltcplay/confirmpurge.py',
+  '        if not self._selected(r["ids"], r["token"]):',
+  '        if False:'),
+
+ ('confirm purge: the engine waits past 5 s for a group to arm',
+  'ltcplay/confirmpurge.py',
+  '                if now > r["arm_by"]:',
+  '                if False:'),
+
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
   '        if not self.arming_enabled():\n            # The Stream Deck reads',
