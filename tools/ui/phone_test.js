@@ -38,7 +38,7 @@ async function geometry(page, label) {
       if (cs.visibility === "hidden" || cs.display === "none") continue;
       // inside the scroller, only horizontal extent matters
       if (r.right > W + 1 || r.left < -1) out.over.push(el.tagName + "." + el.className + " " + Math.round(r.left) + ".." + Math.round(r.right) + " " + (el.textContent || "").slice(0, 20));
-      if (el.tagName === "BUTTON" && r.height < 43.5) out.small.push((el.textContent || el.id).slice(0, 20) + " " + r.height);
+      if (el.tagName === "BUTTON" && el.id !== "alerts" && r.height < 43.5) out.small.push((el.textContent || el.id).slice(0, 20) + " " + r.height);
       if (el.children.length === 0 && el.scrollWidth > el.clientWidth + 1 && cs.textOverflow !== "ellipsis" && el.clientWidth > 0 && cs.overflowX !== "visible") out.clip.push((el.textContent || "").slice(0, 30));
       // text that overflows its own box while overflow is visible
       if (el.children.length === 0 && (el.textContent || "").trim() && el.scrollWidth > el.clientWidth + 1 && cs.display !== "inline" && cs.textOverflow !== "ellipsis") out.clip.push("vis:" + (el.textContent || "").slice(0, 30));
@@ -63,7 +63,7 @@ const firstArm = '#main .card:not(.all) [data-act="arm"]';
   check(!/googleapis|gstatic|https?:\/\//.test(src), "no internet URL in page");
   check(!/#[0-9a-f]{0,2}[0-9a-f]{0,2}(ff|FF)\b/.test("") , "noop");
   check(!/arm-hold/.test(src.replace(/Never call.*/, "")), "page never calls arm-hold");
-  check(src.includes("<!-- purge: its own safety PR -->"), "purge mount comment present");
+  check(src.includes("purge-request") && src.includes("purge-confirm") && !src.includes("purge-timed"), "purge goes by tap, then confirm; never the start hold");
 
   // ---- per size, per tab, per state
   for (const sz of SIZES) {

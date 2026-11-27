@@ -63,7 +63,9 @@ input{font:inherit}
 #link i{display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor;margin-right:8px}
 #link.slow{background:var(--amber);color:var(--amber-ink)}
 #link.lost{background:var(--red);color:var(--white)}
-#alerts{height:44px;margin:-7px 0;padding:0 10px;border-radius:var(--r);font-weight:800;font-size:.8125rem;letter-spacing:.06em;min-width:44px;position:relative;z-index:6}
+#alerts{flex:none;height:22px;line-height:22px;white-space:nowrap;overflow:visible;margin:0;padding:0 10px;border-radius:var(--r);font-weight:800;font-size:.8125rem;letter-spacing:.06em;min-width:44px;position:relative;z-index:6}
+#alerts::after{content:"";position:absolute;inset:-11px 0}
+.hd.in{padding:0;flex:1;min-width:0}
 #alerts.fault{background:var(--red);color:var(--white);box-shadow:0 0 0 2px var(--white)}
 #alerts.warning{background:var(--amber);color:var(--amber-ink);box-shadow:0 0 0 2px var(--amber-ink)}
 #link.lost #alerts{box-shadow:0 0 0 2px var(--white)}
@@ -300,10 +302,11 @@ const fgroups = () => (ST && ST.flames && ST.flames.groups) || [];
 const lockedNames = () => new Set((ST && ST.morning && ST.morning.locked_machines) || []);
 function groupKey(map, name){ if(!map) return null; if(name in map) return name; const l = String(name).toLowerCase(); return Object.keys(map).find(k => k.toLowerCase() === l) || null; }
 function machinesOf(name){
-  if(!MO || !MO.groups) return null;
-  const k = groupKey(MO.groups, name); if(k == null) return null;
-  const by = {}; (MO.machines || []).forEach(m => { by[m.id] = m; });
-  return (MO.groups[k] || []).map(id => by[id]).filter(Boolean);
+  // The engine's machine list names each machine's flamesafe group. (Its
+  // "groups" are the Startup page's rows by machine kind, not these.)
+  if(!MO || !Array.isArray(MO.machines)) return null;
+  const l = String(name).toLowerCase();
+  return MO.machines.filter(m => String(m.group || "").toLowerCase() === l);
 }
 function gcount(name){
   const gm = ST && ST.morning && ST.morning.group_machines;
@@ -414,12 +417,12 @@ function anchor(prev, c, now){
 }
 function cdRead(){ if(!CD) return null; return {kind:CD.kind, length:CD.length, s:CD.running ? Math.max(0, (CD.at - mono()) / 1000) : CD.s}; }
 function onStatus(){
-  evalWaits(); runWatch(); hazBeat(); maybeMorning();
+  evalWaits(); runWatch(); purgeWatch(); hazBeat(); maybeMorning();
   if(usersOut() && !UI.signAuto){ UI.signAuto = true; openSign(); }
   render();
 }
 async function maybeMorning(force){
-  const need = force || !MO || (UI.tab === "arm" && UI.kind === "flame" && mono() - MO_AT > 5000) || mono() - MO_AT > 30000;
+  const need = force || !MO || (((UI.tab === "arm" && UI.kind === "flame") || UI.tab === "service") && mono() - MO_AT > 5000) || mono() - MO_AT > 30000;
   if(!need || MO_BUSY) return;
   MO_BUSY = true;
   try{ MO = await getJSON("/api/remote/morning", 3000); MO_AT = mono(); }catch(e){ MO_AT = mono() - 3000; }
@@ -778,8 +781,88 @@ function vService(){
     h += `<section class="card all"><div class="row"><span class="nm">ALL LASERS</span>${ltRow("*")}</div></section><h2>LASERS</h2>`;
     h += ls.map(l => `<section class="card"><div class="row"><span class="nm">${esc(l.name)}</span>${ltRow(l.id)}</div></section>`).join("");
   }
-  h += `<!-- purge: its own safety PR -->`;
+  return vPurge() + h;
+}
+
+/* ---------- flame purge: tap, then confirm (confirmpurge.py) ---------- */
+const PGK = {};          // button key -> {ids, label}, rebuilt on each draw
+const PG_LIVE = ["arming", "holding", "firing"];
+function purgeRun(){ const p = ((ST || {}).arming || {}).purge; return p && p.run ? p.run : null; }
+function purgeLive(){ const r = purgeRun(); return !!(r && PG_LIVE.includes(r.state)); }
+function purgeSecs(){
+  const ts = (MO && MO.timed_settings) || {}, max = +ts.max_s || 30;
+  return Math.max(1, Math.min(UI.psec || +ts.default_s || 5, max));
+}
+function purgeable(name){
+  const ln = lockedNames();
+  return (machinesOf(name) || []).filter(m => !m.never_purged && !ln.has(m.name));
+}
+function sameIds(a, b){ return a.length === b.length && a.every(x => b.includes(x)); }
+function pgBtn(ids, k){
+  const r = purgeRun(), pl = pendLabel("pg:" + k), at = `data-act="pg" data-k="${esc(k)}"`;
+  if(purgeLive()){
+    if(!sameIds(r.machines || [], ids)) return B(at, "btn", "PURGE", true);
+    const left = Math.ceil(+((((ST || {}).morning || {}).timed || {}).left_s) || 0);
+    const t = RETRY["pg-stop"] ? "SENDING" : r.state === "firing" && left ? "STOP " + left : "STOP";
+    return B(`data-act="pg-stop"`, "btn amber", t, false);
+  }
+  if(pl) return B(at, "btn" + (pl === "NO ANSWER" ? " amber" : ""), pl, pl === "PENDING");
+  if(!flamesKnown()) return B(at, "btn", "UNKNOWN", true);
+  return B(at, "btn", "PURGE", lost() || !may("arm") || !ids.length);
+}
+function vPurge(){
+  let h = `<h2>FLAME PURGE</h2>`;
+  for(const k in PGK) delete PGK[k];
+  if(!MO) return h + `<div class="none">UNKNOWN</div>`;
+  const ts = MO.timed_settings || {}, max = +ts.max_s || 30, cur = purgeSecs();
+  const ps = (Array.isArray(ts.presets) ? ts.presets : [2, 5, 10, 20, 30]).filter(x => x <= max);
+  h += seg("", ps.map(x => `<button data-act="psec" data-n="${x}" class="${x === cur ? "sel" : ""}" ${purgeLive() ? "disabled" : ""}>${x} S</button>`).join(""));
+  let any = false;
+  fgroups().forEach(g => {
+    const ms = purgeable(g.name); if(!ms.length) return;
+    any = true;
+    const ok = "p:" + g.name, o = !!UI.open[ok], one = ms.length < 2, gk = "g:" + g.name;
+    PGK[gk] = {ids:ms.map(m => m.id), label:g.name};
+    h += `<section class="card ${o ? "open" : ""}"><div class="row">` +
+      (one ? `<span class="nm">${esc(g.name)}</span>` :
+        `<button class="hd in" data-act="open" data-n="${esc(ok)}" aria-expanded="${o}"><span class="nm">${esc(g.name)}</span>${chev}</button>`) +
+      pgBtn(PGK[gk].ids, gk) + `</div>` +
+      (o && !one ? `<div class="units">` + ms.map(m => {
+        const mk2 = "m:" + m.id; PGK[mk2] = {ids:[m.id], label:m.name};
+        return `<div class="row"><span class="nm">${esc(m.name)}</span>${pgBtn([m.id], mk2)}</div>`;
+      }).join("") + `</div>` : "") + `</section>`;
+  });
+  if(!any) h += `<div class="none">NONE</div>`;
   return h;
+}
+async function doPurge(k){
+  const t = PGK[k], key = "pg:" + k; if(!t || PEND[key] || purgeLive()) return;
+  const ids = t.ids.slice(), label = t.label, secs = purgeSecs(), sent = mono();
+  PEND[key] = {state:"pending", at:mono()}; render();
+  const r = await post("purge-request", {machines:ids, seconds:secs, seen:seenNow()});
+  delete PEND[key];
+  if(r.net){ line("NO ANSWER", "bad"); return; }
+  if(!r.ok){ line(words(r), "bad"); return; }
+  const min = (+r.j.min_s || 0.3) * 1000, life = (+r.j.expires_s || 5) * 1000;
+  ask("PURGE " + label.toUpperCase() + " " + secs + " S", "amber", min, life - (mono() - sent), async () => {
+    PEND[key] = {state:"pending", at:mono()}; render();
+    const c = await post("purge-confirm", {ticket:r.j.ticket, seen:seenNow()});
+    delete PEND[key];
+    if(c.net){ PEND[key] = {state:"noans", at:mono()}; render(); return; }
+    if(!c.ok){ line(words(c), "bad"); return; }
+    UI.pgRun = c.j.run; render();
+  }, () => {});
+}
+// Stop purge: safe to repeat, never disabled, tried until the engine answers.
+function purgeStop(){
+  sendSafe("pg-stop", "purge-stop", () => ({seen:seenNow()}), r => { if(!r.ok) line(words(r), "bad"); });
+}
+// The run this page started has ended: say how, once, unless it simply ran.
+function purgeWatch(){
+  const r = purgeRun();
+  if(!r || UI.pgRun == null || r.run !== UI.pgRun || PG_LIVE.includes(r.state)) return;
+  UI.pgRun = null;
+  if(r.state !== "done" && r.text) line(r.text, r.state === "stopped" ? "warn" : "bad");
 }
 
 function renderMain(){
@@ -912,6 +995,8 @@ const ACT = {
   lv(d){ doLevel(d.n, d.f, +d.d); },
   run(d){ hzRun(d.n); }, "run-stop"(d){ hzStop(d.n); },
   lt(d){ lasTest(d.n); },
+  psec(d){ UI.psec = +d.n; render(); },
+  pg(d){ doPurge(d.k); }, "pg-stop"(){ purgeStop(); },
   ack(d){ doAck(+d.id, +d.v); },
   pick(d){ UI.sign.name = d.n; renderSheet(); const p = $("pw"); if(p) p.focus(); },
   signin(){ doSignin(); },
