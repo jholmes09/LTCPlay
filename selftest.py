@@ -88567,8 +88567,8 @@ _SU_PLAIN_ROUTES = (
     "/api/schedule/logging", "/api/schedule/operator", "/api/schedule/state",
     "/api/schedule/tonight", "/api/showdir", "/api/skip", "/api/start",
     "/api/state", "/api/stop", "/api/timelines", "/api/trigger", "/brand/",
-    "/index.html", "/remote", "/remote-logic.js", "/remote1", "/remote2",
-    "/ui")
+    "/index.html", "/phone", "/remote", "/remote-logic.js", "/remote1",
+    "/remote2", "/ui")
 
 
 def _su_routes_in_source(src, prefix="/api/remote/"):
