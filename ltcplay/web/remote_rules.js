@@ -625,17 +625,6 @@ function wxBlock(w, heardAgoS){
   if(w.alerts_line) L.push({cls:w.alerts_line.level === "ok" ? "dim" : "none", text:w.alerts_line.text});
   return {cls:["ok", "stale", "none"].includes(w.state) ? w.state : "none", lines:L};
 }
-// The Users screen's "sign everyone out after the last show" minutes, as
-// typed: a whole number 0 to 1440, or null (blank, a word, a decimal,
-// out of range). A null is said on the screen and nothing is saved, so a
-// blank field never switches it off without a word (review of PR #125,
-// P2-7).
-function lastShowMinutes(text){
-  const t = String(text == null ? "" : text).trim();
-  if(!/^[0-9]{1,4}$/.test(t)) return null;
-  const n = parseInt(t, 10);
-  return n <= 1440 ? n : null;
-}
 // What the Rack screen says after Stop: /api/stop also disarms every flame
 // group (review of #126, P2-1), and a disarm that failed is said plainly,
 // never a bare "Stopped." (third review of #126, P2-2).
