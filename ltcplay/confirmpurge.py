@@ -79,6 +79,8 @@ NOT_STARTED = (f"The timed purge did not start within {HOLD_MAX_S:g} s. "
 TAKEN_AWAY = ("The purge selection changed before the purge started (a "
               "Stop, a Hold, a disarm, a Clear, or a machine added or "
               "taken off). Nothing was fired.")
+CUT = ("A Stop, a Hold or a Disarm was pressed after that Purge tap. "
+       "Nothing more was selected, armed or fired. Tap Purge again.")
 SIGNED_OUT = ("Signed out before the purge started. Nothing was fired, and "
               "the selection was cleared.")
 BROKE = ("The purge could not be carried on. It was stopped and the "
@@ -105,7 +107,7 @@ class ConfirmPurge:
                  clear=lambda device, why: None, stop=lambda why: None,
                  last=lambda: "", session_live=lambda ctx: True,
                  journal=None, clock=time.monotonic, wall=time.time,
-                 threaded=True,
+                 threaded=True, cut_mark=lambda: None,
                  new_ticket=lambda: secrets.token_urlsafe(18)):
         self._post, self._precheck = post, precheck
         self._armed, self._selected = armed, selected
@@ -117,6 +119,11 @@ class ConfirmPurge:
         self._seq = int(wall() * 1000)
         self._snap = {"run": None, "ticket": None}
         self._session_live = session_live
+        # What changes at every Stop, Hold and Disarm (remote.Remote.
+        # purge_cut_mark): a Purge tap from before one is void, and so is
+        # a run that has not fired yet (cold review of #310, second pass,
+        # P0-1 and P1-1).
+        self._cut_mark = cut_mark
         self._journal = journal
         self._clock, self._wall = clock, wall
         self._new_ticket = new_ticket
@@ -178,6 +185,7 @@ class ConfirmPurge:
             self._ticket = {"ticket": ticket, "token": token, "who": who,
                             "screen": screen, "at": now, "ids": ids,
                             "seconds": secs, "label": str(label or "")[:64],
+                            "cut": self._mark(),
                             "session": str(getattr(ctx, "token", "")
                                            or "")}
             self._publish()
@@ -189,6 +197,14 @@ class ConfirmPurge:
                      "min_s": CONFIRM_MIN_S, "machines": ids,
                      "seconds": secs}
 
+    def _mark(self):
+        """The cut mark, or a value equal to nothing when it cannot be
+        read: then every tap and run counts as cut."""
+        try:
+            return self._cut_mark()
+        except Exception:                            # noqa: BLE001
+            return object()
+
     # -- step 2: the Confirm tap -------------------------------------------
     def confirm(self, ctx, who, screen, ticket, seen):
         now = self._clock()
@@ -197,7 +213,8 @@ class ConfirmPurge:
             t = self._ticket
             mine = (t is not None and isinstance(ticket, str) and
                     hmac.compare_digest(t["ticket"].encode("utf-8"),
-                                        ticket.encode("utf-8")) and
+                                        ticket.encode("utf-8",
+                                                      "surrogatepass")) and
                     t["token"] == token and t["who"] == who and
                     t["session"] == str(getattr(ctx, "token", "") or ""))
             if mine:
@@ -222,14 +239,18 @@ class ConfirmPurge:
             return refuse(TOO_LATE)
         if age < CONFIRM_MIN_S:
             return refuse(TOO_SOON)
+        if self._mark() != t["cut"]:
+            return refuse(CUT)
         why, secs = self._precheck(ctx, t["ids"], t["seconds"], seen)
         if why:
             return refuse(why)
         if secs != t["seconds"]:
             return refuse(NO_TICKET)
         with self._lock:
+            if self._run is not None and self._run["state"] in LIVE:
+                return refuse(BUSY)
             self._ids += 1
-            run = {"id": self._ids, "ctx": ctx, "token": token, "who": who,
+            run = {"id": self._ids, "cut": t["cut"], "ctx": ctx, "token": token, "who": who,
                    "screen": screen, "ids": list(t["ids"]),
                    "label": t["label"], "seconds": secs, "state": "arming",
                    "text": "", "start": now, "ended": None,
@@ -321,6 +342,11 @@ class ConfirmPurge:
             return self._firing(r, now)
         if not self._session_live(r["ctx"]):
             return self._end(r, "refused", SIGNED_OUT, now, clear=True)
+        if self._mark() != r["cut"]:
+            # A Stop, a Hold or a Disarm since the Purge tap, of any
+            # group: the run ends before a flame, whatever is still
+            # selected.
+            return self._end(r, "stopped", CUT, now, clear=True)
         if not self._selected(r["ids"], r["token"]):
             # Taken away by something that outranks this run. Nothing of
             # it is selected again.

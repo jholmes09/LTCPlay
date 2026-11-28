@@ -83853,6 +83853,64 @@ def test_phone_master_disarm():
               f"the flame step failing is said, and the lasers are still "
               f"disarmed: {st} {out} {lasers()}")
         _no_dashes(out["error"], "the master DISARM's failure")
+        flt = [r for r in R.svc.journal
+               if r.get("action") == "master disarm"]
+        check(flt and "NOT ALL DISARMED" in str(flt[-1].get("text")) and
+              any(r.get("outcome") == "done" for r in flt),
+              f"a failed master DISARM is in the journal as a fault, and a "
+              f"good one as done: {flt[-2:]}")
+        # Cold review of #312. The flames go FIRST, before the setting is
+        # read, and a setting that cannot be read at all never stands in
+        # their way; the hazer step is sent when its switch is on.
+        sent = []
+        post0 = R.remote.post
+
+        def post(route, body, ctx):
+            if route != "/api/remote/master-disarm":
+                sent.append(route.rsplit("/", 1)[1])
+            return post0(route, body, ctx)
+        mode0 = R.remote.master_mode
+
+        def no_mode():
+            check(sent[:1] == ["disarm-all"],
+                  f"the flames were sent before the setting was read: "
+                  f"{sent}")
+            raise RecursionError("the settings file")
+        R.remote.post, R.remote.master_mode = post, no_mode
+        try:
+            st, _h, out = press()
+        finally:
+            R.remote.master_mode = mode0
+        check(st == 200 and sent == ["disarm-all", "hazers-off",
+                                     "laser-arm"],
+              f"a setting that cannot be read: flames first, then hazers "
+              f"and lasers, no Stop: {st} {sent} {out}")
+        # A press that arrives late (a phone that lost its link) disarms
+        # everything and does not stop a show started since.
+        check(switch(stop=True)[0] == 200 and
+              R.remote.master_mode()["stop"] is True,
+              "(set up: Stop on, and the engine acts on it at once)")
+        del sent[:]
+        st, _h, out = R.ask("POST", "/api/remote/master-disarm",
+                            {"seen": R.seen(), "age_ms": 60000})
+        check(st == 200 and "stop" not in sent and
+              sent[:1] == ["disarm-all"] and
+              "Press Stop" in " ".join(out.get("skipped") or []),
+              f"a press a minute old disarms and does not Stop, and says "
+              f"so: {st} {sent} {out}")
+        del sent[:]
+        R.ask("POST", "/api/remote/master-disarm",
+              {"seen": R.seen(), "age_ms": 3000})
+        check("stop" in sent, f"a fresh press does Stop: {sent}")
+        R.remote.post = post0
+        # With no users set up the role matrix lets every press through:
+        # only the show PC itself may change what the button does.
+        st, _h, out = R.ask("POST", "/api/remote/master-disarm-mode",
+                            {"stop": False, "seen": R.seen()})
+        check(not R.remote.users_active() and st == 403 and
+              saved()["stop"] is True,
+              f"no users: a device on the network cannot change it: {st} "
+              f"{out} {saved()}")
     finally:
         R.close()
     print("  ok")
@@ -83870,6 +83928,7 @@ def test_confirm_purge_tap_then_confirm():
     if S is None:
         return
     from ltcplay import remote as RM
+    import types
     from ltcplay import confirmpurge as CP
     from ltcplay import users as US
     check(CP.TICKET_S == 5.0 and CP.CONFIRM_MIN_S == 0.3 and
@@ -84077,6 +84136,61 @@ def test_confirm_purge_tap_then_confirm():
               R.m.purge.selected == [] and len(link.frames) == n_frames,
               f"a selection taken away ends the run; nothing is selected "
               f"or fired again: {cp().view()['run']}")
+        # A Stop, a Hold or a Disarm AFTER the Purge tap voids it: the
+        # Confirm selects nothing (second cold review of #310, P0-1), and
+        # the ticket is spent, so it is never tried twice.
+        front(False)
+        for press in ("disarm-all", "hold", "stop"):
+            step(2.5)
+            st, _h, out = tap()
+            tk = out.get("ticket")
+            step(0.6)
+            stp, _h, outp = R.ask("POST", "/api/remote/" + press,
+                                  {"seen": R.seen(), "confirmed": True})
+            step(0.3)
+            st2, _h, out2 = confirm(tk)
+            front(True)
+            run(20)
+            front(False)
+            check(st == 200 and stp == 200 and st2 == 409 and
+                  out2["error"] == CP.CUT and R.m.purge.selected == [] and
+                  len(link.frames) == n_frames,
+                  f"a Confirm after {press} selects and fires nothing: "
+                  f"{st} {stp} {outp} {st2} {out2}")
+            check(confirm(tk)[2].get("error") == CP.NO_TICKET,
+                  "and its ticket is spent")
+        # One group's Disarm while its purge waits to arm ends the run:
+        # nothing fires when the group reports armed after it (P1-1).
+        step(2.5)
+        st, _h, out = tap()
+        step(0.6)
+        st, _h, out = confirm(out["ticket"])
+        run(3)
+        check(st == 200 and state() == "arming",
+              f"(set up: arming: {st} {out})")
+        R.remote.group_disarm({"group": 0}, types.SimpleNamespace(
+            device="Rack screen", screen="Rack screen", local=True,
+            user="", token="", window=""), confirm=False)
+        run(2)
+        front(True)
+        run(20)
+        front(False)
+        check(state() == "stopped" and
+              cp().view()["run"]["text"] == CP.CUT and
+              R.m.purge.selected == [] and len(link.frames) == n_frames,
+              f"one group's Disarm ends a purge that has not fired: "
+              f"{cp().view()['run']}")
+        # A ticket is used once: a second Confirm with it is refused.
+        step(2.5)
+        st, _h, out = tap()
+        tk = out["ticket"]
+        step(0.6)
+        st, _h, out = confirm(tk)
+        st2, _h, out2 = confirm(tk)
+        check(st == 200 and st2 == 409 and out2["error"] == CP.NO_TICKET,
+              f"a ticket is taken once: {st} {st2} {out2}")
+        R.ask("POST", "/api/remote/purge-stop", {"seen": R.seen()})
+        run(2)
         # A ticket is refused, before anything is selected, for a machine
         # purge-select would refuse.
         step(2.5)
@@ -84089,7 +84203,7 @@ def test_confirm_purge_tap_then_confirm():
               f"a locked out machine on the ticket: refused at the tap, "
               f"nothing selected: {st} {st2} {out2}")
         _no_dashes(CP.NO_TICKET + CP.TOO_LATE + CP.TOO_SOON + CP.BUSY +
-                   CP.NOT_ARMED + CP.NOT_STARTED + CP.TAKEN_AWAY +
+                   CP.NOT_ARMED + CP.NOT_STARTED + CP.TAKEN_AWAY + CP.CUT +
                    CP.SIGNED_OUT + CP.NOT_SELECTED + CP.BROKE,
                    "the confirmed purge's sentences")
     finally:
