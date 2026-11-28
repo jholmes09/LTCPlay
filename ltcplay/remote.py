@@ -54,6 +54,15 @@ longer than ARM_BEAT_GAP_S, a Stop, a disarm or a sign out lets the hold
 go; an interrupted hold never carries on. A group once armed is never
 disarmed by a page going quiet (Jeff, 2026-11-24).
 
+TAP, THEN CONFIRM (Jeff, 2026-11-27; confirmarm.py): a phone's two taps
+(arm-request, then arm-confirm with its one-use ticket, the same device
+and person, 0.3 to 5 s apart) stand in for the finger. The engine then
+makes that hold's first press itself and beats it, 0.1 s apart and for
+3 s at most, through arm_hold above with every rule above. Nothing else
+changes: the Stream Deck program and flamesafe see a screen hold. A Stop,
+a disarm, a sign out or arming switched off ends it; lifting a finger does
+not, and neither does the schedule's Hold, which cuts no hold to arm.
+
 Every refusal is said on the page in a sentence that names the reason
 (2026-10-22, Jeff: "I'm supposed to be able to enable flames via the
 screen"; a hold that went nowhere used to look like a working one). The
@@ -192,6 +201,52 @@ CONFIRM_ROUTES = frozenset(("start-now", "start-at-cue"))
 # and runs every one of its own and flamesafe's rules on it. See
 # flamesafe/CONTRACT.md, "Arming from a screen".
 ARM_ROUTES = ("arm-hold", "arm-release", "group-disarm")
+# Tap, then confirm, to arm one flame group from a phone (confirmarm.py,
+# Jeff 2026-11-27). No new way to arm: the engine beats its own arm-hold.
+CONFIRM_ARM_ROUTES = ("arm-request", "arm-confirm")
+# Tap, then confirm, for a timed purge from a phone (confirmpurge.py, Jeff
+# 2026-11-27). No new way to purge: the engine asks the Startup page's own
+# routes (morning_post) in the phone's name.
+CONFIRM_PURGE_ROUTES = ("purge-request", "purge-confirm")
+# The phone page's master DISARM (Jeff, 2026-11-27): one press, one
+# request, and the engine does every step itself. It ALWAYS disarms every
+# flame group (the fireball's is one of them): that is not a setting.
+# What else it does is this show machine's setting, phone_master_disarm in
+# ltcplay_remote.json, three switches:
+#   "hazers": true   also every hazer off
+#   "lasers": true   also every laser disarmed
+#   "stop": false    then Stop the show
+# A setting that is missing or cannot be read is hazers and lasers on,
+# Stop off (a stored Stop is not kept by a file that cannot be read: the
+# button's label says what it does either way). master-disarm is a
+# safety press, never refused. master-disarm-mode changes the switches:
+# the settings row (an admin), and never while a show plays or anything is
+# armed, so the red button never changes its meaning under someone relying
+# on it.
+PHONE_MASTER_DEFAULT = {"hazers": True, "lasers": True, "stop": False}
+# A master DISARM older than this when it arrives (a phone that lost its
+# link and kept trying) disarms everything and does not Stop.
+MASTER_STOP_FRESH_S = 10.0
+
+
+def master_switches(v, path=""):
+    """phone_master_disarm checked: a dict of the three switches, each the
+    JSON word true or false; one left out keeps its default."""
+    where = f"{path}: " if path else ""
+    if not isinstance(v, dict) or any(k not in PHONE_MASTER_DEFAULT
+                                      for k in v):
+        raise ValueError(f"{where}phone_master_disarm must be an object "
+                         f"with hazers, lasers and stop.")
+    out = dict(PHONE_MASTER_DEFAULT)
+    for k, x in v.items():
+        if x is not True and x is not False:
+            raise ValueError(f"{where}phone_master_disarm.{k} must be true "
+                             f"or false.")
+        out[k] = x
+    return out
+
+
+MASTER_ROUTES = ("master-disarm", "master-disarm-mode")
 ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
 # Disarm all flame groups is a plain disarm through the Stream Deck (Jeff,
 # 2026-10-23): it goes that way only while the deck read this engine within
@@ -284,6 +339,8 @@ ARM_FIRST_GAP_S = 2.0
 ARM_PAGE_FRESH_S = 2.5
 ARM_CUT = ("A Stop or a disarm came after the status this screen is "
            "showing. Lift your finger and hold again.")
+CONFIRM_ARM_CUT = ("A Stop or a disarm came after Arm was tapped. Tap Arm "
+                   "again. Nothing was armed.")
 # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py, MORNING.md).
 # None of these touches the arm link: the purge selection is published on
 # deck-input for the Stream Deck process to act on, the fire heartbeat sets
@@ -373,7 +430,8 @@ GET_ROUTES = ("whoami", "status", "network", "tailscale", "deck-input",
     CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES + FIREBALL_TIMELINE_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
-POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
+POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + \
+    CONFIRM_ARM_ROUTES + CONFIRM_PURGE_ROUTES + MASTER_ROUTES + (
     "network", "tailscale", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone", "preshow-audio") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
@@ -827,6 +885,7 @@ def load_settings(folder=None):
     out = {"show_network_address": None, "flamesafe_config": None,
            "screen_arming": False, "purge_arming": True, "booth_alert": None,
            "tailscale_remote": False, "tailscale_logins": [],
+           "phone_master_disarm": dict(PHONE_MASTER_DEFAULT),
            "alert_pixels": None,
            "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
            "purge_timed_s": TIMED_DEFAULT_S,
@@ -850,6 +909,7 @@ def settings_from_doc(doc, path, out=None):
         out = {"show_network_address": None, "flamesafe_config": None,
                "screen_arming": False, "purge_arming": True,
                "tailscale_remote": False, "tailscale_logins": [],
+           "phone_master_disarm": dict(PHONE_MASTER_DEFAULT),
                "booth_alert": None, "alert_pixels": None,
                "purge_timed_max_s": TIMED_MAX_DEFAULT_S,
                "purge_timed_s": TIMED_DEFAULT_S,
@@ -870,6 +930,9 @@ def settings_from_doc(doc, path, out=None):
         if v is not True and v is not False:
             raise ValueError(f"{path}: screen_arming must be true or false.")
         out["screen_arming"] = v
+    if "phone_master_disarm" in doc:
+        out["phone_master_disarm"] = master_switches(
+            doc["phone_master_disarm"], path)
     if "tailscale_remote" in doc:
         # Only the JSON word true turns it on, as for screen_arming.
         v = doc["tailscale_remote"]
@@ -2260,6 +2323,16 @@ class Remote:
         # fireball_practice.Practice, web.serve
         self.fireball_practice = None
         self.cleaning = None         # cleaning.CleaningPanel, web.serve
+        # confirmarm.ConfirmArm, built on the first Arm tap (confirm_arming).
+        # A test sets confirm_arm_threaded False and ticks it itself.
+        self.confirm_arm = None
+        self.confirm_arm_threaded = True
+        self._confirm_arm_lock = threading.Lock()
+        self._master_mode = None     # (clock, mode): read once a second
+        self._master_lock = threading.RLock()
+        # confirmpurge.ConfirmPurge, built on the first Purge tap.
+        self.confirm_purge = None
+        self.confirm_purge_threaded = True
         # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
         # and the "hazers" mismatch alert's sentence and id.
         self.hazers = None
@@ -2827,6 +2900,18 @@ class Remote:
                 if pr is not None:
                     pr.request_end(f"{name.capitalize()} was pressed")
             return (*out,) + ({},)
+        if name == "master-disarm":
+            return (*self.master_disarm(body, ctx),) + ({},)
+        if name == "master-disarm-mode":
+            return (*self.master_mode_set(body, ctx),) + ({},)
+        if name == "purge-request":
+            return (*self.purge_request(body, ctx),) + ({},)
+        if name == "purge-confirm":
+            return (*self.purge_confirm(body, ctx),) + ({},)
+        if name == "arm-request":
+            return (*self.arm_request(body, ctx),) + ({},)
+        if name == "arm-confirm":
+            return (*self.arm_confirm(body, ctx),) + ({},)
         if name == "arm-hold":
             return (*self.arm_hold(body, ctx),) + ({},)
         if name == "arm-release":
@@ -6080,6 +6165,478 @@ class Remote:
                           f"{h['device']} after {held:.1f} s.")
         return 200, {"ok": True}
 
+    # -- tap, then confirm, to arm (confirmarm.py, Jeff 2026-11-27) --------
+    def confirm_arm_refusal(self, i, gname, ctx, seen, since=None):
+        """Why a tap to arm group i could not become a hold right now, in
+        a sentence, or "". Everything arm_hold checks before it starts a
+        hold, asked at the Arm tap and again at the Confirm; arm_hold then
+        checks it all once more on every beat. `since` (the engine's
+        clock at the Arm tap): a Stop, a Hold or a disarm that cut holds
+        after it refuses the Confirm, whatever the page has read since."""
+        if not self.arming_enabled():
+            return ARMING_OFF
+        try:
+            seen = float(seen)
+        except (TypeError, ValueError):
+            seen = None
+        if seen is None or \
+                abs(self.wall() - seen / 1000.0) > ARM_PAGE_FRESH_S:
+            return (f"The page's status is more than {ARM_PAGE_FRESH_S:g} s "
+                    f"old. Wait for it to be live, then tap Arm again.")
+        cut = self._arm_cut_since(i, seen / 1000.0)
+        if not cut and since is not None:
+            with self._arm_lock:
+                cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
+            cut = any(c is not None and c[0] >= since for c in cuts)
+        if cut:
+            return CONFIRM_ARM_CUT
+        fl = self.flame_status.view() if self.flame_status else None
+        if not fl or fl["stale"] or fl["age_ms"] is None or \
+                fl["age_ms"] > ARM_FRESH_S * 1000:
+            return ("flamesafe has not reported in the last second, so its "
+                    "real armed state is not known. Nothing can arm from "
+                    "here until it does.")
+        g = fl["groups"][i]
+        if g["armed"] == "armed" or g["wanted"]:
+            return f"{gname} is already armed or asked for."
+        why = self.arm_refusal(gname, ctx.device)
+        if why:
+            return why
+        with self._arm_lock:
+            h = self._holds.get(i)
+            if self.hold_live(h):
+                return (f"{h['who']} is already holding {gname}. Only one "
+                        f"hold at a time.")
+        return ""
+
+    def confirm_arming(self):
+        """The engine's one confirmarm.ConfirmArm, built on first use."""
+        ca = self.confirm_arm
+        if ca is None:
+            from . import confirmarm
+
+            def release(i, token):
+                self._drop_hold(i, token)
+
+            def session_live(ctx):
+                # With users on, the sign-in of the Confirm must still
+                # stand: signing out ends it (as for the cleaning).
+                if not self.users_active():
+                    return True
+                token = getattr(ctx, "token", "")
+                return bool(token) and \
+                    self.users.session(token) is not None
+            def cut_since(i, since):
+                with self._arm_lock:
+                    cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
+                return any(c is not None and c[0] >= since for c in cuts)
+
+            def asked(i):
+                fl = self.flame_status.view() if self.flame_status else None
+                try:
+                    g = fl["groups"][i]
+                except (TypeError, KeyError, IndexError):
+                    return False
+                return g.get("armed") == "armed" or bool(g.get("wanted"))
+            with self._confirm_arm_lock:
+                # One only: two first taps at once never build two.
+                if self.confirm_arm is None:
+                    self.confirm_arm = confirmarm.ConfirmArm(
+                        self.arm_hold, release, self.confirm_arm_refusal,
+                        session_live=session_live, cut_since=cut_since,
+                        asked=asked, journal=self._journal,
+                        clock=self.clock, wall=self.wall,
+                        threaded=self.confirm_arm_threaded)
+                ca = self.confirm_arm
+        return ca
+
+    def _confirm_arm_actor(self, body, ctx):
+        """(who, screen, i, gname) as arm_hold names them, or ValueError."""
+        who, device = ctx.device, ctx.screen
+        if self.users_active():
+            who = self.signed_in_name(ctx, body)
+        i, gname = self._group_index(body)
+        return who, device, i, gname
+
+    def arm_request(self, body, ctx):
+        """The Arm tap: every rule checked, a one-use ticket answered.
+        Nothing is armed or held."""
+        if not self.arming_enabled():
+            return 403, {"error": ARMING_OFF, "arming_off": True}
+        try:
+            who, device, i, gname = self._confirm_arm_actor(body, ctx)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        return self.confirm_arming().request(i, gname, ctx, who, device,
+                                             body.get("seen"))
+
+    def arm_confirm(self, body, ctx):
+        """The Confirm tap: the ticket, the same device and person, every
+        rule again, then the engine holds the group's key itself."""
+        if not self.arming_enabled():
+            return 403, {"error": ARMING_OFF, "arming_off": True}
+        try:
+            who, device, i, gname = self._confirm_arm_actor(body, ctx)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        return self.confirm_arming().confirm(i, gname, ctx, who, device,
+                                             body.get("seen"),
+                                             body.get("ticket"))
+
+    # -- the phone page's master DISARM ------------------------------------
+    def master_mode(self):
+        """What the master DISARM does besides the flames: the three
+        switches, read at most once a second. Missing or unreadable: hazers
+        and lasers on, Stop off. Never raises."""
+        with self._master_lock:
+            now = self.clock()
+            c = self._master_mode
+            if c is not None and 0 <= now - c[0] < 1.0:
+                return dict(c[1])
+            try:
+                v = master_switches(load_settings(self.folder)
+                                    ["phone_master_disarm"])
+            except Exception:                        # noqa: BLE001
+                v = dict(PHONE_MASTER_DEFAULT)
+            self._master_mode = (now, v)
+            return dict(v)
+
+    def master_disarm(self, body, ctx):
+        """Every step of the master DISARM, each through its own route
+        with all its rules, in one request. The flames always, and FIRST,
+        before anything is read: no setting and no file stands between
+        the press and the flame disarm. Never stops at a step that
+        failed: each one is tried, and the answer names any that failed.
+        A step for something this engine does not have (no hazers, no
+        Startup page) is not a failure; the flame step not being there
+        is. A press that took longer than MASTER_STOP_FRESH_S to arrive
+        (the page says how old it is) still disarms everything, and does
+        not stop a show that may have started since."""
+        done, failed, skipped = [], [], []
+
+        def step(name, extra, what):
+            try:
+                code, out, _h = self.post("/api/remote/" + name,
+                                          dict(extra, seen=body.get("seen")),
+                                          ctx)
+            except Exception as e:                   # noqa: BLE001
+                code, out = 500, {"error": f"it could not be done "
+                                           f"({type(e).__name__})."}
+            out = out if isinstance(out, dict) else {}
+            if code == 404 and name != "disarm-all":
+                return                   # not in this engine
+            said = str(out.get("error") or out.get("text") or "")
+            if 200 <= code < 300 and not out.get("error"):
+                done.append(what)
+            else:
+                failed.append(f"{what}: {said or 'refused'}")
+        step("disarm-all", {}, "Flames")
+        try:
+            mode = self.master_mode()
+        except Exception:                            # noqa: BLE001
+            mode = dict(PHONE_MASTER_DEFAULT)
+        if mode["hazers"]:
+            step("hazers-off", {}, "Hazers")
+        if mode["lasers"]:
+            step("laser-arm", {"all": True, "on": False}, "Lasers")
+        if mode["stop"]:
+            age = body.get("age_ms")
+            if isinstance(age, (int, float)) and not isinstance(age, bool) \
+                    and age > MASTER_STOP_FRESH_S * 1000:
+                skipped.append(f"Stop: this press took {int(age // 1000)} "
+                               f"s to arrive, so the show was not stopped. "
+                               f"Press Stop.")
+            else:
+                step("stop", {}, "Stop")
+        who, screen, _surface = self._actor(ctx, body)
+        on = ["flames"] + [k for k in ("hazers", "lasers", "stop")
+                           if mode[k]]
+        if failed:
+            why = ("NOT ALL DISARMED. " + " ".join(failed + skipped) +
+                   " Check every lamp, and use Stop.")
+            try:
+                self._journal(who, screen, "master disarm", "fault",
+                              f"{who or 'Someone'}'s master DISARM on the "
+                              f"{screen} ({', '.join(on)}): {why}",
+                              fault=True)
+            except Exception:                        # noqa: BLE001
+                pass
+            return 500, {"ok": False, "mode": mode, "done": done,
+                         "failed": failed, "skipped": skipped, "error": why}
+        text = "Disarm sent: " + ", ".join(done) + "."
+        if skipped:
+            text += " " + " ".join(skipped)
+        try:
+            self._journal(who, screen, "master disarm", "done",
+                          f"{who or 'Someone'} pressed the master DISARM on "
+                          f"the {screen} ({', '.join(on)}). {text}")
+        except Exception:                            # noqa: BLE001
+            pass
+        return 200, {"ok": True, "mode": mode, "done": done,
+                     "skipped": skipped, "text": text}
+
+    def master_mode_locked(self):
+        """Why the master DISARM's meaning may not be changed right now,
+        or "": a show playing (the schedule's, or the show clock playing
+        a cue with no schedule or in Programming), or anything armed,
+        asked for or not known. Anything that cannot be read counts as
+        armed."""
+        try:
+            if self.show_live_refusal():
+                return "A show is playing."
+            fl = self.flame_status.view() if self.flame_status else None
+            if fl is not None and any(
+                    g.get("armed") != "disarmed" or g.get("wanted")
+                    for g in fl.get("groups") or []):
+                return "A flame group is armed or not known."
+            hz = self.hazers
+            if hz is not None and any(
+                    h.get("armed") for h in hz.view().get("hazers") or []):
+                return "A hazer is armed."
+            m = self.morning
+            if m is not None and m.laser_arm.armed_ids():
+                return "A laser is armed."
+        except Exception as e:                       # noqa: BLE001
+            return f"The rig's state could not be read ({type(e).__name__})."
+        return ""
+
+    def master_mode_set(self, body, ctx):
+        """Change one or more of the three switches. The flames are not
+        one of them: a body that names them is refused. With no users set
+        up (the role matrix then lets every press through) only the show
+        PC itself may change it. One change at a time, and the answer is
+        what the next press does."""
+        want = {k: body[k] for k in ("hazers", "lasers", "stop")
+                if k in body}
+        if not want or "flames" in body or any(
+                v is not True and v is not False for v in want.values()):
+            return 400, {"error": "Say hazers, lasers or stop, each true or "
+                                  "false. The flames are always disarmed. "
+                                  "Nothing was changed."}
+        if not self.users_active() and not getattr(ctx, "local", False):
+            return 403, {"error": "With no users set up, the master DISARM "
+                                  "is changed on the show PC only. Nothing "
+                                  "was changed."}
+        locked = ("The master DISARM is changed only with no show playing "
+                  "and nothing armed. Nothing was changed.")
+        who, screen, _surface = self._actor(ctx, body)
+        with self._master_lock:
+            why = self.master_mode_locked()
+            if why:
+                return 409, {"error": f"{why} {locked}"}
+            self._master_mode = None
+            old = self.master_mode()
+            new = dict(old, **want)
+            try:
+                save_settings(self.folder, phone_master_disarm=new)
+            except (ValueError, OSError) as e:
+                self._master_mode = None
+                return 409, {"error": f"Not changed: {e}"}
+            self._master_mode = (self.clock(), dict(new))
+            # Something armed while it was being saved: put it back.
+            why = self.master_mode_locked()
+            if why:
+                try:
+                    save_settings(self.folder, phone_master_disarm=old)
+                    self._master_mode = (self.clock(), dict(old))
+                    return 409, {"error": f"{why} {locked}"}
+                except (ValueError, OSError):
+                    self._master_mode = None
+        on = ["flames"] + [k for k in ("hazers", "lasers", "stop") if new[k]]
+        text = (f"{who} set the phone page's master DISARM on the {screen}: "
+                f"{', '.join(on)}.")
+        self._journal(who, screen, "master disarm mode", "done", text)
+        return 200, {"ok": True, "mode": new, "text": text}
+
+    # -- tap, then confirm, for a timed purge (confirmpurge.py) -------------
+    def purge_confirm_refusal(self, ctx, ids, seconds, seen):
+        """(why, whole seconds): why a tap to purge these machines for this
+        long could not go ahead right now, or "". What can be known before
+        anything is selected; purge-select and purge-timed then apply
+        every rule of their own, on every step."""
+        from . import morning as morning_mod
+        m = self.morning
+        if m is None:
+            return "The Startup page is not set up in this engine.", None
+        if not self.purge_enabled(ctx.local):
+            return ("Arming a purge from here is switched off "
+                    "(purge_arming, and from the show network "
+                    "screen_arming, in ltcplay_remote.json)."), None
+        try:
+            deck_alive = self.clock() - (self._deck_seen or -1e9) <= \
+                self.DECK_QUIET_S
+        except Exception:                            # noqa: BLE001
+            deck_alive = False
+        if not deck_alive:
+            return ("The Stream Deck program has not read this engine in "
+                    "the last 2 s, and it is what arms a group for the "
+                    "purge. Nothing was armed."), None
+        ts = self.timed_purge_settings()
+        if ts["error"]:
+            return f"No timed purge: {ts['error']}", None
+        secs, swhy = morning_mod.timed_seconds(seconds, ts["max_s"])
+        if swhy:
+            return swhy, None
+        if not isinstance(ids, list) or not ids or len(ids) > 64 or \
+                not all(isinstance(x, str) and x for x in ids) or \
+                len(set(ids)) != len(ids):
+            return "Name the machines to purge. Nothing was changed.", None
+        unknown = [x for x in ids if x not in m.cfg.by_id]
+        if unknown:
+            return (f"There is no machine called {unknown[0]}. Nothing was "
+                    f"changed."), None
+        for x in ids:
+            mach = m.cfg.by_id[x]
+            if m.lockout.is_locked("machine", x):
+                return (f"{mach.name} is locked out. Unlock it, or leave "
+                        f"it out. Nothing was changed."), None
+            never = m.cfg.purge_refusal(mach)
+            if never:
+                return f"{mach.name}: {never}", None
+        try:
+            seen_ok = abs(self.wall() - float(seen) / 1000.0) <= 1.0
+        except (TypeError, ValueError):
+            seen_ok = False
+        why = m.purge._refusal(ctx.device, seen_ok)
+        if why:
+            return why, None
+        try:
+            why = m.fire_arrange_refusal() or ""
+        except Exception as e:                       # noqa: BLE001
+            why = (f"Arrange mode could not be read ({type(e).__name__}). "
+                   f"Nothing was changed.")
+        if why:
+            return why, None
+        if m.device_arranging(ctx.device):
+            return (f"{ctx.device} is in Arrange mode on the Startup page. "
+                    f"Nothing was changed."), None
+        p = m.purge
+        with p._lock:
+            busy = bool(p.selected) or p.fire is not None or \
+                p.timed_hold is not None
+            owner = p.owner
+        if busy:
+            return ((f"{owner} has a purge selected or running. "
+                     if owner else "A purge is selected or running. ") +
+                    "One purge at a time: Clear it first."), None
+        why = self.timed_purge_blockers(None)
+        if why:
+            return f"No timed purge: {why}", None
+        return "", secs
+
+    def confirm_purging(self):
+        """The engine's one confirmpurge.ConfirmPurge, built on first use."""
+        cp = self.confirm_purge
+        if cp is None:
+            from . import confirmpurge
+
+            def armed(ids):
+                m = self.morning
+                fl = self.flame_status.view() if self.flame_status else None
+                if m is None or not fl or fl["stale"] or \
+                        fl["age_ms"] is None or \
+                        fl["age_ms"] > ARM_FRESH_S * 1000:
+                    return False
+                on = {g["name"] for g in fl["groups"]
+                      if g.get("armed") == "armed"}
+                try:
+                    return all(m.cfg.by_id[x].group in on for x in ids)
+                except KeyError:
+                    return False
+
+            def selected(ids, device):
+                # Exactly the ticket's machines, this device's: one added
+                # or taken off by anyone ends the run (the cold review of
+                # #310: a machine added after Confirm was fired too).
+                m = self.morning
+                if m is None:
+                    return False
+                with m.purge._lock:
+                    return m.purge.owner == device and \
+                        set(ids) == set(m.purge.selected)
+
+            def clear(device, why):
+                # The system's clear (a page that closed), never an
+                # operator's Clear: the purge's groups stay remembered
+                # until flamesafe reports them off, so a show start still
+                # waits for that (#266, #269). Only this device's own.
+                m = self.morning
+                if m is None:
+                    return
+                with m.purge._lock:
+                    mine = m.purge.owner == device
+                if mine:
+                    m.purge.clear(why)
+
+            def stop(why):
+                m = self.morning
+                if m is not None:
+                    m.purge.stop(why)
+
+            def running():
+                m = self.morning
+                return m is not None and m.purge.timed_running()
+
+            def last():
+                m = self.morning
+                return getattr(m.purge, "timed_last", "") if m else ""
+
+            def session_live(ctx):
+                # Still signed in, and still allowed to arm: the
+                # watcher's own steps never pass the web layer's role
+                # check, so it is asked here on every pass.
+                if not self.users_active():
+                    return True
+                token = getattr(ctx, "token", "")
+                s = self.users.session(token) if token else None
+                return s is not None and \
+                    self.users.may(s.get("role"), "arm") is True
+            with self._confirm_arm_lock:
+                if self.confirm_purge is None:
+                    self.confirm_purge = confirmpurge.ConfirmPurge(
+                        self.morning_post, self.purge_confirm_refusal,
+                        armed, selected, running, clear=clear, stop=stop,
+                        last=last,
+                        session_live=session_live, journal=self._journal,
+                        clock=self.clock, wall=self.wall,
+                        threaded=self.confirm_purge_threaded,
+                        cut_mark=self.purge_cut_mark)
+                cp = self.confirm_purge
+        return cp
+
+    def purge_cut_mark(self):
+        """A value that changes at every Stop and Hold (_halt_seq) and at
+        every Disarm, of all groups or of one (_arm_cut): confirmpurge
+        voids a Purge tap, and a run that has not fired, across any of
+        them. A plain read."""
+        with self._arm_lock:
+            cuts = tuple(sorted((str(k), v[0])
+                                for k, v in self._arm_cut.items()))
+        return (getattr(self, "_halt_seq", 0), cuts)
+
+    def _confirm_purge_actor(self, body, ctx):
+        who, device = ctx.device, ctx.screen
+        if self.users_active():
+            who = self.signed_in_name(ctx, body)
+        return who, device
+
+    def purge_request(self, body, ctx):
+        """The Purge tap: the rules checked, a one-use ticket answered.
+        Nothing is selected, armed or fired."""
+        who, device = self._confirm_purge_actor(body, ctx)
+        return self.confirm_purging().request(
+            ctx, who, device, body.get("machines"), body.get("seconds"),
+            body.get("group") if isinstance(body.get("group"), str) else "",
+            body.get("seen"))
+
+    def purge_confirm(self, body, ctx):
+        """The Confirm tap: the ticket, the same device and person, the
+        rules again, then the engine runs the whole timed purge."""
+        who, device = self._confirm_purge_actor(body, ctx)
+        return self.confirm_purging().confirm(ctx, who, device,
+                                              body.get("ticket"),
+                                              body.get("seen"))
+
     def group_disarm(self, body, ctx, confirm=True):
         """Disarm one group: handed to the Stream Deck process, which owns
         the arm link, as an instant tap of that group's key. Never waits
@@ -8257,6 +8814,30 @@ class Remote:
                                   "set up in this engine."}
         who, screen, _surface = self._actor(ctx, body)
         device = ctx.device
+        if name == "purge-stop":
+            # A tap-and-confirm purge (confirmpurge.py) has no finger to
+            # lift: Stop purge, from any screen, ends it at any step,
+            # before a flame as well as during one, whoever owns the
+            # selection (the cold review of #310, P0). First, before the
+            # owner rule can refuse the press.
+            cp = self.confirm_purge
+            if cp is not None and cp.cancel(
+                    f"Stop purge was pressed on the {screen}."):
+                # Said from what is true now, never assumed (second
+                # review, P2-3).
+                _p = getattr(m, "purge", None)
+                _left = list(getattr(_p, "selected", None) or [])
+                _on = bool(_p is not None and _p.timed_running())
+                if _left or _on:
+                    why = ("Stop purge did NOT clear everything"
+                           + (": the purge is still running" if _on else "")
+                           + (f": still selected: {', '.join(_left)}"
+                              if _left else "")
+                           + ". Press Disarm all flame groups.")
+                    return 500, {"ok": False, "error": why, "text": why}
+                return 200, {"ok": True, "text": "Purge stopped. Nothing "
+                                                 "more is fired, and the "
+                                                 "selection is cleared."}
         try:
             seen = float(body.get("seen"))
             seen_ok = abs(self.wall() - seen / 1000.0) <= 1.0
@@ -11586,6 +12167,17 @@ class Remote:
                          "needs_s": SCREEN_HOLD_S,
                          "fresh_s": ARM_PAGE_FRESH_S,
                          "holds": holds}
+        # Tap, then confirm (confirmarm.py): the runs under way or just
+        # ended and who is waiting on a Confirm. Display only.
+        ca = self.confirm_arm
+        out["arming"]["confirm"] = ca.view(tok) if ca is not None else None
+        cp = self.confirm_purge
+        out["arming"]["purge"] = cp.view(tok) if cp is not None else None
+        # The phone page's master DISARM: what it covers on this show
+        # machine, and why that may not be changed right now ("" when it
+        # may).
+        out["phone"] = {"master": self.master_mode(),
+                        "master_locked": self.master_mode_locked()}
         self.artnet_alert()
         out["artnet_note"] = self.artnet_note()
         out["config_changed"] = self.config_changed_view(ctx)

@@ -12061,6 +12061,151 @@ def build():
   '        if not self.arming_enabled():\n            # First, before anything else',
   '        if False:\n            # First, before anything else'),
 
+ ('confirm arm: a Confirm with the Arm tap itself arms',
+  'ltcplay/confirmarm.py',
+  '        if age < CONFIRM_MIN_S:\n            return refuse(TOO_SOON)',
+  '        if False:\n            return refuse(TOO_SOON)'),
+
+ ("confirm arm: a Confirm after the ticket's 5 s arms",
+  'ltcplay/confirmarm.py',
+  '        if age > TICKET_S:\n            return refuse(TOO_LATE)',
+  '        if False:\n            return refuse(TOO_LATE)'),
+
+ ("confirm arm: another device's Confirm is taken",
+  'ltcplay/confirmarm.py',
+  '                    t["token"] == token and t["who"] == who and',
+  '                    True and t["who"] == who and'),
+
+ ("confirm arm: another person's Confirm is taken",
+  'ltcplay/confirmarm.py',
+  '                    t["token"] == token and t["who"] == who and',
+  '                    t["token"] == token and True and'),
+
+ ('confirm arm: a ticket can be used twice',
+  'ltcplay/confirmarm.py',
+  '                # take the Arm tap away from the one who made it.\n                del self._tickets[i]',
+  '                # take the Arm tap away from the one who made it.\n                pass'),
+
+ ('confirm arm: a Stop after the Arm tap does not refuse the Confirm',
+  'ltcplay/remote.py',
+  '            cut = any(c is not None and c[0] >= since for c in cuts)',
+  '            cut = False'),
+
+ ('confirm arm: the engine holds the key past 3 s',
+  'ltcplay/confirmarm.py',
+  '        if now > r["deadline"]:',
+  '        if False:'),
+
+ ("confirm arm: the taps are not the arm row's",
+  'ltcplay/users.py',
+  '    "arm-request": "arm", "arm-confirm": "arm",',
+  '    "arm-request": "safety", "arm-confirm": "safety",'),
+
+ ('confirm arm: any ticket is taken',
+  'ltcplay/confirmarm.py',
+  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8")) and',
+  '                    True and'),
+
+ ('confirm arm: a ticket outlives a sign out and back in',
+  'ltcplay/confirmarm.py',
+  '                    t["session"] == str(getattr(ctx, "token", "") or ""))',
+  '                    True)'),
+
+ ("confirm arm: a cut since the Confirm does not end the engine's hold",
+  'ltcplay/confirmarm.py',
+  '        if self._cut_since(r["group"], r["start"]):',
+  '        if False:'),
+
+ ("confirm arm: a sign out does not end the engine's hold",
+  'ltcplay/confirmarm.py',
+  '        if not self._session_live(r["ctx"]):',
+  '        if False:'),
+
+ ("confirm arm: 'nothing was armed' is said over a group that is",
+  'ltcplay/confirmarm.py',
+  '            if asked:\n                text = ARMED_ANYWAY',
+  '            if False:\n                text = ARMED_ANYWAY'),
+
+ ("confirm arm: an arm the deck did not credit is called this press's",
+  'ltcplay/confirmarm.py',
+  '            if out.get("taken") is True:',
+  '            if True:'),
+
+ ('confirm purge: a Confirm with the Purge tap itself selects',
+  'ltcplay/confirmpurge.py',
+  '        if age < CONFIRM_MIN_S:\n            return refuse(TOO_SOON)',
+  '        if False:\n            return refuse(TOO_SOON)'),
+
+ ('confirm purge: any ticket is taken',
+  'ltcplay/confirmpurge.py',
+  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8",\n                                                      "surrogatepass")) and',
+  '                    True and'),
+
+ ('confirm purge: a Confirm after a Stop, a Hold or a Disarm still selects',
+  'ltcplay/confirmpurge.py',
+  '        if self._mark() != t["cut"]:\n            return refuse(CUT)',
+  '        if False:\n            return refuse(CUT)'),
+
+ ("confirm purge: one group's Disarm does not end a purge waiting to arm",
+  'ltcplay/confirmpurge.py',
+  '        if self._mark() != r["cut"]:',
+  '        if False:'),
+
+ ('confirm purge: a ticket is taken twice',
+  'ltcplay/confirmpurge.py',
+  '                self._ticket = None\n                self._publish()\n            live =',
+  '                self._publish()\n            live ='),
+
+ ('confirm purge: the engine waits past 5 s for a group to arm',
+  'ltcplay/confirmpurge.py',
+  '                if now > r["arm_by"]:',
+  '                if False:'),
+
+ ('confirm purge: Stop purge before the flame is ignored',
+  'ltcplay/confirmpurge.py',
+  '            if live:\n                self._end(r, "stopped", str(why), now, clear=True,',
+  '            if False:\n                self._end(r, "stopped", str(why), now, clear=True,'),
+
+ ('confirm purge: a machine added after the Confirm is fired too',
+  'ltcplay/remote.py',
+  '                        set(ids) == set(m.purge.selected)',
+  '                        set(ids) <= set(m.purge.selected)'),
+
+ ("confirm purge: its clear forgets the purge's groups like an operator's Clear",
+  'ltcplay/remote.py',
+  '                if mine:\n                    m.purge.clear(why)',
+  '                if mine:\n                    m.purge.clear(why, device=device)'),
+
+ ('master disarm: a setting that cannot be read covers less than everything',
+  'ltcplay/remote.py',
+  '            except Exception:                        # noqa: BLE001\n                v = dict(PHONE_MASTER_DEFAULT)',
+  '            except Exception:                        # noqa: BLE001\n                v = {"hazers": False, "lasers": False, "stop": False}'),
+
+ ('master disarm: the flames wait on the setting being read',
+  'ltcplay/remote.py',
+  '        step("disarm-all", {}, "Flames")\n        try:\n            mode = self.master_mode()\n        except Exception:                            # noqa: BLE001\n            mode = dict(PHONE_MASTER_DEFAULT)\n',
+  '        mode = self.master_mode()\n        step("disarm-all", {}, "Flames")\n'),
+
+ ('master disarm: a step that failed is said to be done',
+  'ltcplay/remote.py',
+  '            if 200 <= code < 300 and not out.get("error"):\n                done.append(what)',
+  '            if True:\n                done.append(what)'),
+
+ ('master disarm: its meaning changes with something armed',
+  'ltcplay/remote.py',
+  '            if m is not None and m.laser_arm.armed_ids():\n                return "A laser is armed."',
+  '            if False:\n                return "A laser is armed."'),
+
+ ('master disarm: a failed step stops the steps after it',
+  'ltcplay/remote.py',
+  '        if mode["lasers"]:\n            step("laser-arm", {"all": True, "on": False}, "Lasers")',
+  '        if mode["lasers"] and not failed:\n            step("laser-arm", {"all": True, "on": False}, "Lasers")'),
+
+ ('master disarm: with no users any device on the network changes what it does',
+  'ltcplay/remote.py',
+  '        if not self.users_active() and not getattr(ctx, "local", False):\n            return 403, {"error": "With no users set up, the master DISARM',
+  '        if False:\n            return 403, {"error": "With no users set up, the master DISARM'),
+
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
   '        if not self.arming_enabled():\n            # The Stream Deck reads',
@@ -13171,6 +13316,11 @@ def build():
   "ltcplay/web.py",
   '            ("Announcements", False,',
   '            ("Announcements", True,'),
+
+ ("rig check: the Booth speaker is required again",
+  "ltcplay/web.py",
+  '            ("Booth speaker", False,',
+  '            ("Booth speaker", True,'),
 
  ("no PA: an advisory check reads FAILED in the rig check's line",
   "ltcplay/preroll.py",

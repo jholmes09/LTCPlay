@@ -959,7 +959,10 @@ loosened.** This section says why, and how.
 **The design: a screen hold is a remote press of the deck's own key.** The
 page never sends anything to flamesafe. A screen's "hold to
 arm" goes to ltcplay's engine (`ltcplay/remote.py`, `arm-hold`, repeated
-every 100 ms while the finger is down). The Stream Deck process
+every 100 ms while the finger is down; since 2026-11-27 a phone's tap and
+then Confirm, `ltcplay/confirmarm.py`, has the engine make and beat that
+same hold itself for 3 s at most, in place of the finger: nothing below
+changes for it). The Stream Deck process
 (`ltcplay/streamdeck.py`, `ScreenKeys`, read 20 times a second from the
 engine's `deck-input`, loopback only) treats a live screen hold exactly as
 a finger on that group's key: the deck's own hold timer, re-arm
