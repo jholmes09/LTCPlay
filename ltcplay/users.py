@@ -139,10 +139,13 @@ PBKDF2_ITERATIONS = 600_000
 # name and the device for LOCK_BASE_S * 2**(extra - 1), at most LOCK_MAX_S.
 # A right password clears the name's count. Never permanent.
 FREE_TRIES = 5
-# A session made over Tailscale (remote.py) signs out after this long
-# without a press or a beat (cold review of #244, M2); the admin's idle
-# sign-out (idle_signout_min) may only shorten it.
-TAILSCALE_IDLE_S = 30 * 60
+# A session made over Tailscale (remote.py) has NO idle sign-out of its own
+# (Jeff, 2026-11-28: the 30 minutes it had, from the cold review of #244,
+# kept signing operators out in the middle of a night). It ends as any
+# other does: a sign out, the admin's idle sign-out when one is set
+# (idle_signout_min, off by default), the SuperUser's own 15 minutes, the
+# night's last show, or an engine restart. web.py still ends it when
+# another login, address or surface presents it.
 LOCK_BASE_S = 30.0
 LOCK_MAX_S = 300.0
 
@@ -1274,25 +1277,7 @@ class Users:
         return allowed(self.matrix(), role, perm)
 
     # -- sessions -----------------------------------------------------------
-    def _drop_tailscale_idle(self, now):
-        """A session made over Tailscale signs out after TAILSCALE_IDLE_S
-        without a press or a beat, or the admin's idle sign-out when that
-        is shorter, never longer (cold review of #244, M2): a phone left
-        signed in does not keep its rights all night. The rack screen and
-        iPads keep their own rule."""
-        mins = self.idle_minutes()
-        limit = TAILSCALE_IDLE_S if not mins else \
-            min(TAILSCALE_IDLE_S, mins * 60)
-        gone = [(t, s) for t, s in self._sessions.items()
-                if s.get("tailscale") and now - s["seen"] > limit]
-        for t, s in gone:
-            del self._sessions[t]
-            self._note("sign-out", s["name"],
-                       reason=f"idle for {limit / 60:g} min on Tailscale",
-                       source=s["source"])
-
     def _drop_idle(self, now):
-        self._drop_tailscale_idle(now)
         self._drop_superuser_idle(now)
         mins = self.idle_minutes()
         if not mins:
@@ -1560,15 +1545,40 @@ class Users:
             self._lock.release()
 
     def bind_tailscale(self, token, login, ip):
-        """Mark a session as made over Tailscale by `login` from `ip`: it
-        signs out after TAILSCALE_IDLE_S without a press (or the admin's
-        idle sign-out, when that is shorter), and web.py ends it when any
-        other login, address or surface presents it."""
+        """Mark a session as made over Tailscale by `login` from `ip`:
+        web.py ends it when any other login, address or surface presents
+        it. It has no idle sign-out of its own (Jeff, 2026-11-28)."""
         with self._lock:
             s = self._sessions.get(token)
             if s is not None:
                 s["tailscale"] = {"login": str(login or ""),
                                   "ip": str(ip or "")}
+
+    def end_tailscale(self, keep_logins=None):
+        """Tailscale access was taken away: every session made over
+        Tailscale is ended (None: Tailscale switched off), or every one
+        whose login is no longer on the allow list. With no idle sign-out
+        of Tailscale's own, nothing else would end it (cold review of
+        #314, P1-1). Signing out ends that person's timed purge, hazer
+        run, fireball run and arm hold. The names signed out."""
+        keep = None if keep_logins is None else {
+            str(x).strip().lower() for x in keep_logins}
+        out = []
+        with self._lock:
+            for t, s in list(self._sessions.items()):
+                b = s.get("tailscale")
+                if not b or (keep is not None and
+                             str(b.get("login", "")).lower() in keep):
+                    continue
+                del self._sessions[t]
+                out.append(s["name"])
+                self._note("sign-out", s["name"],
+                           reason=("Tailscale was switched off"
+                                   if keep is None else
+                                   "their Tailscale login was taken off "
+                                   "the list"),
+                           source=s["source"])
+        return out
 
     def touch(self, token):
         """A command from this session: it is not idle."""

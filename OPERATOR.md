@@ -2999,13 +2999,15 @@ Only for the people the SuperUser has let in (SUPERUSER.md).
 
 - Sign in to do anything that needs a role.
 - Signed out: view, Stop, Hold, Acknowledge, disarm.
-- Signed out by itself after 30 minutes idle.
+- Stays signed in until you sign out (Jeff, 2026-11-28: it used to sign
+  out by itself after 30 minutes idle). The admin's idle sign out, when
+  one is set, and the sign out after the night's last show still apply.
 
 Tailscale follows the iPad's settings: the role matrix (USERS.md), the
 "Arming from a screen" switch and every rule an iPad has. The one
 difference: from Tailscale every press that needs a role needs a sign-in.
-The 30 minutes stop a forgotten phone staying signed in; they do not
-change what a signed-in person may do. Every press and every refusal is in
+A forgotten phone stays signed in: sign out on it, or lock the phone.
+Every press and every refusal is in
 the audit log as "Tailscale at <address> (<login>)".
 
 ## What it will not do
