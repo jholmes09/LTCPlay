@@ -88607,6 +88607,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/laser-arm", "/api/remote/laser-test",
     "/api/remote/last-show-signout", "/api/remote/layout",
     "/api/remote/live-flame", "/api/remote/lock", "/api/remote/loop",
+    "/api/remote/master-disarm", "/api/remote/master-disarm-mode",
     "/api/remote/mark-a", "/api/remote/mark-b", "/api/remote/mesonet",
     "/api/remote/morning", "/api/remote/morning-open",
     "/api/remote/my-password", "/api/remote/network", "/api/remote/nws_obs",
