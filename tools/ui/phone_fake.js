@@ -145,7 +145,7 @@ function start(rig, port) {
         case "start-now": rig.state = "SHOW"; rig.showStartedAt = Date.now(); return ok();
         case "resume": rig.state = "SHOW"; rig.showStartedAt = Date.now() - 100000; return ok();
         case "master-disarm-mode": rig.master = Object.assign({hazers: true, lasers: true, stop: false}, rig.master); for (const k of ["hazers", "lasers", "stop"]) if (typeof b[k] === "boolean") rig.master[k] = b[k]; return ok({mode: rig.master});
-        case "master-disarm": rig.groups.forEach((g) => (g.armed = "disarmed")); rig.hazers.forEach((h) => (h.armed = false)); rig.lasers.forEach((l) => (l.armed = false)); return ok({mode: "all", done: ["Flames", "Hazers", "Lasers"]});
+        case "master-disarm": rig.groups.forEach((g) => (g.armed = "disarmed")); rig.hazers.forEach((h) => (h.armed = false)); rig.lasers.forEach((l) => (l.armed = false)); return ok({mode: Object.assign({hazers: true, lasers: true, stop: false}, rig.master), done: ["Flames", "Hazers", "Lasers"], skipped: []});
         case "hold": rig.state = "PAUSED"; return ok();
         case "stop": rig.state = "HOLD"; rig.stopHeld = true; rig.groups.forEach((g) => (g.armed = "disarmed")); return ok({stopped: true});
         case "alert": rig.alerts = rig.alerts.filter((a) => a.id !== b.id); return ok();

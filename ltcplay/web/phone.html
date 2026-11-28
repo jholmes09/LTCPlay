@@ -1004,6 +1004,7 @@ const ACT = {
     const r = await post("master-disarm-mode", {[d.n]:!masterMode()[d.n], seen:seenNow()});
     if(r.net){ closeSheet(); line("NO ANSWER", "bad"); return; }
     if(!r.ok){ closeSheet(); line(words(r), "bad"); return; }
+    if(r.j && r.j.mode && ST && ST.phone) ST.phone.master = r.j.mode;
     render();
   },
   master(){ doMaster(); },
@@ -1356,13 +1357,18 @@ async function doMaster(){
   // One press, one request: the engine does every step itself, so a bad
   // link can never land one disarm and lose another. Tried until answered.
   cancelSeq();
-  const key = "master", mm = masterMode();
+  const key = "master", t0 = mono();
+  let mm = masterMode();
   if(RETRY[key]) return;
   RETRY[key] = true; PEND[key] = {state:"sending", at:mono()}; render();
   let r;
-  for(;;){ r = await post("master-disarm", {seen:seenNow()}, 4500); if(!r.net) break; await sleep(1000); }
+  // age_ms: a press that took long to land still disarms; the engine then leaves the show running.
+  for(;;){ r = await post("master-disarm", {seen:seenNow(), age_ms:Math.round(mono() - t0)}, 4500); if(!r.net) break; await sleep(1000); }
   delete RETRY[key];
+  const m = r.j && r.j.mode;
+  if(m && typeof m === "object") mm = {hazers:m.hazers !== false, lasers:m.lasers !== false, stop:m.stop === true};
   if(!r.ok) line(words(r), "bad");
+  else if(r.j && r.j.skipped && r.j.skipped.length) line("STOP NOT SENT", "bad");
   track(key, st => {
     const gs = (st.flames || {}).groups || [];
     const fo = (st.flames && st.flames.connected && !st.flames.stale) ? gs.every(g => g.armed === "disarmed") : false;

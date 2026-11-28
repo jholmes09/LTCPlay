@@ -12173,23 +12173,33 @@ def build():
 
  ('master disarm: a setting that cannot be read covers less than everything',
   'ltcplay/remote.py',
-  '        except (ValueError, OSError, KeyError):\n            v = dict(PHONE_MASTER_DEFAULT)',
-  '        except (ValueError, OSError, KeyError):\n            v = {"hazers": False, "lasers": False, "stop": False}'),
+  '            except Exception:                        # noqa: BLE001\n                v = dict(PHONE_MASTER_DEFAULT)',
+  '            except Exception:                        # noqa: BLE001\n                v = {"hazers": False, "lasers": False, "stop": False}'),
 
- ('master disarm: it stops the show with its Stop switch off',
+ ('master disarm: the flames wait on the setting being read',
   'ltcplay/remote.py',
-  '        if mode["stop"]:\n            steps.append(("stop", {}, "Stop"))',
-  '        if True:\n            steps.append(("stop", {}, "Stop"))'),
+  '        step("disarm-all", {}, "Flames")\n        try:\n            mode = self.master_mode()\n        except Exception:                            # noqa: BLE001\n            mode = dict(PHONE_MASTER_DEFAULT)\n',
+  '        mode = self.master_mode()\n        step("disarm-all", {}, "Flames")\n'),
+
+ ('master disarm: a step that failed is said to be done',
+  'ltcplay/remote.py',
+  '            if 200 <= code < 300 and not out.get("error"):\n                done.append(what)',
+  '            if True:\n                done.append(what)'),
 
  ('master disarm: its meaning changes with something armed',
   'ltcplay/remote.py',
-  '        why = self.master_mode_locked()\n        if why:\n            return 409, {"error": f"{why} The master DISARM',
-  '        why = self.master_mode_locked()\n        if False:\n            return 409, {"error": f"{why} The master DISARM'),
+  '            if m is not None and m.laser_arm.armed_ids():\n                return "A laser is armed."',
+  '            if False:\n                return "A laser is armed."'),
 
  ('master disarm: a failed step stops the steps after it',
   'ltcplay/remote.py',
-  '            if code == 404:\n                continue                 # not in this engine',
-  '            if code == 404 or failed:\n                continue                 # not in this engine'),
+  '        if mode["lasers"]:\n            step("laser-arm", {"all": True, "on": False}, "Lasers")',
+  '        if mode["lasers"] and not failed:\n            step("laser-arm", {"all": True, "on": False}, "Lasers")'),
+
+ ('master disarm: with no users any device on the network changes what it does',
+  'ltcplay/remote.py',
+  '        if not self.users_active() and not getattr(ctx, "local", False):\n            return 403, {"error": "With no users set up, the master DISARM',
+  '        if False:\n            return 403, {"error": "With no users set up, the master DISARM'),
 
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
