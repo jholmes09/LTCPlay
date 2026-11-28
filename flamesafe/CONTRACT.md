@@ -1030,24 +1030,89 @@ every heartbeat; any failure lets the hold go and is journaled):
   and the hold's next heartbeat says it. A hold is credited with arming
   a group only when the deck reports it took THAT hold (`taken=<hold id>`).
   Reporting only: nothing the deck or flamesafe decides changed;
-- the page's own status no older than 1 s, and flamesafe's status (the
-  `status_mirror_port` copy) no older than 1 s, so the page is showing
-  flamesafe's real state, not a cached one;
+- the page's own status no older than 2.5 s (1 s until 2026-11-24, see
+  "A slow link" below), and flamesafe's status (the `status_mirror_port`
+  copy) no older than 1 s, so the page is showing flamesafe's real state,
+  not a cached one; and never a press sent from a status served before a
+  Stop, a Hold, a Disarm every flame group or that group's Disarm that came
+  in the last 2.5 s (how long ago is the engine's monotonic clock, before
+  or after is the wall clock's, as the status's `served_at` is: a wall
+  clock stepped back after the Stop only refuses more; one stepped back
+  between the status and the Stop lets a press from before the Stop start
+  a hold, as the 1 s age rule before 2026-11-24 did for a 0.5 s step.
+  Accepted: that hold still needs 10 more heartbeats with the finger
+  down);
 - the group not already armed or wanted;
 - one hold per group at a time: a second browser holding the same group is
-  refused; a Disarm from anyone cancels every hold on that group, and an
+  refused while the first hold is live (up to 1.5 s after its last
+  heartbeat); the same device's own new press replaces its hold once that
+  hold has had no heartbeat for 0.25 s (its let go can arrive after the
+  press on a slow link), journaled as replaced; a Disarm from anyone cancels every hold on that group, and an
   Abort or Disarm every flame group cancels every hold.
 
-**Connection loss never completes an arm.** The engine lets a hold go 0.25
-s after its last heartbeat, and a heartbeat for a hold that was let go is
-refused ("lift your finger and hold again"): an interrupted hold never
-carries on. The deck lets a screen hold go the moment the engine stops
-reporting it fresh, or the moment it has not heard from the engine for 0.3
-s. And the deck fires a screen hold only when BOTH its own `ARM_HOLD_S`
-has run since it saw the press AND the engine reports `held_s` of at least
-1 s, where `held_s` is measured to the last heartbeat the engine actually
-received. So a hold whose page drops before 1 s of heartbeats has arrived
-can never complete, whatever the timing of the deck's polls.
+**Connection loss never completes an arm.** The engine lets a hold go 1.5
+s after its last heartbeat (0.25 s until 2026-11-24; 2.0 s from the press
+while it has had no heartbeat yet, since the page's first heartbeat waits
+a whole round trip for the press's answer), and a heartbeat for
+a hold that was let go is refused ("lift your finger and hold again"): an
+interrupted hold never carries on. The deck lets a screen hold go the
+moment the engine stops reporting it fresh, or the moment it has not heard
+from the engine for 0.3 s. And the deck fires a screen hold only when BOTH
+its own `ARM_HOLD_S` has run since it saw the press AND the engine reports
+`held_s` of at least 1 s, where `held_s` counts only the heartbeats the
+engine actually received: each gap between two of them for 0.25 s at most,
+and never more than 0.1 s (the page's beat period) for each heartbeat.
+The page sends its first heartbeat only once the press is answered and at
+most one a 0.1 s tick after that, so 1 s needs 10 of them, sent over at
+least 0.9 s plus a round trip, whatever a link that queues does to when
+they arrive (cold review of #303). On a good link the gaps still decide,
+so a hold completes when it did before. So a hold whose page drops
+before 1 s of heartbeats has arrived can never complete, whatever the
+timing of the deck's polls, and neither a late burst nor a slow drip of
+heartbeats from a short touch can stand in for time the finger was not
+proved down.
+
+**A slow link (Jeff, 2026-11-24).** A phone over Tailscale and 5G has
+round trips of 250 ms or more, and its page waits for the first press's
+answer before its first heartbeat, so the 0.25 s gap cut every hold.
+Jeff: "I don't think you should drop the arm at all if a phone loses
+signal." Only the proof that a finger is down while arming changed, all of
+it in the engine (`ltcplay/remote.py`): a gap of up to 1.5 s carries a
+hold on (a 0.4 s round trip, a 1.0 s stall and 0.4 s for a resend), each
+gap counts 0.25 s at most toward the 1 s, and the page's status may be 2.5
+s old. A lifted finger whose let go never arrives, or a dead phone, still
+ends the hold within 1.5 s of its last heartbeat's ARRIVAL (2.0 s after
+a press with none), and nothing is armed unless 1 s of heartbeats
+arrived. That bound is on arrival, not on the lift: with the let go lost,
+up to 4 heartbeats still in flight when the finger came up may each take
+up to 1.5 s to arrive on a very slow, queued link, so an arm a finger
+earned can land up to about 6 s after the lift (cold review, round 3: 10
+heartbeats arriving 1.45 s apart armed 15.0 s after the press). It is
+still bounded, and still needs 10 heartbeats the page sent while the
+finger was down. On the phone the page sends the heartbeats itself once
+the pop-up is confirmed, so this matters mostly for a desktop press and
+hold. Every
+check of whether a screen hold is live (the engine, the Stream Deck's
+fresh, the status, the wave flamer cleaning's "one flame group at a
+time") asks the engine's one rule, `Remote.hold_live`.
+
+How long a finger has to stay down, measured on the page's own beat
+timing (8 runs each, the shortest hold that armed on every one): 1.1 s on
+a 0.05 s round trip, 1.3 s at 0.25 s with 0.1 s of jitter, 1.5 s at 0.3 s,
+1.4 s at 0.4 s with no jitter, 2.0 s at 0.4 s with 0.15 s of jitter (the
+page keeps at most 4 heartbeats in flight, so past about 0.4 s it beats
+fewer than 10 a second), and 3.0 s at 0.4 s with jitter and a 1.0 s stall.
+Arm all of four groups shares those 4: about one heartbeat a group a round
+trip, so about 3.8 s at 0.25 s and 5.4 s at 0.4 s (0.1 s of jitter). On the phone the pop-up runs the hold by
+itself once confirmed, so this is a wait; on a desktop press and hold it
+is a longer press. Nothing in flamesafe or the deck
+changed. Accepted: a Disarm done on the deck itself (its key) or by
+flamesafe leaves no mark in the engine, so a press sent before it can land
+up to 2.5 s after it (was 1 s). The deck's own re-arm wait (2 s after its
+disarm) refuses such a hold for most of that, and in the rest it still
+needs 1 s more of heartbeats with the finger down. A group that is armed stays armed whatever happens to the phone
+afterwards: only a disarm, a Stop, flamesafe's own rules or the deck
+disarm it, never a page going quiet.
 
 **What it cannot do.** The physical key switch on Andy's flame system sits
 outside all of this: with it off nothing fires, whatever any software

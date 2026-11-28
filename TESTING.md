@@ -271,6 +271,65 @@ green one) until it is green, which closes its issue.
   no browser it says so and skips; on the ubuntu CI runner a missing
   browser is a failure.
 
+## Layout rules (2026-11-24)
+
+From Jeff's phone at a large display size: the top line jumped as a
+countdown ticked and moved Hold and Disarm under a finger, and DAY's
+panel was a strip. Every screen of remote2.html follows these, and
+`test_ui2_layout_sweep_any_phone_size_and_scale` checks them over a
+device matrix (a sample on every run; `LTC_LAYOUT_MATRIX=full` for every
+width, height and scale both ways up):
+
+- A display size or text size is a narrower, shorter page in CSS px.
+  Design for 270 px wide and 560 px tall, not only for the phone in hand.
+- Nothing scrolls sideways: no row wider than the screen, no control past
+  an edge. A row that can be too wide wraps or shares its width
+  (`flex:1 1 0; min-width:0`, grid `minmax(0,1fr)`).
+- Words that change (a countdown, a status line, "Some armed") get
+  reserved room: `tabular-nums` on digits, one line or a fixed number of
+  lines with an ellipsis, a fixed height for a cell whose words tick.
+  Nothing under them moves when they change, and a clock in them is never
+  the part an ellipsis cuts.
+- A safety control (Hold, Stop, Disarm, Arm) never shares a row that can
+  reflow because some words changed; only a resize may move it.
+- Pinned rows never starve the pane. The pane's room is what shows
+  between every row still pinned above it (the header unless it scrolled
+  away, the top line, SHOW's transport or the safety strip) and the
+  footer, scrolled to its foot. Floors on a phone (a screen 500 px or
+  less on its short side; over that, a tablet's or desktop's layout, kept
+  as it was), and why:
+  - 40 percent of the screen in the normal states.
+  - 30 percent on a phone upright under 560 px tall: the header (44 px
+    taps), the top line, the transport or the safety strip and the
+    footer are each one 44 px row at least, about 230 px before the pane
+    has any.
+  - On its side under 300 px tall (800x360 at 1.5 is 533x240), and while
+    more is pinned (five alerts holding the show, a failed rig check, a
+    live mode's Stops, whose words and Stops are never cut): the
+    transport (or the safety strip) whole on the screen and at least one
+    44 px row of the pane, the rest reached by scrolling. The top line,
+    the transport and the footer alone are about 160 px there.
+  A screen 500 px tall or less scrolls as a whole: the header
+  scrolls away, the top line, the transport (or strip) and the footer
+  stay. What is not pinned scrolls with the pane, never squeezed to a
+  strip.
+- Taps 44 px or more (48 where there is room), never overlapping, their
+  words never cut.
+- The frame is `100dvh` (with a `100vh` fallback) and keeps clear of the
+  screen's own edges through `--safe-t/r/b/l` (`env(safe-area-inset-*)`);
+  `viewport-fit=cover` stays in the viewport meta.
+- Phone rules are in media queries on width and height. The touch phone
+  block (`max-width:500px and pointer:coarse`) only tightens; a narrow
+  mouse window, 500 to 600 px, a tablet and a phone on its side must work
+  without it.
+- A tablet or a desktop window (over 600 px wide and over 500 px tall)
+  keeps the layout it had before the phone work, control for control:
+  every phone rule sits inside `(max-width:600px), (max-height:500px)` or
+  a narrower query, and the script's `phoneArrangement()` is the same
+  query (the top line's clock spans, the taskbar guess). Widening the
+  phone's arrangement onto a tablet is a change to the tablet: it needs
+  its own PR.
+
 While mutate.py runs, the working tree is deliberately broken (a
 `.mutating` file marks it). Do not build, soak or run a show from that
 tree until it says "tree restored byte for byte".

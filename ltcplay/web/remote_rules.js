@@ -48,7 +48,7 @@ function armState(st, nowMs, lastOkMs, i){
   const g = (fl.groups || [])[i];
   if(!mayRow(st, "arm")) return {ok:false, signin:true, why:SIGN_IN_WORDS};
   if(!a.enabled) return {ok:false, off:true, why:ARMING_OFF};
-  if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return {ok:false, why:"Not live: no contact with the engine in the last second."};
+  if(isStale(nowMs, lastOkMs, a.fresh_s || 1.0)) return {ok:false, why:"Not live: no contact with the engine in the last " + (a.fresh_s || 1.0) + " s."};
   if(!fl.connected || fl.stale || fl.age_ms === null || fl.age_ms === undefined || fl.age_ms > 1000)
     return {ok:false, why:"flamesafe's real state is not known."};
   if(!g) return {ok:false, why:"No such group."};
@@ -416,6 +416,92 @@ function armAllWords(parts, out, names){
   left.forEach(l => { const why = String(l.why || "").replace(/[.\s]+$/, ""); const b = by.find(x => x.why === why); if(b) b.names.push(l.name); else by.push({why:why, names:[l.name]}); });
   by.forEach(b => { t += " Not armed: " + b.names.join(", ") + " (" + b.why + ")."; });
   return t;
+}
+// What the engine's flame groups read now (Andy and Jeff on a phone,
+// 2026-11-23: Arm flames said "All armed" and the line "Nothing armed"
+// with two groups armed and two not). `idx` the groups asked about (every
+// group when null). state: "all" only when every one reads armed; "asked"
+// when each is armed or asked for and one at least only asked for; "some"
+// when one at least is armed or asked for and one at least is not; "none"
+// when not one is; "unknown" when the state cannot be read (stale, no
+// flamesafe, a lamp not armed, held or disarmed). Pure.
+function flamesRead(fl, stale, idx){
+  const gs = (fl && fl.groups) || [];
+  const pick = idx === null || idx === undefined ? gs.map((_g, i) => i) : idx;
+  const r = {state:"unknown", armed:[], asked:[], off:[]};
+  if(stale || !fl || !fl.connected || fl.stale || !gs.length || !pick.length) return r;
+  for(const i of pick){
+    const g = gs[i];
+    if(!g || ["armed", "held", "disarmed"].indexOf(g.armed) < 0) return {state:"unknown", armed:[], asked:[], off:[]};
+    if(g.armed === "armed") r.armed.push(i);
+    else if(g.wanted) r.asked.push(i);
+    else r.off.push(i);
+  }
+  r.state = r.armed.length === pick.length ? "all" : !r.off.length ? "asked" : (r.armed.length || r.asked.length) ? "some" : "none";
+  return r;
+}
+// The Arm flames button's small line once Arm all is not offered: what
+// the groups read, never "All armed" unless every one does.
+const FLAMES_READ_WORD = {all:"All armed", asked:"Arming", some:"Some armed", none:"None armed", unknown:"Not known"};
+function flamesReadWord(fl, stale){ return FLAMES_READ_WORD[flamesRead(fl, stale, null).state]; }
+// The status line for an arm, from an engine read: 8 words or fewer, no
+// "hold". `one` for a single group.
+function flamesReadLine(state, one){
+  if(state === "all") return one ? "Armed." : "All flames armed.";
+  if(state === "asked") return one ? "Arming. Watch the tile." : "Arming. Watch the tiles.";
+  if(state === "some") return "Some armed. Check the tiles.";
+  if(state === "none") return one ? "Not armed. Tap Details." : "None armed. Tap Details.";
+  return "Not known. Check the tile.";
+}
+// An arm's whole sentence made true to an engine read (`r`, flamesRead's
+// for every group, `names` theirs): a group armed or asked for is never
+// listed as not armed, and "nothing was armed" is never said while one
+// is. The read is added at the end. Pure.
+function armTextNow(text, r, names){
+  let t = String(text || "");
+  if(!r || r.state === "unknown") return t;
+  const on = r.armed.concat(r.asked).map(i => names[i]);
+  if(on.length){
+    t = t.replace(/^Arm all: nothing was armed\.\s*/, "Arm all: ");
+    t = t.replace(/Not armed: ([^()]*?) \(([^()]*)\)\.\s*/g, (m, list, why) => {
+      const left = list.split(", ").filter(n => on.indexOf(n) < 0);
+      return left.length ? "Not armed: " + left.join(", ") + " (" + why + "). " : "";
+    }).trim();
+  }
+  const nm = a => a.map(i => names[i]).join(", ");
+  let now = " The engine now reads.";
+  if(r.armed.length) now += " Armed: " + nm(r.armed) + ".";
+  if(r.asked.length) now += " Asked for: " + nm(r.asked) + ".";
+  if(r.off.length) now += " Not armed now: " + nm(r.off) + ".";
+  return t + now;
+}
+// Why a pop-up arm sent nothing, on the line: 8 words or fewer, no
+// "hold", and that nothing was sent (cold review of #302, F3). Pure.
+function faRefusedLine(why){
+  const w = String(why || "");
+  if(w.indexOf(SIGN_IN_WORDS) >= 0) return "Sign in first. Nothing sent.";
+  if(w.indexOf(ARMING_OFF) >= 0) return "Arming from screens is off. Nothing sent.";
+  if(w === ONE_GROUP_WORDS) return "One group at a time. Nothing sent.";
+  if(w === LF_UNKNOWN_WORDS) return "Live flame state unknown. Nothing sent.";
+  if(/no contact|Not live/i.test(w)) return "No contact. Nothing sent.";
+  if(/real state is not known/.test(w)) return "Flame state unknown. Nothing sent.";
+  if(/Already armed/.test(w)) return "Already armed. Nothing sent.";
+  if(/^Re-arm in|re-arm wait/i.test(w)) return "Re-arm wait. Nothing sent.";
+  return "Not armed. Nothing sent.";
+}
+// A sentence for a touch phone: no word "hold", no semicolons and no
+// dashes. A reason that names holding is said in a phone's words. Pure.
+function phoneArmWhy(w){
+  return /interrupted/i.test(w) ? "the arm was cut off, try again" :
+    /re-arm wait/i.test(w) ? "the re-arm wait was not over" :
+    /let go|stopped/i.test(w) ? "stopped before the engine armed it" : "refused";
+}
+// A sentence ends at . ! or ?, but never at the "." of a decimal such as
+// "2.5 s" (a digit on each side). No lookbehind (older Safari).
+function phoneArmText(text){
+  let t = String(text || "").replace(/\(([^()]*)\)/g, (m, w) => /hold/i.test(w) ? "(" + phoneArmWhy(w) + ")" : m);
+  t = (t.match(/(?:\d\.(?=\d)|[^.!?])+[.!?]*/g) || []).map(s => s.trim()).filter(s => s && !/hold/i.test(s)).join(" ");
+  return t.replace(/;/g, ",").replace(/[\u2013\u2014]/g, ",");
 }
 // Why an unlock of machine `m` ({name, group}) is refused on this page, or
 // "": its flame group armed or asked for, or flamesafe's state not known
