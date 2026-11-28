@@ -57444,6 +57444,58 @@ def test_tailscale_session_idle_and_binding():
                 "refused" for a in audit[n0:]),
                   f"presented by {why}: rejected, ended, audited: "
                   f"{audit[n0:]}")
+        # Access taken away ends the sign-in itself, not only the door
+        # (cold review of #314, P1-1): a login taken off the list, then
+        # Tailscale switched off. The rack sign-in is never touched.
+        import types
+        su = types.SimpleNamespace(
+            session={"name": "Jeff", "role": U.SUPERUSER, "local": True},
+            local=True, tailscale=False, user="Jeff", screen="rack")
+        rm.tailscale_close = lambda: None
+        ck = ts_sign_in()
+        tok = ck.split("=", 1)[1]
+        st, out = rm.set_tailscale_logins({"logins": [_TS_LOGIN]}, su)
+        check(st == 200 and us.session(tok) is not None,
+              f"a list that still has the login keeps its sign-in: {st} "
+              f"{out}")
+        st, out = rm.set_tailscale_logins({"logins": ["bo@x.org"]}, su)
+        check(st == 200 and us.session(tok) is None and
+              us.session(jtok) is not None,
+              f"a login taken off the list is signed out at once, the "
+              f"rack sign-in kept: {st}")
+        rm.set_tailscale_logins({"logins": [_TS_LOGIN]}, su)
+        check(us.session(tok) is None,
+              "and put back on the list, the old sign-in is still gone")
+        ck = ts_sign_in()
+        tok = ck.split("=", 1)[1]
+        st, out = rm.set_tailscale({"on": False}, su)
+        check(us.session(tok) is None and us.session(jtok) is not None,
+              f"Tailscale switched off signs every Tailscale sign-in out, "
+              f"the rack sign-in kept: {st}")
+        RM.save_settings(R.work, tailscale_remote=True)
+        rm._tailscale_cache = None
+        # The SuperUser's own 15 minutes hold over Tailscale too, now the
+        # only limit there (P1-2).
+        ck = ts_sign_in()
+        tok = ck.split("=", 1)[1]
+        load0 = us._load
+
+        def as_superuser():
+            doc = json.loads(json.dumps(load0()))
+            doc["users"]["Ollie"]["role"] = U.SUPERUSER
+            return doc
+        us._load = as_superuser
+        try:
+            now[0] += 14 * 60
+            alive = tok in us._sessions and us.machine_user() is not None \
+                and tok in us._sessions
+            now[0] += 2 * 60
+            us.machine_user()
+            check(alive and tok not in us._sessions,
+                  "a SuperUser on Tailscale is signed out after 15 idle "
+                  "minutes, and not before")
+        finally:
+            us._load = load0
         # A rack sign-in over Tailscale: signed out there, kept here.
         got = me(f"{U.COOKIE}={jtok}")
         check(got is None and us.session(jtok) is not None,

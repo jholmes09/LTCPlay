@@ -3926,6 +3926,8 @@ class Remote:
                     close()
                 except Exception:                # noqa: BLE001
                     pass
+            # And every Tailscale sign-in ends with it, saved or not.
+            self._end_tailscale_sessions(None)
         try:
             save_settings(self.folder, tailscale_remote=on)
         except (ValueError, OSError) as e:
@@ -3946,6 +3948,15 @@ class Remote:
         return 200, dict(view, ok=True,
                          note="Saved. Restart the engine to apply." if on
                          else "Off. Tailscale is closed now.")
+
+    def _end_tailscale_sessions(self, keep_logins):
+        """users.Users.end_tailscale, never raising: taking access away
+        is never held up by it."""
+        try:
+            fn = getattr(self.users, "end_tailscale", None)
+            return fn(keep_logins) if fn is not None else []
+        except Exception:                        # noqa: BLE001
+            return []
 
     def set_tailscale_logins(self, body, ctx):
         """POST tailscale {"logins": [...]}: the allow list of Tailscale
@@ -3972,6 +3983,9 @@ class Remote:
                                   f"written ({e}). Nothing was changed."}
         self._ts_logins_cache = None
         self._ts_whois_cache = {}
+        # A login taken off the list is signed out now, not only refused
+        # at the door.
+        self._end_tailscale_sessions(logins)
         who = ctx.user or "unsigned"
         self._journal(who, ctx.screen, "tailscale logins", "saved",
                       f"{who} set the Tailscale logins allowed in: "

@@ -1775,8 +1775,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": why})
         # Remote access over Tailscale: a press that needs a role needs a
         # sign-in there, users set up or not (Jeff, 2026-11-13). Every
-        # press or beat keeps a Tailscale sign-in from its idle sign-out;
-        # the page's status polls never do.
+        # press or beat counts against the admin's idle sign out and the
+        # SuperUser's 15 minutes; the page's status polls never do.
         try:
             _c = self._ctx()
             if _c.tailscale and _c.session and _c.token:

@@ -232,7 +232,8 @@ Past that, a device on Tailscale is an iPad on the show network: the same
 role matrix and the same "Arming from a screen". Every press that needs a
 role needs a sign-in there. A Tailscale sign-in has no idle sign out of
 its own (Jeff, 2026-11-28); a SuperUser's still ends 15 minutes after its
-last press, there as anywhere. Use long passwords: Tailscale reaches past the venue. Tailscale
+last press, there as anywhere. Taking a login off the list, or
+switching Tailscale off, signs that person out at once. Use long passwords: Tailscale reaches past the venue. Tailscale
 cannot prove anyone is at the rig.
 
 **Never share routes from the show PC.**

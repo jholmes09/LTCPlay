@@ -841,6 +841,17 @@ MUTATIONS = [
   "                    self._tailscale_session_check(ctx, users)\n"
   "                    users.touch(tok)\n"),
 
+ ("tailscale: access taken away ends no Tailscale sign-in",
+  "ltcplay/users.py",
+  "                if not b or (keep is not None and\n",
+  "                if True or not b or (keep is not None and\n"),
+
+ ("tailscale: the SuperUser's 15 idle minutes skip a Tailscale sign-in",
+  "ltcplay/users.py",
+  "                and now - s[\"seen\"] > SUPERUSER_IDLE_S]",
+  "                and now - s[\"seen\"] > SUPERUSER_IDLE_S\n"
+  "                and not s.get(\"tailscale\")]"),
+
  ("tailscale: a session is not bound at sign-in", "ltcplay/remote.py",
   "                u.bind_tailscale(token, ctx.login, ctx.ip)",
   "                pass"),

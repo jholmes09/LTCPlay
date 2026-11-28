@@ -1554,6 +1554,32 @@ class Users:
                 s["tailscale"] = {"login": str(login or ""),
                                   "ip": str(ip or "")}
 
+    def end_tailscale(self, keep_logins=None):
+        """Tailscale access was taken away: every session made over
+        Tailscale is ended (None: Tailscale switched off), or every one
+        whose login is no longer on the allow list. With no idle sign-out
+        of Tailscale's own, nothing else would end it (cold review of
+        #314, P1-1). Signing out ends that person's timed purge, hazer
+        run, fireball run and arm hold. The names signed out."""
+        keep = None if keep_logins is None else {
+            str(x).strip().lower() for x in keep_logins}
+        out = []
+        with self._lock:
+            for t, s in list(self._sessions.items()):
+                b = s.get("tailscale")
+                if not b or (keep is not None and
+                             str(b.get("login", "")).lower() in keep):
+                    continue
+                del self._sessions[t]
+                out.append(s["name"])
+                self._note("sign-out", s["name"],
+                           reason=("Tailscale was switched off"
+                                   if keep is None else
+                                   "their Tailscale login was taken off "
+                                   "the list"),
+                           source=s["source"])
+        return out
+
     def touch(self, token):
         """A command from this session: it is not idle."""
         with self._lock:

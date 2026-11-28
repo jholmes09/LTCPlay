@@ -4317,6 +4317,8 @@
 "Reload engine: the page is never told why it waits": "test_restart_engine_between_shows_on_hold",
 "tailscale: an exit node is not seen": "test_tailscale_allow_list",
 "tailscale: a status poll keeps a Tailscale sign-in alive": "test_tailscale_session_idle_and_binding",
+"tailscale: access taken away ends no Tailscale sign-in": "test_tailscale_session_idle_and_binding",
+"tailscale: the SuperUser's 15 idle minutes skip a Tailscale sign-in": "test_tailscale_session_idle_and_binding",
 "tailscale: a session is not bound at sign-in": "test_tailscale_session_idle_and_binding",
 "tailscale: a session presented by another device is kept": "test_tailscale_session_idle_and_binding",
 "tailscale: a rack sign-in is taken over Tailscale": "test_tailscale_session_idle_and_binding",
