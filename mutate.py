@@ -835,16 +835,6 @@ MUTATIONS = [
   "    return bool(me.get(\"ExitNodeOption\") or me.get(\"PrimaryRoutes\") or",
   "    return bool(me.get(\"PrimaryRoutes\") or"),
 
- ("tailscale: a Tailscale sign-in never signs out when idle",
-  "ltcplay/users.py",
-  "        self._drop_tailscale_idle(now)\n",
-  ""),
-
- ("tailscale: the admin's idle sign-out may lengthen Tailscale's",
-  "ltcplay/users.py",
-  "            min(TAILSCALE_IDLE_S, mins * 60)",
-  "            max(TAILSCALE_IDLE_S, mins * 60)"),
-
  ("tailscale: a status poll keeps a Tailscale sign-in alive",
   "ltcplay/web.py",
   "                    self._tailscale_session_check(ctx, users)\n",

@@ -57333,9 +57333,10 @@ def test_tailscale_acts_as_an_ipad_signed_in():
 
 def test_tailscale_session_idle_and_binding():
     section("remote access over Tailscale (cold review of #244, M2 and "
-            "minors): a Tailscale sign-in signs out after 30 minutes with no "
-            "press or beat (the admin's idle sign out only shortens it; "
-            "status polls never count; the rack screen's rule unchanged); a "
+            "minors; Jeff, 2026-11-28): a Tailscale sign-in has no idle "
+            "sign out of its own any more (the 30 minutes signed operators "
+            "out mid-night); the admin's idle sign out, when one is set, "
+            "ends it as it ends any sign-in (status polls never count); a "
             "Tailscale session presented by another login, address or "
             "surface is ended and audited; a rack sign-in is never taken "
             "over Tailscale; checklist records carry the login")
@@ -57380,27 +57381,36 @@ def test_tailscale_session_idle_and_binding():
         check(us.session(tok).get("tailscale") ==
               {"login": _TS_LOGIN, "ip": "100.88.1.2"},
               "the session is bound to its login and address")
-        now[0] += 29 * 60
-        check(me(ck) == "Ollie", "29 minutes: still signed in")
-        _ask(D, "POST", "/api/remote/hold", {"seen": R.seen()},
-             client=_TS_PEER, headers={"Cookie": ck})
-        now[0] += 29 * 60
-        for _i in range(5):
-            me(ck)                       # polls never count as a press
-        check(me(ck) == "Ollie", "a press keeps it signed in")
-        now[0] += 2 * 60
-        check(me(ck) is None and us.session(tok) is None,
-              "31 minutes with no press: signed out by itself")
-        check(U.TAILSCALE_IDLE_S == 30 * 60, "30 minutes, a named constant")
-        # The admin's idle sign out only shortens it.
+        now[0] += 31 * 60
+        check(me(ck) == "Ollie" and us.session(tok) is not None,
+              "31 minutes with no press: still signed in (Jeff, "
+              "2026-11-28: no idle sign out of Tailscale's own)")
+        now[0] += 6 * 3600
+        check(me(ck) == "Ollie", "and six hours on, with the admin's idle "
+                                 "sign out off")
+        check(not hasattr(U, "TAILSCALE_IDLE_S"),
+              "the 30 minute constant is gone")
+        # The admin's idle sign out, when one is set, ends it as it ends
+        # any sign-in: polls never count as a press, a press does.
         us.set_idle(10)
         ck = ts_sign_in()
-        now[0] += 11 * 60
-        check(me(ck) is None, "idle sign out 10 min: 10 min on Tailscale")
+        now[0] += 9 * 60
+        _ask(D, "POST", "/api/remote/hold", {"seen": R.seen()},
+             client=_TS_PEER, headers={"Cookie": ck})
+        now[0] += 9 * 60
+        for _i in range(5):
+            me(ck)                       # polls never count as a press
+        check(me(ck) == "Ollie", "idle sign out 10 min: a press keeps it")
+        now[0] += 2 * 60
+        check(me(ck) is None, "idle sign out 10 min: 11 min with no press "
+                              "signs a Tailscale sign-in out")
         us.set_idle(120)
         ck = ts_sign_in()
         now[0] += 31 * 60
-        check(me(ck) is None, "idle sign out 120 min: still 30 on Tailscale")
+        check(me(ck) == "Ollie", "idle sign out 120 min: 31 min is still "
+                                 "signed in on Tailscale")
+        now[0] += 90 * 60
+        check(me(ck) is None, "and 121 min is signed out")
         us.set_idle(0)
         _o, _w, jtok, _n = us.sign_in("Jeff", "", True, "rack",
                                       new_password="Jeff-pw-1234")
