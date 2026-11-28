@@ -88216,6 +88216,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/announce-outputs", "/api/remote/announce-play",
     "/api/remote/announce-stop", "/api/remote/announce-test-tone",
     "/api/remote/arm-hold", "/api/remote/arm-release",
+    "/api/remote/arm-confirm", "/api/remote/arm-request",
     "/api/remote/arrangement", "/api/remote/audit-verify", "/api/remote/awc",
     "/api/remote/booth-speaker",
     "/api/remote/awc:", "/api/remote/checklist-",
