@@ -45,22 +45,24 @@ to run or arm" default was replaced by the rule above on 2026-10-28):
 Files, in the settings folder (never in the repo):
   ltcplay_users.json  {"users": {name: {"role", "pw": {alg, params, salt,
                       hash}, "created", "changed"}}, "matrix": {...},
-                      "idle_signout_min": 0,
-                      "signout_after_last_show_min": 10}
+                      "idle_signout_min": 0}
 Sessions live in memory: an engine restart signs everyone out, which
 changes nothing on the rig.
 
-SIGN OUT AFTER THE LAST SHOW (Jeff, 2026-10-26): when tonight's last show
-has ended (nothing still to come, nothing live or held, nothing going on
-at the rig), and `signout_after_last_show_min`
-minutes have passed (default 10; 0 is off), every session signed in
-before the show ended is signed out, once for that night. Someone who
-signs in after the show ended is left signed in. Without a show on the
-schedule that night it never happens. The engine says when the last show
-ended (`last_show`, remote.Remote.last_show_over); this module only counts
-the minutes. It is checked on every session read and on its own beat
-(start(), every LAST_SHOW_BEAT_S), so it happens on time with no page
-open.
+WHAT SIGNS PEOPLE OUT (Jeff, 2026-11-28). Nobody is signed out because a
+show ended: they purge and test after the last show. (The sign-out some
+minutes after the night's last show, 2026-10-26, is removed.)
+  - End of night, pressed by a signed-in person: everyone, everywhere,
+    Tailscale included (end_all; remote.Remote.end_of_night_press).
+  - 4 AM in the show's time zone, the backstop, only after a night that
+    had shows on the schedule: everyone signed in before that 4 AM. A
+    dark day's 4 AM signs nobody out. The engine says when (`backstop`,
+    remote.Remote.signout_backstop: it waits while a show is live or
+    anything is armed or firing); this module only compares. Checked on
+    every session read and on its own beat (start(), every BEAT_S), so it
+    happens with no page open.
+  - The SuperUser's own 15 idle minutes, the admin's idle sign out when
+    one is set, a sign out, an engine restart.
 """
 import contextlib
 import hashlib
@@ -94,7 +96,7 @@ LOCK_WAIT_S = 2.0
 AUTH_FAIL_PAUSE_S = 1.0     # the local command line, after a wrong password
 SIGNAL_MAX_AGE_S = 600.0
 # A SuperUser's session ends after this long with no press, whatever the
-# admin's idle and last show settings say (M3, review of #251).
+# admin's idle setting says (M3, review of #251).
 SUPERUSER_IDLE_S = 15 * 60
 # Written once, when the first SuperUser is made: from then on the "first
 # SuperUser" path of the local command line is refused forever (verifi-
@@ -143,8 +145,8 @@ FREE_TRIES = 5
 # (Jeff, 2026-11-28: the 30 minutes it had, from the cold review of #244,
 # kept signing operators out in the middle of a night). It ends as any
 # other does: a sign out, the admin's idle sign-out when one is set
-# (idle_signout_min, off by default), the SuperUser's own 15 minutes, the
-# night's last show, or an engine restart. web.py still ends it when
+# (idle_signout_min, off by default), the SuperUser's own 15 minutes, End
+# of night, the 4 AM backstop, or an engine restart. web.py still ends it when
 # another login, address or surface presents it.
 LOCK_BASE_S = 30.0
 LOCK_MAX_S = 300.0
@@ -170,7 +172,7 @@ PERMS = (
                  "flame programming, moving Programming playback from an "
                  "iPad while flames follow it, the timecode input, the "
                  "announcement output, idle sign out, "
-                 "sign out after the last show, the play-from cues, the "
+                 "the play-from cues, the "
                  "fireball timeline, the haze fluid settings"),
     ("users", "Users: add, remove, reset passwords, set roles, clear "
               "sign-in lockouts"),
@@ -208,7 +210,7 @@ SAFETY_ROWS = ("Stop, Hold, Disarm (one group or every group, "
                "locking a machine, a laser test off, live flame "
                "programming off, "
                "a hazer disarm, Hazers off, the hazer test off, "
-               "the fuel pump off, End of night, "
+               "the fuel pump off, "
                "Fireball practice's Done, Acknowledge, signing "
                "in and out: always, for everyone, signed in or not")
 
@@ -238,10 +240,7 @@ FIXED = {("admin", "users"): True}
 FIXED.update({(SIGNED_OUT, p): False for p in PERM_KEYS})
 # A SuperUser may always do everything an admin may.
 FIXED.update({(SUPERUSER, p): True for p in PERM_KEYS})
-# Sign everyone out this many minutes after the night's last show ended
-# (Jeff, 2026-10-26): on by default; 0 is off.
-LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10
-LAST_SHOW_BEAT_S = 5.0     # the sign-out's own beat (Users.start)
+BEAT_S = 5.0     # the 4 AM backstop's own beat (Users.start)
 # A users file that is there but cannot be opened is tried again on every
 # read; while it keeps failing for less than this the last good read
 # stands, then it counts as broken (locked) until a read works.
@@ -254,8 +253,10 @@ READ_GRACE_S = 10.0
 # "safety": never restricted. None: harmless, never restricted.
 REMOTE_ROUTES = {
     "hold": "safety", "disarm-all": "safety", "stop": "safety",
-    # End of night (Jeff, 2026-11-14): everyone, signed out included, like
-    # Stop; it only ends the idle look held after the last show, to black.
+    # End of night: never refused by a role, only by nobody being signed
+    # in (Jeff, 2026-11-28; remote.Remote.end_of_night_press checks it):
+    # it ends the idle look held after the last show and signs everyone
+    # out.
     "end-of-night": "safety",
     "group-disarm": "safety", "arm-release": "safety", "alert": "safety",
     "purge-stop": "safety", "purge-clear": "safety",
@@ -296,7 +297,6 @@ REMOTE_ROUTES = {
     # The nightly upload: the SuperUser's alone (UPLOAD, is_upload_route).
     "audit-settings": UPLOAD,
     "audit-upload-now": UPLOAD, "idle-signout": "settings",
-    "last-show-signout": "settings",
     "users": "users", "role-matrix": "users", "clear-lockouts": "users",
     "schedule-file": "show_files", "show-folder": "show_files",
     # Reload engine (2026-10-28): a restart of the engine between shows,
@@ -799,12 +799,10 @@ class Users:
         # (gone after users were set up); "" when it can.
         self.error_kind = ""
         self.error = ""
-        # () -> None, or {"night": the schedule's night, "ended": wall
-        # clock seconds the last show of it ended}, only while that last
-        # show is over and nothing is live or held. Set by the
-        # engine (remote.Remote.last_show_over). None: never.
-        self.last_show = None
-        self._last_show_done = None   # the night already signed out
+        # () -> None, or the wall clock seconds of the 4 AM everyone
+        # signed in before it is signed out at (the engine's
+        # remote.Remote.signout_backstop). None: never.
+        self.backstop = None
         self._beat_stop = threading.Event()
         self._beat = None
         self.key_path = os.path.join(folder, USERS_KEY)
@@ -1225,15 +1223,6 @@ class Users:
         return v if isinstance(v, int) and not isinstance(v, bool) and \
             0 <= v <= 24 * 60 else 0
 
-    def last_show_minutes(self):
-        """Minutes after the night's last show ended that everyone is
-        signed out; 0 is off. Not in the file: the default (10)."""
-        with self._lock:
-            v = self._load().get("signout_after_last_show_min",
-                                 LAST_SHOW_SIGNOUT_DEFAULT_MIN)
-        return v if isinstance(v, int) and not isinstance(v, bool) and \
-            0 <= v <= 24 * 60 else LAST_SHOW_SIGNOUT_DEFAULT_MIN
-
     def role_of(self, name):
         with self._lock:
             u = self._load().get("users", {}).get(name)
@@ -1291,7 +1280,7 @@ class Users:
 
     def _drop_superuser_idle(self, now):
         """A SuperUser's session ends SUPERUSER_IDLE_S after its last press,
-        whatever the admin's idle and last show settings are (review of
+        whatever the admin's idle setting is (review of
         #251, M3): an admin cannot keep a SuperUser's rack screen session
         open for themselves."""
         users = self._load().get("users", {})
@@ -1433,51 +1422,55 @@ class Users:
                    source=LOCAL_COMMAND)
         return True
 
-    def _drop_after_last_show(self):
-        """Every session signed in before the night's last show ended plus
-        the grace, signed out once for that night. Asks the engine
-        (`last_show`) and does nothing at all while it says no, or when
-        the setting is 0."""
-        mins = self.last_show_minutes()
-        fn = self.last_show
-        if not mins or fn is None:
+    def _drop_backstop(self):
+        """Everyone signed in before the 4 AM backstop the engine names
+        (`backstop`), signed out. Nothing at all while it names none (a
+        dark day, a show live, something armed). Someone who signs in
+        after that 4 AM is left signed in."""
+        fn = self.backstop
+        if fn is None:
             return
         try:
-            info = fn()
-            if not info:
-                return
-            night = str(info["night"])
-            due = float(info["ended"]) + mins * 60
+            at = fn()
+            at = float(at) if at else 0.0
         except Exception:                        # noqa: BLE001
             return
-        if night == self._last_show_done or self._wall() < due:
+        if not at:
             return
-        self._last_show_done = night
-        ended = due - mins * 60
-        # Only sessions signed in before the show ended: a sign-in after
-        # it is never signed out by this (review of PR #125, P2-5).
         gone = [(t, s) for t, s in self._sessions.items()
-                if s.get("wall_at", 0.0) < ended]
+                if s.get("wall_at", 0.0) < at]
         for t, s in gone:
             del self._sessions[t]
             self._note("sign-out", s["name"],
-                       reason=f"after the last show of the night ({mins} "
-                              f"min after it ended)",
+                       reason="4 AM after a night with shows",
                        source=s["source"])
 
-    def after_last_show_tick(self):
+    def backstop_tick(self):
         """The same check, from this module's own beat (start()). Never
         raises."""
         try:
             with self._lock:
-                self._drop_after_last_show()
+                self._drop_backstop()
         except Exception:                        # noqa: BLE001
             pass
 
-    def start(self, every_s=LAST_SHOW_BEAT_S):
-        """The sign-out after the last show on a beat of its own, so it
-        happens on time with no page open (review of PR #125, P2-6).
-        web.serve starts it and stops it with the engine."""
+    def end_all(self, reason="End of night"):
+        """Everyone signed out, everywhere, Tailscale included (End of
+        night, Jeff 2026-11-28). Signing out ends each person's timed
+        purge, hazer run, fireball run and arm hold. The names."""
+        out = []
+        with self._lock:
+            for t, s in list(self._sessions.items()):
+                del self._sessions[t]
+                out.append(s["name"])
+                self._note("sign-out", s["name"], reason=str(reason),
+                           source=s["source"])
+        return out
+
+    def start(self, every_s=BEAT_S):
+        """The 4 AM backstop on a beat of its own, so it happens with no
+        page open (review of PR #125, P2-6). web.serve starts it and
+        stops it with the engine."""
         if self._beat is not None:
             return self
         self._beat_stop.clear()
@@ -1486,7 +1479,7 @@ class Users:
             self.flush_pending_audit()
             self.consume_signal()
             while not self._beat_stop.wait(every_s):
-                self.after_last_show_tick()
+                self.backstop_tick()
                 self.flush_pending_audit()
                 self.consume_signal()
         self._beat = threading.Thread(target=loop, daemon=True,
@@ -1508,7 +1501,7 @@ class Users:
         with self._lock:
             now = self._clock()
             self._drop_idle(now)
-            self._drop_after_last_show()
+            self._drop_backstop()
             s = self._sessions.get(token)
             if s is None:
                 return None
@@ -1593,7 +1586,7 @@ class Users:
         with self._lock:
             now = self._clock()
             self._drop_idle(now)
-            self._drop_after_last_show()
+            self._drop_backstop()
             best = None
             users = self._load().get("users", {})
             for s in self._sessions.values():
@@ -2034,19 +2027,6 @@ class Users:
                     f"A screen idle for {minutes} min is signed out.")
         return self._change(fn)
 
-    def set_last_show(self, minutes):
-        if isinstance(minutes, bool) or not isinstance(minutes, int) or \
-                not 0 <= minutes <= 24 * 60:
-            raise ValueError("Sign out after the last show is 0 (off) to "
-                             "1440 minutes.")
-
-        def fn(doc):
-            doc["signout_after_last_show_min"] = minutes
-            return ("Sign out after the last show is off." if not minutes
-                    else f"Everyone is signed out {minutes} min after the "
-                         f"last show of the night ends.")
-        return self._change(fn)
-
     def clear_lockouts(self):
         with self._lock:
             n = len(self._fails)
@@ -2279,7 +2259,6 @@ class Users:
                 "safety": SAFETY_ROWS, "matrix": self.matrix(),
                 "fixed": [list(k) for k in FIXED],
                 "idle_signout_min": self.idle_minutes(),
-                "signout_after_last_show_min": self.last_show_minutes(),
                 "error": self.error}
 
 

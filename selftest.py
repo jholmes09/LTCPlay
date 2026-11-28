@@ -50367,10 +50367,13 @@ def test_end_of_night_end_to_end_on_the_rig():
 
 
 def test_end_of_night_route_anyone_two_steps():
-    section("End of night's route (Jeff, 2026-11-14): anyone, signed out "
-            "included, like Stop (the role matrix's safety row); only with "
-            "{\"confirmed\": true}, the page's second tap; journaled with "
-            "who, or \"signed out\"; refused when the look is not held")
+    section("End of night's route (Jeff, 2026-11-14 and 2026-11-28): with "
+            "users set up only a signed-in person, any role (never "
+            "refused by the role matrix); only with {\"confirmed\": "
+            "true}, the page's second tap; it ends the held idle look "
+            "when there is one and signs everyone out, on every screen; "
+            "always there for a signed-in person, held look or not; "
+            "never while a show is live; journaled with who")
     S = _sched()
     if S is None:
         return
@@ -50388,8 +50391,10 @@ def test_end_of_night_route_anyone_two_steps():
           U.classify("/api/remote/end-of-night", {}) == "safety" and
           U.classify("/api/remote/end-of-night",
                      {"confirmed": True}) == "safety" and
-          "End of night" in U.SAFETY_ROWS,
-          "the role matrix: safety, everyone, always")
+          "End of night" not in U.SAFETY_ROWS,
+          "the role matrix never refuses it by role (the engine itself "
+          "asks for a sign-in), and the always-for-everyone row no "
+          "longer lists it")
     mx = U.normalise_matrix({})
     check(all(U.allowed(mx, role, "safety")
               for role in (None, "viewer", "operator", "admin")),
@@ -50412,21 +50417,70 @@ def test_end_of_night_route_anyone_two_steps():
                             {"confirmed": "yes"})
         check(st == 400 and R.svc.machine.held_look,
               f"only the JSON word true confirms: {st} {out}")
-        # Users on, nobody signed in: it goes, journaled "signed out".
+        # Users on, nobody signed in: refused, the look still held
+        # (Jeff, 2026-11-28, reversing 2026-11-14's "anyone").
         us = U.Users(udir, hash_params=_U_FAST)
         us.seed([("Jeff", "admin"), ("Vic", "viewer")])
         R.remote.users = us
         st, _h, out = R.ask("POST", "/api/remote/end-of-night",
                             {"confirmed": True})
+        check(st == 403 and out.get("error") == RM.END_OF_NIGHT_SIGN_IN
+              and R.svc.machine.held_look,
+              f"nobody signed in: refused, nothing changed: {st} {out}")
+        st, _h, sv = R.ask("GET", "/api/remote/status")
+        check(sv["schedule"]["end_of_night"] is False,
+              "and the button is not offered to a signed-out screen")
+        # A viewer signed in on an iPad, Jeff on the rack: the viewer's
+        # press ends the look and signs BOTH out.
+        loop = ("127.0.0.1", 5000)
+        _o, _w, jtok, _n = us.sign_in("Jeff", "", True, "rack",
+                                      new_password="Jeff-pw-1234")
+        us.sign_in("Vic", "", True, "rack", new_password="Vic-pw-12345")
+        _o, _w, vtok, _n = us.sign_in("Vic", "Vic-pw-12345", False, "iPad")
+        vck = {"Cookie": f"{U.COOKIE}={vtok}"}
+        st, _h, sv = R.ask("GET", "/api/remote/status", headers=vck)
+        check(sv["schedule"]["end_of_night"] is True,
+              "a signed-in screen is offered End of night")
+        live0 = R.remote.show_live_refusal
+        R.remote.show_live_refusal = lambda: "a scheduled show is live"
+        try:
+            st, _h, out = R.ask("POST", "/api/remote/end-of-night",
+                                {"confirmed": True}, headers=vck)
+            st2, _h, sv = R.ask("GET", "/api/remote/status", headers=vck)
+        finally:
+            R.remote.show_live_refusal = live0
+        check(st == 409 and out.get("error") == RM.END_OF_NIGHT_LIVE and
+              us.session(vtok) is not None and R.svc.machine.held_look and
+              sv["schedule"]["end_of_night"] is False,
+              f"a show live: refused, nobody signed out, not offered: "
+              f"{st} {out}")
+        st, _h, out = R.ask("POST", "/api/remote/end-of-night",
+                            {"confirmed": True}, headers=vck)
         R.settle()
         m = R.svc.machine
         check(st == 200 and out.get("ok") and not m.held_look and
-              m.closed_by_operator,
-              f"signed out, confirmed: the held look ends: {st} {out} "
+              m.closed_by_operator and out.get("signed_out") == 3 and
+              us.session(vtok) is None and us.session(jtok) is None,
+              f"a signed-in viewer, confirmed: the held look ends and "
+              f"everyone is signed out, the rack too: {st} {out} "
               f"{m.state}")
         rows = [x for x in R.svc.journal if x.get("action") == "END_NIGHT"]
-        check(rows and rows[-1].get("who") == "signed out",
-              f"journaled as signed out: {rows[-1:]}")
+        check(rows and rows[-1].get("who") == "Vic",
+              f"journaled with who: {rows[-1:]}")
+        _no_dashes(RM.END_OF_NIGHT_SIGN_IN + RM.END_OF_NIGHT_LIVE +
+                   RM.END_OF_NIGHT_CONFIRM + str(out.get("text")),
+                   "End of night's sentences")
+        # No idle look held (a night that went dark): still there for a
+        # signed-in person, and it signs everyone out.
+        _o, _w, jtok, _n = us.sign_in("Jeff", "Jeff-pw-1234", True, "rack")
+        _o, _w, vtok, _n = us.sign_in("Vic", "Vic-pw-12345", False, "iPad")
+        st, _h, out = R.ask("POST", "/api/remote/end-of-night",
+                            {"confirmed": True}, client=loop,
+                            headers={"Cookie": f"{U.COOKIE}={jtok}"})
+        check(st == 200 and out.get("signed_out") == 2 and
+              us.session(vtok) is None and us.session(jtok) is None,
+              f"no idle look held: End of night still signs everyone "
+              f"out: {st} {out}")
         # Signed out over Tailscale: remote._actor says "unsigned, <the
         # device>"; the journal says signed out, and keeps the device.
         R.svc.machine = replace(R.svc.machine, state=S.OFF,
@@ -50470,8 +50524,8 @@ def test_end_of_night_button_and_docs():
           "the button is in the next-step bar, hidden until held, a safe "
           "press")
     fn = _js_function(two, "eonShown") or ""
-    check("held_look === true" in fn,
-          f"shown only while the engine says the look is held: {fn!r}")
+    check("end_of_night === true" in fn,
+          f"shown only while the engine says it would take it: {fn!r}")
     tap = _js_function(two, "eonTap") or ""
     check("stopTapStep(EON_TAP, monoNow(), kind, false)" in tap and
           'press("end-of-night", {confirmed:true})' in tap and
@@ -50494,7 +50548,8 @@ def test_end_of_night_button_and_docs():
                         text.find("End of night") + 400], name)
     op = read("OPERATOR.md")
     for words in ("Keep the idle look until End of night",
-                  "Anyone may\n  press it, signed in or not",
+                  "Only a\n  signed-in person can press it",
+                  "it signs\n  everyone out on every screen",
                   "| ltcplay restarts |", "The hand over to the next night"):
         check(words.lower() in op.lower(), f"OPERATOR.md says {words!r}")
     print("  ok")
@@ -86402,19 +86457,24 @@ console.log(JSON.stringify(out));
     print("  ok")
 
 
-def test_users_sign_out_after_the_last_show():
-    """Jeff, 2026-10-26: once the night's last show has ended, and N
-    minutes have passed (default 10, 0 is off), everyone signed in is
-    signed out, once for that night; a sign-in after that stays; never
-    while a show is live, held or an Abort stands; no schedule, never."""
-    section("users: everyone is signed out N minutes after the last show "
-            "of the night (default 10, 0 off), once a night; a later "
-            "sign-in stays; never while live, held or aborted")
+def test_users_signed_out_by_end_of_night_and_the_4am_backstop():
+    """Jeff, 2026-11-28: nobody is signed out because a show ended (they
+    purge and test after the last show). End of night signs everyone out
+    everywhere; 4 AM in the show's time zone does too, only after a night
+    that had shows on the schedule, never on a dark day."""
+    section("users: no sign out after the last show any more; End of "
+            "night's sign out is everyone, everywhere, Tailscale too; the "
+            "4 AM backstop signs out everyone from before it, only after a "
+            "night with shows, never a dark day, and waits while a show is "
+            "live or anything is armed; a later sign-in stays")
     import shutil
     import types
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta
     from ltcplay import users as U
     from ltcplay import remote as RM
+    S = _sched()
+    if S is None:
+        return
     d = tempfile.mkdtemp()
     try:
         t, clock = _u_clock()
@@ -86429,13 +86489,16 @@ def test_users_sign_out_after_the_last_show():
                    new_password="right-pw-1")
         us.sign_in("Andy", "andy-temp-1", False, "iPad",
                    new_password="right-pw-2")
-        check(us.last_show_minutes() == 10 and
-              U.LAST_SHOW_SIGNOUT_DEFAULT_MIN == 10 and
-              us.view()["signout_after_last_show_min"] == 10 and
+        check("signout_after_last_show_min" not in us.view() and
+              not hasattr(us, "set_last_show") and
+              not hasattr(us, "last_show") and
+              "last-show-signout" not in U.REMOTE_ROUTES and
+              "last-show-signout" not in RM.USER_POST_ROUTES and
               us.idle_minutes() == 0,
-              "on by default at 10 minutes; idle sign out stays off")
-        info = [None]
-        us.last_show = lambda: info[0]
+              "the sign out after the last show is gone: no setting, no "
+              "route; idle sign out stays off")
+        at = [None]
+        us.backstop = lambda: at[0]
 
         def sin(name, pw, local=True, src="Rack screen"):
             ok, why, tok, _n = us.sign_in(name, pw, local, src)
@@ -86443,159 +86506,101 @@ def test_users_sign_out_after_the_last_show():
             return tok
         a = sin("Jeff", "right-pw-1")
         b = sin("Andy", "right-pw-2", False, "iPad")
-        w[0] += 6 * 3600
-        t[0] += 6 * 3600
+        w[0] += 5 * 24 * 3600
+        t[0] += 60
         check(us.session(a) is not None and us.session(b) is not None,
-              "no last show over (None from the engine): nobody is "
-              "signed out, hours later")
-        ended = w[0]
-        info[0] = {"night": "2026-11-14", "ended": ended}
-        w[0] = ended + 9 * 60 + 59
-        check(us.session(a) is not None and us.machine_user() is not None,
-              "9:59 after the last show ended: still signed in")
-        c = sin("Andy", "right-pw-2", False, "iPad 2")   # inside the grace
-        w[0] = ended + 10 * 60
+              "no backstop named (dark days, None from the engine): "
+              "nobody is signed out, days later")
+        at[0] = w[0] + 60
+        w[0] += 120
+        c = sin("Andy", "right-pw-2", False, "iPad 2")   # after that 4 AM
         check(us.session(a) is None and us.session(b) is None and
               us.machine_user() is None,
-              "10 minutes after: every session from before the show ended "
-              "is signed out, and the deck acts as nobody")
+              "the 4 AM the engine names: everyone signed in before it is "
+              "signed out, and the deck acts as nobody")
         check(us.session(c) is not None,
-              "a sign-in after the show ended (inside the grace) is not "
-              "signed out (review of PR #125, P2-5)")
-        us.sign_out(c)
+              "a sign-in after that 4 AM stays signed in")
         outs = [n for n in notes if n.get("action") == "sign-out" and
-                "after the last show" in n.get("reason", "")]
-        # Four sessions: the two first sign-ins (choosing a password), a
-        # and b.
+                "4 AM" in n.get("reason", "")]
         check(len(outs) == 4 and {n["user"] for n in outs} ==
-              {"Jeff", "Andy"} and all("—" not in n["reason"] and "–" not in
-                                       n["reason"] for n in outs),
-              f"each one journaled as signed out after the last show: "
-              f"{outs}")
-        e = sin("Jeff", "right-pw-1")
-        w[0] += 3 * 3600
-        t[0] += 60
-        check(us.session(e) is not None,
-              "a sign-in after it is not signed out again that night")
-        us.after_last_show_tick()
-        check(us.session(e) is not None, "nor by the engine's own beat")
-        # An extra show (Start now) ends later the same night: the night
-        # was already signed out once, so the later sign-in stays.
-        info[0] = {"night": "2026-11-14", "ended": w[0]}
-        w[0] += 3600
-        us.after_last_show_tick()
-        check(us.session(e) is not None,
-              "a later show ending the same night signs nobody out again")
-        # A restart (a new Users, the same file) with a sign-in after the
-        # sign out: it is not signed out either.
-        us2 = U.Users(d, clock=clock, wall=lambda: w[0], hash_params=_U_FAST)
-        us2.last_show = lambda: info[0]
-        ok, _w, f, _n = us2.sign_in("Jeff", "right-pw-1", True, "Rack")
-        w[0] += 60
-        check(ok and us2.session(f) is not None,
-              "after a restart a later sign-in stays signed in")
-        # The next night: again, once. The Stream Deck's own read (who
-        # is signed in on this machine) finds it on its own.
-        info[0] = {"night": "2026-11-15", "ended": w[0]}
-        w[0] += 10 * 60
-        check(us.machine_user() is None, "the next night's last show: the "
-                                         "deck reads nobody signed in")
-        check(us.session(e) is None, "signed out again, once")
-        # Live, held, aborted: the engine says None; nothing happens.
-        g = sin("Jeff", "right-pw-1")
-        info[0] = None
-        w[0] += 24 * 3600
-        check(us.session(g) is not None, "while the engine says no: never")
+              {"Jeff", "Andy"},
+              f"each one audited as signed out at 4 AM: {outs}")
+        _no_dashes(" ".join(n["reason"] for n in outs), "the audit reason")
         # A broken answer from the engine never signs anyone out.
-        us.last_show = lambda: 1 / 0
-        check(us.session(g) is not None, "an engine error: nothing")
-        us.last_show = lambda: {"night": "2026-11-16"}
-        check(us.session(g) is not None, "a half answer: nothing")
-        # 0 is off.
-        us.last_show = lambda: info[0]
-        check("off" in us.set_last_show(0), "0 turns it off")
-        info[0] = {"night": "2026-11-17", "ended": w[0] - 3600}
-        check(us.session(g) is not None and us.last_show_minutes() == 0,
-              "off: never signed out")
-        check("30 min" in us.set_last_show(30) and
-              us.view()["signout_after_last_show_min"] == 30,
-              "an admin sets it in minutes")
-        check(us.session(g) is None, "and on again it applies")
-        for bad in (-1, 1441, True, "10", 2.5, None):
-            try:
-                us.set_last_show(bad)
-                check(False, f"{bad!r} accepted")
-            except ValueError as ex:
-                check("0 (off) to 1440" in str(ex), f"{bad!r} refused")
-        check(U.classify("/api/remote/last-show-signout", {}) == "settings"
-              and "last-show-signout" in RM.USER_POST_ROUTES,
-              "setting it is a Settings press, on the Users screen")
+        us.backstop = lambda: 1 / 0
+        check(us.session(c) is not None, "an engine error: nothing")
+        us.backstop = lambda: "soon"
+        check(us.session(c) is not None, "an answer that is no time: "
+                                         "nothing")
+        us.backstop = None
+        # End of night's sign out: everyone, a Tailscale sign-in too.
+        e = sin("Jeff", "right-pw-1")
+        us.bind_tailscale(c, "andy@example.com", "100.88.1.2")
+        n0 = len(notes)
+        gone = us.end_all("End of night, pressed by Jeff on the Rack")
+        check(sorted(gone) == ["Andy", "Jeff"] and not us._sessions and
+              us.session(c) is None and us.session(e) is None and
+              all("End of night" in n["reason"] for n in notes[n0:]) and
+              len(notes) - n0 == 2,
+              f"end_all signs out everyone everywhere, audited: {gone} "
+              f"{notes[n0:]}")
     finally:
         shutil.rmtree(d, ignore_errors=True)
-    # The engine's side: when is the last show over?
+    # The engine's side: which 4 AM, if any. Saturday 2026-11-14 is the
+    # only night with shows; the show's time zone is Denver.
     import threading as _th
-    utc = timezone.utc
-    end = datetime(2026, 11, 15, 4, 30, tzinfo=utc)
-    early = datetime(2026, 11, 15, 2, 0, tzinfo=utc)
+    rule = _one_night_rule(S)
+    tz = S.zone("America/Denver")
+    four = datetime(2026, 11, 15, 4, 0, tzinfo=tz)
 
-    def slot(ended=end, origin="rule"):
-        return types.SimpleNamespace(ended_at=ended, origin=origin)
-
-    def machine(**kw):
-        base = dict(state="CLOSING", running=0, last_end=end,
-                    date="2026-11-14",
-                    pending=False, slots=(slot(early), slot(end)))
-        base.update(kw)
-        m = types.SimpleNamespace(**base)
-        m.waiting = lambda: m.pending
-        return m
-
-    def rig(m, look=None, latched=False, playing=False):
+    def rig(now, state="IDLE", running=0, look=None, playing=False,
+            the_rule=rule):
+        m = types.SimpleNamespace(state=state, running=running)
         svc = types.SimpleNamespace(
-            machine=m, conductor=types.SimpleNamespace(_look=look,
-                                                       latched=latched))
+            machine=m, rule=the_rule,
+            conductor=types.SimpleNamespace(_look=look))
         clk = types.SimpleNamespace(playing=playing)
         r = types.SimpleNamespace(
             schedule=svc, control=types.SimpleNamespace(
                 session=types.SimpleNamespace(clock=clk)),
             _arm_lock=_th.Lock(), _holds={}, morning=None,
-            flame_status=None, _last_show_seen=None)
+            flame_status=None, wall=lambda: now.timestamp())
         r.show_live_refusal = lambda: RM.Remote.show_live_refusal(r)
         r.rig_busy = lambda armed=False: RM.Remote.rig_busy(r, armed)
-        r.ask = lambda: RM.Remote.last_show_over(r)
+        r.ask = lambda: RM.Remote.signout_backstop(r)
         return r
 
-    def engine(m, **kw):
-        return rig(m, **kw).ask()
-    got = engine(machine())
-    check(got == {"night": "2026-11-14", "ended": end.timestamp()},
-          f"the last show ended: the night and when: {got}")
-    check(engine(machine(state="IDLE")) == got and
-          engine(machine(state="OFF")) == got,
-          "standing dark after the night closed still counts")
-    check(engine(machine(slots=(slot(end), slot(early, "operator")))) ==
-          got, "the latest end counts, whatever the slot order")
-    got_op = engine(machine(slots=(slot(early), slot(end, "operator"))))
-    check(got_op == got, "a Start now show after the scheduled ones counts")
+    def engine(now, **kw):
+        return rig(now, **kw).ask()
+    got = four.timestamp()
+    check(RM.SIGNOUT_BACKSTOP_HOUR == 4, "the backstop is 4 AM")
+    for why, now, want in (
+            ("3:59 after the show night: the 4 AM before it ended Friday, "
+             "a dark night", four - timedelta(minutes=1), None),
+            ("4:00 after the show night", four, got),
+            ("that afternoon", four + timedelta(hours=11), got),
+            ("3:59 the next morning: still that 4 AM",
+             four + timedelta(hours=23, minutes=59), got),
+            ("4:00 Monday, after dark Sunday: nobody",
+             four + timedelta(days=1), None),
+            ("a dark day's afternoon", four + timedelta(days=1, hours=9),
+             None),
+            ("4:00 on the show day itself (Friday was dark)",
+             four - timedelta(days=1), None)):
+        check(engine(now) == want, f"{why}: {engine(now)} not {want}")
+    late = four + timedelta(minutes=5)
     for why, eng in (
-            ("no schedule", lambda: RM.Remote.last_show_over(
+            ("no schedule", lambda: RM.Remote.signout_backstop(
                 types.SimpleNamespace(schedule=None))),
-            ("a show live", lambda: engine(machine(state="SHOW",
-                                                   running=3))),
-            ("paused", lambda: engine(machine(state="PAUSED", running=3))),
-            ("on Hold", lambda: engine(machine(state="HOLD"))),
-            ("the conductor holding", lambda: engine(machine(),
-                                                     look="HELD")),
-            ("a show still to come or delayed", lambda: engine(
-                machine(state="STANDBY", pending=True))),
-            ("the show clock playing", lambda: engine(machine(),
-                                                      playing=True)),
-            ("no show ended tonight (a restart's assumed end does not "
-             "count)", lambda: engine(machine(slots=(slot(None),)))),
-            ("a night with no show on the schedule, only Start now",
-             lambda: engine(machine(slots=(slot(end, "operator"),))))):
-        check(eng() is None, f"{why}: not over, nobody is signed out")
-    # Anything going on at the rig: wait until it is clear (P2-5).
+            ("no rule loaded", lambda: engine(late, the_rule=None)),
+            ("a show live", lambda: engine(late, state="SHOW", running=3)),
+            ("paused", lambda: engine(late, state="PAUSED", running=3)),
+            ("on Hold", lambda: engine(late, state="HOLD")),
+            ("the conductor holding", lambda: engine(late, look="HELD")),
+            ("the show clock playing", lambda: engine(late, playing=True))):
+        check(eng() is None, f"{why}: no backstop, nobody is signed out")
+    # Anything going on at the rig: it waits until that is clear, and
+    # then still names that 4 AM.
 
     class _Purge:
         fire = None
@@ -86617,18 +86622,15 @@ def test_users_sign_out_after_the_last_show():
 
         def view(self):
             return self.v
-    r = rig(machine())
+    r = rig(late)
     r.morning = types.SimpleNamespace(purge=_Purge(), lasers=_Lasers(),
                                       laser_arm=_Arm())
     r.flame_status = _Flames()
-    check(r.ask() == got, "setup: a quiet rig, the last show is over")
+    check(r.ask() == got, "setup: a quiet rig after a show night")
     for why, on, off in (
             ("a purge firing",
              lambda: setattr(r.morning.purge, "fire", {"id": 1}),
              lambda: setattr(r.morning.purge, "fire", None)),
-            ("machines armed for a purge",
-             lambda: setattr(r.morning.purge, "selected", ["g1"]),
-             lambda: setattr(r.morning.purge, "selected", [])),
             ("a laser test on",
              lambda: setattr(r.morning.lasers, "on", {"l1": {}}),
              lambda: setattr(r.morning.lasers, "on", {})),
@@ -86654,25 +86656,7 @@ def test_users_sign_out_after_the_last_show():
         check(r.ask() is None, f"{why}: it waits")
         off()
         check(r.ask() == got, f"{why} over: it goes")
-    # A night whose last show ended just before the 02:00 reset: the new
-    # night (its shows still to come) carries the old night's end, so the
-    # sign-out still comes (P2-8).
-    r = rig(machine())
-    check(r.ask() == got, "setup: the night's last show seen")
-    r.schedule.machine = machine(date="2026-11-15", state="IDLE",
-                                 pending=True, slots=(slot(None),),
-                                 last_end=None)
-    check(r.ask() == got, "after the reset the closed night's end still "
-                          "counts")
-    r.schedule.machine = machine(date="2026-11-15", state="SHOW",
-                                 running=1, pending=True)
-    check(r.ask() is None, "but never while the new night's show is live")
-    r2 = rig(machine(state="STANDBY", pending=True))
-    check(r2.ask() is None, "setup: a show still to come tonight")
-    r2.schedule.machine = machine(state="STANDBY", pending=True,
-                                  date="2026-11-14")
-    check(r2.ask() is None, "the same night is never carried")
-    # Users' own beat signs out with no page asking (P2-6).
+    # Users' own beat signs out with no page asking.
     d2 = tempfile.mkdtemp()
     try:
         w2 = [1_800_000_000.0]
@@ -86680,9 +86664,9 @@ def test_users_sign_out_after_the_last_show():
         u2.add("Jeff", "admin", "jeff-temp-1")
         u2.sign_in("Jeff", "jeff-temp-1", True, "Rack",
                    new_password="right-pw-1")
-        ended2 = w2[0] + 1
+        at2 = w2[0] + 1
         w2[0] += 3600
-        u2.last_show = lambda: {"night": "n", "ended": ended2}
+        u2.backstop = lambda: at2
         u2.start(every_s=0.02)
         deadline = time.monotonic() + 5
         while u2._sessions and time.monotonic() < deadline:
@@ -86695,43 +86679,13 @@ def test_users_sign_out_after_the_last_show():
         shutil.rmtree(d2, ignore_errors=True)
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "ltcplay", "web.py"), encoding="utf-8").read()
-    check("r.users.last_show = r.last_show_over" in src and
+    check("r.users.backstop = r.signout_backstop" in src and
           "r.users.start()" in src and "r.users.stop()" in src,
           "web.serve gives the users the engine's answer")
     page = screen_text()
-    check('post("/api/remote/last-show-signout", {minutes:lastShow})' in
-          page and 'id="au-lastshow"' in page,
-          "the Users screen has the setting and saves it")
-    # A blank or wrong number is said and nothing is saved, never read as
-    # 0 (off) (review of PR #125, P2-7).
-    h = page[page.find('$("au-save").addEventListener'):]
-    h = h[:h.find("});")]
-    check(h.find("lastShowMinutes(") >= 0 and
-          0 <= h.find("if(lastShow === null)") < h.find("post(") and
-          "Nothing was saved" in h and "parseInt($(\"au-lastshow\")" not
-          in h, "Save checks the minutes before it sends anything")
-    import shutil as _sh2
-    import json as _json2
-    logic = page[page.find("// LOGIC BEGIN"):page.find("// LOGIC END")]
-    check("function lastShowMinutes(" in logic, "lastShowMinutes is pure "
-                                                "page logic")
-    node = _sh2.which("node")
-    if node:
-        cases = [["", None], ["  ", None], ["abc", None], ["-1", None],
-                 ["2.5", None], ["1441", None], ["99999", None],
-                 [None, None], ["0", 0], ["10", 10], [" 30 ", 30],
-                 ["1440", 1440]]
-        js = logic + "console.log(JSON.stringify(" + _json2.dumps(cases) + \
-            ".map(c => [c[0], lastShowMinutes(c[0]), c[1]])));"
-        # Through a temporary file (_node_js): the logic block is over
-        # Windows' 32,767 character command line (WinError 206).
-        r = _node_js(node, js, capture_output=True, text=True, timeout=60)
-        try:
-            got = _json2.loads(r.stdout)
-        except ValueError:
-            got = None
-        check(got is not None and all(g[1] == g[2] for g in got),
-              f"the page reads the minutes right: {got or r.stderr[-300:]}")
+    check("last-show-signout" not in page and "au-lastshow" not in page
+          and "lastShowMinutes" not in page,
+          "the Users screen has no last show setting any more")
     print("  ok")
 
 
@@ -87292,7 +87246,6 @@ def test_superuser_session_limit_and_password_again():
     ok, _w, jt, _n = us.sign_in("Jeff", "jeff-own-pw-1", True, "Rack screen")
     ok, _w, at, _n = us.sign_in("Andy", "andy-own-pw-1", True, "Rack screen")
     us.set_idle(0)
-    us.set_last_show(0)
     now[0] += U.SUPERUSER_IDLE_S - 5
     us.touch(at)
     check(us.session(jt) is not None, "Jeff before the limit")
@@ -87902,7 +87855,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/hazers-arm-all", "/api/remote/hazers-off",
     "/api/remote/hold", "/api/remote/idle-signout", "/api/remote/jump",
     "/api/remote/laser-arm", "/api/remote/laser-test",
-    "/api/remote/last-show-signout", "/api/remote/layout",
+    "/api/remote/layout",
     "/api/remote/live-flame", "/api/remote/lock", "/api/remote/loop",
     "/api/remote/mark-a", "/api/remote/mark-b", "/api/remote/mesonet",
     "/api/remote/morning", "/api/remote/morning-open",
@@ -114649,7 +114602,6 @@ _UI2_ROUTES = {
     "/api/remote/idle-signout": "settings",
     "/api/remote/jump": "show",
     "/api/remote/laser-arm": "arm",
-    "/api/remote/last-show-signout": "settings",
     "/api/remote/live-flame": "settings",
     "/api/remote/loop": "show",
     "/api/remote/mark-a": "show",
@@ -137354,7 +137306,7 @@ def test_ui2_users_audit_are_1_0s():
           'id="nav-user"' not in two,
           "2.0 has no 1.0 chip and no lockForSignIn")
     for r in ("users", "signin", "signout", "my-password", "role-matrix",
-              "audit-verify", "idle-signout", "last-show-signout"):
+              "audit-verify", "idle-signout"):
         check(f'"/api/remote/{r}"' in want,
               f"the Users pane posts 1.0's route {r}")
     # The nightly upload's two routes are in the card's own script, served
@@ -137448,7 +137400,7 @@ _UI2_USERS_VIEW = {
     "upload": {"upload": {"enabled": True, "host": "audit.example",
                           "time": "03:30", "keep_days": 120,
                           "token_set": True, "pending_days": []}},
-    "idle_signout_min": 15, "signout_after_last_show_min": 10}
+    "idle_signout_min": 15}
 # The same screen for an admin (Andy): no upload, Jeff read only.
 _UI2_USERS_ADMIN_VIEW = dict(
     {k: v for k, v in _UI2_USERS_VIEW.items()
@@ -137465,8 +137417,8 @@ def test_ui2_users_audit_driven():
             "control posts 1.0's route and body (role, reset, clear, "
             "remove after 1.0's question, add, lockouts, own password, "
             "who may do what, check the chain, the audit settings with "
-            "idle and last show sign out, Send now, Sign out); a bad "
-            "last show time posts nothing; typed secrets are cleared; a "
+            "idle sign out, Send now, Sign out); no sign out after the "
+            "last show any more; typed secrets are cleared; a "
             "screen off the show PC gets 1.0's limits; 56 px targets, "
             "nothing off the side, rows stacked on a phone")
     chrome = _find_chromium()
@@ -137512,7 +137464,7 @@ out.open = {tab:document.body.dataset.tab, hash:location.hash, shown:!g("t-users
   rows:[...g("u-list").querySelectorAll("tr")].map(r => r.cells[0].textContent + "|" + r.cells[2].textContent),
   fixed:[...g("u-matrix").querySelectorAll("input[disabled]")].map(c => c.dataset.c + "/" + c.dataset.p),
   tok:[g("au-tok").type, g("au-tok").value, g("au-tok").placeholder, g("au-url").value],
-  idle:g("au-idle").value, last:g("au-lastshow").value, save:!g("um-save").hidden};
+  idle:g("au-idle").value, last:!!g("au-lastshow"), save:!g("um-save").hidden};
 out.small = [...document.querySelectorAll("#t-users button, #t-users input, #t-users select")]
   .filter(e => vis(e) && e.getBoundingClientRect().height < 55.5).map(e => e.id || e.textContent.trim());
 out.xs = document.scrollingElement.scrollWidth - innerWidth;
@@ -137560,10 +137512,7 @@ g("u-matrix").querySelector('input[data-c="operator"][data-p="arm"]').checked = 
 out.matrix = await press(g("um-save"));
 out.verify = await press(g("au-verify"));
 out.vmsg = g("au-msg").textContent;
-g("au-lastshow").value = "abc";
-out.bad = await press(g("au-save"));
-out.badMsg = g("au-msg").textContent;
-g("au-lastshow").value = "20"; g("au-idle").value = "5";
+g("au-idle").value = "5";
 out.saved = await press(g("au-save"), 500);
 g("au-tok").value = "tok"; g("au-pw").value = "jeff-pw-1";
 out.upSaved = await press(g("au-upsave"), 500);
@@ -137624,9 +137573,9 @@ out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, upload:!!g
               f"{where}: a SuperUser on the show PC: 1.0's users, their "
               f"passwords' state and the fixed rows locked: {o}")
         check(o["tok"] == ["password", "", "saved (type to replace)", ""]
-              and o["idle"] == "15" and o["last"] == "10",
-              f"{where}: the token and address are not shown; idle and "
-              f"last show sign out filled: {o}")
+              and o["idle"] == "15" and o["last"] is False,
+              f"{where}: the token and address are not shown; idle sign "
+              f"out filled; no last show field: {o}")
         check(not r["small"] and r["xs"] <= 0,
               f"{where}: 56 px targets, nothing off the side: "
               f"{r['small']} {r['xs']}")
@@ -137682,14 +137631,10 @@ out.viewer = {admin:!g("u-admin").hidden, audit:!g("u-audit").hidden, upload:!!g
         check(r["verify"] == [["audit-verify", {}]] and
               r["vmsg"] == "The chain holds.",
               f"{where}: Check the chain now: {r['verify']} {r['vmsg']!r}")
-        check(r["bad"] == [] and r["badMsg"].startswith(
-                  "Sign out after the last show has to be a whole number"),
-              f"{where}: a bad last show time posts nothing: {r['bad']}")
-        check(r["saved"] == [
-                  ["idle-signout", {"minutes": 5}],
-                  ["last-show-signout", {"minutes": 20}]],
-              f"{where}: the audit card's Save posts the two sign out "
-              f"settings, never the upload: {r['saved']}")
+        check(r["saved"] == [["idle-signout", {"minutes": 5}]],
+              f"{where}: the audit card's Save posts the idle sign out "
+              f"alone (no sign out after the last show any more), never "
+              f"the upload: {r['saved']}")
         check(r["upSaved"] == [
                   ["audit-settings", {"enabled": True, "time": "03:30",
                                       "keep_days": 120, "token": "tok",
@@ -140088,7 +140033,7 @@ if __name__ == "__main__":
         test_open_beyond_window_finder_and_front,
         test_calibrate_all_lasers_rules_and_order,
         test_calibrate_all_and_open_beyond_routes,
-        test_users_sign_out_after_the_last_show,
+        test_users_signed_out_by_end_of_night_and_the_4am_backstop,
         test_config_watch_names_the_file_and_who_is_behind,
         test_config_watch_reloads_only_what_is_safe_and_is_quick,
         test_config_watch_on_the_status_and_reload_engine,

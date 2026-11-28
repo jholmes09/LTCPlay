@@ -841,6 +841,46 @@ MUTATIONS = [
   "                    self._tailscale_session_check(ctx, users)\n"
   "                    users.touch(tok)\n"),
 
+ ("sign out: a dark day's 4 AM signs everyone out",
+  "ltcplay/remote.py",
+  "            if sch._night_span(rule, night)[0] is None:\n                return None",
+  "            if False:\n                return None"),
+
+ ("sign out: the 4 AM backstop never signs anyone out",
+  "ltcplay/users.py",
+  "                if s.get(\"wall_at\", 0.0) < at]",
+  "                if False]"),
+
+ ("sign out: the 4 AM backstop runs while a show is on Hold",
+  "ltcplay/remote.py",
+  "                    getattr(m, \"state\", None) in (\"SHOW\", \"PAUSED\",\n                                                  \"HOLD\") or \\",
+  "                    False or \\"),
+
+ ("sign out: the engine never tells the users of the 4 AM backstop",
+  "ltcplay/web.py",
+  "        r.users.backstop = r.signout_backstop",
+  "        pass"),
+
+ ("end of night: one tap is taken",
+  "ltcplay/remote.py",
+  "        if body.get(\"confirmed\") is not True:\n            return refuse(400, END_OF_NIGHT_CONFIRM)",
+  "        if False:\n            return refuse(400, END_OF_NIGHT_CONFIRM)"),
+
+ ("end of night: taken from a screen with nobody signed in",
+  "ltcplay/remote.py",
+  "        if self.users_active() and not getattr(ctx, \"session\", None):\n            return refuse(403, END_OF_NIGHT_SIGN_IN)",
+  "        if False:\n            return refuse(403, END_OF_NIGHT_SIGN_IN)"),
+
+ ("end of night: taken while a show is live",
+  "ltcplay/remote.py",
+  "        if live:\n            return refuse(409, END_OF_NIGHT_LIVE)",
+  "        if False:\n            return refuse(409, END_OF_NIGHT_LIVE)"),
+
+ ("end of night: it signs nobody out",
+  "ltcplay/remote.py",
+  "                f\"{screen}\") if self.users_active() else []",
+  "                f\"{screen}\") if False else []"),
+
  ("tailscale: access taken away ends no Tailscale sign-in",
   "ltcplay/users.py",
   "                if not b or (keep is not None and\n",
@@ -14025,12 +14065,6 @@ def build():
 
  # End of night (Jeff, 2026-11-14): the schedule's after_last_show "idle"
  # holds the idle look after the last show until End of night.
- ("end of night: one tap ends the held idle look", "ltcplay/remote.py",
-  """        if body.get("confirmed") is not True:
-            self._journal(who, screen, "end of night", "refused",""",
-  """        if False:
-            self._journal(who, screen, "end of night", "refused","""),
-
  ("end of night: signed out may not press it", "ltcplay/users.py",
   """    "end-of-night": "safety",""",
   """    "end-of-night": "show","""),
@@ -19031,34 +19065,6 @@ def build():
   "        r.users.start()\n",
   "        pass\n"),
 
- ("last show sign out: the beat checks nothing (P2-6)",
-  "ltcplay/users.py",
-  "            while not self._beat_stop.wait(every_s):\n"
-  "                self.after_last_show_tick()",
-  "            while not self._beat_stop.wait(every_s):\n"
-  "                pass"),
-
- ("last show sign out: a blank minutes box is saved as off (P2-7)",
-  "ltcplay/web/remote_rules.js",
-  "  if(!/^[0-9]{1,4}$/.test(t)) return null;",
-  "  if(!/^[0-9]{1,4}$/.test(t)) return 0;"),
-
- ("last show sign out: a night closed at its reset loses its sign-out (P2-8)",
-  "ltcplay/remote.py",
-  "            if seen is not None and seen[\"night\"] != str(m.date):",
-  "            if False:"),
-
- ("last show sign out: a Start now on an unscheduled night counts (P2-8)",
-  "ltcplay/remote.py",
-  "            if ends and scheduled:",
-  "            if ends:"),
-
- ("last show sign out: a restart's assumed end counts as a show (P2-8)",
-  "ltcplay/remote.py",
-  "            ends = [s.ended_at for s in slots\n"
-  "                    if getattr(s, \"ended_at\", None) is not None]",
-  "            ends = [m.last_end] if m.last_end is not None else []"),
-
  ("open beyond: ltc serve never hands on BEYOND's host (P2-9)",
   "ltcplay/web.py",
   "        httpd.remote.beyond_host = getattr(_bey_cfg, \"host\", None)",
@@ -19126,66 +19132,6 @@ def build():
 
  # Sign everyone out after the last show (users.py, remote.py; Jeff,
  # 2026-10-26).
- ("last show sign out: off by default",
-  "ltcplay/users.py",
-  "LAST_SHOW_SIGNOUT_DEFAULT_MIN = 10",
-  "LAST_SHOW_SIGNOUT_DEFAULT_MIN = 0"),
-
- ("last show sign out: no grace after the last show",
-  "ltcplay/users.py",
-  "            due = float(info[\"ended\"]) + mins * 60",
-  "            due = float(info[\"ended\"])"),
-
- ("last show sign out: a later sign-in is signed out again that night",
-  "ltcplay/users.py",
-  "        if night == self._last_show_done or self._wall() < due:",
-  "        if self._wall() < due:"),
-
- ("last show sign out: a sign-in after the show ended is signed out (P2-5)",
-  "ltcplay/users.py",
-  "                if s.get(\"wall_at\", 0.0) < ended]",
-  "                if s.get(\"wall_at\", 0.0) < due]"),
-
- ("last show sign out: a sign-in after it is signed out after a restart",
-  "ltcplay/users.py",
-  "                if s.get(\"wall_at\", 0.0) < ended]",
-  "                ]"),
-
- ("last show sign out: never signs anyone out",
-  "ltcplay/users.py",
-  "            del self._sessions[t]\n            self._note(\"sign-out\", s[\"name\"],\n                       reason=f\"after the last show",
-  "            pass\n            self._note(\"sign-out\", s[\"name\"],\n                       reason=f\"after the last show"),
-
- ("last show sign out: 0 does not turn it off",
-  "ltcplay/users.py",
-  "        if not mins or fn is None:\n            return\n        try:\n            info = fn()",
-  "        if fn is None:\n            return\n        try:\n            info = fn()"),
-
- ("last show sign out: the deck's user is not checked",
-  "ltcplay/users.py",
-  "            self._drop_idle(now)\n            self._drop_after_last_show()\n            best = None",
-  "            self._drop_idle(now)\n            best = None"),
-
- ("last show sign out: runs while a show is on Hold",
-  "ltcplay/remote.py",
-  "            if getattr(m, \"state\", None) in (\"SHOW\", \"PAUSED\", \"HOLD\") or \\",
-  "            if getattr(m, \"state\", None) in (\"SHOW\", \"PAUSED\") or \\"),
-
- ("last show sign out: runs while a show is still to come",
-  "ltcplay/remote.py",
-  "                if not m.waiting():\n                    return dict(self._last_show_seen)",
-  "                if True:\n                    return dict(self._last_show_seen)"),
-
- ("last show sign out: runs while an Abort stands",
-  "ltcplay/remote.py",
-  "            if self.show_live_refusal():\n                return None\n            cond = getattr(svc, \"conductor\", None)",
-  "            if False:\n                return None\n            cond = getattr(svc, \"conductor\", None)"),
-
- ("last show sign out: the engine never tells the users",
-  "ltcplay/web.py",
-  "        r.users.last_show = r.last_show_over\n",
-  "        pass\n"),
-
  # Third review of #126 (deck-followup).
  ("morning: an undeclared multi-safety group is purged again (third review of #126, P2-1)",
   "ltcplay/morning.py",
@@ -26159,11 +26105,6 @@ def build():
   "ltcplay/web/remote2.html",
   "  renderUser();\n  loadUsers();\n});",
   "  loadUsers();\n});"),
-
- ("ui 2.0 Users: a bad last show time is saved anyway",
-  "ltcplay/web/remote2.html",
-  "  if(lastShow === null){\n    uMsg(\"au-msg\", \"Sign out after the last show",
-  "  if(false){\n    uMsg(\"au-msg\", \"Sign out after the last show"),
 
  ("ui 2.0 Users: the pane's buttons are smaller than 56 px",
   "ltcplay/web/remote2.html",

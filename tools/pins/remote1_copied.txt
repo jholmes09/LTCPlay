@@ -57,7 +57,6 @@
       <div class="row" style="margin-top:8px"><button class="ghost" id="au-verify">Check the chain now</button></div>
       <div id="au-set">
         <div><label for="au-idle">Idle sign out, minutes (0 is off)</label><input id="au-idle" type="number" min="0"></div>
-        <div><label for="au-lastshow">Sign everyone out this many minutes after the last show of the night (0 is off)</label><input id="au-lastshow" type="number" min="0" max="1440"></div>
         <div class="row" style="margin-top:8px"><button id="au-save">Save</button></div>
       </div>
       <div class="toast" id="au-msg"></div>
@@ -1285,7 +1284,6 @@ function renderAudit(){
   const busy = document.activeElement && $("au-set").contains(document.activeElement);
   if(!busy){
     $("au-idle").value = UV.idle_signout_min || 0;
-    $("au-lastshow").value = UV.signout_after_last_show_min == null ? 10 : UV.signout_after_last_show_min;
   }
   const may = !!UV.may_settings;
   $("au-set").querySelectorAll("input,button").forEach(el => { el.disabled = !may; });
@@ -1369,14 +1367,8 @@ $("au-verify").addEventListener("click", async () => {
   loadUsers();
 });
 $("au-save").addEventListener("click", async () => {
-  const lastShow = lastShowMinutes($("au-lastshow").value);
-  if(lastShow === null){
-    uMsg("au-msg", "Sign out after the last show has to be a whole number of minutes, 0 (off) to 1440. Nothing was saved.", true);
-    return;
-  }
   try{
-    await post("/api/remote/idle-signout", {minutes:parseInt($("au-idle").value, 10) || 0});
-    const r = await post("/api/remote/last-show-signout", {minutes:lastShow});
+    const r = await post("/api/remote/idle-signout", {minutes:parseInt($("au-idle").value, 10) || 0});
     uMsg("au-msg", r.text);
   }catch(e){ uMsg("au-msg", e.message, true); }
   loadUsers();

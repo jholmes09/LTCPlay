@@ -148,14 +148,23 @@ FLAME_STALE_S = 1.0
 # The routes this module answers, and nothing else. No "arm" among them.
 CONTROL_ROUTES = ("start-now", "hold", "resume",
                   "disarm-all", "stop", "run-off", "start-at-cue")
-# End of night (Jeff, 2026-11-14): the idle look the schedule holds after
-# the last show (after_last_show "idle") ends, to black. Anyone may press
-# it, signed in or not, like Stop (users.REMOTE_ROUTES: "safety"); the
-# page sends it only after a deliberate second tap, and the engine takes
-# it only with {"confirmed": true}.
+# End of night (Jeff, 2026-11-14 and 2026-11-28): the idle look the
+# schedule holds after the last show (after_last_show "idle") ends, to
+# black, when one is held, and EVERYONE is signed out, everywhere,
+# Tailscale included. Always there for a signed-in person, any role; with
+# users set up, never for nobody (2026-11-28, reversing 2026-11-14's
+# "anyone"). Never while a show is live. The page sends it only after a
+# deliberate second tap, and the engine takes it only with
+# {"confirmed": true}.
 END_OF_NIGHT_ROUTES = ("end-of-night",)
-END_OF_NIGHT_CONFIRM = ("Tap End of night twice to end the idle look. "
-                        "Nothing was changed.")
+END_OF_NIGHT_CONFIRM = ("Tap End of night twice. Nothing was changed.")
+END_OF_NIGHT_SIGN_IN = ("Sign in to press End of night. Nothing was "
+                        "changed.")
+END_OF_NIGHT_LIVE = ("A show is playing. End of night is for after the "
+                     "last show. Nothing was changed.")
+# The backstop: this hour, in the show's time zone, after a night that had
+# shows on the schedule, everyone signed in before it is signed out.
+SIGNOUT_BACKSTOP_HOUR = 4
 # Stop from a screen (Jeff, 2026-10-28; review of #144, F7): the Stream
 # Deck's complete halt (Remote.halt). Since 2026-10-30 Stop leaves Run on
 # and holds the schedule instead; "run-off" is the halt with no Hold and
@@ -516,7 +525,6 @@ UPLOAD_CARD_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 UPLOAD_PASSWORD = "Type your password to save. Nothing was changed."
 USER_POST_ROUTES = ("signin", "signout", "my-password", "users",
                     "role-matrix", "clear-lockouts", "idle-signout",
-                    "last-show-signout",
                     "audit-settings", "audit-upload-now", "audit-verify")
 
 # Any of these on a request means something forwarded it. A browser on the
@@ -2237,7 +2245,6 @@ class Remote:
         # The last show seen ended ({"night", "ended"}), kept so a night
         # that closes at its 02:00 reset before the sign-out is due still
         # gets it (review of PR #125, P2-8).
-        self._last_show_seen = None
         # madmapperwatch.MadMapperWatch, set by web.serve with MadMapper
         # configured, and its heartbeat Watchdog and HeartbeatConfig: the
         # Video lamp says whether MadMapper is running before a show plays.
@@ -2812,14 +2819,14 @@ class Remote:
         if name in FIREBALL_PRACTICE_POST_ROUTES:
             return (*self.fireball_practice_post(body, ctx),) + ({},)
         if name in END_OF_NIGHT_ROUTES:
-            # Only takes something away (the held idle look, to black):
-            # never refused for a stale page or a sign in, from any
-            # surface; only the deliberate second tap is asked for.
+            # Never refused for a stale page; with users set up, for
+            # nobody signed in (end_of_night_press).
             stamp = getattr(self.schedule, "stamp_press", None)
             if stamp is not None:
                 stamp()
             who, screen, _surface = self._actor(ctx, body)
-            return (*self.end_of_night_press(who, screen, body),) + ({},)
+            return (*self.end_of_night_press(who, screen, body, ctx),) + (
+                {},)
         if name in CONTROL_ROUTES or name in TRANSPORT_ROUTES:
             out = self.press(name, body, ctx)
             if name in PRACTICE_ENDS_ROUTES:
@@ -3496,8 +3503,6 @@ class Remote:
                 text = u.clear_lockouts()
             elif name == "idle-signout":
                 text = u.set_idle(body.get("minutes"))
-            elif name == "last-show-signout":
-                text = u.set_last_show(body.get("minutes"))
             elif name == "audit-settings":
                 from . import auditsend
                 # Every upload change asks for the SuperUser's password
@@ -5377,34 +5382,82 @@ class Remote:
                      text=f"{tests_said} {r.get('text') or ''}".strip())
         return (200 if r.get("ok") else 409), r
 
-    def end_of_night_press(self, who, screen, body):
+    def end_of_night_offered(self, ctx, held):
+        """True while End of night would do something from this screen:
+        with users set up, someone signed in on it; with none, only an
+        idle look to end; never while a show is live. Never raises."""
+        try:
+            if self.show_live_refusal():
+                return False
+            if self.users_active():
+                return bool(getattr(ctx, "session", None))
+            return bool(held)
+        except Exception:                        # noqa: BLE001
+            return False
+
+    def end_of_night_press(self, who, screen, body, ctx=None):
         """POST end-of-night {"confirmed": true}: the schedule's held idle
-        look ends (schedule_service.Service.end_of_night), journaled by
-        the engine with who pressed it, or "signed out". (code, body)."""
-        if body.get("confirmed") is not True:
+        look ends, when one is held (schedule_service.Service.
+        end_of_night), and everyone is signed out everywhere
+        (users.Users.end_all), the person who pressed it too. Journaled
+        with who. (code, body)."""
+        def refuse(code, why):
             self._journal(who, screen, "end of night", "refused",
                           f"{who or 'Someone'}'s End of night on the "
-                          f"{screen} was refused. {END_OF_NIGHT_CONFIRM}")
-            return 400, {"ok": False, "error": END_OF_NIGHT_CONFIRM,
-                         "text": END_OF_NIGHT_CONFIRM}
-        svc = self.schedule
-        fn = getattr(svc, "end_of_night", None)
-        if fn is None:
-            why = ("There is no scheduler running in this engine, so there "
-                   "is no idle look to end. Nothing was changed.")
-            return 409, {"ok": False, "error": why, "text": why}
+                          f"{screen} was refused. {why}")
+            return code, {"ok": False, "error": why, "text": why}
+        if body.get("confirmed") is not True:
+            return refuse(400, END_OF_NIGHT_CONFIRM)
+        if self.users_active() and not getattr(ctx, "session", None):
+            return refuse(403, END_OF_NIGHT_SIGN_IN)
         try:
-            r = fn(who, screen)
+            live = self.show_live_refusal()
+        except Exception:                        # noqa: BLE001
+            live = "not known"
+        if live:
+            return refuse(409, END_OF_NIGHT_LIVE)
+        svc = self.schedule
+        text = ""
+        state = getattr(getattr(svc, "machine", None), "state", None)
+        held = getattr(getattr(svc, "machine", None), "held_look", False)
+        if not held and not self.users_active():
+            # Nothing to end and nobody to sign out: said, as before.
+            fn = getattr(svc, "end_of_night", None)
+            why = (fn(who, screen).get("text") if fn is not None else
+                   "There is no scheduler running in this engine, so "
+                   "there is no idle look to end. Nothing was changed.")
+            return 409, {"ok": False, "error": why, "text": why}
+        if held:
+            try:
+                r = svc.end_of_night(who, screen)
+            except Exception as e:               # noqa: BLE001
+                why = (f"End of night did NOT go ({type(e).__name__}: {e}). "
+                       f"Press Stop to take the pixels dark. Nobody was "
+                       f"signed out.")
+                self._journal(who, screen, "end of night", "fault", why,
+                              fault=True)
+                return 500, {"ok": False, "error": why, "text": why}
+            if not r.get("ok"):
+                return 409, {"ok": False, "error": r.get("text"),
+                             "text": r.get("text")}
+            text, state = str(r.get("text") or ""), r.get("state")
+        try:
+            gone = self.users.end_all(
+                f"End of night, pressed by {who or 'someone'} on the "
+                f"{screen}") if self.users_active() else []
         except Exception as e:                   # noqa: BLE001
-            why = (f"End of night did NOT go ({type(e).__name__}: {e}). "
-                   f"Press Stop to take the pixels dark.")
+            why = (f"{text} Signing everyone out did NOT go "
+                   f"({type(e).__name__}).").strip()
             self._journal(who, screen, "end of night", "fault", why,
                           fault=True)
             return 500, {"ok": False, "error": why, "text": why}
-        if not r.get("ok"):
-            return 409, {"ok": False, "error": r.get("text"),
-                         "text": r.get("text")}
-        return 200, r
+        said = ("Everyone is signed out." if gone or self.users_active()
+                else "")
+        self._journal(who, screen, "end of night", "done",
+                      f"{who or 'Someone'} pressed End of night on the "
+                      f"{screen}. {said}".strip())
+        return 200, {"ok": True, "state": state, "signed_out": len(gone),
+                     "text": f"{text} {said}".strip() or "End of night."}
 
     # -- Start at a cue (play_from.py part 2) -----------------------------
     def start_at_cue(self, body):
@@ -8633,56 +8686,48 @@ class Remote:
         except Exception:                        # noqa: BLE001
             pass
 
-    def last_show_over(self):
-        """For users.Users.last_show (sign everyone out after the last
-        show, Jeff, 2026-10-26): {"night", "ended"} once the night's last
-        show has ended, else None.
+    def signout_backstop(self):
+        """For users.Users.backstop (Jeff, 2026-11-28): the wall clock
+        seconds of the latest SIGNOUT_BACKSTOP_HOUR (4 AM) in the show's
+        time zone, when the night that ended at it had shows on the
+        schedule (the night of the date before); else None. A dark day's
+        4 AM is None: nobody is signed out by it.
 
-        The night is the schedule's own (schedule.night_of: until it hands
-        over to the next, 2 AM or later while a show of it still runs),
-        and "ended" is when the last show of it that really ran ended (a
-        slot's ended_at; a restart's assumed end does not count). A show
-        started by hand (Start now) counts, but only on a night that had a
-        show on the schedule: without one, never (review of PR #125, P2-8).
-        A night whose last show ended shortly before the 02:00 reset still
-        gets its sign-out after the reset (remembered here).
-
-        None with no schedule, while a show is live, paused or on Hold,
-        while a show is still to come or waiting after a Hold, while the
-        show clock plays, and while anything is
-        going on at the rig (rig_busy with armed: a hold to arm, a purge,
-        a laser test, an armed laser or flame group): it waits until that
-        is clear (P2-5). Plain reads, never a lock."""
+        None too with no schedule, while a show is live, paused or on
+        Hold, while the show clock plays, and while anything is going on
+        at the rig (rig_busy with armed: a hold to arm, a purge, a laser
+        test, an armed laser or flame group): it waits until that is
+        clear, and then still signs out everyone from before that 4 AM.
+        Plain reads, never a lock."""
         svc = self.schedule
-        m = getattr(svc, "machine", None)
-        if m is None:
+        rule = getattr(svc, "rule", None)
+        if rule is None:
             return None
         try:
-            if self.show_live_refusal():
+            import datetime as _dt
+            from . import schedule as sch
+            tz = getattr(rule, "tz", None) or sch.zone(rule.timezone)
+            now = _dt.datetime.fromtimestamp(self.wall(), tz)
+            at = now.replace(hour=SIGNOUT_BACKSTOP_HOUR, minute=0,
+                             second=0, microsecond=0)
+            if now < at:
+                at = (at - _dt.timedelta(days=1))
+                at = _dt.datetime.combine(
+                    at.date(), _dt.time(SIGNOUT_BACKSTOP_HOUR), tzinfo=tz)
+            night = at.date() - _dt.timedelta(days=1)
+            if sch._night_span(rule, night)[0] is None:
                 return None
+            m = getattr(svc, "machine", None)
             cond = getattr(svc, "conductor", None)
-            if getattr(m, "state", None) in ("SHOW", "PAUSED", "HOLD") or \
+            if self.show_live_refusal() or \
+                    getattr(m, "state", None) in ("SHOW", "PAUSED",
+                                                  "HOLD") or \
                     getattr(cond, "_look", None) == "HELD" or \
                     getattr(m, "running", 0):
                 return None
             if self.rig_busy(armed=True):
                 return None
-            slots = list(getattr(m, "slots", ()) or ())
-            ends = [s.ended_at for s in slots
-                    if getattr(s, "ended_at", None) is not None]
-            scheduled = any(getattr(s, "origin", "rule") != "operator"
-                            for s in slots)
-            if ends and scheduled:
-                self._last_show_seen = {"night": str(m.date),
-                                        "ended": max(ends).timestamp()}
-                if not m.waiting():
-                    return dict(self._last_show_seen)
-            seen = self._last_show_seen
-            if seen is not None and seen["night"] != str(m.date):
-                # That night closed at its reset (nothing of it can still
-                # run), so its last show is over whatever tonight holds.
-                return dict(seen)
-            return None
+            return at.timestamp()
         except Exception:                        # noqa: BLE001
             return None
 
@@ -11468,9 +11513,13 @@ class Remote:
                     "conductor": cv.get("attached", False),
                     "lit": cv.get("lit") is True,
                     "stop_held": cv.get("stop_held") is True,
-                    # The idle look held after the last show: the SHOW
-                    # tab's End of night is there only while this is true.
+                    # The idle look held after the last show.
                     "held_look": st.get("held_look") is True,
+                    # End of night would be taken from this screen now
+                    # (end_of_night_press): the button is there only
+                    # while this is true.
+                    "end_of_night": self.end_of_night_offered(
+                        ctx, st.get("held_look") is True),
                     "trouble": cv.get("trouble"),
                     "next": st.get("next"), "delayed": st.get("delayed"),
                     "dry_run": st.get("dry_run"),

@@ -2201,13 +2201,17 @@ the Schedule tab's editor (the schedule file's `after_last_show`):
   until the hand over), but the pixels stay on the idle look. A red
   **End of night** button then shows in the next-step bar at the top of
   every tab. Tap it twice (like Stop show) and the pixels go black: the
-  night is closed exactly as Close for the night closes it. Anyone may
-  press it, signed in or not; the journal and the audit log say who, or
-  "signed out".
+  night is closed exactly as Close for the night closes it. Only a
+  signed-in person can press it (Jeff, 2026-11-28), and it signs
+  everyone out on every screen; the journal and the audit log say who.
+
+End of night is there for a signed-in person on every night, whether or
+not the idle look is kept (never while a show is playing): on a night
+that went dark it only signs everyone out.
 
 | While the idle look is held | What happens |
 | --- | --- |
-| End of night, tapped twice | the pixels go black; the night is closed for good (a restart or a schedule save never holds it again) |
+| End of night, tapped twice | the pixels go black; the night is closed for good (a restart or a schedule save never holds it again); everyone is signed out on every screen |
 | One tap only | nothing is sent; after 3 s the message line says "End of night not sent: tap twice" |
 | Stop | a complete halt as always, and the held look ends: the pixels go black, the night is closed for good |
 | Show control off | everything a Stop does but the Hold, so the same: black, closed for good |
@@ -2215,7 +2219,7 @@ the Schedule tab's editor (the schedule file's `after_last_show`):
 | Start now | an extra show starts; when it ends by itself the idle look is held again, with End of night |
 | The hand over to the next night (2 AM, or earlier for an early next night) | the held look ends, the pixels go black, the journal says so, and the next night starts as it always does |
 | ltcplay restarts | the look is held again (and End of night shows) only if it was held before the restart; a night that was black stays black |
-| Everyone is signed out 10 minutes after the last show | the look stays; End of night still works signed out |
+| Everyone is signed out at 4 AM | the look stays until the hand over; sign in to press End of night |
 | The schedule is saved with "Go dark" | the held look ends: the pixels go black |
 
 The setting only changes what the pixels do. Nothing is armed or lit
@@ -2709,16 +2713,10 @@ can still Stop, Hold, Acknowledge and disarm. Anything on the show
 Wi-Fi that can reach that address can see the page, so keep the show Wi-Fi
 to the crew.
 
-After the last show of the night, everyone is signed out on their own:
-10 minutes after the last show ends, every screen that was signed in
-before it ended is signed out, once. It waits while a show is live or on
-Hold, and while anything is armed or going on at the rig (a
-hold to arm, a purge, a laser test, an armed laser or flame group), and
-goes as soon as that is clear. Anyone who signs in after the last show
-ended stays signed in for the rest of the night. It only happens on a
-night with a show on the schedule. An admin
-can change the minutes, or turn it off with 0, on the Users screen
-(USERS.md).
+Nobody is signed out because a show ended. **End of night** (a
+signed-in person taps it twice) signs everyone out on every screen. At
+4 AM after a night that had shows, everyone still signed in is signed
+out; a dark day's 4 AM signs nobody out (USERS.md).
 
 On the iPad, on the show Wi-Fi, open `http://<that address>:7878/`. It goes
 straight to the show screen. Everything you need during a show is on that
@@ -3001,7 +2999,8 @@ Only for the people the SuperUser has let in (SUPERUSER.md).
 - Signed out: view, Stop, Hold, Acknowledge, disarm.
 - Stays signed in until you sign out (Jeff, 2026-11-28: it used to sign
   out by itself after 30 minutes idle). The admin's idle sign out, when
-  one is set, and the sign out after the night's last show still apply.
+  one is set, End of night and the 4 AM sign out after a show night
+  still apply.
 
 Tailscale follows the iPad's settings: the role matrix (USERS.md), the
 "Arming from a screen" switch and every rule an iPad has. The one

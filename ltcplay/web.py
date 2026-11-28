@@ -2088,8 +2088,8 @@ def _attach_accounts(httpd, users_seed=None, transport=None):
         r.users = users_mod.Users(r.folder, audit=_note)
         # The SuperUsers changed outside this program: an alert.
         r.users.on_alert = r.superuser_alert
-        # Sign everyone out after the night's last show (Jeff, 2026-10-26).
-        r.users.last_show = r.last_show_over
+        # The 4 AM sign-out after a night with shows (Jeff, 2026-11-28).
+        r.users.backstop = r.signout_backstop
         r.users.start()
         r.users.seed(users_mod.SEED_USERS if users_seed is None
                      else users_seed)

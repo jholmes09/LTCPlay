@@ -75,26 +75,21 @@ and Users.
   can clear it at once ("Clear sign-in lockouts").
 - Idle sign out is OFF on the show PC. An admin can turn it on (minutes,
   on the Users screen); 0 means off.
-- Sign out after the last show is ON: 10 minutes after the last show of
-  the night has ended, everyone who was signed in before it ended is
-  signed out, once. When the schedule keeps the idle look after the last
-  show (OPERATOR.md, "Keeping the idle look after the last show"), the
-  look stays through this sign out: End of night needs no sign in, so
-  anyone can still end it, and the journal and audit log then say
-  "signed out". It waits while a show is live or on Hold, and while
-  anything is armed or going on at the rig
-  (a hold to arm, a purge, a laser test, an armed laser or flame group),
-  then goes as soon as that is clear. A show started by hand with Start
-  now counts as a show, on a night that has a show on the schedule; on a
-  night with no show on the schedule it never happens. Someone who signs
-  in after the last show ended stays signed in for the rest of the
-  night. The night is the schedule's own, up to where it hands over to
-  the next (2 AM, or later while a show of it still has to run), so a
-  show ending just before then still gets its sign-out. A blank or wrong
-  number in the box is refused and nothing is saved. An admin can change the minutes on the
-  Users screen ("Sign everyone out this many minutes after the last show
-  of the night"); 0 means off. The audit log says "after the last show"
-  for each one.
+- Nobody is signed out because a show ended (Jeff, 2026-11-28): the crew
+  purges and tests after the last show. Two things sign everyone out:
+  - **End of night.** A signed-in person, any role, taps it twice. It
+    ends the idle look if one is held, and signs everyone out on every
+    screen, Tailscale included, the person who pressed it too. Signing
+    out ends each person's timed purge, hazer run, fireball run and hold
+    to arm. It is refused while a show is playing.
+  - **4 AM, the backstop.** At 4 AM in the show's time zone, after a
+    night that had shows on the schedule, everyone signed in before
+    4 AM is signed out. It waits while a show is live or on Hold, and
+    while anything is armed or going on at the rig (a hold to arm, a
+    purge, a laser test, an armed laser or flame group), then goes as
+    soon as that is clear. A dark day's 4 AM signs nobody out, so
+    someone working on a dark day stays signed in. The audit log says
+    "4 AM after a night with shows" for each one.
 - The Stream Deck has no sign-in of its own. It acts as whoever is signed
   in on the rack screen of that PC, and shows their name on the Start key
   for a few seconds when it changes (SIGNED IN / NAME, or SIGNED OUT).
@@ -112,7 +107,7 @@ password of, or removes a SuperUser, and the only one who sees a few
 things that are Jeff's alone. Nobody else is shown those at all.
 
 An admin (Andy) keeps everything else: users, roles, who may do what,
-idle sign out, sign out after the last show, the audit log's state and
+idle sign out, the audit log's state and
 "Check the chain now". An admin can never make anyone a SuperUser
 (themselves included), never change, reset or remove a SuperUser, and no
 tick in "Who may do what" can change that. The last SuperUser can never
@@ -151,13 +146,14 @@ the ticks there. These are the proposed defaults:
 
 | What | SuperUser | admin | operator | viewer | signed out |
 |---|---|---|---|---|---|
-| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Fireball practice's Done, Acknowledge, End of night** | always | always | always | always | always |
+| **Stop, Hold, every disarm (flames and lasers), letting go, locking a machine, a hazer disarm, Hazers off, the fuel pump off, Fireball practice's Done, Acknowledge** | always | always | always | always | always |
+| End of night (ends the idle look and signs everyone out) | always | always | always | always | never |
 | Start now, Start at a cue, Resume, Show control on/off, rehearsal scrubbing, playing an announcement, choosing the operator | always | yes | yes | no | never |
 | Arm flames and lasers (hold to arm, the deck's arm keys, a purge, momentary or timed, the Fireball page's channels, the wave flamer cleaning, arming a laser, arming a hazer, the hazer levels, turning the fuel pump on, Fireball practice's open and Step, which need the row above too) | always | yes | yes | no | never |
 | Unlock a machine, turn a laser test on | always | yes | yes | no | never |
 | Tick the Morning and Shutdown checklists | always | yes | yes | no | never |
 | Show files and setup (show folder, choosing the show, opening a folder, schedule, tonight's list, layout) | always | yes | yes | no | never |
-| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, idle sign out, sign out after the last show, the play-from cues, the fireball timeline, the haze fluid settings) | always | yes | no | no | never |
+| Settings (show network, arming from a screen, moving Programming playback from an iPad while flames follow it, idle sign out, the play-from cues, the fireball timeline, the haze fluid settings) | always | yes | no | no | never |
 | Users (add, remove, passwords, roles, lockouts; a SuperUser only by a SuperUser) | always | yes | no | no | never |
 | The nightly upload (SuperUser only; shown only to a SuperUser) | always | never | never | never | never |
 
