@@ -88580,6 +88580,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/announce-outputs", "/api/remote/announce-play",
     "/api/remote/announce-stop", "/api/remote/announce-test-tone",
     "/api/remote/arm-hold", "/api/remote/arm-release",
+    "/api/remote/arm-confirm", "/api/remote/arm-request",
     "/api/remote/arrangement", "/api/remote/audit-verify", "/api/remote/awc",
     "/api/remote/booth-speaker",
     "/api/remote/awc:", "/api/remote/checklist-",
@@ -88613,6 +88614,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/play-from", "/api/remote/play-from-cues",
     "/api/remote/play-from-cues-save", "/api/remote/preroll-check",
     "/api/remote/preroll-continue", "/api/remote/preshow-audio",
+    "/api/remote/purge-confirm", "/api/remote/purge-request",
     "/api/remote/purge-clear", "/api/remote/purge-fire",
     "/api/remote/purge-select", "/api/remote/purge-stop",
     "/api/remote/purge-timed", "/api/remote/reload-engine",
@@ -88631,8 +88633,8 @@ _SU_PLAIN_ROUTES = (
     "/api/schedule/logging", "/api/schedule/operator", "/api/schedule/state",
     "/api/schedule/tonight", "/api/showdir", "/api/skip", "/api/start",
     "/api/state", "/api/stop", "/api/timelines", "/api/trigger", "/brand/",
-    "/index.html", "/remote", "/remote-logic.js", "/remote1", "/remote2",
-    "/ui")
+    "/index.html", "/phone", "/remote", "/remote-logic.js", "/remote1",
+    "/remote2", "/ui")
 
 
 def _su_routes_in_source(src, prefix="/api/remote/"):
