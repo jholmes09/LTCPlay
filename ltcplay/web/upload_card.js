@@ -51,7 +51,7 @@ window.ltcUploadCard = function(UV){
     (j ? " Night journal: nights waiting: " + ((j.pending_nights || []).join(", ") || "none") + "." +
       (j.last_error ? " Last error: " + j.last_error : "") +
       ((j.changed_since_sent || []).length ? " CHANGED SINCE SENT, sending again: " + j.changed_since_sent.join(", ") : "") +
-      ((j.failed || []).length ? " NOT SENT, refused by the server: " + j.failed.join(", ") : "") : "");
+      ((j.failed || []).length ? " NOT SENT, refused by the server: " + j.failed.join(", ") + ". Send now tries them again." : "") : "");
   if(!(document.activeElement && c.contains(document.activeElement))){
     $("au-en").checked = !!u.enabled;
     $("au-time").value = u.time || "03:30";

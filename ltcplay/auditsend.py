@@ -451,7 +451,10 @@ class JournalUploader:
     large, a different file already there, another 4xx) is marked failed
     for that checksum, said once in the audit log (never in the night
     journal, which everyone reads: the upload is a SuperUser's alone), and
-    the later nights go on."""
+    the later nights go on. The nightly run never tries it again as it is;
+    Send now does, once per press (2026-11-28: a server that did not know
+    the night journal yet refused every night with a 400, and after it was
+    updated nothing sent them)."""
 
     def __init__(self, folder, settings_folder, night=None, transport=None,
                  wall=time.time, clock=time.monotonic, note=None,
@@ -584,10 +587,11 @@ class JournalUploader:
                 out.add(m.group(1))
         return sorted(out)
 
-    def pending(self):
+    def pending(self, retry_refused=False):
         """[(name, the checksum the server holds or "")]: files of closed
         nights not acknowledged, or changed since, and not failed for good
-        as they are; oldest night first."""
+        as they are (those too with retry_refused, Send now); oldest night
+        first."""
         sent, failed = self.sent(), self.failed()
         out = []
         for night in self.closed_nights():
@@ -604,7 +608,7 @@ class JournalUploader:
                         out.append((name, held or ""))
                     continue
                 sha = f[1] or f"size {f[2]}"
-                bad = failed.get(name)
+                bad = None if retry_refused else failed.get(name)
                 if isinstance(bad, dict) and bad.get("sha256") == sha:
                     continue
                 if held != sha:
@@ -725,11 +729,14 @@ class JournalUploader:
                                "sent_at": audit._iso_local(self._wall())})
         return "sent", ""
 
-    def run(self, force=False):
+    def run(self, force=False, retry_refused=False):
         """Send every pending night file, oldest first. A file refused for
         good is marked so and the later nights go on; any other failure
         stops the run and waits out the backoff. Returns how many went.
-        Never raises."""
+        Never raises. retry_refused (Send now, never the nightly run) tries
+        the files refused for good once more: the server may have changed.
+        One refused again with the same answer stays marked and is not said
+        again."""
         if not self._busy.acquire(blocking=False):
             return 0
         try:
@@ -745,7 +752,7 @@ class JournalUploader:
             self.last_attempt_at = self._wall()
             went = 0
             checked = {}
-            for name, held in self.pending():
+            for name, held in self.pending(retry_refused):
                 night = JOURNAL_NAME_RE.match(name).group(1)
                 if night not in checked:
                     checked[night] = self.check(night)
@@ -757,10 +764,16 @@ class JournalUploader:
                     continue
                 if result == "failed":
                     f = self._file(name)
+                    sha = (f[1] or f"size {f[2]}") if f else ""
+                    was = self.failed().get(name)
                     self._mark_failed(name, {
-                        "sha256": (f[1] or f"size {f[2]}") if f else "",
+                        "sha256": sha,
                         "why": why, "at": audit._iso_local(self._wall())})
-                    # Once: a file failed for good is never tried again.
+                    if isinstance(was, dict) and (
+                            was.get("sha256"), was.get("why")) == (sha, why):
+                        continue
+                    # Once: the nightly run never tries a file failed for
+                    # good again, and Send now's same refusal is not news.
                     self._note("journal-upload-failed", "error", why,
                                target=name)
                     continue

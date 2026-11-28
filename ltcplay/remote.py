@@ -3537,7 +3537,11 @@ class Remote:
                                  name="ltcplay-audit-upload-now").start()
                 jup = getattr(self, "journal_uploader", None)
                 if jup is not None:
-                    threading.Thread(target=jup.run, kwargs={"force": True},
+                    # Send now also tries the nights the server refused
+                    # for good: it may have been updated since.
+                    threading.Thread(target=jup.run,
+                                     kwargs={"force": True,
+                                             "retry_refused": True},
                                      daemon=True,
                                      name="ltcplay-journal-upload-now"
                                      ).start()

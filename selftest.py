@@ -89910,7 +89910,8 @@ def test_journal_upload_sends_closed_nights_and_waits_for_the_ack():
 def test_journal_upload_failures_and_changes():
     section("night journal upload (review of #246): a file the server "
             "refuses for good is marked failed for its checksum, said once, "
-            "and the later nights still go; a file changed after it was "
+            "and the later nights still go; Send now tries it again, the "
+            "nightly run never; a file changed after it was "
             "sent goes once more, naming the copy it replaces; a file that "
             "cannot be read waits out the backoff; a link or a file over "
             "the receiver's 64 MB is never read; the switch is remembered "
@@ -89966,6 +89967,22 @@ def test_journal_upload_failures_and_changes():
     check(up.status()["failed"] == [first] and
           up.status()["failed_why"] == {first: "HTTP 409: refused"},
           f"the status names it: {up.status()}")
+    # Send now (2026-11-28: a server from before the night journal refused
+    # every night, and once it was updated nothing sent them): the refused
+    # file is tried once per press. The same answer is not said again; once
+    # the server takes it, it is sent and no longer failed.
+    answers[:] = [409]
+    check(up.run(force=True, retry_refused=True) == 0 and len(sent) == 7 and
+          sent[-1]["X-LTC-File"] == first and list(up.failed()) == [first]
+          and len([k for k in said
+                   if k["action"] == "journal-upload-failed"]) == 1,
+          f"Send now tries a refused file again; refused the same way it "
+          f"stays marked and is said once: {up.failed()}")
+    check(up.run(force=True) == 0 and len(sent) == 7,
+          "and the nightly run still leaves it alone")
+    check(up.run(force=True, retry_refused=True) == 1 and len(sent) == 8 and
+          up.failed() == {} and first in up.sent(),
+          f"a server that takes it now gets it: {up.failed()}")
     # A summary written again after it was sent: sent once more, naming
     # the copy the server holds.
     summ = os.path.join(nights, "night_2026-11-08.summary.md")
