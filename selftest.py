@@ -83736,6 +83736,186 @@ def _tp_lines(R, outcome):
             if r.get("action") == "purge" and r.get("outcome") == outcome]
 
 
+def test_phone_master_disarm():
+    section("the phone page's master DISARM (Jeff, 2026-11-27): one "
+            "request, and the engine does every step itself; the flames "
+            "always; hazers, lasers and Stop are this show machine's three "
+            "switches, hazers and lasers on when the setting is missing or "
+            "cannot be read; an admin changes them, never with a show "
+            "playing or anything armed")
+    S = _sched()
+    if S is None:
+        return
+    import json as _j
+    from ltcplay import remote as RM
+    from ltcplay import users as US
+    check(RM.PHONE_MASTER_DEFAULT == {"hazers": True, "lasers": True,
+                                      "stop": False} and
+          US.REMOTE_ROUTES["master-disarm"] == "safety" and
+          US.classify("/api/remote/master-disarm", {}) == "safety" and
+          US.REMOTE_ROUTES["master-disarm-mode"] == "settings" and
+          all(r in RM.POST_ROUTES for r in RM.MASTER_ROUTES),
+          "the press is a safety press, never restricted; its switches "
+          "are the settings row's")
+    R = _morning_rig(S, _MO_CONFIG)
+    loop = ("127.0.0.1", 5000)
+    R.groups[2]["armed"], R.groups[2]["wanted"] = "disarmed", False
+    R.feed()
+    four = ("laser-1", "laser-2", "laser-3", "laser-4")
+
+    def press():
+        R.remote._master_mode = None
+        return R.ask("POST", "/api/remote/master-disarm",
+                     {"seen": R.seen()})
+
+    def switch(**kw):
+        R.remote._deck_seen = R.mono[0]
+        return R.ask("POST", "/api/remote/master-disarm-mode",
+                     dict(kw, seen=R.seen()), client=loop)
+
+    def lasers():
+        return sorted(R.m.laser_arm.armed_ids())
+
+    def saved():
+        return RM.load_settings(R.work)["phone_master_disarm"]
+    try:
+        st, _h, out = R.ask("GET", "/api/remote/status")
+        check(out["phone"] == {"master": RM.PHONE_MASTER_DEFAULT,
+                               "master_locked": ""},
+              f"no setting: hazers and lasers too, no Stop, and it may be "
+              f"changed: {out.get('phone')}")
+        # Everything: the lasers go too. Not changed with one armed.
+        _mo_arm(R, *four)
+        check(len(lasers()) == 4, f"(set up: lasers armed: {lasers()})")
+        st, _h, out = switch(lasers=False)
+        check(st == 409 and "A laser is armed" in out["error"] and
+              saved() == RM.PHONE_MASTER_DEFAULT,
+              f"with a laser armed its meaning is not changed: {st} {out}")
+        st, _h, out = press()
+        check(st == 200 and out["done"] == ["Flames", "Lasers"] and
+              lasers() == [],
+              f"flames and lasers in one request (this rig has no hazers, "
+              f"which is no failure), and no Stop: {st} {out} {lasers()}")
+        # The flames are never a switch.
+        st, _h, out = switch(flames=False)
+        st2, _h, out2 = switch(lasers="no")
+        check(st == 400 and st2 == 400 and
+              saved() == RM.PHONE_MASTER_DEFAULT,
+              f"the flames cannot be switched off, and a switch is true or "
+              f"false: {st} {out} {st2} {out2}")
+        # Lasers off: they stay armed. One switch changes only itself.
+        st, _h, out = switch(lasers=False)
+        check(st == 200 and saved() == {"hazers": True, "lasers": False,
+                                        "stop": False},
+              f"nothing armed: an admin's change is saved, the other "
+              f"switches kept: {st} {out} {saved()}")
+        _mo_arm(R, *four)
+        st, _h, out = press()
+        check(st == 200 and out["done"] == ["Flames"] and
+              len(lasers()) == 4,
+              f"lasers off: they stay armed: {st} {out} {lasers()}")
+        R.m.laser_arm.disarm_all("the test")
+        R.m.laser_arm.run_pending()
+        # Stop only when its switch is on.
+        st, _h, out = switch(stop=True, lasers=True)
+        st2, _h, out2 = press()
+        check(st == 200 and st2 in (200, 500) and
+              ("Stop" in out2.get("done", []) or
+               any(f.startswith("Stop:") for f in out2.get("failed", []))),
+              f"Stop on: Stop is one of its steps: {st2} {out2}")
+        # A setting that cannot be read, or is not the three switches:
+        # hazers and lasers too, never less.
+        for bad in ("{ not json", _j.dumps({"phone_master_disarm": "all"}),
+                    _j.dumps({"phone_master_disarm": {"lasers": 0}})):
+            with open(os.path.join(R.work, RM.SETTINGS_FILE), "w",
+                      encoding="utf-8") as fh:
+                fh.write(bad)
+            R.remote._master_mode = None
+            check(R.remote.master_mode() == RM.PHONE_MASTER_DEFAULT,
+                  f"a setting that cannot be used ({bad[:28]}): hazers and "
+                  f"lasers too, never less: {R.remote.master_mode()}")
+        with open(os.path.join(R.work, RM.SETTINGS_FILE), "w",
+                  encoding="utf-8") as fh:
+            _j.dump({"screen_arming": True}, fh)
+        # A step that fails is said, and the others are still done.
+        _mo_arm(R, *four)
+        real = R.remote.disarm_all
+        R.remote.disarm_all = lambda who, screen: (
+            409, {"ok": False, "plain": False, "text": "flamesafe did not "
+                  "answer.", "error": "flamesafe did not answer."})
+        try:
+            st, _h, out = press()
+        finally:
+            R.remote.disarm_all = real
+        check(st == 500 and out["ok"] is False and
+              out["error"].startswith("NOT ALL DISARMED. Flames:") and
+              out["done"] == ["Lasers"] and lasers() == [],
+              f"the flame step failing is said, and the lasers are still "
+              f"disarmed: {st} {out} {lasers()}")
+        _no_dashes(out["error"], "the master DISARM's failure")
+        flt = [r for r in R.svc.journal
+               if r.get("action") == "master disarm"]
+        check(flt and "NOT ALL DISARMED" in str(flt[-1].get("text")) and
+              any(r.get("outcome") == "done" for r in flt),
+              f"a failed master DISARM is in the journal as a fault, and a "
+              f"good one as done: {flt[-2:]}")
+        # Cold review of #312. The flames go FIRST, before the setting is
+        # read, and a setting that cannot be read at all never stands in
+        # their way; the hazer step is sent when its switch is on.
+        sent = []
+        post0 = R.remote.post
+
+        def post(route, body, ctx):
+            if route != "/api/remote/master-disarm":
+                sent.append(route.rsplit("/", 1)[1])
+            return post0(route, body, ctx)
+        mode0 = R.remote.master_mode
+
+        def no_mode():
+            check(sent[:1] == ["disarm-all"],
+                  f"the flames were sent before the setting was read: "
+                  f"{sent}")
+            raise RecursionError("the settings file")
+        R.remote.post, R.remote.master_mode = post, no_mode
+        try:
+            st, _h, out = press()
+        finally:
+            R.remote.master_mode = mode0
+        check(st == 200 and sent == ["disarm-all", "hazers-off",
+                                     "laser-arm"],
+              f"a setting that cannot be read: flames first, then hazers "
+              f"and lasers, no Stop: {st} {sent} {out}")
+        # A press that arrives late (a phone that lost its link) disarms
+        # everything and does not stop a show started since.
+        check(switch(stop=True)[0] == 200 and
+              R.remote.master_mode()["stop"] is True,
+              "(set up: Stop on, and the engine acts on it at once)")
+        del sent[:]
+        st, _h, out = R.ask("POST", "/api/remote/master-disarm",
+                            {"seen": R.seen(), "age_ms": 60000})
+        check(st == 200 and "stop" not in sent and
+              sent[:1] == ["disarm-all"] and
+              "Press Stop" in " ".join(out.get("skipped") or []),
+              f"a press a minute old disarms and does not Stop, and says "
+              f"so: {st} {sent} {out}")
+        del sent[:]
+        R.ask("POST", "/api/remote/master-disarm",
+              {"seen": R.seen(), "age_ms": 3000})
+        check("stop" in sent, f"a fresh press does Stop: {sent}")
+        R.remote.post = post0
+        # With no users set up the role matrix lets every press through:
+        # only the show PC itself may change what the button does.
+        st, _h, out = R.ask("POST", "/api/remote/master-disarm-mode",
+                            {"stop": False, "seen": R.seen()})
+        check(not R.remote.users_active() and st == 403 and
+              saved()["stop"] is True,
+              f"no users: a device on the network cannot change it: {st} "
+              f"{out} {saved()}")
+    finally:
+        R.close()
+    print("  ok")
+
+
 def test_confirm_purge_tap_then_confirm():
     section("tap, then confirm, for a timed purge from a phone (Jeff, "
             "2026-11-27): a Purge tap selects nothing; only a Confirm from "
@@ -88541,6 +88721,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/laser-arm", "/api/remote/laser-test",
     "/api/remote/last-show-signout", "/api/remote/layout",
     "/api/remote/live-flame", "/api/remote/lock", "/api/remote/loop",
+    "/api/remote/master-disarm", "/api/remote/master-disarm-mode",
     "/api/remote/mark-a", "/api/remote/mark-b", "/api/remote/mesonet",
     "/api/remote/morning", "/api/remote/morning-open",
     "/api/remote/my-password", "/api/remote/network", "/api/remote/nws_obs",
@@ -140604,6 +140785,7 @@ if __name__ == "__main__":
         test_morning_arrange_mode_arms_nothing,
         test_morning_arrange_disables_firing,
         test_purge_release_can_never_start_a_fire,
+        test_phone_master_disarm,
         test_confirm_purge_tap_then_confirm,
         test_timed_purge_flame_link_hard_end,
         test_timed_purge_at_the_engine,

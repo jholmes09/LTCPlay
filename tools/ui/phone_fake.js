@@ -64,6 +64,7 @@ function statusOf(rig) {
     morning: {locked_machines: lockedNames, locked_lasers: [], flamesafe_confirmed: true, lock_error: "", group_machines: gm,
       laser_tests_on: [...rig.laserTests], laser_arm: {armed: [], total: rig.lasers.length}, purge: false, open: false},
     laser_arm: rig.lasers.length ? {lasers: rig.lasers.map((l) => ({id: l.id, name: l.name, armed: l.armed, locked: l.locked})), groups: {"All lasers": rig.lasers.map((l) => l.id)}, armed: 0, total: rig.lasers.length} : null,
+    phone: {master: rig.master || {hazers: true, lasers: true, stop: false}, master_locked: rig.masterLocked || ""},
     alerts: rig.alerts, alert_hold: {held: false}, preroll: Object.assign({}, rig.preroll, {age_s: rig.prerollAt ? (now - rig.prerollAt) / 1000 : null}),
   };
   if (rig.hazers.length) {
@@ -143,6 +144,8 @@ function start(rig, port) {
           set.forEach((l) => { if (b.on) { if (l.armed) rig.laserTests.add(l.id); } else rig.laserTests.delete(l.id); }); return ok(); }
         case "start-now": rig.state = "SHOW"; rig.showStartedAt = Date.now(); return ok();
         case "resume": rig.state = "SHOW"; rig.showStartedAt = Date.now() - 100000; return ok();
+        case "master-disarm-mode": rig.master = Object.assign({hazers: true, lasers: true, stop: false}, rig.master); for (const k of ["hazers", "lasers", "stop"]) if (typeof b[k] === "boolean") rig.master[k] = b[k]; return ok({mode: rig.master});
+        case "master-disarm": rig.groups.forEach((g) => (g.armed = "disarmed")); rig.hazers.forEach((h) => (h.armed = false)); rig.lasers.forEach((l) => (l.armed = false)); return ok({mode: Object.assign({hazers: true, lasers: true, stop: false}, rig.master), done: ["Flames", "Hazers", "Lasers"], skipped: []});
         case "hold": rig.state = "PAUSED"; return ok();
         case "stop": rig.state = "HOLD"; rig.stopHeld = true; rig.groups.forEach((g) => (g.armed = "disarmed")); return ok({stopped: true});
         case "alert": rig.alerts = rig.alerts.filter((a) => a.id !== b.id); return ok();

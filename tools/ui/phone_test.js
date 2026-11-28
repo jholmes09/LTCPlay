@@ -4,7 +4,8 @@ const {chromium} = require("playwright");
 const fs = require("fs");
 const path = require("path");
 const {makeRig, start} = require("./phone_fake.js");
-const SHOTS = process.argv[2] || path.join(__dirname, "shots");
+// Screenshots go to a temp folder, never into the repo.
+const SHOTS = process.env.PHONE_SHOTS || path.join(require("os").tmpdir(), "phone-shots");
 fs.mkdirSync(SHOTS, {recursive: true});
 const SIZES = [[320, 568], [360, 740], [390, 844], [430, 932]];
 let pass = 0, fail = 0;
@@ -117,12 +118,12 @@ const firstArm = '#main .card:not(.all) [data-act="arm"]';
     check((await btnText(A.page, disBtn)) === "SENDING", "disarm reads SENDING: " + await btnText(A.page, disBtn));
     await sleep(4500);
     check(rig.posts.filter((p) => p.name === "group-disarm").length >= 2, "disarm retried about once a second: " + rig.posts.length);
-    rig.ignore.add("disarm-all"); rig.ignore.add("hazers-off"); rig.ignore.add("laser-arm");
+    rig.ignore.add("master-disarm");
     await A.page.tap("#master"); await sleep(300);
     check((await btnText(A.page, "#master")) === "SENDING", "master reads SENDING with no contact");
-    rig.ignore.delete("group-disarm"); rig.ignore.delete("disarm-all"); rig.ignore.delete("hazers-off"); rig.ignore.delete("laser-arm"); rig.statusDead = false; await sleep(2500);
+    rig.ignore.delete("group-disarm"); rig.ignore.delete("master-disarm"); rig.statusDead = false; await sleep(2500);
     check((await btnText(A.page, "#link-t")) === "LINK OK", "LINK OK again");
-    check(rig.posts.some((p) => p.name === "disarm-all") && rig.posts.some((p) => p.name === "hazers-off") && rig.posts.some((p) => p.name === "laser-arm" && p.body.all === true && p.body.on === false), "master posts disarm-all, hazers-off, laser-arm off");
+    check(rig.posts.some((p) => p.name === "master-disarm") && !rig.posts.some((p) => p.name === "hazers-off"), "master is one request, master-disarm, never three");
     await A.close();
   }
 

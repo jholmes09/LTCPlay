@@ -187,6 +187,7 @@ h2::after{content:"";flex:1;height:1px;background:var(--line)}
 #tabs .sel{color:var(--champagne);border-top-color:var(--gold)}
 #masterw{grid-area:master;padding:8px var(--gr) max(10px, env(safe-area-inset-bottom, 0px)) var(--gl);background:var(--panel)}
 #master{width:100%;min-height:4.25rem;border-radius:var(--r);background:var(--red);color:var(--white);font-weight:800;font-size:1.375rem;letter-spacing:.06em;border:2px solid #ff8a80}
+#master.long{font-size:1rem;letter-spacing:.02em}
 #master:active{background:var(--red-deep)}
 #master.done{background:var(--bronze);border-color:var(--gold);color:var(--champagne)}
 #master.send{background:var(--red-deep);border-color:var(--amber)}
@@ -197,6 +198,11 @@ h2::after{content:"";flex:1;height:1px;background:var(--line)}
 #cfg[hidden]{display:none}
 #cfg .box{width:100%;max-width:480px;max-height:100%;overflow-y:auto;overflow-x:hidden;background:var(--panel);border:1px solid var(--gold);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:12px;touch-action:pan-y}
 #cfg .opt{display:flex;flex-direction:column;gap:8px}
+#cfg .opt .btn{display:flex;align-items:center;gap:12px;text-align:left;padding:0 14px}
+#cfg .opt .btn i{flex:none;width:22px;height:22px;border-radius:5px;border:2px solid var(--gold)}
+#cfg .opt .btn.sel{border-color:var(--gold)}
+#cfg .opt .btn.sel i{background:var(--gold);box-shadow:inset 0 0 0 3px var(--panel)}
+#cfg .opt .btn.sel:disabled{opacity:.7}
 .who{display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:700;min-width:0}
 .who span{min-width:0;overflow-wrap:anywhere}
 .names{display:flex;flex-direction:column;gap:8px}
@@ -285,8 +291,20 @@ const PEND = {};         // key -> {state:"sending"|"pending"|"noans", at}
 const WAITS = [];        // things waiting on a newer status
 const RETRY = {};        // key -> true while a safe press is being retried
 let HZ = {run:null, timer:null, until:0};
-function masterMode(){ return "all"; }              // later: "flame" | "stop"
-function masterConfigurable(){ return false; }
+// The master DISARM always disarms the flames. What else it does is the
+// show machine's setting, the same on every phone: hazers, lasers, stop.
+// Not known yet: hazers and lasers too, no Stop.
+function masterMode(){
+  const m = ((ST || {}).phone || {}).master || {};
+  return {hazers:m.hazers !== false, lasers:m.lasers !== false, stop:m.stop === true};
+}
+function masterWords(){
+  const m = masterMode();
+  const t = m.hazers && m.lasers ? "DISARM ALL" : "DISARM FLAMES" + (m.hazers ? " + HAZERS" : "") + (m.lasers ? " + LASERS" : "");
+  return t + (m.stop ? " + STOP" : "");
+}
+function masterLocked(){ return String(((ST || {}).phone || {}).master_locked || ""); }
+function masterConfigurable(){ return !!(ST && ST.phone) && !!ME().user && may("settings"); }
 
 /* ---------- derived facts ---------- */
 function linkAge(){ return LAST_OK == null ? mono() - LOST_SINCE : mono() - LAST_OK; }
@@ -523,9 +541,7 @@ function renderTabs(){
 function renderMaster(){
   const b = $("master");
   const key = "master", pl = pendLabel(key);
-  let t = "DISARM ALL", cls = "";
-  const mm = masterMode();
-  if(mm === "flame") t = "DISARM FLAME"; else if(mm === "stop") t = "DISARM ALL + STOP";
+  let t = masterWords(), cls = t.length > 17 ? "long" : "";
   if(pl){ t = pl; cls = pl === "SENDING" ? "send" : pl === "NO ANSWER" ? "noans" : "send"; }
   else if(mono() < UI.flash){ t = "DISARMED"; cls = "done"; }
   setText(b, t); setCls(b, cls);
@@ -943,7 +959,8 @@ function cfgHTML(){
       B('data-act="signin"', "btn gold", u.busy ? "PENDING" : "SIGN IN", !!u.busy) + B('data-act="close"', "btn", "CLOSE") + `</div>`;
   }
   const opts = masterConfigurable() ? `<span class="cap">MASTER DISARM</span><div class="opt">` +
-    [["all","DISARM ALL"],["flame","DISARM FLAME"],["stop","DISARM ALL + STOP"]].map(([k, t]) => B(`data-act="mm" data-n="${k}"`, "btn" + (masterMode() === k ? " sel" : ""), t)).join("") + `</div>` : "";
+    B("", "btn sel", `<i></i>FLAMES`, true) +
+    [["hazers","HAZERS"],["lasers","LASERS"],["stop","STOP SHOW"]].map(([k, t]) => B(`data-act="mm" data-n="${k}"`, "btn" + (masterMode()[k] ? " sel" : ""), `<i></i>${t}`, lost() || !!masterLocked())).join("") + `</div>` : "";
   return `<div class="box"><div class="who"><span class="cap">${me.users_active ? "SIGNED IN" : "NO SIGN IN"}</span><span>${esc(me.user || "")}${me.role ? " &middot; " + esc(String(me.role).toUpperCase()) : ""}</span></div>` +
     opts + (me.users_active ? B('data-act="signout"', "btn", "SIGN OUT") : "") + B('data-act="close"', "btn gold", "DONE") + `</div>`;
 }
@@ -983,7 +1000,13 @@ const ACT = {
   line(){ const f = BAR && BAR.onTap; BAR = null; render(); if(f) f(); },
   no(){ barClose(); },
   ok(){ if(!BAR || BAR.kind !== "confirm") return; if(mono() < BAR.minAt || lost()) return; const f = BAR.onConfirm; BAR = null; render(); f(); },
-  mm(d){ },
+  async mm(d){
+    const r = await post("master-disarm-mode", {[d.n]:!masterMode()[d.n], seen:seenNow()});
+    if(r.net){ closeSheet(); line("NO ANSWER", "bad"); return; }
+    if(!r.ok){ closeSheet(); line(words(r), "bad"); return; }
+    if(r.j && r.j.mode && ST && ST.phone) ST.phone.master = r.j.mode;
+    render();
+  },
   master(){ doMaster(); },
   go(){ doGo(); }, hold(){ doHold(); }, stop(){ doStop(); }, cont(){ doCont(); },
   arm(d){ armGroup(d.n); },
@@ -1331,35 +1354,30 @@ function doCont(){
 }
 /* master */
 async function doMaster(){
+  // One press, one request: the engine does every step itself, so a bad
+  // link can never land one disarm and lose another. Tried until answered.
   cancelSeq();
-  const key = "master", mm = masterMode();
+  const key = "master", t0 = mono();
+  let mm = masterMode();
   if(RETRY[key]) return;
   RETRY[key] = true; PEND[key] = {state:"sending", at:mono()}; render();
-  const jobs = [["disarm-all", () => ({seen:seenNow()}), true], ["hazers-off", () => ({seen:seenNow()}), haveHazers()],
-    ["laser-arm", () => ({all:true, on:false}), !!lasers()]];
-  if(mm === "flame") jobs.splice(1);
-  if(mm === "stop") jobs.push(["stop", () => ({seen:seenNow()}), true]);
-  const res = await Promise.all(jobs.map(async ([route, fn, show]) => {
-    let r;
-    for(;;){ r = await post(route, fn(), 3500); if(!r.net) break; await sleep(1000); }
-    return {route, r, show};
-  }));
+  let r;
+  // age_ms: a press that took long to land still disarms; the engine then leaves the show running.
+  for(;;){ r = await post("master-disarm", {seen:seenNow(), age_ms:Math.round(mono() - t0)}, 4500); if(!r.net) break; await sleep(1000); }
   delete RETRY[key];
-  const bad = res.find(x => x.show && !x.r.ok);
-  if(bad) line(words(bad.r), "bad");
-  else{
-    const f = res.find(x => x.route === "disarm-all");
-    if(f && f.r.j && f.r.j.plain === false) line(words(f.r), "warn");
-  }
+  const m = r.j && r.j.mode;
+  if(m && typeof m === "object") mm = {hazers:m.hazers !== false, lasers:m.lasers !== false, stop:m.stop === true};
+  if(!r.ok) line(words(r), "bad");
+  else if(r.j && r.j.skipped && r.j.skipped.length) line("STOP NOT SENT", "bad");
   track(key, st => {
     const gs = (st.flames || {}).groups || [];
     const fo = (st.flames && st.flames.connected && !st.flames.stale) ? gs.every(g => g.armed === "disarmed") : false;
     const ho = (((st.hazers || {}).hazers) || []).every(h => !h.armed);
     const lo = (((st.laser_arm || {}).lasers) || []).every(l => !l.armed);
-    return (mm === "flame" ? fo : fo && ho && lo);
+    return fo && (!mm.hazers || ho) && (!mm.lasers || lo);
   }, 3000);
   const w = WAITS.find(x => x.key === key);
-  if(w){ const old = w.test; w.test = st => { const r = old(st); if(r === true) UI.flash = mono() + 1500; return r; }; }
+  if(w){ const old = w.test; w.test = st => { const q = old(st); if(q === true) UI.flash = mono() + 1500; return q; }; }
 }
 /* alerts */
 function doAck(id, ver){
