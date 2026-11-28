@@ -12131,6 +12131,51 @@ def build():
   '            if out.get("taken") is True:',
   '            if True:'),
 
+ ('confirm purge: a Confirm with the Purge tap itself selects',
+  'ltcplay/confirmpurge.py',
+  '        if age < CONFIRM_MIN_S:\n            return refuse(TOO_SOON)',
+  '        if False:\n            return refuse(TOO_SOON)'),
+
+ ('confirm purge: any ticket is taken',
+  'ltcplay/confirmpurge.py',
+  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8",\n                                                      "surrogatepass")) and',
+  '                    True and'),
+
+ ('confirm purge: a Confirm after a Stop, a Hold or a Disarm still selects',
+  'ltcplay/confirmpurge.py',
+  '        if self._mark() != t["cut"]:\n            return refuse(CUT)',
+  '        if False:\n            return refuse(CUT)'),
+
+ ("confirm purge: one group's Disarm does not end a purge waiting to arm",
+  'ltcplay/confirmpurge.py',
+  '        if self._mark() != r["cut"]:',
+  '        if False:'),
+
+ ('confirm purge: a ticket is taken twice',
+  'ltcplay/confirmpurge.py',
+  '                self._ticket = None\n                self._publish()\n            live =',
+  '                self._publish()\n            live ='),
+
+ ('confirm purge: the engine waits past 5 s for a group to arm',
+  'ltcplay/confirmpurge.py',
+  '                if now > r["arm_by"]:',
+  '                if False:'),
+
+ ('confirm purge: Stop purge before the flame is ignored',
+  'ltcplay/confirmpurge.py',
+  '            if live:\n                self._end(r, "stopped", str(why), now, clear=True,',
+  '            if False:\n                self._end(r, "stopped", str(why), now, clear=True,'),
+
+ ('confirm purge: a machine added after the Confirm is fired too',
+  'ltcplay/remote.py',
+  '                        set(ids) == set(m.purge.selected)',
+  '                        set(ids) <= set(m.purge.selected)'),
+
+ ("confirm purge: its clear forgets the purge's groups like an operator's Clear",
+  'ltcplay/remote.py',
+  '                if mine:\n                    m.purge.clear(why)',
+  '                if mine:\n                    m.purge.clear(why, device=device)'),
+
  ("review43: a screen's per-group Disarm is 'sent' with arming off",
   'ltcplay/remote.py',
   '        if not self.arming_enabled():\n            # The Stream Deck reads',
