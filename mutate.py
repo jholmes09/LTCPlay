@@ -12138,18 +12138,23 @@ def build():
 
  ('confirm purge: any ticket is taken',
   'ltcplay/confirmpurge.py',
-  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8")) and',
+  '                    hmac.compare_digest(t["ticket"].encode("utf-8"),\n                                        ticket.encode("utf-8",\n                                                      "surrogatepass")) and',
   '                    True and'),
 
- ('confirm purge: the start hold begins before every group is armed',
+ ('confirm purge: a Confirm after a Stop, a Hold or a Disarm still selects',
   'ltcplay/confirmpurge.py',
-  '            if not self._armed(r["ids"]):',
-  '            if False:'),
+  '        if self._mark() != t["cut"]:\n            return refuse(CUT)',
+  '        if False:\n            return refuse(CUT)'),
 
- ('confirm purge: a selection taken away does not end the run',
+ ("confirm purge: one group's Disarm does not end a purge waiting to arm",
   'ltcplay/confirmpurge.py',
-  '        if not self._selected(r["ids"], r["token"]):',
+  '        if self._mark() != r["cut"]:',
   '        if False:'),
+
+ ('confirm purge: a ticket is taken twice',
+  'ltcplay/confirmpurge.py',
+  '                self._ticket = None\n                self._publish()\n            live =',
+  '                self._publish()\n            live ='),
 
  ('confirm purge: the engine waits past 5 s for a group to arm',
   'ltcplay/confirmpurge.py',

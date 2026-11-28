@@ -6599,9 +6599,20 @@ class Remote:
                         last=last,
                         session_live=session_live, journal=self._journal,
                         clock=self.clock, wall=self.wall,
-                        threaded=self.confirm_purge_threaded)
+                        threaded=self.confirm_purge_threaded,
+                        cut_mark=self.purge_cut_mark)
                 cp = self.confirm_purge
         return cp
+
+    def purge_cut_mark(self):
+        """A value that changes at every Stop and Hold (_halt_seq) and at
+        every Disarm, of all groups or of one (_arm_cut): confirmpurge
+        voids a Purge tap, and a run that has not fired, across any of
+        them. A plain read."""
+        with self._arm_lock:
+            cuts = tuple(sorted((str(k), v[0])
+                                for k, v in self._arm_cut.items()))
+        return (getattr(self, "_halt_seq", 0), cuts)
 
     def _confirm_purge_actor(self, body, ctx):
         who, device = ctx.device, ctx.screen
@@ -8812,6 +8823,18 @@ class Remote:
             cp = self.confirm_purge
             if cp is not None and cp.cancel(
                     f"Stop purge was pressed on the {screen}."):
+                # Said from what is true now, never assumed (second
+                # review, P2-3).
+                _p = getattr(m, "purge", None)
+                _left = list(getattr(_p, "selected", None) or [])
+                _on = bool(_p is not None and _p.timed_running())
+                if _left or _on:
+                    why = ("Stop purge did NOT clear everything"
+                           + (": the purge is still running" if _on else "")
+                           + (f": still selected: {', '.join(_left)}"
+                              if _left else "")
+                           + ". Press Disarm all flame groups.")
+                    return 500, {"ok": False, "error": why, "text": why}
                 return 200, {"ok": True, "text": "Purge stopped. Nothing "
                                                  "more is fired, and the "
                                                  "selection is cleared."}
