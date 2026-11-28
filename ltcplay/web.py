@@ -48,6 +48,17 @@ REMOTE2_PAGE = os.path.join(HERE, "web", "remote2.html")
 PHONE_PAGE = os.path.join(HERE, "web", "phone.html")
 REMOTE_RULES = os.path.join(HERE, "web", "remote_rules.js")
 UI_ROUTES = ("/remote2", "/remote-logic.js", "/remote1", "/ui")
+
+
+def phone_agent(agent):
+    """A browser's User-Agent names a phone: an iPhone or iPod, an Android
+    phone ("Mobile"; an Android tablet leaves it out) or a Windows Phone.
+    An iPad (it says iPad or Macintosh), a tablet and a computer are not:
+    they get the station page. Phones get the phone page (Jeff,
+    2026-11-28)."""
+    a = str(agent or "")
+    return ("iPhone" in a or "iPod" in a or "Windows Phone" in a or
+            ("Android" in a and "Mobile" in a))
 OLD_SCREEN_ROUTES = ("/remote1", "/ui")
 LOGIC_OPEN = '<script id="remote-logic">'
 LOGIC_TAG = '<script src="/remote-logic.js"></script>'
@@ -1667,6 +1678,15 @@ class Handler(BaseHTTPRequestHandler):
                     route in ("/", "/index.html") and not self._local()):
                 # The screen, to the show network and this machine alike
                 # (/remote2 is the same page, for old bookmarks).
+                # A phone, never this machine itself, is sent to the phone
+                # page instead; not stored, so a tablet on the same address
+                # is never sent after it.
+                if not self._local() and phone_agent(
+                        self.headers.get("User-Agent")):
+                    return self._send(302, b"", "text/plain",
+                                      headers={"Location": "/phone",
+                                               "Cache-Control": "no-store",
+                                               "Vary": "User-Agent"})
                 return self._send(200, remote2_page(),
                                   "text/html; charset=utf-8")
             if route == "/api/remote" or route.startswith("/api/remote/"):

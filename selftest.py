@@ -139720,6 +139720,88 @@ def _sp_status():
     return st
 
 
+def test_phone_page_and_phones_sent_to_it():
+    section("the phone page (/phone): served to the network signed out; a "
+            "phone asking for the station page (/, /remote, /remote2) is "
+            "sent to /phone, never stored; an iPad, an Android tablet, a "
+            "computer and the rack screen itself get the station page; "
+            "every route the page posts or reads is one the engine "
+            "answers; nothing of the real rig is written in the page; no "
+            "dashes")
+    S = _sched()
+    if S is None:
+        return
+    from ltcplay import web as web_mod
+    iphone = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+              "Mobile/15E148 Safari/604.1")
+    droid = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36")
+    ipad = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+            "Safari/605.1.15")
+    old_ipad = ("Mozilla/5.0 (iPad; CPU OS 15_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 "
+                "Mobile/15E148 Safari/604.1")
+    tablet = ("Mozilla/5.0 (Linux; Android 14; SM-X710) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+    check(web_mod.phone_agent(iphone) and web_mod.phone_agent(droid) and
+          not any(web_mod.phone_agent(a)
+                  for a in (ipad, old_ipad, tablet, "", None)),
+          "phone_agent: an iPhone and an Android phone, never an iPad, a "
+          "tablet or nothing")
+    R = _RemoteRig(S)
+    try:
+        st, h, out = R.ask("GET", "/phone", headers={"User-Agent": iphone})
+        check(st == 200 and "text/html" in (h.get("content-type") or [""])[0]
+              and "<title>" in str(out),
+              f"/phone is a page, signed out, from the network: {st}")
+        for path in ("/", "/remote", "/remote2"):
+            for name, agent in (("an iPhone", iphone),
+                                ("an Android phone", droid)):
+                st, h, _o = R.ask("GET", path,
+                                  headers={"User-Agent": agent})
+                check(st == 302 and h.get("location") == ["/phone"] and
+                      h.get("cache-control") == ["no-store"],
+                      f"{name} asking for {path} is sent to /phone, not "
+                      f"stored: {st} {h.get('location')}")
+            for name, agent in (("an iPad", ipad), ("an old iPad", old_ipad),
+                                ("an Android tablet", tablet),
+                                ("no agent", None)):
+                st, h, _o = R.ask("GET", path,
+                                  headers={"User-Agent": agent})
+                check(st == 200 and "location" not in h,
+                      f"{name} asking for {path} gets the station page: "
+                      f"{st}")
+        for path in ("/remote", "/remote2"):
+            st, h, _o = R.ask("GET", path, client=("127.0.0.1", 50000),
+                              headers={"User-Agent": iphone})
+            check(st == 200 and "location" not in h,
+                  f"the rack screen itself is never sent away from {path}, "
+                  f"whatever its browser says: {st}")
+    finally:
+        R.close()
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = open(os.path.join(here, "ltcplay", "web", "phone.html"),
+                encoding="utf-8").read()
+    real = _su_all_routes()
+    used = set(re.findall(r'\bpost\("([a-z0-9-]+)"', page)) | {
+        r[len("/api/remote/"):]
+        for r in re.findall(r'"(/api/remote/[a-z0-9-]+)"', page)}
+    gone = sorted(u for u in used if "/api/remote/" + u not in real)
+    check(len(used) > 15 and not gone,
+          f"every route the page uses is the engine's: {len(used)} used, "
+          f"not answered {gone}")
+    low = page.lower()
+    rig = [w for w in ("cat-walk", "catwalk", "wave flamer", "front row",
+                       "test grid", "ignite the night", "andy", "dallen")
+           if w in low]
+    check(not rig, f"nothing of the real rig is written in the page: {rig}")
+    check("\u2014" not in page and "\u2013" not in page,
+          "the page has no em or en dash")
+    print("  ok")
+
+
 def test_special_dates_tab_in_a_browser():
     section("special dates on the Schedule tab, drawn and pressed in a "
             "real browser against the stub: every exception in the file "
@@ -140917,6 +140999,7 @@ if __name__ == "__main__":
         test_special_dates_example_ships_no_closure,
         test_special_dates_engine_round_trip_and_tonight_said,
         test_special_dates_tab_in_a_browser,
+        test_phone_page_and_phones_sent_to_it,
     ]
     _stopped = _run_tests(TESTS)
     for arg in (sys.argv[1:] if _stopped is None else []):
