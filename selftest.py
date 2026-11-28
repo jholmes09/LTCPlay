@@ -88492,6 +88492,7 @@ _SU_PLAIN_ROUTES = (
     "/api/remote/play-from", "/api/remote/play-from-cues",
     "/api/remote/play-from-cues-save", "/api/remote/preroll-check",
     "/api/remote/preroll-continue", "/api/remote/preshow-audio",
+    "/api/remote/purge-confirm", "/api/remote/purge-request",
     "/api/remote/purge-clear", "/api/remote/purge-fire",
     "/api/remote/purge-select", "/api/remote/purge-stop",
     "/api/remote/purge-timed", "/api/remote/reload-engine",
