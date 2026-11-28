@@ -54,6 +54,15 @@ longer than ARM_BEAT_GAP_S, a Stop, a disarm or a sign out lets the hold
 go; an interrupted hold never carries on. A group once armed is never
 disarmed by a page going quiet (Jeff, 2026-11-24).
 
+TAP, THEN CONFIRM (Jeff, 2026-11-27; confirmarm.py): a phone's two taps
+(arm-request, then arm-confirm with its one-use ticket, the same device
+and person, 0.3 to 5 s apart) stand in for the finger. The engine then
+makes that hold's first press itself and beats it, 0.1 s apart and for
+3 s at most, through arm_hold above with every rule above. Nothing else
+changes: the Stream Deck program and flamesafe see a screen hold. A Stop,
+a disarm, a sign out or arming switched off ends it; lifting a finger does
+not, and neither does the schedule's Hold, which cuts no hold to arm.
+
 Every refusal is said on the page in a sentence that names the reason
 (2026-10-22, Jeff: "I'm supposed to be able to enable flames via the
 screen"; a hold that went nowhere used to look like a working one). The
@@ -192,6 +201,9 @@ CONFIRM_ROUTES = frozenset(("start-now", "start-at-cue"))
 # and runs every one of its own and flamesafe's rules on it. See
 # flamesafe/CONTRACT.md, "Arming from a screen".
 ARM_ROUTES = ("arm-hold", "arm-release", "group-disarm")
+# Tap, then confirm, to arm one flame group from a phone (confirmarm.py,
+# Jeff 2026-11-27). No new way to arm: the engine beats its own arm-hold.
+CONFIRM_ARM_ROUTES = ("arm-request", "arm-confirm")
 ARM_FRESH_S = 1.0      # the page's status, and flamesafe's, no older
 # Disarm all flame groups is a plain disarm through the Stream Deck (Jeff,
 # 2026-10-23): it goes that way only while the deck read this engine within
@@ -284,6 +296,8 @@ ARM_FIRST_GAP_S = 2.0
 ARM_PAGE_FRESH_S = 2.5
 ARM_CUT = ("A Stop or a disarm came after the status this screen is "
            "showing. Lift your finger and hold again.")
+CONFIRM_ARM_CUT = ("A Stop or a disarm came after Arm was tapped. Tap Arm "
+                   "again. Nothing was armed.")
 # The Morning and Shutdown page (Jeff, 2026-10-17; morning.py, MORNING.md).
 # None of these touches the arm link: the purge selection is published on
 # deck-input for the Stream Deck process to act on, the fire heartbeat sets
@@ -373,7 +387,8 @@ GET_ROUTES = ("whoami", "status", "network", "tailscale", "deck-input",
     CLEANING_GET_ROUTES + PLAY_FROM_GET_ROUTES + FIREBALL_TIMELINE_GET_ROUTES
 # "alert" (alerts.py, 2026-10-12): raise and clear only from this machine
 # (the Stream Deck process, over loopback); Acknowledge from any page.
-POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + (
+POST_ROUTES = CONTROL_ROUTES + TRANSPORT_ROUTES + ARM_ROUTES + \
+    CONFIRM_ARM_ROUTES + (
     "network", "tailscale", "screen-arming", "alert", "live-flame",
     "announce-output", "announce-test-tone", "preshow-audio") + \
     MORNING_POST_ROUTES + FUEL_POST_ROUTES + FIREBALL_POST_ROUTES + \
@@ -2260,6 +2275,11 @@ class Remote:
         # fireball_practice.Practice, web.serve
         self.fireball_practice = None
         self.cleaning = None         # cleaning.CleaningPanel, web.serve
+        # confirmarm.ConfirmArm, built on the first Arm tap (confirm_arming).
+        # A test sets confirm_arm_threaded False and ticks it itself.
+        self.confirm_arm = None
+        self.confirm_arm_threaded = True
+        self._confirm_arm_lock = threading.Lock()
         # hazers.Hazers, set by web.serve (Fire & Ice with a flame link),
         # and the "hazers" mismatch alert's sentence and id.
         self.hazers = None
@@ -2827,6 +2847,10 @@ class Remote:
                 if pr is not None:
                     pr.request_end(f"{name.capitalize()} was pressed")
             return (*out,) + ({},)
+        if name == "arm-request":
+            return (*self.arm_request(body, ctx),) + ({},)
+        if name == "arm-confirm":
+            return (*self.arm_confirm(body, ctx),) + ({},)
         if name == "arm-hold":
             return (*self.arm_hold(body, ctx),) + ({},)
         if name == "arm-release":
@@ -6079,6 +6103,124 @@ class Remote:
                           f"{h['who']} let go of {gname} on the "
                           f"{h['device']} after {held:.1f} s.")
         return 200, {"ok": True}
+
+    # -- tap, then confirm, to arm (confirmarm.py, Jeff 2026-11-27) --------
+    def confirm_arm_refusal(self, i, gname, ctx, seen, since=None):
+        """Why a tap to arm group i could not become a hold right now, in
+        a sentence, or "". Everything arm_hold checks before it starts a
+        hold, asked at the Arm tap and again at the Confirm; arm_hold then
+        checks it all once more on every beat. `since` (the engine's
+        clock at the Arm tap): a Stop, a Hold or a disarm that cut holds
+        after it refuses the Confirm, whatever the page has read since."""
+        if not self.arming_enabled():
+            return ARMING_OFF
+        try:
+            seen = float(seen)
+        except (TypeError, ValueError):
+            seen = None
+        if seen is None or \
+                abs(self.wall() - seen / 1000.0) > ARM_PAGE_FRESH_S:
+            return (f"The page's status is more than {ARM_PAGE_FRESH_S:g} s "
+                    f"old. Wait for it to be live, then tap Arm again.")
+        cut = self._arm_cut_since(i, seen / 1000.0)
+        if not cut and since is not None:
+            with self._arm_lock:
+                cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
+            cut = any(c is not None and c[0] >= since for c in cuts)
+        if cut:
+            return CONFIRM_ARM_CUT
+        fl = self.flame_status.view() if self.flame_status else None
+        if not fl or fl["stale"] or fl["age_ms"] is None or \
+                fl["age_ms"] > ARM_FRESH_S * 1000:
+            return ("flamesafe has not reported in the last second, so its "
+                    "real armed state is not known. Nothing can arm from "
+                    "here until it does.")
+        g = fl["groups"][i]
+        if g["armed"] == "armed" or g["wanted"]:
+            return f"{gname} is already armed or asked for."
+        why = self.arm_refusal(gname, ctx.device)
+        if why:
+            return why
+        with self._arm_lock:
+            h = self._holds.get(i)
+            if self.hold_live(h):
+                return (f"{h['who']} is already holding {gname}. Only one "
+                        f"hold at a time.")
+        return ""
+
+    def confirm_arming(self):
+        """The engine's one confirmarm.ConfirmArm, built on first use."""
+        ca = self.confirm_arm
+        if ca is None:
+            from . import confirmarm
+
+            def release(i, token):
+                self._drop_hold(i, token)
+
+            def session_live(ctx):
+                # With users on, the sign-in of the Confirm must still
+                # stand: signing out ends it (as for the cleaning).
+                if not self.users_active():
+                    return True
+                token = getattr(ctx, "token", "")
+                return bool(token) and \
+                    self.users.session(token) is not None
+            def cut_since(i, since):
+                with self._arm_lock:
+                    cuts = (self._arm_cut.get("all"), self._arm_cut.get(i))
+                return any(c is not None and c[0] >= since for c in cuts)
+
+            def asked(i):
+                fl = self.flame_status.view() if self.flame_status else None
+                try:
+                    g = fl["groups"][i]
+                except (TypeError, KeyError, IndexError):
+                    return False
+                return g.get("armed") == "armed" or bool(g.get("wanted"))
+            with self._confirm_arm_lock:
+                # One only: two first taps at once never build two.
+                if self.confirm_arm is None:
+                    self.confirm_arm = confirmarm.ConfirmArm(
+                        self.arm_hold, release, self.confirm_arm_refusal,
+                        session_live=session_live, cut_since=cut_since,
+                        asked=asked, journal=self._journal,
+                        clock=self.clock, wall=self.wall,
+                        threaded=self.confirm_arm_threaded)
+                ca = self.confirm_arm
+        return ca
+
+    def _confirm_arm_actor(self, body, ctx):
+        """(who, screen, i, gname) as arm_hold names them, or ValueError."""
+        who, device = ctx.device, ctx.screen
+        if self.users_active():
+            who = self.signed_in_name(ctx, body)
+        i, gname = self._group_index(body)
+        return who, device, i, gname
+
+    def arm_request(self, body, ctx):
+        """The Arm tap: every rule checked, a one-use ticket answered.
+        Nothing is armed or held."""
+        if not self.arming_enabled():
+            return 403, {"error": ARMING_OFF, "arming_off": True}
+        try:
+            who, device, i, gname = self._confirm_arm_actor(body, ctx)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        return self.confirm_arming().request(i, gname, ctx, who, device,
+                                             body.get("seen"))
+
+    def arm_confirm(self, body, ctx):
+        """The Confirm tap: the ticket, the same device and person, every
+        rule again, then the engine holds the group's key itself."""
+        if not self.arming_enabled():
+            return 403, {"error": ARMING_OFF, "arming_off": True}
+        try:
+            who, device, i, gname = self._confirm_arm_actor(body, ctx)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        return self.confirm_arming().confirm(i, gname, ctx, who, device,
+                                             body.get("seen"),
+                                             body.get("ticket"))
 
     def group_disarm(self, body, ctx, confirm=True):
         """Disarm one group: handed to the Stream Deck process, which owns
@@ -11586,6 +11728,10 @@ class Remote:
                          "needs_s": SCREEN_HOLD_S,
                          "fresh_s": ARM_PAGE_FRESH_S,
                          "holds": holds}
+        # Tap, then confirm (confirmarm.py): the runs under way or just
+        # ended and who is waiting on a Confirm. Display only.
+        ca = self.confirm_arm
+        out["arming"]["confirm"] = ca.view(tok) if ca is not None else None
         self.artnet_alert()
         out["artnet_note"] = self.artnet_note()
         out["config_changed"] = self.config_changed_view(ctx)
